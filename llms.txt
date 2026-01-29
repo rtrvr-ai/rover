@@ -1,0 +1,48 @@
+# Rover
+
+> Turn any web interface into an AI agent. DOM-native SDK that reads the real DOM, plans actions, and executes them directly in the browser — clicks, forms, navigation — with sub-second latency and zero infrastructure.
+
+Built by RTRVR AI. Works on websites, browser extensions, Electron apps, or anywhere there's a DOM.
+
+## Embed on a website (one line)
+
+<script src="https://rover.rtrvr.ai/embed.js" data-site-id="YOUR_SITE_ID" data-public-key="pk_site_YOUR_PUBLIC_KEY" data-allowed-domains="yourdomain.com"></script>
+
+## npm
+
+npm install @rtrvr-ai/rover
+import { boot, shutdown } from '@rtrvr-ai/rover';
+boot({ siteId: '...', publicKey: 'pk_site_...', allowedDomains: ['yourdomain.com'] });
+
+## AI-Ready URLs
+
+Any Rover-enabled page can be queried by AI agents:
+https://example.com?rover=book%20a%20flight
+https://example.com?rover_shortcut=checkout_flow
+No MCP servers, tool definitions, or browser automation tools needed.
+
+## JS API
+
+rover.send(text) — send a task to Rover
+rover.open() / rover.close() — toggle chat panel
+rover.show() / rover.hide() — toggle widget visibility
+rover.newTask() / rover.endTask() — task lifecycle
+rover.registerTool(def, handler) — register client-side tools
+rover.on(event, handler) — subscribe to events (ready, status, error)
+rover.identify({ name, email }) — set visitor identity
+rover.getState() — get runtime state
+rover.update(config) — update config without reboot
+
+## Documentation
+
+- SDK API Reference: /packages/sdk/README.md
+- Integration Guide: /docs/INTEGRATION.md
+- Architecture: /docs/ARCHITECTURE.md
+- Security Model: /docs/SECURITY_MODEL.md
+
+## Links
+
+- Website: https://www.rtrvr.ai/rover
+- npm: https://www.npmjs.com/package/@rtrvr-ai/rover
+- GitHub: https://github.com/rtrvr-ai/rover
+- Discord: https://rtrvr.ai/discord

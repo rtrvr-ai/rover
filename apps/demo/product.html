@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rover Demo Product</title>
+  </head>
+  <body data-page="product">
+    <div class="page-shell">
+      <header class="topbar" data-reveal>
+        <a class="brand" href="./index.html">
+          Rover Mercantile
+          <small>Agent Interaction Lab</small>
+        </a>
+
+        <nav class="nav-links" aria-label="Primary">
+          <a class="nav-link" href="./index.html">Catalog</a>
+          <a class="nav-link" href="./product.html?sku=aurora-mug">Product</a>
+          <a class="nav-link" href="./checkout.html">Checkout</a>
+          <a class="nav-link" href="./confirmation.html">Confirmation</a>
+        </nav>
+
+        <div class="toolbar">
+          <span class="status-pill" id="rover-status-pill">Booting Rover...</span>
+          <button class="btn-ghost" id="open-rover-widget" type="button">Open Rover</button>
+          <button class="btn-ghost" id="close-rover-widget" type="button">Hide Rover</button>
+          <button class="btn-ghost" id="new-rover-task" type="button">New Task</button>
+          <button class="btn-ghost" id="end-rover-task" type="button">End Task</button>
+          <span class="kpi">Cart <strong class="cart-badge" data-cart-count>0</strong></span>
+        </div>
+      </header>
+
+      <details class="rover-config" data-reveal>
+        <summary>Rover API Config</summary>
+        <div class="config-grid">
+          <label>
+            API key
+            <input id="rover-api-key" type="password" placeholder="rtrvr_..." autocomplete="off" />
+          </label>
+          <label>
+            API base
+            <input id="rover-api-base" type="url" placeholder="https://...cloudfunctions.net" autocomplete="off" />
+          </label>
+        </div>
+        <div class="hero-actions">
+          <button id="save-rover-config" type="button">Save Rover Config</button>
+        </div>
+        <p class="inline-note" id="rover-config-status">Update API settings here without editing code.</p>
+      </details>
+
+      <main>
+        <section class="product-layout" data-reveal>
+          <article class="panel stack">
+            <div class="meta">SKU: <span id="product-sku">--</span> · Category: <span id="product-category">--</span></div>
+            <h1 id="product-title">Product</h1>
+            <p class="inline-note" id="product-blurb"></p>
+            <p id="product-description"></p>
+            <div class="summary-line total"><span>Price</span><span id="product-price">$0.00</span></div>
+
+            <div class="form-grid">
+              <label>
+                Size
+                <select id="variant-size">
+                  <option value="Small">Small</option>
+                  <option value="Medium" selected>Medium</option>
+                  <option value="Large">Large</option>
+                </select>
+              </label>
+
+              <label>
+                Color
+                <select id="variant-color">
+                  <option value="Natural" selected>Natural</option>
+                  <option value="Clay">Clay</option>
+                  <option value="Forest">Forest</option>
+                  <option value="Midnight">Midnight</option>
+                </select>
+              </label>
+
+              <label class="full">
+                Engraving note
+                <input id="engraving-note" type="text" placeholder="Optional text engraving" />
+              </label>
+            </div>
+
+            <div class="hero-actions">
+              <button class="btn-secondary" id="qty-decrease" type="button">-</button>
+              <input id="product-qty" type="number" value="1" min="1" max="99" style="width: 100px" />
+              <button class="btn-secondary" id="qty-increase" type="button">+</button>
+            </div>
+
+            <div class="hero-actions">
+              <button id="product-add-btn" type="button">Add to Cart</button>
+              <button class="btn-secondary" id="buy-now-btn" type="button">Buy Now</button>
+              <button class="btn-ghost" id="favorite-toggle" type="button" aria-pressed="false">Wishlist</button>
+              <button class="btn-ghost" id="copy-sku" type="button">Copy SKU</button>
+            </div>
+
+            <p class="inline-note" id="product-message">Try: "Select large size and add three to cart."</p>
+          </article>
+
+          <aside class="panel stack">
+            <h2>Shipping Estimate</h2>
+            <label>
+              ZIP code
+              <input id="zip-code" type="text" inputmode="numeric" placeholder="94103" maxlength="5" />
+            </label>
+            <label>
+              Speed
+              <select id="shipping-speed">
+                <option value="standard">Standard</option>
+                <option value="express">Express</option>
+                <option value="overnight">Overnight</option>
+              </select>
+            </label>
+            <button id="estimate-shipping" type="button">Estimate Shipping</button>
+            <p class="inline-note" id="shipping-result">Add ZIP and shipping speed to estimate delivery.</p>
+
+            <h3>Navigation hops</h3>
+            <div class="hero-actions">
+              <a class="button-link secondary" href="./index.html">Back to Catalog</a>
+              <a class="button-link primary" href="./checkout.html">Go to Checkout</a>
+            </div>
+          </aside>
+        </section>
+
+        <section class="panel" data-reveal>
+          <h2>Product Details</h2>
+          <div class="tabs" role="tablist" aria-label="Product detail tabs">
+            <button class="tab-btn" data-tab="specs" type="button">Specs</button>
+            <button class="tab-btn" data-tab="care" type="button">Care</button>
+            <button class="tab-btn" data-tab="returns" type="button">Returns</button>
+          </div>
+
+          <div class="tab-panel" id="tab-specs">
+            <p>Material blend, finish process, and dimensions appear in this section for read/summary tests.</p>
+          </div>
+          <div class="tab-panel" id="tab-care">
+            <p>Cleaning instructions and maintenance recommendations can be toggled here.</p>
+          </div>
+          <div class="tab-panel" id="tab-returns">
+            <p>Returns accepted within 30 days. Used to test extraction and follow-up actions.</p>
+          </div>
+        </section>
+
+        <section class="panel" data-reveal>
+          <h2>Expandable FAQ</h2>
+          <article class="accordion">
+            <button class="accordion-toggle" data-content="prod-faq-1" aria-expanded="false" type="button">Does engraving change shipping time?</button>
+            <div class="content" id="prod-faq-1" hidden>Engraving adds 1 business day before dispatch.</div>
+          </article>
+          <article class="accordion">
+            <button class="accordion-toggle" data-content="prod-faq-2" aria-expanded="false" type="button">Can I mix sizes in one order?</button>
+            <div class="content" id="prod-faq-2" hidden>Yes. Add each size separately from this page or catalog.</div>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast-wrap" id="toast-wrap" aria-live="polite"></div>
+    <script type="module" src="/rover-site-config.js"></script>
+    <script type="module" src="/src/demo.ts"></script>
+  </body>
+</html>

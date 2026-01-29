@@ -1,0 +1,11 @@
+packages:
+  - "packages/a11y-tree"
+  - "packages/shared"
+  - "packages/dom"
+  - "packages/instrumentation"
+  - "packages/bridge"
+  - "packages/worker"
+  - "packages/ui"
+  - "packages/sdk"
+  - "packages/tsconfig"
+  - "apps/*"

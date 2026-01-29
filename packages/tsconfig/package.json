@@ -1,0 +1,8 @@
+{
+  "name": "@rover/tsconfig",
+  "version": "2.0.1",
+  "description": "rover embed - tsconfig",
+  "license": "FSL-1.1-Apache-2.0",
+  "private": true,
+  "sideEffects": false
+}

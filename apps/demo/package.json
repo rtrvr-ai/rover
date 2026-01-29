@@ -1,0 +1,19 @@
+{
+  "name": "@rover/demo",
+  "private": true,
+  "license": "FSL-1.1-Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@rtrvr-ai/rover": "workspace:*",
+    "@rover/worker": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "^5.4.1",
+    "typescript": "^5.6.3"
+  }
+}

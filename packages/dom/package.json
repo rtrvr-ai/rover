@@ -1,0 +1,27 @@
+{
+  "name": "@rover/dom",
+  "version": "2.0.1",
+  "license": "FSL-1.1-Apache-2.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/**"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "lint": "eslint .",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@rover/a11y-tree": "workspace:*",
+    "@rover/shared": "workspace:*",
+    "@rover/instrumentation": "workspace:*"
+  },
+  "devDependencies": {
+    "@rover/tsconfig": "workspace:*",
+    "@types/node": "^20.11.30",
+    "typescript": "^5.6.3"
+  }
+}

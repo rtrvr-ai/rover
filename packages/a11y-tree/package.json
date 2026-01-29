@@ -1,0 +1,33 @@
+{
+  "name": "@rover/a11y-tree",
+  "version": "2.0.1",
+  "description": "rover embed - a11y tree",
+  "license": "FSL-1.1-Apache-2.0",
+  "type": "module",
+  "private": true,
+  "sideEffects": false,
+  "files": [
+    "dist/**"
+  ],
+  "types": "dist/index.d.mts",
+  "main": "dist/index.mjs",
+  "scripts": {
+    "clean:bundle": "rimraf dist",
+    "clean:node_modules": "pnpx rimraf node_modules",
+    "clean:turbo": "rimraf .turbo",
+    "clean": "pnpm clean:bundle && pnpm clean:node_modules && pnpm clean:turbo",
+    "ready": "tsc -b",
+    "lint": "eslint .",
+    "lint:fix": "pnpm lint --fix",
+    "format": "prettier . --write --ignore-path ../../.prettierignore",
+    "type-check": "tsc --noEmit",
+    "postinstall": "pnpm ready"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@rover/tsconfig": "workspace:*",
+    "@types/node": "^20.11.30",
+    "type-fest": "^4.41.0",
+    "typescript": "^5.6.3"
+  }
+}

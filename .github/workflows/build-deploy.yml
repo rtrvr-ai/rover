@@ -1,0 +1,89 @@
+name: Build & Deploy Rover SDK
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r --filter '!@rover/demo' build
+      - run: node packages/sdk/scripts/prepare-deploy.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rover-sdk-dist
+          path: packages/sdk/dist/deploy/
+
+  deploy-vercel:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: rtrvr-ai/rtrvr-cloud-website
+          token: ${{ secrets.WEBSITE_PAT }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rover-sdk-dist
+          path: public/
+      - name: Update artifact manifest
+        run: node scripts/rover-artifacts.mjs manifest --commit "$ROVER_COMMIT" --tag "$ROVER_TAG"
+        env:
+          ROVER_COMMIT: ${{ github.sha }}
+          ROVER_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+      - name: Create artifact update PR
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_PAT }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/embed.js public/rover.js public/worker/ public/rover-artifacts-manifest.json
+
+          if git diff --cached --quiet; then
+            echo "No artifact changes — skipping."
+            exit 0
+          fi
+
+          BRANCH="chore/rover-sdk-update-$(date +%s)"
+          git checkout -b "$BRANCH"
+          git commit -m "chore: update Rover SDK artifacts"
+          git push -u origin "$BRANCH"
+
+          PR_URL=$(gh pr create \
+            --title "chore: update Rover SDK artifacts" \
+            --body "Automated PR from Rover CI.
+
+          Source commit: ${{ github.sha }}
+          Triggered by: ${{ github.event_name }}" \
+            --head "$BRANCH" \
+            --base main)
+
+          echo "Created PR: $PR_URL"
+
+          for i in $(seq 1 30); do
+            STATE=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus')
+            case "$STATE" in
+              CLEAN|UNSTABLE)
+                gh pr merge "$PR_URL" --squash --delete-branch
+                exit 0 ;;
+              BLOCKED)
+                echo "PR is BLOCKED — failing."
+                exit 1 ;;
+              *) echo "Merge state: $STATE — waiting (attempt $i/30)…"
+                 sleep 10 ;;
+            esac
+          done
+          echo "Timed out waiting for PR to become mergeable."
+          exit 1
+
+  # npm publishing moved to .github/workflows/release.yml
+  # Use manual workflow trigger or push git tags to publish

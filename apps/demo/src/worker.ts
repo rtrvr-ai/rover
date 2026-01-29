@@ -1,0 +1,1 @@
+import '@rover/worker/worker';

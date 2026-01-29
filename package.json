@@ -1,0 +1,23 @@
+{
+  "name": "rover",
+  "private": true,
+  "version": "2.0.1",
+  "license": "FSL-1.1-Apache-2.0",
+  "description": "Turn any website into an AI-native interface — for your users and for AI.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rtrvr-ai/rover.git"
+  },
+  "packageManager": "pnpm@9.12.0",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm --filter @rover/demo dev",
+    "lint": "pnpm -r lint",
+    "type-check": "pnpm -r type-check",
+    "version:bump": "node scripts/bump-version.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.3"
+  }
+}

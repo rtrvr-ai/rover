@@ -1,0 +1,269 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { SessionCoordinator } from '../dist/sessionCoordinator.js';
+
+function installBrowserEnv() {
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  const previousBroadcastChannel = globalThis.BroadcastChannel;
+
+  const storage = new Map();
+  const localStorage = {
+    getItem(key) {
+      return storage.has(key) ? storage.get(key) : null;
+    },
+    setItem(key, value) {
+      storage.set(key, String(value));
+    },
+    removeItem(key) {
+      storage.delete(key);
+    },
+    clear() {
+      storage.clear();
+    },
+  };
+
+  globalThis.window = {
+    localStorage,
+    location: { href: 'https://example.com/' },
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  };
+  globalThis.document = { title: 'Test Page' };
+  globalThis.BroadcastChannel = undefined;
+
+  return {
+    restore() {
+      if (previousWindow === undefined) delete globalThis.window;
+      else globalThis.window = previousWindow;
+
+      if (previousDocument === undefined) delete globalThis.document;
+      else globalThis.document = previousDocument;
+
+      if (previousBroadcastChannel === undefined) delete globalThis.BroadcastChannel;
+      else globalThis.BroadcastChannel = previousBroadcastChannel;
+    },
+  };
+}
+
+test('navigation handoff adopts logical tab id and rebinds active tab', () => {
+  const env = installBrowserEnv();
+  try {
+    const firstRuntime = new SessionCoordinator({
+      siteId: 'site-a',
+      sessionId: 'session-a',
+      runtimeId: 'runtime-a',
+    });
+
+    const originalLogicalTabId = firstRuntime.registerCurrentTab('https://example.com/start', 'Start');
+    const handoffTs = Date.now();
+
+    firstRuntime.broadcastClosing({
+      handoffId: 'handoff-1',
+      targetUrl: 'https://example.com/next',
+      sourceLogicalTabId: originalLogicalTabId,
+      ts: handoffTs,
+    });
+
+    const nextRuntime = new SessionCoordinator({
+      siteId: 'site-a',
+      sessionId: 'session-a',
+      runtimeId: 'runtime-b',
+    });
+
+    const adoptedLogicalTabId = nextRuntime.registerCurrentTab(
+      'https://example.com/next',
+      'Next',
+      {
+        handoffId: 'handoff-1',
+        targetUrl: 'https://example.com/next',
+        sourceLogicalTabId: originalLogicalTabId,
+        ts: handoffTs,
+      },
+    );
+
+    assert.equal(adoptedLogicalTabId, originalLogicalTabId);
+    assert.equal(nextRuntime.getActiveLogicalTabId(), originalLogicalTabId);
+
+    const contextTabs = nextRuntime.listTabs({ scope: 'context' });
+    assert.equal(contextTabs.length, 1);
+    assert.equal(contextTabs[0].logicalTabId, originalLogicalTabId);
+    assert.equal(contextTabs[0].runtimeId, 'runtime-b');
+  } finally {
+    env.restore();
+  }
+});
+
+test('context scope excludes detached internal tabs while all scope keeps them briefly', () => {
+  const env = installBrowserEnv();
+  try {
+    const runtime = new SessionCoordinator({
+      siteId: 'site-b',
+      sessionId: 'session-b',
+      runtimeId: 'runtime-a',
+    });
+
+    const logicalTabId = runtime.registerCurrentTab('https://example.com/a', 'A');
+    runtime.broadcastClosing({
+      handoffId: 'handoff-2',
+      targetUrl: 'https://example.com/b',
+      sourceLogicalTabId: logicalTabId,
+      ts: Date.now(),
+    });
+
+    assert.equal(runtime.listTabs({ scope: 'all' }).length, 1);
+    assert.equal(runtime.listTabs({ scope: 'context' }).length, 0);
+  } finally {
+    env.restore();
+  }
+});
+
+test('boundary pruning keeps active live tab and external placeholders only', () => {
+  const env = installBrowserEnv();
+  try {
+    const runtime = new SessionCoordinator({
+      siteId: 'site-c',
+      sessionId: 'session-c',
+      runtimeId: 'runtime-a',
+    });
+
+    const activeLogicalTabId = runtime.registerCurrentTab('https://example.com/home', 'Home');
+    const externalLogicalTabId = runtime.registerOpenedTab({
+      url: 'https://external.example.net/',
+      external: true,
+      openerRuntimeId: 'runtime-a',
+    }).logicalTabId;
+    const internalDetachedTabId = runtime.registerOpenedTab({
+      url: 'https://example.com/background',
+      external: false,
+      openerRuntimeId: 'runtime-a',
+    }).logicalTabId;
+
+    runtime.pruneTabs({
+      dropRuntimeDetached: true,
+      keepOnlyActiveLiveTab: true,
+      keepRecentExternalPlaceholders: true,
+    });
+
+    const allTabs = runtime.listTabs({ scope: 'all' });
+    assert.equal(allTabs.some(tab => tab.logicalTabId === activeLogicalTabId && tab.runtimeId === 'runtime-a'), true);
+    assert.equal(allTabs.some(tab => tab.logicalTabId === externalLogicalTabId && tab.external), true);
+    assert.equal(allTabs.some(tab => tab.logicalTabId === internalDetachedTabId), false);
+  } finally {
+    env.restore();
+  }
+});
+
+test('task boundary hard-resets logical tabs to the current runtime tab', () => {
+  const env = installBrowserEnv();
+  try {
+    const runtime = new SessionCoordinator({
+      siteId: 'site-d',
+      sessionId: 'session-d',
+      runtimeId: 'runtime-a',
+    });
+
+    runtime.registerCurrentTab('https://example.com/start', 'Start');
+    runtime.registerOpenedTab({
+      url: 'https://example.com/background',
+      external: false,
+      openerRuntimeId: 'runtime-a',
+    });
+    runtime.registerOpenedTab({
+      url: 'https://external.example.net/',
+      external: true,
+      openerRuntimeId: 'runtime-a',
+    });
+
+    runtime.startNewTask({
+      taskId: 'task-next',
+      startedAt: Date.now(),
+      boundaryReason: 'test_reset',
+      status: 'running',
+    });
+
+    const tabs = runtime.listTabs({ scope: 'all' });
+    assert.equal(tabs.length, 1);
+    assert.equal(tabs[0].logicalTabId, 1);
+    assert.equal(tabs[0].runtimeId, 'runtime-a');
+    assert.equal(runtime.getActiveLogicalTabId(), 1);
+
+    const opened = runtime.registerOpenedTab({
+      url: 'https://example.com/new',
+      external: false,
+      openerRuntimeId: 'runtime-a',
+    });
+    assert.equal(opened.logicalTabId, 2);
+  } finally {
+    env.restore();
+  }
+});
+
+test('setActiveRun does not synthesize task lifecycle state', () => {
+  const env = installBrowserEnv();
+  try {
+    const runtime = new SessionCoordinator({
+      siteId: 'site-e',
+      sessionId: 'session-e',
+      runtimeId: 'runtime-a',
+    });
+
+    runtime.registerCurrentTab('https://example.com/start', 'Start');
+    runtime.setActiveRun({ runId: 'run-1', text: 'test run' });
+    const state = runtime.getState();
+
+    assert.equal(state.activeRun?.runId, 'run-1');
+    assert.equal(state.task, undefined);
+  } finally {
+    env.restore();
+  }
+});
+
+test('remote workflow lock keeps active logical tab pinned to the remote owner tab', () => {
+  const env = installBrowserEnv();
+  try {
+    const runtimeA = new SessionCoordinator({
+      siteId: 'site-g',
+      sessionId: 'session-g',
+      runtimeId: 'runtime-a',
+    });
+    const runtimeATabId = runtimeA.registerCurrentTab('https://example.com/start', 'Start');
+    runtimeA.setActiveRun({ runId: 'run-1', text: 'continue task' });
+    assert.equal(runtimeA.acquireWorkflowLock('run-1'), true);
+
+    const runtimeB = new SessionCoordinator({
+      siteId: 'site-g',
+      sessionId: 'session-g',
+      runtimeId: 'runtime-b',
+    });
+    const runtimeBTabId = runtimeB.registerCurrentTab('https://example.com/other', 'Other');
+
+    assert.equal(runtimeATabId !== runtimeBTabId, true);
+    assert.equal(runtimeB.getActiveLogicalTabId(), runtimeATabId);
+  } finally {
+    env.restore();
+  }
+});
+
+test('start remains transport-only and does not synthesize task lifecycle state', () => {
+  const env = installBrowserEnv();
+  try {
+    const runtime = new SessionCoordinator({
+      siteId: 'site-f',
+      sessionId: 'session-f',
+      runtimeId: 'runtime-a',
+    });
+    runtime.start();
+    const state = runtime.getState();
+
+    assert.equal(state.task, undefined);
+    runtime.stop();
+  } finally {
+    env.restore();
+  }
+});

@@ -1,0 +1,64 @@
+{
+  "name": "@rtrvr-ai/rover",
+  "version": "2.0.1",
+  "license": "FSL-1.1-Apache-2.0",
+  "description": "Turn any website into an AI-native interface — for your users and for AI.",
+  "author": "RTRVR AI, INC. <support@rtrvr.ai>",
+  "homepage": "https://www.rtrvr.ai/rover",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rtrvr-ai/rover.git",
+    "directory": "packages/sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/rtrvr-ai/rover/issues"
+  },
+  "keywords": [
+    "rover", "web-agent", "ai-agent", "automation", "embedded", "dom",
+    "browser-automation", "autonomous-agent", "sdk", "electron", "browser-extension",
+    "chrome-extension", "agentic", "deep-link", "accessibility", "open-source",
+    "dom-agent", "ai-web-agent"
+  ],
+  "private": false,
+  "type": "module",
+  "main": "dist/rover.js",
+  "module": "dist/rover.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/rover.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./embed": "./dist/embed.js",
+    "./worker": "./dist/worker/rover-worker.js"
+  },
+  "files": [
+    "dist/rover.js",
+    "dist/embed.js",
+    "dist/index.d.ts",
+    "dist/worker/rover-worker.js",
+    "dist/loader.js",
+    "dist/loader.d.ts",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -b && node ./scripts/copy-worker.mjs && node ./scripts/bundle.mjs && node ./scripts/build-embed.mjs",
+    "lint": "eslint .",
+    "type-check": "tsc --noEmit",
+    "test": "node --test tests/**/*.test.mjs"
+  },
+  "dependencies": {
+    "@rover/bridge": "workspace:*",
+    "@rover/ui": "workspace:*",
+    "@rover/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@rover/tsconfig": "workspace:*",
+    "@rover/worker": "workspace:*",
+    "@types/node": "^20.11.30",
+    "typescript": "^5.6.3"
+  }
+}
