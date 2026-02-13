@@ -129,7 +129,6 @@ export enum SystemToolOpcode {
   answer_task = 37,
   dispatch_pointer_path = 38,
   network_run_recipe = 40,
-  discover_and_extract_network_data = 41,
 }
 
 // skipped tools: google_search, close_tab, switch_tab, answer_task doesn't go through content script
@@ -174,7 +173,6 @@ export const ToolNameToOpcode: Record<SystemToolNames, SystemToolOpcode> = {
   [SystemToolNames.solve_captcha]: SystemToolOpcode.solve_captcha,
   [SystemToolNames.answer_task]: SystemToolOpcode.answer_task,
   [SystemToolNames.dispatch_pointer_path]: SystemToolOpcode.dispatch_pointer_path,
-  [SystemToolNames.discover_and_extract_network_data]: SystemToolOpcode.discover_and_extract_network_data,
   [SystemToolNames.network_run_recipe]: SystemToolOpcode.network_run_recipe,
 } as Record<SystemToolNames, SystemToolOpcode>;
 

@@ -188,13 +188,6 @@ export class Bridge {
       );
     }
 
-    if (toolName === SystemToolNames.discover_and_extract_network_data || toolName === SystemToolNames.network_run_recipe) {
-      return capabilityUnavailableResponse(
-        `${toolName} is only available in extension runtime and is not supported in embed mode.`,
-        'CAPABILITY_UNAVAILABLE',
-      );
-    }
-
     if (toolName === SystemToolNames.click_element && (call?.args as any)?.open_in_new_tab) {
       return this.openElementInNewTab(call?.args || {});
     }
@@ -856,7 +849,6 @@ const NON_ACTION_TOOLS = new Set<SystemToolNames>([
   SystemToolNames.wait_for_element,
   SystemToolNames.answer_task,
   SystemToolNames.solve_captcha,
-  SystemToolNames.discover_and_extract_network_data,
   SystemToolNames.network_run_recipe,
 ]);
 

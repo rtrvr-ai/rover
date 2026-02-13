@@ -68,7 +68,6 @@ export enum SystemToolNames {
   // ============================================
   describe_images = 'describe_images',
   google_search = 'google_search',
-  discover_and_extract_network_data = 'discover_and_extract_network_data',
   network_run_recipe = 'network_run_recipe',
 
   // ============================================

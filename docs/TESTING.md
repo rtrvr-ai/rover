@@ -28,7 +28,7 @@ User Input → UI Widget (Shadow DOM) → SDK (init/send/registerTool)
 ### 1. Build Rover
 
 ```bash
-cd /Users/bhavanikalisetty/work/act_2/rover
+cd /Users/.../rover
 pnpm install
 pnpm build
 ```
@@ -62,7 +62,7 @@ The demo app at `apps/demo/` is a Vite-based test page with a simple "store" UI.
 **Run it:**
 ```bash
 # Terminal 1: Start the demo
-cd /Users/bhavanikalisetty/work/act_2/rover
+cd /Users/.../rover
 pnpm dev
 # Opens http://localhost:5174
 ```
@@ -102,7 +102,7 @@ Create a standalone HTML file that loads the pre-built SDK:
 
 ```bash
 # After `pnpm build`, serve the SDK dist statically
-cd /Users/bhavanikalisetty/work/act_2/rover
+cd /Users/.../rover
 npx serve . --cors -l 3333
 ```
 
@@ -175,12 +175,12 @@ Run the backend locally for complete end-to-end testing without hitting producti
 
 ```bash
 # Terminal 1: Start Firebase emulators
-cd /Users/bhavanikalisetty/work/act_2/rtrvr-extension-functions
+cd /Users/.../rtrvr-cloud-backend
 firebase emulators:start
 # Runs on http://127.0.0.1:5002
 
 # Terminal 2: Start Rover demo
-cd /Users/bhavanikalisetty/work/act_2/rover
+cd /Users/.../rover
 pnpm dev
 # Runs on http://localhost:5174
 ```

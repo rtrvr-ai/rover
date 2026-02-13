@@ -37,9 +37,9 @@ export const hasDriveScope = (scopes: string[]): boolean => {
 };
 
 export const CLOUD_FUNCTIONS_URL =
-  'http://127.0.0.1:5002/rtrvr-extension-functions/us-central1';
+  // 'http://127.0.0.1:5002/rtrvr-extension-functions/us-central1';
   // Production URL:
-  // 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net';
+  'https://us-central1-rtrvr-extension-functions.cloudfunctions.net';
 
 export const RTRVR_WEBSITE =
   // 'http://localhost:3000';
