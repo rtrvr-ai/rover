@@ -43,21 +43,5 @@ jobs:
           git diff --cached --quiet || git commit -m "chore: update Rover SDK artifacts"
           git push
 
-  publish-npm:
-    needs: build
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.12.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm -r --filter '!@rover/demo' build
-      - run: cd packages/sdk && npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+  # npm publishing moved to .github/workflows/release.yml
+  # Use manual workflow trigger or push git tags to publish

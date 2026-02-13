@@ -1,14 +1,15 @@
 {
   "name": "rover",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "packageManager": "pnpm@9.12.0",
   "type": "module",
   "scripts": {
     "build": "pnpm -r build",
     "dev": "pnpm --filter @rover/demo dev",
     "lint": "pnpm -r lint",
-    "type-check": "pnpm -r type-check"
+    "type-check": "pnpm -r type-check",
+    "version:bump": "node scripts/bump-version.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.27.3"
