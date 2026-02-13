@@ -1,6 +1,6 @@
 {
   "name": "@rover/storage",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "rtrvr.ai chrome extension - storage",
   "type": "module",
   "private": true,
