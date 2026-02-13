@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rover Demo Checkout</title>
+  </head>
+  <body data-page="checkout">
+    <div class="page-shell">
+      <header class="topbar" data-reveal>
+        <a class="brand" href="./index.html">
+          Rover Mercantile
+          <small>Agent Interaction Lab</small>
+        </a>
+
+        <nav class="nav-links" aria-label="Primary">
+          <a class="nav-link" href="./index.html">Catalog</a>
+          <a class="nav-link" href="./product.html?sku=aurora-mug">Product</a>
+          <a class="nav-link" href="./checkout.html">Checkout</a>
+          <a class="nav-link" href="./confirmation.html">Confirmation</a>
+        </nav>
+
+        <div class="toolbar">
+          <span class="status-pill" id="rover-status-pill">Booting Rover...</span>
+          <button class="btn-ghost" id="open-rover-widget" type="button">Open Rover</button>
+          <button class="btn-ghost" id="close-rover-widget" type="button">Hide Rover</button>
+          <button class="btn-ghost" id="new-rover-task" type="button">New Task</button>
+          <button class="btn-ghost" id="end-rover-task" type="button">End Task</button>
+          <span class="kpi">Cart <strong class="cart-badge" data-cart-count>0</strong></span>
+        </div>
+      </header>
+
+      <details class="rover-config" data-reveal>
+        <summary>Rover API Config</summary>
+        <div class="config-grid">
+          <label>
+            API key
+            <input id="rover-api-key" type="password" placeholder="rtrvr_..." autocomplete="off" />
+          </label>
+          <label>
+            API base
+            <input id="rover-api-base" type="url" placeholder="https://...cloudfunctions.net" autocomplete="off" />
+          </label>
+        </div>
+        <div class="hero-actions">
+          <button id="save-rover-config" type="button">Save Rover Config</button>
+        </div>
+        <p class="inline-note" id="rover-config-status">Checkout actions are fully stateful for multi-step testing.</p>
+      </details>
+
+      <main>
+        <section class="checkout-layout" data-reveal>
+          <article class="panel stack">
+            <h1>Checkout</h1>
+            <p class="inline-note">Try: "Fill all required fields, apply SAVE10, and place order."</p>
+
+            <form id="checkout-form" class="stack">
+              <div class="form-grid">
+                <label class="full">
+                  Email *
+                  <input id="checkout-email" type="email" autocomplete="email" />
+                </label>
+
+                <label class="full">
+                  Full name *
+                  <input id="checkout-name" type="text" autocomplete="name" />
+                </label>
+
+                <label>
+                  Phone *
+                  <input id="checkout-phone" type="tel" autocomplete="tel" />
+                </label>
+
+                <label>
+                  ZIP code *
+                  <input id="checkout-zip" type="text" inputmode="numeric" maxlength="5" autocomplete="postal-code" />
+                </label>
+
+                <label class="full">
+                  Address line 1 *
+                  <input id="checkout-address1" type="text" autocomplete="address-line1" />
+                </label>
+
+                <label class="full">
+                  Address line 2
+                  <input id="checkout-address2" type="text" autocomplete="address-line2" />
+                </label>
+
+                <label>
+                  City *
+                  <input id="checkout-city" type="text" autocomplete="address-level2" />
+                </label>
+
+                <label>
+                  State *
+                  <input id="checkout-state" type="text" autocomplete="address-level1" />
+                </label>
+              </div>
+
+              <h2>Shipping Method</h2>
+              <div class="radio-group">
+                <label class="radio-box"><input type="radio" name="shipping-method" value="standard" checked /> Standard</label>
+                <label class="radio-box"><input type="radio" name="shipping-method" value="express" /> Express</label>
+                <label class="radio-box"><input type="radio" name="shipping-method" value="overnight" /> Overnight</label>
+              </div>
+
+              <h2>Payment</h2>
+              <div class="form-grid">
+                <label class="full">
+                  Card number *
+                  <input id="card-number" type="text" inputmode="numeric" />
+                </label>
+                <label>
+                  Expiry *
+                  <input id="card-expiry" type="text" placeholder="MM/YY" />
+                </label>
+                <label>
+                  CVC *
+                  <input id="card-cvc" type="text" inputmode="numeric" maxlength="4" />
+                </label>
+              </div>
+
+              <div class="checkbox-row">
+                <input id="agree-terms" type="checkbox" />
+                <label for="agree-terms">I agree to terms and privacy policy.</label>
+              </div>
+
+              <div class="hero-actions">
+                <button id="autofill-checkout" class="btn-secondary" type="button">Autofill Test Values</button>
+                <button id="place-order-btn" type="submit">Place Test Order</button>
+              </div>
+            </form>
+
+            <p class="inline-note" id="checkout-alert">Complete shipping and payment fields to continue.</p>
+          </article>
+
+          <aside class="panel stack">
+            <h2>Order Summary</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th>Qty</th>
+                  <th>Amount</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="checkout-items"></tbody>
+            </table>
+
+            <div class="stack">
+              <label>
+                Coupon code
+                <input id="coupon-code" type="text" placeholder="SAVE10 / WELCOME15 / FREESHIP" />
+              </label>
+              <button id="apply-coupon-btn" type="button">Apply Coupon</button>
+              <p class="inline-note" id="coupon-message">No coupon applied.</p>
+            </div>
+
+            <div class="summary-line"><span>Subtotal</span><strong id="summary-subtotal">$0.00</strong></div>
+            <div class="summary-line"><span>Shipping</span><strong id="summary-shipping">$0.00</strong></div>
+            <div class="summary-line"><span>Discount</span><strong id="summary-discount">-$0.00</strong></div>
+            <div class="summary-line total"><span>Total</span><strong id="summary-total">$0.00</strong></div>
+
+            <div class="hero-actions">
+              <a class="button-link secondary" href="./index.html">Continue Shopping</a>
+              <a class="button-link secondary" href="./product.html?sku=lumen-lamp">Go to Product</a>
+            </div>
+          </aside>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast-wrap" id="toast-wrap" aria-live="polite"></div>
+    <script type="module" src="/rover-site-config.js"></script>
+    <script type="module" src="/src/demo.ts"></script>
+  </body>
+</html>

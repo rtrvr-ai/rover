@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rover Demo Storefront</title>
+  </head>
+  <body data-page="catalog">
+    <div class="page-shell">
+      <header class="topbar" data-reveal>
+        <a class="brand" href="./index.html">
+          Rover Mercantile
+          <small>Agent Interaction Lab</small>
+        </a>
+
+        <nav class="nav-links" aria-label="Primary">
+          <a class="nav-link" href="./index.html">Catalog</a>
+          <a class="nav-link" href="./product.html?sku=aurora-mug">Product</a>
+          <a class="nav-link" href="./checkout.html">Checkout</a>
+          <a class="nav-link" href="./confirmation.html">Confirmation</a>
+        </nav>
+
+        <div class="toolbar">
+          <span class="status-pill" id="rover-status-pill">Booting Rover...</span>
+          <button class="btn-ghost" id="open-rover-widget" type="button">Open Rover</button>
+          <button class="btn-ghost" id="close-rover-widget" type="button">Hide Rover</button>
+          <button class="btn-ghost" id="new-rover-task" type="button">New Task</button>
+          <button class="btn-ghost" id="end-rover-task" type="button">End Task</button>
+          <span class="kpi">Cart <strong class="cart-badge" data-cart-count>0</strong></span>
+        </div>
+      </header>
+
+      <details class="rover-config" data-reveal>
+        <summary>Rover API Config</summary>
+        <div class="config-grid">
+          <label>
+            API key
+            <input id="rover-api-key" type="password" placeholder="rtrvr_..." autocomplete="off" />
+          </label>
+          <label>
+            API base
+            <input id="rover-api-base" type="url" placeholder="https://...cloudfunctions.net" autocomplete="off" />
+          </label>
+        </div>
+        <div class="hero-actions">
+          <button id="save-rover-config" type="button">Save Rover Config</button>
+        </div>
+        <p class="inline-note" id="rover-config-status">Config is stored in your browser localStorage.</p>
+      </details>
+
+      <main>
+        <section class="panel hero" data-reveal>
+          <div>
+            <h1>Multi-page testbed for Rover actions</h1>
+            <p>
+              Use Rover to click through products, fill forms, apply coupons, and place a full test checkout.
+              State persists across pages so you can test real navigation hops.
+            </p>
+            <div class="hero-actions">
+              <a class="button-link primary" href="./product.html?sku=atlas-bottle">Go to Featured Product</a>
+              <a class="button-link secondary" href="./checkout.html">Jump to Checkout</a>
+            </div>
+            <p class="inline-note" id="catalog-message">Try: "Add two items to cart and proceed to checkout."</p>
+          </div>
+
+          <div class="stack">
+            <div class="search-row">
+              <input id="catalog-search" type="search" placeholder="Search products (e.g., mug, lamp, pack)" />
+            </div>
+            <div class="chips" role="group" aria-label="Catalog filters">
+              <button class="chip is-active" data-filter="all" type="button">All</button>
+              <button class="chip" data-filter="kitchen" type="button">Kitchen</button>
+              <button class="chip" data-filter="workspace" type="button">Workspace</button>
+              <button class="chip" data-filter="travel" type="button">Travel</button>
+            </div>
+            <p class="inline-note" id="catalog-results-count">0 items visible</p>
+          </div>
+        </section>
+
+        <section class="grid-2" data-reveal>
+          <div class="panel">
+            <h2>Catalog</h2>
+            <p class="inline-note">Each card has Add to Cart and View Details actions.</p>
+
+            <div class="product-grid" id="catalog-grid">
+              <article class="product-card" data-sku="aurora-mug" data-category="kitchen" data-name="aurora ember mug">
+                <div class="product-thumb" aria-hidden="true"></div>
+                <h3>Aurora Ember Mug</h3>
+                <p class="meta">Heat-retaining ceramic travel mug.</p>
+                <div class="price-row"><span>$34.00</span><span class="meta">Kitchen</span></div>
+                <div class="hero-actions">
+                  <button data-action="add-to-cart" data-sku="aurora-mug" type="button">Add to Cart</button>
+                  <a class="button-link secondary" href="./product.html?sku=aurora-mug">View Details</a>
+                </div>
+              </article>
+
+              <article class="product-card" data-sku="atlas-bottle" data-category="travel" data-name="atlas trail bottle">
+                <div class="product-thumb" aria-hidden="true"></div>
+                <h3>Atlas Trail Bottle</h3>
+                <p class="meta">Insulated bottle with magnetic cap.</p>
+                <div class="price-row"><span>$42.00</span><span class="meta">Travel</span></div>
+                <div class="hero-actions">
+                  <button data-action="add-to-cart" data-sku="atlas-bottle" type="button">Add to Cart</button>
+                  <a class="button-link secondary" href="./product.html?sku=atlas-bottle">View Details</a>
+                </div>
+              </article>
+
+              <article class="product-card" data-sku="pilot-notebook" data-category="workspace" data-name="pilot grid notebook">
+                <div class="product-thumb" aria-hidden="true"></div>
+                <h3>Pilot Grid Notebook</h3>
+                <p class="meta">Refillable notebook for planning and sketching.</p>
+                <div class="price-row"><span>$19.00</span><span class="meta">Workspace</span></div>
+                <div class="hero-actions">
+                  <button data-action="add-to-cart" data-sku="pilot-notebook" type="button">Add to Cart</button>
+                  <a class="button-link secondary" href="./product.html?sku=pilot-notebook">View Details</a>
+                </div>
+              </article>
+
+              <article class="product-card" data-sku="lumen-lamp" data-category="workspace" data-name="lumen arc lamp">
+                <div class="product-thumb" aria-hidden="true"></div>
+                <h3>Lumen Arc Lamp</h3>
+                <p class="meta">Rechargeable desk lamp with memory modes.</p>
+                <div class="price-row"><span>$79.00</span><span class="meta">Workspace</span></div>
+                <div class="hero-actions">
+                  <button data-action="add-to-cart" data-sku="lumen-lamp" type="button">Add to Cart</button>
+                  <a class="button-link secondary" href="./product.html?sku=lumen-lamp">View Details</a>
+                </div>
+              </article>
+
+              <article class="product-card" data-sku="wander-pack" data-category="travel" data-name="wander sling pack">
+                <div class="product-thumb" aria-hidden="true"></div>
+                <h3>Wander Sling Pack</h3>
+                <p class="meta">Weather-sealed sling with hidden passport pocket.</p>
+                <div class="price-row"><span>$58.00</span><span class="meta">Travel</span></div>
+                <div class="hero-actions">
+                  <button data-action="add-to-cart" data-sku="wander-pack" type="button">Add to Cart</button>
+                  <a class="button-link secondary" href="./product.html?sku=wander-pack">View Details</a>
+                </div>
+              </article>
+
+              <article class="product-card" data-sku="fable-plate" data-category="kitchen" data-name="fable serving plate">
+                <div class="product-thumb" aria-hidden="true"></div>
+                <h3>Fable Serving Plate</h3>
+                <p class="meta">Stoneware serving plate with matte glaze.</p>
+                <div class="price-row"><span>$27.00</span><span class="meta">Kitchen</span></div>
+                <div class="hero-actions">
+                  <button data-action="add-to-cart" data-sku="fable-plate" type="button">Add to Cart</button>
+                  <a class="button-link secondary" href="./product.html?sku=fable-plate">View Details</a>
+                </div>
+              </article>
+            </div>
+          </div>
+
+          <aside class="panel stack">
+            <h2>Mini Cart</h2>
+            <ul class="mini-list" id="mini-cart-items"></ul>
+            <div class="summary-line total"><span>Total</span><span id="mini-cart-total">$0.00</span></div>
+            <div class="hero-actions">
+              <a class="button-link primary" href="./checkout.html">Proceed to Checkout</a>
+              <button class="btn-secondary" id="clear-cart-btn" type="button">Clear Cart</button>
+            </div>
+
+            <h3>Save email for checkout</h3>
+            <form class="stack" id="email-capture-form">
+              <input id="capture-email" type="email" placeholder="you@example.com" autocomplete="email" />
+              <button type="submit">Save Email</button>
+            </form>
+          </aside>
+        </section>
+
+        <section class="panel" data-reveal>
+          <h2>FAQ Actions</h2>
+          <p class="inline-note">Useful for testing click, expand/collapse, and read operations.</p>
+
+          <article class="accordion">
+            <button class="faq-toggle" data-content="faq-one" aria-expanded="false" type="button">Do cart items persist across pages?</button>
+            <div class="content" id="faq-one" hidden>Yes. Cart and profile info are stored in localStorage for realistic multi-hop flows.</div>
+          </article>
+
+          <article class="accordion">
+            <button class="faq-toggle" data-content="faq-two" aria-expanded="false" type="button">Can I test failed validation states?</button>
+            <div class="content" id="faq-two" hidden>Yes. Leave required checkout fields empty and Rover will need to recover by filling missing fields.</div>
+          </article>
+
+          <article class="accordion">
+            <button class="faq-toggle" data-content="faq-three" aria-expanded="false" type="button">Which coupons work?</button>
+            <div class="content" id="faq-three" hidden>Try SAVE10, WELCOME15, or FREESHIP in the checkout coupon field.</div>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast-wrap" id="toast-wrap" aria-live="polite"></div>
+    <script type="module" src="/rover-site-config.js"></script>
+    <script type="module" src="/src/demo.ts"></script>
+  </body>
+</html>

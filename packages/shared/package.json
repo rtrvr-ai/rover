@@ -1,0 +1,39 @@
+{
+  "name": "@rover/shared",
+  "version": "0.1.0",
+  "description": "rover embed - shared code",
+  "type": "module",
+  "private": true,
+  "sideEffects": false,
+  "files": [
+    "dist/**"
+  ],
+  "types": "dist/index.d.mts",
+  "main": "dist/index.mjs",
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./lib/*": "./dist/lib/*"
+  },
+  "scripts": {
+    "clean:bundle": "rimraf dist",
+    "clean:node_modules": "pnpx rimraf node_modules",
+    "clean:turbo": "rimraf .turbo",
+    "clean": "pnpm clean:bundle && pnpm clean:node_modules && pnpm clean:turbo",
+    "ready": "tsc -b",
+    "lint": "eslint .",
+    "lint:fix": "pnpm lint --fix",
+    "format": "prettier . --write --ignore-path ../../.prettierignore",
+    "type-check": "tsc --noEmit",
+    "postinstall": "pnpm ready"
+  },
+  "dependencies": {
+    "@rover/a11y-tree": "workspace:*",
+    "@google/genai": "^1.27.0"
+  },
+  "devDependencies": {
+    "@rover/tsconfig": "workspace:*",
+    "@types/node": "^20.11.30",
+    "type-fest": "^5.1.0",
+    "typescript": "^5.6.3"
+  }
+}

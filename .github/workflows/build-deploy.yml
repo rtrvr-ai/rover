@@ -1,0 +1,63 @@
+name: Build & Deploy Rover SDK
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: node packages/sdk/scripts/prepare-deploy.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rover-sdk-dist
+          path: packages/sdk/dist/deploy/
+
+  deploy-vercel:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: rtrvr-ai/rtrvr-cloud-website
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: rover-sdk-dist
+          path: public/
+      - run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add public/embed.js public/rover.js public/rover-worker.js public/worker/
+          git diff --cached --quiet || git commit -m "chore: update Rover SDK artifacts"
+          git push
+
+  publish-npm:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: cd packages/sdk && npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

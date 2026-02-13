@@ -1,0 +1,24 @@
+{
+  "extends": "@rover/tsconfig/module",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "outDir": "dist"
+  },
+  "include": [
+    "index.mts",
+    "lib/system-tools/**/*.ts",
+    "lib/page/index.ts",
+    "lib/page/time-utils.ts",
+    "lib/page/file-upload-utils.ts",
+    "lib/page/upload-bytes-store.ts",
+    "lib/utils/constants.ts",
+    "lib/utils/helpers.ts",
+    "lib/utils/sheetUtils.ts",
+    "lib/utils/types.ts",
+    "lib/utils/main-listener-utils.ts",
+    "lib/types/index.ts",
+    "lib/types/artifact-types.ts",
+    "lib/types/workflow-types.ts",
+    "lib/types/agent-types.ts"
+  ]
+}

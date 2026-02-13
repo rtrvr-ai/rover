@@ -1,0 +1,2365 @@
+import { Bridge } from '@rover/bridge';
+import { bindRpc } from '@rover/bridge';
+import { mountWidget, type RoverExecutionMode, type RoverTimelineEvent, type RoverUi } from '@rover/ui';
+import {
+  SessionCoordinator,
+  type SharedSessionState,
+  type SharedTaskState,
+  type SharedTimelineEvent,
+  type SharedUiMessage,
+  type SharedWorkerContext,
+} from './sessionCoordinator.js';
+import { RoverCloudCheckpointClient, type RoverCloudCheckpointPayload } from './cloudCheckpoint.js';
+import { createRuntimeStateStore, type RuntimeStateStore } from './runtimeStorage.js';
+import type {
+  PersistedPendingRun,
+  PersistedRuntimeState,
+  PersistedTaskState,
+  PersistedTimelineEvent,
+  PersistedUiMessage,
+  PersistedWorkerState,
+  UiRole,
+} from './runtimeTypes.js';
+
+export type RoverInit = {
+  siteId: string;
+  apiBase?: string;
+  apiKey?: string;
+  siteKeyId?: string;
+  authToken?: string;
+  auth?: {
+    enableSessionJwt?: boolean;
+    sessionJwtEndpoint?: string;
+    refreshSkewSec?: number;
+  };
+  visitorId?: string;
+  sessionId?: string;
+  sessionScope?: 'shared_site' | 'tab';
+  workerUrl?: string;
+  mode?: 'safe' | 'full';
+  openOnInit?: boolean;
+  allowActions?: boolean;
+  allowedDomains?: string[];
+  domainScopeMode?: 'host_only' | 'registrable_domain';
+  externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
+  crossDomainPolicy?: 'block_new_tab' | 'allow';
+  tabPolicy?: {
+    observerByDefault?: boolean;
+    actionLeaseMs?: number;
+  };
+  taskRouting?: {
+    mode?: 'auto' | 'act' | 'planner';
+    actHeuristicThreshold?: number;
+    plannerOnActError?: boolean;
+  };
+  taskContext?: {
+    inactivityMs?: number;
+    suggestReset?: boolean;
+    semanticSimilarityThreshold?: number;
+  };
+  checkpointing?: {
+    enabled?: boolean;
+    autoVisitorId?: boolean;
+    flushIntervalMs?: number;
+    pullIntervalMs?: number;
+    minFlushIntervalMs?: number;
+    ttlHours?: number;
+  };
+  apiMode?: boolean;
+  apiToolsConfig?: {
+    mode?: 'allowlist' | 'profile' | 'none';
+    enableAdditionalTools?: string[];
+    userDefined?: string[];
+  };
+  ui?: {
+    mascot?: {
+      mp4Url?: string;
+      webmUrl?: string;
+    };
+    thoughtStyle?: 'concise_cards' | 'minimal';
+    panel?: {
+      resizable?: boolean;
+    };
+    showTaskControls?: boolean;
+  };
+  tools?: { client?: ClientToolDefinition[] };
+};
+
+export type ClientToolDefinition = {
+  name: string;
+  description?: string;
+  parameters?: Record<string, any>;
+  required?: string[];
+  schema?: any;
+  llmCallable?: boolean;
+};
+
+export type RoverEventName =
+  | 'ready'
+  | 'updated'
+  | 'status'
+  | 'tool_start'
+  | 'tool_result'
+  | 'error'
+  | 'auth_required'
+  | 'navigation_guardrail'
+  | 'mode_change'
+  | 'task_started'
+  | 'task_ended'
+  | 'task_suggested_reset'
+  | 'context_restored'
+  | 'open'
+  | 'close';
+
+export type RoverEventHandler = (payload?: any) => void;
+
+export type RoverInstance = {
+  boot: (cfg: RoverInit) => RoverInstance;
+  init: (cfg: RoverInit) => RoverInstance;
+  update: (cfg: Partial<RoverInit>) => void;
+  shutdown: () => void;
+  open: () => void;
+  close: () => void;
+  show: () => void;
+  hide: () => void;
+  send: (text: string) => void;
+  newTask: (options?: { reason?: string; clearUi?: boolean }) => void;
+  endTask: (options?: { reason?: string }) => void;
+  getState: () => any;
+  registerTool: (
+    nameOrDef: string | ClientToolDefinition,
+    handler: (args: any) => any | Promise<any>,
+  ) => void;
+  on: (event: RoverEventName, handler: RoverEventHandler) => () => void;
+};
+
+type ToolRegistration = {
+  def: ClientToolDefinition;
+  handler: (args: any) => any | Promise<any>;
+};
+
+const RUNTIME_STATE_VERSION = 1;
+const RUNTIME_STATE_PREFIX = 'rover:runtime:';
+const RUNTIME_ID_PREFIX = 'rover:runtime-id:';
+const VISITOR_ID_PREFIX = 'rover:visitor-id:';
+const MAX_UI_MESSAGES = 160;
+const MAX_TIMELINE_EVENTS = 240;
+const MAX_WORKER_HISTORY = 80;
+const MAX_WORKER_STEPS = 40;
+const MAX_TEXT_LEN = 8_000;
+const MAX_AUTO_RESUME_AGE_MS = 15 * 60_000;
+const MAX_AUTO_RESUME_ATTEMPTS = 12;
+const VISITOR_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
+const CHECKPOINT_PAYLOAD_VERSION = 1;
+const DEFAULT_TASK_INACTIVITY_MS = 5 * 60_000;
+const DEFAULT_SEMANTIC_SIMILARITY_THRESHOLD = 0.18;
+const MAX_RECENT_USER_MESSAGES_FOR_TASK_HEURISTIC = 3;
+
+let instance: RoverInstance | null = null;
+let bridge: Bridge | null = null;
+let worker: Worker | null = null;
+let ui: RoverUi | null = null;
+let currentConfig: RoverInit | null = null;
+let runtimeStorageKey: string | null = null;
+let runtimeState: PersistedRuntimeState | null = null;
+let runtimeStateStore: RuntimeStateStore<PersistedRuntimeState> | null = null;
+let runtimeId: string = '';
+let sessionCoordinator: SessionCoordinator | null = null;
+let cloudCheckpointClient: RoverCloudCheckpointClient | null = null;
+let resolvedVisitorId: string | undefined = undefined;
+let suppressCheckpointSync = false;
+let currentMode: RoverExecutionMode = 'controller';
+let workerReady = false;
+let autoResumeAttempted = false;
+let unloadHandlerInstalled = false;
+let pendingTaskSuggestion: { text: string; reason: string; createdAt: number } | null = null;
+let lastStatusSignature = '';
+const latestAssistantByRunId = new Map<string, string>();
+const RUN_SCOPED_WORKER_MESSAGE_TYPES = new Set([
+  'run_started',
+  'run_completed',
+  'assistant',
+  'status',
+  'tool_start',
+  'tool_result',
+  'auth_required',
+  'navigation_guardrail',
+  'error',
+]);
+
+const pendingToolRegistrations: ToolRegistration[] = [];
+const eventHandlers = new Map<RoverEventName, Set<RoverEventHandler>>();
+
+function emit(event: RoverEventName, payload?: any): void {
+  const handlers = eventHandlers.get(event);
+  if (!handlers) return;
+  for (const handler of handlers) {
+    try {
+      handler(payload);
+    } catch {
+      // no-op
+    }
+  }
+}
+
+function on(event: RoverEventName, handler: RoverEventHandler): () => void {
+  if (!eventHandlers.has(event)) {
+    eventHandlers.set(event, new Set());
+  }
+  const handlers = eventHandlers.get(event)!;
+  handlers.add(handler);
+  return () => {
+    handlers.delete(handler);
+  };
+}
+
+function toToolDef(nameOrDef: string | ClientToolDefinition): ClientToolDefinition {
+  return typeof nameOrDef === 'string' ? { name: nameOrDef } : nameOrDef;
+}
+
+function createId(prefix: string): string {
+  try {
+    return `${prefix}-${crypto.randomUUID()}`;
+  } catch {
+    return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+  }
+}
+
+function getOrCreateRuntimeId(siteId: string): string {
+  const key = `${RUNTIME_ID_PREFIX}${siteId}`;
+  try {
+    const existing = window.sessionStorage.getItem(key);
+    if (existing && existing.trim()) return existing.trim();
+    const next = createId('runtime');
+    window.sessionStorage.setItem(key, next);
+    return next;
+  } catch {
+    return createId('runtime');
+  }
+}
+
+function stableHash(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function sanitizeVisitorId(input: string): string {
+  return String(input || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9._:-]/g, '')
+    .slice(0, 180);
+}
+
+function readCookie(name: string): string | undefined {
+  try {
+    const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+    if (!match) return undefined;
+    return decodeURIComponent(match[1] || '');
+  } catch {
+    return undefined;
+  }
+}
+
+function writeCookie(name: string, value: string, domain?: string): boolean {
+  try {
+    const domainPart = domain ? `; domain=${domain}` : '';
+    document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${VISITOR_COOKIE_MAX_AGE_SECONDS}; samesite=lax${domainPart}`;
+    return readCookie(name) === value;
+  } catch {
+    return false;
+  }
+}
+
+function candidateCookieDomains(hostname: string): string[] {
+  const host = String(hostname || '').trim().toLowerCase();
+  if (!host || host === 'localhost' || /^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
+    return [];
+  }
+
+  const segments = host.split('.').filter(Boolean);
+  if (segments.length < 2) return [];
+
+  const out: string[] = [];
+  for (let i = segments.length - 2; i >= 0; i -= 1) {
+    out.push(`.${segments.slice(i).join('.')}`);
+  }
+  return out;
+}
+
+function persistVisitorIdCookie(siteId: string, visitorId: string): void {
+  const cookieName = `rover_vid_${stableHash(siteId)}`;
+
+  for (const domain of candidateCookieDomains(window.location.hostname)) {
+    if (writeCookie(cookieName, visitorId, domain)) {
+      return;
+    }
+  }
+
+  // Fallback to host-only cookie.
+  writeCookie(cookieName, visitorId);
+}
+
+function resolveVisitorId(cfg: RoverInit): string | undefined {
+  const explicit = sanitizeVisitorId(cfg.visitorId || '');
+  if (explicit) return explicit;
+  if (cfg.checkpointing?.autoVisitorId === false) return undefined;
+
+  const localStorageKey = `${VISITOR_ID_PREFIX}${cfg.siteId}`;
+  const cookieName = `rover_vid_${stableHash(cfg.siteId)}`;
+  const cookieValue = sanitizeVisitorId(readCookie(cookieName) || '');
+  if (cookieValue) {
+    try {
+      window.localStorage.setItem(localStorageKey, cookieValue);
+    } catch {
+      // ignore local storage failures
+    }
+    return cookieValue;
+  }
+
+  try {
+    const stored = sanitizeVisitorId(window.localStorage.getItem(localStorageKey) || '');
+    if (stored) {
+      persistVisitorIdCookie(cfg.siteId, stored);
+      return stored;
+    }
+  } catch {
+    // ignore local storage failures
+  }
+
+  const generated = `v_${stableHash(`${cfg.siteId}:${createId('visitor')}`)}_${Date.now().toString(36)}`;
+  try {
+    window.localStorage.setItem(localStorageKey, generated);
+  } catch {
+    // ignore local storage failures
+  }
+  persistVisitorIdCookie(cfg.siteId, generated);
+  return generated;
+}
+
+function createVisitorSessionId(siteId: string, visitorId: string): string {
+  const digest = stableHash(`${siteId}:${visitorId}`);
+  return `visitor-${digest}`;
+}
+
+function applyToolRegistration(registration: ToolRegistration): void {
+  if (!bridge || !worker) return;
+  bridge.registerTool(registration.def, registration.handler);
+  worker.postMessage({ type: 'register_tool', tool: registration.def });
+}
+
+function getRuntimeStateKey(siteId: string): string {
+  return `${RUNTIME_STATE_PREFIX}${siteId}`;
+}
+
+function createDefaultTaskState(reason = 'session_start'): PersistedTaskState {
+  const startedAt = Date.now();
+  return {
+    taskId: createId('task'),
+    status: 'running',
+    startedAt,
+    lastUserAt: undefined,
+    lastAssistantAt: undefined,
+    boundaryReason: reason,
+    endedAt: undefined,
+  };
+}
+
+function createDefaultRuntimeState(sessionId: string, rid: string): PersistedRuntimeState {
+  return {
+    version: RUNTIME_STATE_VERSION,
+    sessionId,
+    runtimeId: rid,
+    uiOpen: false,
+    uiHidden: false,
+    uiStatus: undefined,
+    uiMessages: [],
+    timeline: [],
+    executionMode: 'controller',
+    workerState: undefined,
+    pendingRun: undefined,
+    taskEpoch: 1,
+    activeTask: createDefaultTaskState(),
+    lastRoutingDecision: undefined,
+    updatedAt: Date.now(),
+  };
+}
+
+function truncateText(value: string, max = MAX_TEXT_LEN): string {
+  if (value.length <= max) return value;
+  return `${value.slice(0, max)}…`;
+}
+
+function safeSerialize(value: any): string | undefined {
+  if (value == null) return undefined;
+  if (typeof value === 'string') return truncateText(value, 1200);
+  try {
+    return truncateText(JSON.stringify(value), 1200);
+  } catch {
+    try {
+      return truncateText(String(value), 1200);
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+type WorkerStatusStage = 'analyze' | 'route' | 'execute' | 'verify' | 'complete';
+
+function normalizeStatusStage(input: unknown): WorkerStatusStage | undefined {
+  if (
+    input === 'analyze' ||
+    input === 'route' ||
+    input === 'execute' ||
+    input === 'verify' ||
+    input === 'complete'
+  ) {
+    return input;
+  }
+  return undefined;
+}
+
+function formatStageLabel(stage?: WorkerStatusStage): string {
+  if (!stage) return 'Status';
+  if (stage === 'analyze') return 'Analyze';
+  if (stage === 'route') return 'Route';
+  if (stage === 'execute') return 'Execute';
+  if (stage === 'verify') return 'Verify';
+  if (stage === 'complete') return 'Complete';
+  return 'Status';
+}
+
+function buildStatusSignature(message?: string, stage?: WorkerStatusStage, compactThought?: string): string {
+  return [
+    String(stage || ''),
+    String(message || '').trim().toLowerCase(),
+    String(compactThought || '').trim().toLowerCase(),
+  ].join('|');
+}
+
+function getPendingRunId(): string | undefined {
+  return runtimeState?.pendingRun?.id;
+}
+
+function hasRemoteActiveRun(): boolean {
+  const activeRun = sessionCoordinator?.getState()?.activeRun;
+  return !!(activeRun && activeRun.runtimeId && activeRun.runtimeId !== runtimeId);
+}
+
+function canComposeInObserverMode(): boolean {
+  return !hasRemoteActiveRun();
+}
+
+function resolveExecutionModeNote(mode: RoverExecutionMode): string | undefined {
+  if (mode !== 'observer') return undefined;
+  if (hasRemoteActiveRun()) {
+    return 'Observing active run in another tab...';
+  }
+  return 'Send to take control and run here.';
+}
+
+function shouldIgnoreRunScopedWorkerMessage(msg: any): boolean {
+  const type = typeof msg?.type === 'string' ? msg.type : '';
+  if (!RUN_SCOPED_WORKER_MESSAGE_TYPES.has(type)) return false;
+
+  const messageRunId = typeof msg?.runId === 'string' && msg.runId ? msg.runId : undefined;
+  const pendingRunId = getPendingRunId();
+
+  if (type === 'run_started') {
+    if (!messageRunId || !pendingRunId) return false;
+    return pendingRunId !== messageRunId;
+  }
+
+  if (!messageRunId) {
+    // Backward-compatible: if older workers do not send runId, don't drop message.
+    return false;
+  }
+
+  if (type === 'run_completed') {
+    if (!pendingRunId) return true;
+    return pendingRunId !== messageRunId;
+  }
+
+  if (!pendingRunId) return true;
+  return pendingRunId !== messageRunId;
+}
+
+function getLatestAssistantText(runId?: string): string | undefined {
+  if (runId && latestAssistantByRunId.has(runId)) {
+    return latestAssistantByRunId.get(runId);
+  }
+
+  if (!runtimeState?.uiMessages?.length) return undefined;
+  for (let i = runtimeState.uiMessages.length - 1; i >= 0; i -= 1) {
+    const message = runtimeState.uiMessages[i];
+    if (message.role === 'assistant' && message.text) {
+      return message.text;
+    }
+  }
+  return undefined;
+}
+
+function loadPersistedState(key: string): PersistedRuntimeState | null {
+  if (!runtimeStateStore) return null;
+  return runtimeStateStore.readSync(key);
+}
+
+function cloneUnknown<T>(value: T): T | undefined {
+  if (value == null) return value;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  try {
+    return structuredClone(value);
+  } catch {
+    try {
+      return JSON.parse(JSON.stringify(value)) as T;
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+function toWorkerHistoryEntry(input: unknown): { role: string; content: string } | null {
+  if (!input || typeof input !== 'object') return null;
+  const role = (input as any).role;
+  const content = (input as any).content;
+  if (typeof role !== 'string' || typeof content !== 'string') return null;
+  if (!content) return null;
+  return { role, content };
+}
+
+function cloneUnknownArrayTail(input: unknown, max: number): unknown[] {
+  if (!Array.isArray(input)) return [];
+  const out: unknown[] = [];
+  for (const entry of input.slice(-max)) {
+    const cloned = cloneUnknown(entry);
+    if (cloned !== undefined) out.push(cloned);
+  }
+  return out;
+}
+
+async function loadPersistedStateFromAsyncStore(key: string): Promise<PersistedRuntimeState | null> {
+  if (!runtimeStateStore) return null;
+  try {
+    return await runtimeStateStore.readAsync(key);
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeUiMessages(input: any): PersistedUiMessage[] {
+  if (!Array.isArray(input)) return [];
+  const out: PersistedUiMessage[] = [];
+
+  for (const message of input.slice(-MAX_UI_MESSAGES)) {
+    const role = message?.role;
+    if (role !== 'user' && role !== 'assistant' && role !== 'system') continue;
+
+    out.push({
+      id: typeof message?.id === 'string' && message.id ? message.id : createId('msg'),
+      role,
+      text: truncateText(String(message?.text || '')),
+      ts: Number(message?.ts) || Date.now(),
+      sourceRuntimeId: typeof message?.sourceRuntimeId === 'string' ? message.sourceRuntimeId : undefined,
+    });
+  }
+
+  return out;
+}
+
+function sanitizeTimelineEvents(input: any): PersistedTimelineEvent[] {
+  if (!Array.isArray(input)) return [];
+  const out: PersistedTimelineEvent[] = [];
+  for (const event of input.slice(-MAX_TIMELINE_EVENTS)) {
+    const title = truncateText(String(event?.title || ''), 400);
+    if (!title) continue;
+    const kind = String(event?.kind || 'status') as RoverTimelineEvent['kind'];
+    const status = event?.status as RoverTimelineEvent['status'] | undefined;
+
+    out.push({
+      id: typeof event?.id === 'string' && event.id ? event.id : createId('timeline'),
+      kind,
+      title,
+      detail: event?.detail ? truncateText(String(event.detail), 1200) : undefined,
+      status:
+        status === 'pending' || status === 'success' || status === 'error' || status === 'info'
+          ? status
+          : undefined,
+      ts: Number(event?.ts) || Date.now(),
+      sourceRuntimeId: typeof event?.sourceRuntimeId === 'string' ? event.sourceRuntimeId : undefined,
+    });
+  }
+  return out;
+}
+
+function sanitizeWorkerState(input: any): PersistedWorkerState | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+
+  const historyRaw: unknown[] = Array.isArray((input as PersistedWorkerState).history)
+    ? ((input as PersistedWorkerState).history as unknown[])
+    : [];
+  const plannerRaw: unknown[] = Array.isArray((input as PersistedWorkerState).plannerHistory)
+    ? ((input as PersistedWorkerState).plannerHistory as unknown[])
+    : [];
+  const agentPrevStepsRaw: unknown[] = Array.isArray((input as PersistedWorkerState).agentPrevSteps)
+    ? ((input as PersistedWorkerState).agentPrevSteps as unknown[])
+    : Array.isArray((input as PersistedWorkerState).lastToolPreviousSteps)
+      ? ((input as PersistedWorkerState).lastToolPreviousSteps as unknown[])
+      : [];
+
+  const history = historyRaw
+    .slice(-MAX_WORKER_HISTORY)
+    .map(message => toWorkerHistoryEntry(message))
+    .filter((message): message is { role: string; content: string } => !!message);
+  const plannerHistory = cloneUnknownArrayTail(plannerRaw, MAX_WORKER_STEPS);
+  const agentPrevSteps = cloneUnknownArrayTail(agentPrevStepsRaw, MAX_WORKER_STEPS * 2);
+
+  return {
+    trajectoryId: typeof input.trajectoryId === 'string' ? input.trajectoryId : undefined,
+    history,
+    plannerHistory,
+    agentPrevSteps,
+    lastToolPreviousSteps: agentPrevSteps,
+    updatedAt: Number(input.updatedAt) || Date.now(),
+  };
+}
+
+function normalizePersistedState(raw: PersistedRuntimeState | null, sessionId: string, rid: string): PersistedRuntimeState {
+  if (!raw || typeof raw !== 'object') {
+    return createDefaultRuntimeState(sessionId, rid);
+  }
+
+  const fallbackTask = createDefaultTaskState();
+  const parsedTask = sanitizeTask(raw.activeTask, fallbackTask);
+
+  return {
+    version: RUNTIME_STATE_VERSION,
+    sessionId: typeof raw.sessionId === 'string' && raw.sessionId ? raw.sessionId : sessionId,
+    runtimeId: typeof raw.runtimeId === 'string' && raw.runtimeId ? raw.runtimeId : rid,
+    uiOpen: !!raw.uiOpen,
+    uiHidden: !!raw.uiHidden,
+    uiStatus: typeof raw.uiStatus === 'string' ? truncateText(raw.uiStatus, 300) : undefined,
+    uiMessages: sanitizeUiMessages(raw.uiMessages),
+    timeline: sanitizeTimelineEvents((raw as any).timeline),
+    executionMode:
+      (raw as any).executionMode === 'observer' || (raw as any).executionMode === 'controller'
+        ? (raw as any).executionMode
+        : 'controller',
+    workerState: sanitizeWorkerState(raw.workerState),
+    pendingRun: sanitizePendingRun(raw.pendingRun),
+    taskEpoch: Math.max(1, Number(raw.taskEpoch) || 1),
+    activeTask: parsedTask,
+    lastRoutingDecision:
+      raw.lastRoutingDecision &&
+      (raw.lastRoutingDecision.mode === 'act' || raw.lastRoutingDecision.mode === 'planner')
+        ? {
+            mode: raw.lastRoutingDecision.mode,
+            score: Number(raw.lastRoutingDecision.score) || undefined,
+            reason:
+              typeof raw.lastRoutingDecision.reason === 'string'
+                ? truncateText(raw.lastRoutingDecision.reason, 200)
+                : undefined,
+            ts: Number(raw.lastRoutingDecision.ts) || Date.now(),
+          }
+        : undefined,
+    updatedAt: Number(raw.updatedAt) || Date.now(),
+  };
+}
+
+function sanitizeTask(input: any, fallback: PersistedTaskState): PersistedTaskState {
+  if (!input || typeof input !== 'object') return fallback;
+  const taskId = typeof input.taskId === 'string' && input.taskId.trim() ? input.taskId.trim() : fallback.taskId;
+  const status = input.status === 'ended' || input.status === 'completed' || input.status === 'running' ? input.status : 'running';
+  return {
+    taskId,
+    status,
+    startedAt: Number(input.startedAt) || fallback.startedAt,
+    lastUserAt: Number(input.lastUserAt) || undefined,
+    lastAssistantAt: Number(input.lastAssistantAt) || undefined,
+    boundaryReason: typeof input.boundaryReason === 'string' ? truncateText(input.boundaryReason, 120) : fallback.boundaryReason,
+    endedAt: Number(input.endedAt) || undefined,
+  };
+}
+
+function toPersistedTask(task: SharedTaskState | undefined, fallback: PersistedTaskState): PersistedTaskState {
+  return sanitizeTask(task, fallback);
+}
+
+function toSharedWorkerContext(state: PersistedWorkerState | undefined): SharedWorkerContext | undefined {
+  if (!state) return undefined;
+  return {
+    trajectoryId: state.trajectoryId,
+    history: Array.isArray(state.history)
+      ? state.history
+          .slice(-MAX_WORKER_HISTORY)
+          .map(message => toWorkerHistoryEntry(message))
+          .filter((message): message is { role: string; content: string } => !!message)
+      : [],
+    plannerHistory: cloneUnknownArrayTail(state.plannerHistory, MAX_WORKER_STEPS),
+    agentPrevSteps: cloneUnknownArrayTail(state.agentPrevSteps, MAX_WORKER_STEPS * 2),
+    updatedAt: Number(state.updatedAt) || Date.now(),
+  };
+}
+
+function sanitizePendingRun(input: any): PersistedPendingRun | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+
+  const id = typeof input.id === 'string' && input.id.trim() ? input.id.trim() : undefined;
+  const text = typeof input.text === 'string' ? input.text.trim() : '';
+  if (!id || !text) return undefined;
+
+  return {
+    id,
+    text,
+    startedAt: Number(input.startedAt) || Date.now(),
+    attempts: Math.max(0, Number(input.attempts) || 0),
+    autoResume: input.autoResume !== false,
+  };
+}
+
+function persistRuntimeState(): void {
+  if (!runtimeState || !runtimeStorageKey) return;
+  try {
+    runtimeState.updatedAt = Date.now();
+    runtimeStateStore?.write(runtimeStorageKey, runtimeState);
+    if (!suppressCheckpointSync) {
+      cloudCheckpointClient?.markDirty();
+    }
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function ensureUnloadHandler(): void {
+  if (unloadHandlerInstalled) return;
+  unloadHandlerInstalled = true;
+
+  const onPageHide = () => {
+    persistRuntimeState();
+    cloudCheckpointClient?.markDirty();
+    cloudCheckpointClient?.syncNow();
+    cloudCheckpointClient?.stop();
+    sessionCoordinator?.stop();
+  };
+
+  window.addEventListener('pagehide', onPageHide, { capture: true });
+}
+
+function ensureActiveTask(reason = 'implicit'): PersistedTaskState | undefined {
+  if (!runtimeState) return undefined;
+  if (!runtimeState.activeTask) {
+    runtimeState.activeTask = createDefaultTaskState(reason);
+    runtimeState.taskEpoch = Math.max(1, Number(runtimeState.taskEpoch) || 1);
+  }
+  return runtimeState.activeTask;
+}
+
+function markTaskActivity(role: UiRole, timestamp = Date.now()): void {
+  if (!runtimeState) return;
+  const task = ensureActiveTask('implicit');
+  if (!task) return;
+
+  if (role === 'user') task.lastUserAt = timestamp;
+  if (role === 'assistant') task.lastAssistantAt = timestamp;
+  if (task.status === 'ended') {
+    task.status = 'running';
+    task.endedAt = undefined;
+  }
+}
+
+function hideTaskSuggestion(): void {
+  pendingTaskSuggestion = null;
+  ui?.setTaskSuggestion({ visible: false });
+}
+
+function clearTaskUiState(): void {
+  ui?.clearMessages();
+  ui?.clearTimeline();
+  hideTaskSuggestion();
+}
+
+function collectRecentUserTextsForHeuristic(): string[] {
+  if (!runtimeState) return [];
+  const userMessages = runtimeState.uiMessages.filter(message => message.role === 'user');
+  return userMessages
+    .slice(-MAX_RECENT_USER_MESSAGES_FOR_TASK_HEURISTIC)
+    .map(message => message.text.trim())
+    .filter(Boolean);
+}
+
+function tokenizeForSimilarity(input: string): Set<string> {
+  return new Set(
+    String(input || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .map(token => token.trim())
+      .filter(token => token.length > 2),
+  );
+}
+
+function computeSemanticOverlap(a: string, b: string): number {
+  const ta = tokenizeForSimilarity(a);
+  const tb = tokenizeForSimilarity(b);
+  if (!ta.size || !tb.size) return 0;
+  let intersection = 0;
+  for (const token of ta) {
+    if (tb.has(token)) intersection += 1;
+  }
+  return intersection / Math.max(ta.size, tb.size);
+}
+
+function shouldSuggestResetForPrompt(text: string): { suggest: boolean; reason?: string } {
+  if (!runtimeState || !currentConfig) return { suggest: false };
+  const suggestEnabled = currentConfig.taskContext?.suggestReset !== false;
+  if (!suggestEnabled) return { suggest: false };
+  if (runtimeState.pendingRun) return { suggest: false };
+
+  const task = ensureActiveTask('implicit');
+  if (!task || task.status === 'ended') return { suggest: false };
+
+  const inactivityMs = Math.max(60_000, Number(currentConfig.taskContext?.inactivityMs) || DEFAULT_TASK_INACTIVITY_MS);
+  const now = Date.now();
+  const latestActivity = Math.max(task.lastUserAt || 0, task.lastAssistantAt || 0, task.startedAt || 0);
+  if (!latestActivity || now - latestActivity < inactivityMs) return { suggest: false };
+
+  const recent = collectRecentUserTextsForHeuristic();
+  if (!recent.length) return { suggest: true, reason: 'inactivity_only' };
+
+  const baseline = recent.join(' ');
+  const overlap = computeSemanticOverlap(baseline, text);
+  const threshold = Math.max(
+    0.05,
+    Math.min(0.9, Number(currentConfig.taskContext?.semanticSimilarityThreshold) || DEFAULT_SEMANTIC_SIMILARITY_THRESHOLD),
+  );
+
+  if (overlap < threshold) {
+    return { suggest: true, reason: `low_similarity_${overlap.toFixed(2)}` };
+  }
+  return { suggest: false };
+}
+
+function appendUiMessage(
+  role: UiRole,
+  text: string,
+  persist = true,
+  options?: { id?: string; ts?: number; sourceRuntimeId?: string; publishShared?: boolean },
+): PersistedUiMessage | undefined {
+  const clean = truncateText(String(text || ''));
+  if (!clean) return undefined;
+
+  const message: PersistedUiMessage = {
+    id: options?.id || createId('msg'),
+    role,
+    text: clean,
+    ts: options?.ts || Date.now(),
+    sourceRuntimeId: options?.sourceRuntimeId,
+  };
+
+  ui?.addMessage(message.role, message.text);
+
+  if (runtimeState && persist) {
+    runtimeState.uiMessages.push(message);
+    if (runtimeState.uiMessages.length > MAX_UI_MESSAGES) {
+      runtimeState.uiMessages = runtimeState.uiMessages.slice(-MAX_UI_MESSAGES);
+    }
+    markTaskActivity(message.role, message.ts);
+    persistRuntimeState();
+  }
+
+  if (sessionCoordinator && options?.publishShared !== false) {
+    sessionCoordinator.appendMessage({
+      id: message.id,
+      role: message.role,
+      text: message.text,
+      ts: message.ts,
+    });
+    sessionCoordinator.markTaskActivity(message.role, message.ts);
+  }
+
+  return message;
+}
+
+function replayUiMessages(messages: PersistedUiMessage[]): void {
+  for (const message of messages) {
+    appendUiMessage(message.role, message.text, false, {
+      id: message.id,
+      ts: message.ts,
+      sourceRuntimeId: message.sourceRuntimeId,
+      publishShared: false,
+    });
+  }
+}
+
+function appendTimelineEvent(
+  event: Omit<PersistedTimelineEvent, 'id' | 'ts'> & { id?: string; ts?: number; publishShared?: boolean },
+  persist = true,
+): PersistedTimelineEvent {
+  const timelineEvent: PersistedTimelineEvent = {
+    id: event.id || createId('timeline'),
+    kind: event.kind,
+    title: truncateText(event.title, 400),
+    detail: event.detail ? truncateText(event.detail, 1200) : undefined,
+    status: event.status,
+    ts: event.ts || Date.now(),
+    sourceRuntimeId: event.sourceRuntimeId,
+  };
+
+  ui?.addTimelineEvent(timelineEvent);
+
+  if (runtimeState && persist) {
+    runtimeState.timeline.push(timelineEvent);
+    if (runtimeState.timeline.length > MAX_TIMELINE_EVENTS) {
+      runtimeState.timeline = runtimeState.timeline.slice(-MAX_TIMELINE_EVENTS);
+    }
+    persistRuntimeState();
+  }
+
+  if (sessionCoordinator && event.publishShared !== false) {
+    sessionCoordinator.appendTimeline({
+      id: timelineEvent.id,
+      kind: timelineEvent.kind,
+      title: timelineEvent.title,
+      detail: timelineEvent.detail,
+      status: timelineEvent.status,
+      ts: timelineEvent.ts,
+    });
+  }
+
+  return timelineEvent;
+}
+
+function replayTimeline(events: PersistedTimelineEvent[]): void {
+  ui?.clearTimeline();
+  for (const event of events) {
+    appendTimelineEvent(
+      {
+        id: event.id,
+        kind: event.kind,
+        title: event.title,
+        detail: event.detail,
+        status: event.status,
+        ts: event.ts,
+        sourceRuntimeId: event.sourceRuntimeId,
+        publishShared: false,
+      },
+      false,
+    );
+  }
+}
+
+function setUiStatus(text: string, options?: { publishShared?: boolean }): void {
+  ui?.setStatus(text);
+  if (runtimeState) {
+    runtimeState.uiStatus = truncateText(text, 300);
+    persistRuntimeState();
+  }
+  if (sessionCoordinator && options?.publishShared !== false) {
+    sessionCoordinator.setStatus(text);
+  }
+}
+
+function setExecutionMode(
+  mode: RoverExecutionMode,
+  info?: { localLogicalTabId?: number; activeLogicalTabId?: number; holderRuntimeId?: string },
+): void {
+  currentMode = mode;
+  if (runtimeState) {
+    runtimeState.executionMode = mode;
+    persistRuntimeState();
+  }
+  ui?.setExecutionMode(mode, {
+    controllerRuntimeId: info?.holderRuntimeId ?? sessionCoordinator?.getCurrentHolderRuntimeId(),
+    localLogicalTabId: info?.localLogicalTabId ?? sessionCoordinator?.getLocalLogicalTabId(),
+    activeLogicalTabId: info?.activeLogicalTabId ?? sessionCoordinator?.getActiveLogicalTabId(),
+    canTakeControl: true,
+    canComposeInObserver: canComposeInObserverMode(),
+    note: resolveExecutionModeNote(mode),
+  });
+  emit('mode_change', { mode, ...info });
+}
+
+function setPendingRun(next: PersistedPendingRun | undefined): void {
+  if (!runtimeState) return;
+  runtimeState.pendingRun = next;
+  const task = ensureActiveTask('implicit');
+  if (task) {
+    if (next) {
+      task.status = 'running';
+      task.endedAt = undefined;
+    } else if (task.status === 'running') {
+      task.status = 'completed';
+    }
+  }
+  persistRuntimeState();
+}
+
+function postRun(text: string, options?: { runId?: string; resume?: boolean; appendUserMessage?: boolean; autoResume?: boolean }): void {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return;
+  if (!worker) return;
+
+  if (currentMode === 'observer') {
+    const claimed = sessionCoordinator?.requestControl() ?? false;
+    if (!claimed) {
+      appendUiMessage(
+        'system',
+        'Unable to take control right now because another tab is still running Rover actions.',
+        true,
+      );
+      appendTimelineEvent({
+        kind: 'info',
+        title: 'Observer mode',
+        detail: 'Action execution is currently owned by another tab runtime.',
+        status: 'info',
+      });
+      return;
+    }
+  }
+
+  const runId = options?.runId || crypto.randomUUID();
+  const resume = !!options?.resume;
+  const appendUserMessageFlag = options?.appendUserMessage !== false;
+
+  if (appendUserMessageFlag) {
+    appendUiMessage('user', trimmed, true);
+  }
+
+  const previousAttempts = runtimeState?.pendingRun?.id === runId ? runtimeState.pendingRun.attempts : 0;
+
+  setPendingRun({
+    id: runId,
+    text: trimmed,
+    startedAt: Date.now(),
+    attempts: resume ? previousAttempts + 1 : 0,
+    autoResume: options?.autoResume !== false,
+  });
+
+  sessionCoordinator?.setActiveRun({ runId, text: trimmed });
+  worker.postMessage({ type: 'run', text: trimmed, runId, resume });
+}
+
+function dispatchUserPrompt(
+  text: string,
+  options?: { bypassSuggestion?: boolean; startNewTask?: boolean; reason?: string },
+): void {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return;
+
+  if (options?.startNewTask) {
+    newTask({ reason: options.reason || 'suggested_new_task', clearUi: true });
+  } else if (!options?.bypassSuggestion) {
+    const decision = shouldSuggestResetForPrompt(trimmed);
+    if (decision.suggest) {
+      pendingTaskSuggestion = {
+        text: trimmed,
+        reason: decision.reason || 'heuristic',
+        createdAt: Date.now(),
+      };
+      ui?.setTaskSuggestion({
+        visible: true,
+        text: 'This looks like a different request. Start a new task or continue this one?',
+        primaryLabel: 'Start new',
+        secondaryLabel: 'Continue',
+      });
+      emit('task_suggested_reset', {
+        text: trimmed,
+        reason: pendingTaskSuggestion.reason,
+      });
+      return;
+    }
+  }
+
+  hideTaskSuggestion();
+  postRun(trimmed, { appendUserMessage: true, resume: false, autoResume: true });
+}
+
+function maybeAutoResumePendingRun(): void {
+  if (currentMode === 'observer') return;
+  const sharedActiveRun = sessionCoordinator?.getState()?.activeRun;
+  if (sharedActiveRun?.runtimeId && sharedActiveRun.runtimeId !== runtimeId) {
+    return;
+  }
+  if (!workerReady || !worker || autoResumeAttempted || !runtimeState?.pendingRun) return;
+  if (runtimeState.activeTask?.status === 'ended') return;
+
+  const pending = runtimeState.pendingRun;
+  if (!pending.autoResume) return;
+
+  const ageMs = Date.now() - pending.startedAt;
+  if (ageMs > MAX_AUTO_RESUME_AGE_MS) {
+    setPendingRun(undefined);
+    setUiStatus('Previous task expired after navigation.');
+    return;
+  }
+
+  if (pending.attempts >= MAX_AUTO_RESUME_ATTEMPTS) {
+    setPendingRun(undefined);
+    appendUiMessage('system', 'Auto-resume stopped after too many navigation attempts.', true);
+    return;
+  }
+
+  autoResumeAttempted = true;
+  setUiStatus('Resuming previous task after navigation...');
+  postRun(pending.text, {
+    runId: pending.id,
+    resume: true,
+    appendUserMessage: false,
+    autoResume: true,
+  });
+}
+
+async function applyAsyncRuntimeStateHydration(key: string): Promise<void> {
+  if (!runtimeState) return;
+  const loaded = await loadPersistedStateFromAsyncStore(key);
+  if (!loaded || !runtimeState) return;
+
+  const localUpdatedAt = Number(runtimeState.updatedAt) || 0;
+  const normalized = normalizePersistedState(
+    {
+      ...loaded,
+      sessionId: runtimeState.sessionId,
+      runtimeId,
+    },
+    runtimeState.sessionId,
+    runtimeId,
+  );
+  const incomingUpdatedAt = Number(normalized.updatedAt) || 0;
+  if (incomingUpdatedAt <= localUpdatedAt + 200) return;
+
+  runtimeState = normalizePersistedState(
+    {
+      ...runtimeState,
+      ...normalized,
+      sessionId: runtimeState.sessionId,
+      runtimeId,
+    } as PersistedRuntimeState,
+    runtimeState.sessionId,
+    runtimeId,
+  );
+  persistRuntimeState();
+
+  if (ui) {
+    ui.clearMessages();
+    replayUiMessages(runtimeState.uiMessages);
+    replayTimeline(runtimeState.timeline);
+    if (runtimeState.uiStatus) {
+      ui.setStatus(runtimeState.uiStatus);
+    }
+    if (runtimeState.uiHidden) {
+      ui.hide();
+    } else {
+      ui.show();
+      if (runtimeState.uiOpen) ui.open();
+      else ui.close();
+    }
+  }
+
+  if (workerReady && worker && runtimeState.workerState && currentMode === 'controller') {
+    worker.postMessage({ type: 'hydrate_state', state: runtimeState.workerState });
+    emit('context_restored', { source: 'indexeddb_checkpoint', ts: Date.now() });
+  }
+}
+
+function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'remote'): void {
+  if (!runtimeState) return;
+
+  if (source === 'remote') {
+    const localTaskEpoch = Math.max(1, Number(runtimeState.taskEpoch) || 1);
+    const remoteTaskEpoch = Math.max(1, Number(state.taskEpoch) || 1);
+    const taskEpochAdvanced = remoteTaskEpoch > localTaskEpoch;
+    runtimeState.taskEpoch = Math.max(localTaskEpoch, remoteTaskEpoch);
+
+    const fallbackTask = runtimeState.activeTask || createDefaultTaskState('shared_sync');
+    runtimeState.activeTask = toPersistedTask(state.task, fallbackTask);
+
+    if (taskEpochAdvanced) {
+      runtimeState.uiMessages = [];
+      runtimeState.timeline = [];
+      clearTaskUiState();
+      setPendingRun(undefined);
+      hideTaskSuggestion();
+    }
+
+    const incomingMessages = sanitizeUiMessages(state.uiMessages as SharedUiMessage[]);
+    const incomingMessageIds = new Set(incomingMessages.map(message => message.id));
+    const shouldReplaceMessages =
+      incomingMessages.length < runtimeState.uiMessages.length ||
+      runtimeState.uiMessages.some(message => !incomingMessageIds.has(message.id));
+
+    if (shouldReplaceMessages) {
+      runtimeState.uiMessages = incomingMessages;
+      ui?.clearMessages();
+      replayUiMessages(runtimeState.uiMessages);
+    } else {
+      const existingMessageIds = new Set(runtimeState.uiMessages.map(message => message.id));
+      for (const message of incomingMessages) {
+        if (existingMessageIds.has(message.id)) continue;
+        appendUiMessage(message.role, message.text, true, {
+          id: message.id,
+          ts: message.ts,
+          sourceRuntimeId: message.sourceRuntimeId,
+          publishShared: false,
+        });
+        existingMessageIds.add(message.id);
+      }
+    }
+
+    const incomingTimeline = sanitizeTimelineEvents(state.timeline as SharedTimelineEvent[]);
+    const incomingTimelineIds = new Set(incomingTimeline.map(event => event.id));
+    const shouldReplaceTimeline =
+      incomingTimeline.length < runtimeState.timeline.length ||
+      runtimeState.timeline.some(event => !incomingTimelineIds.has(event.id));
+
+    if (shouldReplaceTimeline) {
+      runtimeState.timeline = incomingTimeline;
+      replayTimeline(runtimeState.timeline);
+    } else {
+      const existingTimelineIds = new Set(runtimeState.timeline.map(event => event.id));
+      for (const event of incomingTimeline) {
+        if (existingTimelineIds.has(event.id)) continue;
+        appendTimelineEvent(
+          {
+            id: event.id,
+            kind: event.kind as RoverTimelineEvent['kind'],
+            title: event.title,
+            detail: event.detail,
+            status: event.status,
+            ts: event.ts,
+            sourceRuntimeId: event.sourceRuntimeId,
+            publishShared: false,
+          },
+          true,
+        );
+        existingTimelineIds.add(event.id);
+      }
+    }
+
+    if (typeof state.uiStatus === 'string') {
+      setUiStatus(state.uiStatus, { publishShared: false });
+    }
+
+    if (state.activeRun && state.activeRun.runtimeId !== runtimeId) {
+      setPendingRun(
+        sanitizePendingRun({
+          id: state.activeRun.runId,
+          text: state.activeRun.text,
+          startedAt: state.activeRun.startedAt,
+          attempts: runtimeState.pendingRun?.attempts || 0,
+          autoResume: true,
+        }),
+      );
+    } else if (!state.activeRun && currentMode === 'observer') {
+      setPendingRun(undefined);
+    }
+
+    if (currentMode === 'observer') {
+      setExecutionMode('observer', {
+        localLogicalTabId: sessionCoordinator?.getLocalLogicalTabId(),
+        activeLogicalTabId: sessionCoordinator?.getActiveLogicalTabId(),
+        holderRuntimeId: sessionCoordinator?.getCurrentHolderRuntimeId(),
+      });
+    }
+
+    if (state.workerContext) {
+      const incomingWorker = sanitizeWorkerState(state.workerContext);
+      const localUpdatedAt = Number(runtimeState.workerState?.updatedAt) || 0;
+      const incomingUpdatedAt = Number(incomingWorker?.updatedAt) || 0;
+      if (incomingWorker && incomingUpdatedAt > localUpdatedAt + 100) {
+        runtimeState.workerState = incomingWorker;
+        if (workerReady && worker && currentMode === 'controller') {
+          worker.postMessage({ type: 'hydrate_state', state: incomingWorker });
+          emit('context_restored', { source: 'shared_session', ts: Date.now() });
+        }
+      }
+    }
+  }
+
+  runtimeState.uiMessages = sanitizeUiMessages(runtimeState.uiMessages);
+  runtimeState.timeline = sanitizeTimelineEvents(runtimeState.timeline);
+  runtimeState.workerState = sanitizeWorkerState(runtimeState.workerState);
+  runtimeState.activeTask = sanitizeTask(runtimeState.activeTask, createDefaultTaskState('implicit'));
+  persistRuntimeState();
+}
+
+function cloneRuntimeStateForCheckpoint(state: PersistedRuntimeState): PersistedRuntimeState {
+  const fallbackTask = createDefaultTaskState('checkpoint_clone');
+  return {
+    version: RUNTIME_STATE_VERSION,
+    sessionId: state.sessionId,
+    runtimeId: state.runtimeId,
+    uiOpen: !!state.uiOpen,
+    uiHidden: !!state.uiHidden,
+    uiStatus: typeof state.uiStatus === 'string' ? truncateText(state.uiStatus, 300) : undefined,
+    uiMessages: sanitizeUiMessages(state.uiMessages),
+    timeline: sanitizeTimelineEvents(state.timeline),
+    executionMode:
+      state.executionMode === 'observer' || state.executionMode === 'controller'
+        ? state.executionMode
+        : 'controller',
+    workerState: sanitizeWorkerState(state.workerState),
+    pendingRun: sanitizePendingRun(state.pendingRun),
+    taskEpoch: Math.max(1, Number(state.taskEpoch) || 1),
+    activeTask: sanitizeTask(state.activeTask, fallbackTask),
+    lastRoutingDecision:
+      state.lastRoutingDecision &&
+      (state.lastRoutingDecision.mode === 'act' || state.lastRoutingDecision.mode === 'planner')
+        ? {
+            mode: state.lastRoutingDecision.mode,
+            score: Number(state.lastRoutingDecision.score) || undefined,
+            reason: state.lastRoutingDecision.reason,
+            ts: Number(state.lastRoutingDecision.ts) || Date.now(),
+          }
+        : undefined,
+    updatedAt: Number(state.updatedAt) || Date.now(),
+  };
+}
+
+function shouldEnableCloudCheckpointing(cfg: RoverInit): boolean {
+  if (cfg.sessionScope === 'tab') return false;
+  // Default off to keep hot-path execution local and avoid remote read latency.
+  if (cfg.checkpointing?.enabled !== true) return false;
+  if (!(cfg.apiKey || cfg.authToken)) return false;
+  if (!resolvedVisitorId) return false;
+  return true;
+}
+
+function buildCloudCheckpointPayload(): RoverCloudCheckpointPayload | null {
+  if (!runtimeState || !currentConfig || !resolvedVisitorId) return null;
+  const sharedState = sessionCoordinator?.getState();
+  const runtimeSnapshot = cloneRuntimeStateForCheckpoint(runtimeState);
+  const updatedAt = Math.max(
+    Number(sharedState?.updatedAt || 0),
+    Number(runtimeSnapshot.updatedAt || 0),
+    Date.now(),
+  );
+
+  return {
+    version: CHECKPOINT_PAYLOAD_VERSION,
+    siteId: currentConfig.siteId,
+    visitorId: resolvedVisitorId,
+    sessionId: runtimeState.sessionId,
+    updatedAt,
+    sharedState,
+    runtimeState: runtimeSnapshot,
+  };
+}
+
+function applyCloudCheckpointPayload(payload: RoverCloudCheckpointPayload): void {
+  if (!payload || typeof payload !== 'object') return;
+  if (!runtimeState || !currentConfig) return;
+  if (payload.siteId && payload.siteId !== currentConfig.siteId) return;
+  if (resolvedVisitorId && payload.visitorId && payload.visitorId !== resolvedVisitorId) return;
+
+  const remoteSessionId = typeof payload.sessionId === 'string' && payload.sessionId.trim() ? payload.sessionId.trim() : runtimeState.sessionId;
+
+  suppressCheckpointSync = true;
+  try {
+    if (remoteSessionId && runtimeState.sessionId !== remoteSessionId) {
+      runtimeState.sessionId = remoteSessionId;
+      currentConfig = { ...currentConfig, sessionId: remoteSessionId };
+      setupSessionCoordinator(currentConfig);
+      worker?.postMessage({ type: 'update_config', config: { sessionId: remoteSessionId } });
+    }
+
+    if (payload.sharedState && sessionCoordinator) {
+      const hydrated = sessionCoordinator.hydrateExternalState(payload.sharedState);
+      if (hydrated) {
+        applyCoordinatorState(sessionCoordinator.getState(), 'remote');
+        setExecutionMode(sessionCoordinator.getRole(), {
+          localLogicalTabId: sessionCoordinator.getLocalLogicalTabId(),
+          activeLogicalTabId: sessionCoordinator.getActiveLogicalTabId(),
+          holderRuntimeId: sessionCoordinator.getCurrentHolderRuntimeId(),
+        });
+      }
+    }
+
+    if (payload.runtimeState && typeof payload.runtimeState === 'object') {
+      const incomingState = normalizePersistedState(
+        {
+          ...(payload.runtimeState as PersistedRuntimeState),
+          sessionId: remoteSessionId,
+          runtimeId,
+        },
+        remoteSessionId,
+        runtimeId,
+      );
+      const localUpdatedAt = Number(runtimeState.updatedAt) || 0;
+      const incomingUpdatedAt = Number(incomingState.updatedAt) || 0;
+      if (incomingUpdatedAt > localUpdatedAt + 200) {
+        runtimeState = normalizePersistedState(
+          {
+            ...runtimeState,
+            ...incomingState,
+            sessionId: remoteSessionId,
+            runtimeId,
+          } as PersistedRuntimeState,
+          remoteSessionId,
+          runtimeId,
+        );
+        persistRuntimeState();
+
+        if (runtimeState.uiStatus) {
+          ui?.setStatus(runtimeState.uiStatus);
+        }
+
+        if (runtimeState.uiHidden) {
+          ui?.hide();
+        } else {
+          ui?.show();
+          if (runtimeState.uiOpen) ui?.open();
+          else ui?.close();
+        }
+
+        if (workerReady && runtimeState.workerState) {
+          worker?.postMessage({ type: 'hydrate_state', state: runtimeState.workerState });
+          emit('context_restored', { source: 'cloud_checkpoint', ts: Date.now() });
+        }
+        if (currentMode === 'controller') {
+          maybeAutoResumePendingRun();
+        }
+      }
+    }
+  } finally {
+    suppressCheckpointSync = false;
+  }
+}
+
+function setupCloudCheckpointing(cfg: RoverInit): void {
+  cloudCheckpointClient?.stop();
+  cloudCheckpointClient = null;
+
+  if (!shouldEnableCloudCheckpointing(cfg)) return;
+  if (!resolvedVisitorId) return;
+
+  try {
+    cloudCheckpointClient = new RoverCloudCheckpointClient({
+      apiBase: cfg.apiBase,
+      apiKey: cfg.apiKey,
+      authToken: cfg.authToken,
+      siteId: cfg.siteId,
+      visitorId: resolvedVisitorId,
+      ttlHours: cfg.checkpointing?.ttlHours ?? 1,
+      flushIntervalMs: cfg.checkpointing?.flushIntervalMs,
+      pullIntervalMs: cfg.checkpointing?.pullIntervalMs,
+      minFlushIntervalMs: cfg.checkpointing?.minFlushIntervalMs,
+      shouldWrite: () => currentMode === 'controller',
+      buildCheckpoint: () => buildCloudCheckpointPayload(),
+      onCheckpoint: payload => {
+        applyCloudCheckpointPayload(payload);
+      },
+      onError: () => {
+        // keep checkpoint sync silent for end-users
+      },
+    });
+    cloudCheckpointClient.start();
+    cloudCheckpointClient.markDirty();
+  } catch {
+    cloudCheckpointClient = null;
+  }
+}
+
+function setupSessionCoordinator(cfg: RoverInit): void {
+  if (!runtimeState) return;
+
+  sessionCoordinator?.stop();
+  sessionCoordinator = null;
+
+  if (cfg.sessionScope === 'tab') {
+    setExecutionMode('controller');
+    return;
+  }
+
+  sessionCoordinator = new SessionCoordinator({
+    siteId: cfg.siteId,
+    sessionId: runtimeState.sessionId,
+    runtimeId,
+    leaseMs: cfg.tabPolicy?.actionLeaseMs,
+    onRoleChange: (role, info) => {
+      setExecutionMode(role, info);
+      const allowActions = role === 'controller' && (currentConfig?.allowActions ?? true);
+      bridge?.setAllowActions(allowActions);
+      if (role === 'controller') {
+        const sharedWorkerContext = sessionCoordinator?.getWorkerContext();
+        if (sharedWorkerContext) {
+          const incomingWorker = sanitizeWorkerState(sharedWorkerContext);
+          const localUpdatedAt = Number(runtimeState?.workerState?.updatedAt) || 0;
+          const incomingUpdatedAt = Number(incomingWorker?.updatedAt) || 0;
+          if (incomingWorker && incomingUpdatedAt > localUpdatedAt + 100) {
+            if (runtimeState) {
+              runtimeState.workerState = incomingWorker;
+              persistRuntimeState();
+            }
+            if (workerReady && worker) {
+              worker.postMessage({ type: 'hydrate_state', state: incomingWorker });
+              emit('context_restored', { source: 'controller_handoff', ts: Date.now() });
+            }
+          }
+        }
+        maybeAutoResumePendingRun();
+      }
+    },
+    onStateChange: (state, source) => {
+      applyCoordinatorState(state, source);
+    },
+    onSwitchRequested: logicalTabId => {
+      if (logicalTabId > 0) {
+        open();
+        appendTimelineEvent({
+          kind: 'status',
+          title: `Switched to tab #${logicalTabId}`,
+          status: 'info',
+        });
+      }
+    },
+  });
+
+  sessionCoordinator.start();
+  if (runtimeState?.activeTask) {
+    sessionCoordinator.syncTask(
+      {
+        ...runtimeState.activeTask,
+        taskId: runtimeState.activeTask.taskId,
+      },
+      runtimeState.taskEpoch,
+    );
+  }
+  if (runtimeState?.workerState) {
+    sessionCoordinator.setWorkerContext(toSharedWorkerContext(runtimeState.workerState));
+  }
+}
+
+function finalizeSuccessfulRunTimeline(runId?: string): void {
+  const detail = truncateText(getLatestAssistantText(runId) || 'Done.', 1200);
+
+  ui?.clearTimeline();
+  if (runtimeState) {
+    runtimeState.timeline = [];
+  }
+  sessionCoordinator?.clearTimeline();
+
+  appendTimelineEvent({
+    id: runId ? `run:${runId}:final` : undefined,
+    kind: 'tool_result',
+    title: 'Execution completed',
+    detail,
+    status: 'success',
+  });
+}
+
+function handleWorkerMessage(msg: any): void {
+  if (!msg || typeof msg !== 'object') return;
+  if (shouldIgnoreRunScopedWorkerMessage(msg)) return;
+
+  if (msg.type === 'assistant') {
+    const text = String(msg.text || '');
+    if (typeof msg.runId === 'string' && msg.runId) {
+      latestAssistantByRunId.set(msg.runId, text);
+      if (latestAssistantByRunId.size > 80) {
+        const oldestKey = latestAssistantByRunId.keys().next().value;
+        if (oldestKey) latestAssistantByRunId.delete(oldestKey);
+      }
+    }
+    appendUiMessage('assistant', text, true);
+    appendTimelineEvent({
+      kind: 'tool_result',
+      title: 'Assistant update',
+      detail: text,
+      status: 'success',
+    });
+    return;
+  }
+
+  if (msg.type === 'status') {
+    const stage = normalizeStatusStage(msg.stage);
+    const message = msg.message ? String(msg.message) : undefined;
+    const compactThought = msg.compactThought ? String(msg.compactThought) : undefined;
+    const signature = buildStatusSignature(message, stage, compactThought);
+
+    if (message) {
+      setUiStatus(message);
+    }
+
+    if (signature && signature !== lastStatusSignature) {
+      lastStatusSignature = signature;
+      if (message) {
+        const title = stage ? `${formatStageLabel(stage)}: ${message}` : message;
+        appendTimelineEvent({
+          kind: 'status',
+          title,
+          detail: compactThought || (msg.thought ? String(msg.thought) : undefined),
+          status: stage === 'complete' ? 'success' : msg.thought ? 'pending' : 'info',
+        });
+      }
+    }
+    emit('status', msg);
+    return;
+  }
+
+  if (msg.type === 'tool_start') {
+    appendUiMessage('system', `Running ${msg.call?.name || 'tool'}...`, true);
+    appendTimelineEvent({
+      kind: 'tool_start',
+      title: `Running ${msg.call?.name || 'tool'}`,
+      detail: safeSerialize(msg.call?.args),
+      status: 'pending',
+    });
+    emit('tool_start', msg);
+    return;
+  }
+
+  if (msg.type === 'tool_result') {
+    appendUiMessage('system', `${msg.call?.name || 'tool'} done`, true);
+    appendTimelineEvent({
+      kind: 'tool_result',
+      title: `${msg.call?.name || 'tool'} completed`,
+      detail: safeSerialize(msg.result),
+      status: msg?.result?.success === false ? 'error' : 'success',
+    });
+    emit('tool_result', msg);
+    return;
+  }
+
+  if (msg.type === 'auth_required') {
+    emit('auth_required', msg.error);
+    if (msg.error?.message) {
+      appendUiMessage('system', `Auth required: ${msg.error.message}`, true);
+      appendTimelineEvent({
+        kind: 'error',
+        title: 'Auth required',
+        detail: String(msg.error.message),
+        status: 'error',
+      });
+    }
+    return;
+  }
+
+  if (msg.type === 'navigation_guardrail') {
+    emit('navigation_guardrail', msg);
+    appendTimelineEvent({
+      kind: 'status',
+      title: 'Navigation guardrail',
+      detail: safeSerialize(msg),
+      status: 'info',
+    });
+    return;
+  }
+
+  if (msg.type === 'error') {
+    appendUiMessage('system', `Error: ${msg.message || 'unknown'}`, true);
+    appendTimelineEvent({
+      kind: 'error',
+      title: 'Execution error',
+      detail: String(msg.message || 'unknown'),
+      status: 'error',
+    });
+    emit('error', msg);
+    return;
+  }
+
+  if (msg.type === 'state_snapshot') {
+    if (runtimeState) {
+      runtimeState.workerState = sanitizeWorkerState({
+        ...(msg.state || {}),
+        updatedAt: Date.now(),
+      });
+      if (msg?.activeRun?.runId && msg?.activeRun?.text && !runtimeState.pendingRun) {
+        runtimeState.pendingRun = sanitizePendingRun({
+          id: msg.activeRun.runId,
+          text: msg.activeRun.text,
+          startedAt: msg.activeRun.startedAt,
+          attempts: 0,
+          autoResume: true,
+        });
+      }
+      if (msg?.activeRun?.runId && msg?.activeRun?.text) {
+        sessionCoordinator?.setActiveRun({ runId: msg.activeRun.runId, text: msg.activeRun.text });
+      }
+      if (runtimeState.workerState) {
+        sessionCoordinator?.setWorkerContext(toSharedWorkerContext(runtimeState.workerState));
+      }
+      persistRuntimeState();
+    }
+    return;
+  }
+
+  if (msg.type === 'task_started') {
+    emit('task_started', {
+      taskId: msg.taskId,
+      reason: 'worker',
+    });
+    return;
+  }
+
+  if (msg.type === 'run_started') {
+    lastStatusSignature = '';
+    hideTaskSuggestion();
+    if (typeof msg.runId === 'string' && msg.runId) {
+      latestAssistantByRunId.delete(msg.runId);
+    }
+    const existing = runtimeState?.pendingRun;
+    setPendingRun(
+      sanitizePendingRun({
+        id: msg.runId,
+        text: msg.text,
+        startedAt: existing?.startedAt || Date.now(),
+        attempts: existing?.attempts || 0,
+        autoResume: existing?.autoResume !== false,
+      }),
+    );
+    sessionCoordinator?.setActiveRun({ runId: msg.runId, text: String(msg.text || '') });
+    const startEventId = `run:${String(msg.runId || '')}:start`;
+    if (!runtimeState?.timeline.some(event => event.id === startEventId)) {
+      appendTimelineEvent({
+        id: startEventId,
+        kind: 'plan',
+        title: msg.resume ? 'Run resumed' : 'Run started',
+        detail: String(msg.text || ''),
+        status: 'pending',
+      });
+    }
+    return;
+  }
+
+  if (msg.type === 'run_completed') {
+    lastStatusSignature = '';
+    if (runtimeState?.pendingRun?.id === msg.runId) {
+      setPendingRun(undefined);
+    }
+    if (
+      runtimeState &&
+      msg?.route &&
+      (msg.route.mode === 'act' || msg.route.mode === 'planner')
+    ) {
+      runtimeState.lastRoutingDecision = {
+        mode: msg.route.mode,
+        score: Number(msg.route.score) || undefined,
+        reason: typeof msg.route.reason === 'string' ? truncateText(msg.route.reason, 200) : undefined,
+        ts: Date.now(),
+      };
+      persistRuntimeState();
+    }
+    sessionCoordinator?.setActiveRun(undefined);
+    if (!msg.ok && msg.error) {
+      setUiStatus(`Task failed: ${String(msg.error)}`);
+      latestAssistantByRunId.delete(String(msg.runId || ''));
+      appendTimelineEvent({
+        kind: 'error',
+        title: 'Run failed',
+        detail: String(msg.error),
+        status: 'error',
+      });
+    } else if (msg.ok) {
+      setUiStatus('Execution completed');
+      finalizeSuccessfulRunTimeline(typeof msg.runId === 'string' ? msg.runId : undefined);
+      if (typeof msg.runId === 'string' && msg.runId) {
+        latestAssistantByRunId.delete(msg.runId);
+      }
+    }
+    return;
+  }
+
+  if (msg.type === 'ready') {
+    workerReady = true;
+    setUiStatus('ready');
+    emit('ready');
+
+    const sharedWorkerContext = sessionCoordinator?.getWorkerContext();
+    const sharedWorkerState = sanitizeWorkerState(sharedWorkerContext);
+    const localUpdatedAt = Number(runtimeState?.workerState?.updatedAt) || 0;
+    const sharedUpdatedAt = Number(sharedWorkerState?.updatedAt) || 0;
+    const stateToHydrate =
+      sharedWorkerState && sharedUpdatedAt > localUpdatedAt + 100
+        ? sharedWorkerState
+        : runtimeState?.workerState;
+
+    if (runtimeState && stateToHydrate && stateToHydrate !== runtimeState.workerState) {
+      runtimeState.workerState = stateToHydrate;
+      persistRuntimeState();
+    }
+
+    if (stateToHydrate) {
+      worker?.postMessage({ type: 'hydrate_state', state: stateToHydrate });
+      emit('context_restored', { source: 'runtime_start', ts: Date.now() });
+    } else {
+      maybeAutoResumePendingRun();
+    }
+    return;
+  }
+
+  if (msg.type === 'hydrated') {
+    maybeAutoResumePendingRun();
+    return;
+  }
+
+  if (msg.type === 'updated') {
+    emit('updated');
+  }
+}
+
+function createRuntime(cfg: RoverInit): void {
+  setupSessionCoordinator(cfg);
+  if (sessionCoordinator) {
+    const initialRole = sessionCoordinator.getRole();
+    currentMode = initialRole;
+    if (runtimeState) {
+      runtimeState.executionMode = initialRole;
+    }
+  }
+  setupCloudCheckpointing(cfg);
+
+  const initialAllowActions =
+    (cfg.allowActions ?? true) && (sessionCoordinator ? sessionCoordinator.isController() : true);
+
+  bridge = new Bridge({
+    allowActions: initialAllowActions,
+    runtimeId,
+    allowedDomains: cfg.allowedDomains,
+    domainScopeMode: cfg.domainScopeMode,
+    externalNavigationPolicy: cfg.externalNavigationPolicy,
+    crossDomainPolicy: cfg.crossDomainPolicy,
+    registerOpenedTab: payload => sessionCoordinator?.registerOpenedTab(payload),
+    switchToLogicalTab: logicalTabId => sessionCoordinator?.switchToLogicalTab(logicalTabId) || { ok: false, reason: 'No session coordinator' },
+    listKnownTabs: () =>
+      (sessionCoordinator?.listTabs() || []).map(tab => ({
+        logicalTabId: tab.logicalTabId,
+        runtimeId: tab.runtimeId,
+        url: tab.url,
+        title: tab.title,
+        external: !!tab.external,
+      })),
+    onNavigationGuardrail: event => {
+      emit('navigation_guardrail', event);
+      appendTimelineEvent({
+        kind: 'status',
+        title: 'Navigation guardrail',
+        detail: safeSerialize(event),
+        status: 'info',
+      });
+    },
+    instrumentationOptions: cfg.mode === 'safe' ? { observeInlineMutations: false } : undefined,
+  });
+
+  const channel = new MessageChannel();
+  bindRpc(channel.port1, {
+    getSnapshot: () => bridge!.getSnapshot(),
+    getPageData: (params: any) => bridge!.getPageData(params),
+    executeTool: (params: any) => bridge!.executeTool(params.call, params.payload),
+    executeClientTool: (params: any) => bridge!.executeClientTool(params.name, params.args),
+    listClientTools: () => bridge!.listClientTools(),
+    getTabContext: () => {
+      const localLogicalTabId = sessionCoordinator?.getLocalLogicalTabId();
+      const activeLogicalTabId = sessionCoordinator?.getActiveLogicalTabId();
+      return {
+        id: localLogicalTabId || 1,
+        logicalTabId: localLogicalTabId || 1,
+        activeLogicalTabId: activeLogicalTabId || localLogicalTabId || 1,
+        runtimeId,
+        mode: currentMode,
+        url: window.location.href,
+        title: document.title,
+      };
+    },
+    listSessionTabs: () => sessionCoordinator?.listTabs() || [],
+  });
+  channel.port1.start?.();
+
+  const workerUrl = cfg.workerUrl ? cfg.workerUrl : new URL('./worker/worker.js', import.meta.url).toString();
+  worker = new Worker(workerUrl, { type: 'module' });
+  worker.postMessage({ type: 'init', config: cfg, port: channel.port2 }, [channel.port2]);
+
+  ui = mountWidget({
+    onSend: text => {
+      dispatchUserPrompt(text);
+    },
+    onRequestControl: () => {
+      const claimed = sessionCoordinator?.requestControl() ?? false;
+      if (!claimed) {
+        appendUiMessage('system', 'Unable to acquire control right now. Try again in a moment.', true);
+      } else {
+        appendTimelineEvent({
+          kind: 'status',
+          title: 'Control requested',
+          detail: 'This tab is now the active Rover controller.',
+          status: 'info',
+        });
+      }
+    },
+    onNewTask: () => {
+      newTask({ reason: 'manual_new_task', clearUi: true });
+    },
+    onEndTask: () => {
+      endTask({ reason: 'manual_end_task' });
+    },
+    onTaskSuggestionPrimary: () => {
+      const suggestion = pendingTaskSuggestion;
+      if (!suggestion) return;
+      dispatchUserPrompt(suggestion.text, {
+        bypassSuggestion: true,
+        startNewTask: true,
+        reason: suggestion.reason,
+      });
+    },
+    onTaskSuggestionSecondary: () => {
+      const suggestion = pendingTaskSuggestion;
+      if (!suggestion) return;
+      dispatchUserPrompt(suggestion.text, {
+        bypassSuggestion: true,
+      });
+    },
+    showTaskControls: cfg.ui?.showTaskControls !== false,
+    mascot: {
+      mp4Url: cfg.ui?.mascot?.mp4Url,
+      webmUrl: cfg.ui?.mascot?.webmUrl,
+    },
+    onOpen: () => {
+      if (runtimeState) {
+        runtimeState.uiOpen = true;
+        runtimeState.uiHidden = false;
+        persistRuntimeState();
+      }
+      emit('open');
+    },
+    onClose: () => {
+      if (runtimeState) {
+        runtimeState.uiOpen = false;
+        persistRuntimeState();
+      }
+      emit('close');
+    },
+  });
+
+  hideTaskSuggestion();
+
+  if (runtimeState?.uiMessages?.length) {
+    replayUiMessages(runtimeState.uiMessages);
+  }
+  if (runtimeState?.timeline?.length) {
+    replayTimeline(runtimeState.timeline);
+  }
+  if (runtimeState?.uiStatus) {
+    ui.setStatus(runtimeState.uiStatus);
+  }
+  if (runtimeState?.executionMode) {
+    ui.setExecutionMode(runtimeState.executionMode, {
+      localLogicalTabId: sessionCoordinator?.getLocalLogicalTabId(),
+      activeLogicalTabId: sessionCoordinator?.getActiveLogicalTabId(),
+      controllerRuntimeId: sessionCoordinator?.getCurrentHolderRuntimeId(),
+      canTakeControl: true,
+      canComposeInObserver: canComposeInObserverMode(),
+      note: resolveExecutionModeNote(runtimeState.executionMode),
+    });
+  }
+
+  worker.onmessage = ev => {
+    handleWorkerMessage(ev.data || {});
+  };
+
+  if (runtimeState?.uiHidden) {
+    ui.hide();
+  } else {
+    ui.show();
+    const shouldOpen = runtimeState?.uiOpen ?? !!cfg.openOnInit;
+    if (shouldOpen) ui.open();
+    else ui.close();
+  }
+
+  if (runtimeState) {
+    runtimeState.uiHidden = !!runtimeState.uiHidden;
+    runtimeState.uiOpen = !!runtimeState.uiOpen;
+    persistRuntimeState();
+  }
+
+  if (sessionCoordinator) {
+    applyCoordinatorState(sessionCoordinator.getState(), 'remote');
+    setExecutionMode(sessionCoordinator.getRole(), {
+      localLogicalTabId: sessionCoordinator.getLocalLogicalTabId(),
+      activeLogicalTabId: sessionCoordinator.getActiveLogicalTabId(),
+      holderRuntimeId: sessionCoordinator.getCurrentHolderRuntimeId(),
+    });
+  }
+}
+
+export function boot(cfg: RoverInit): RoverInstance {
+  if (instance) {
+    update(cfg);
+    return instance;
+  }
+
+  runtimeStateStore = createRuntimeStateStore<PersistedRuntimeState>();
+  runtimeId = getOrCreateRuntimeId(cfg.siteId);
+  resolvedVisitorId = resolveVisitorId(cfg);
+  runtimeStorageKey = getRuntimeStateKey(cfg.siteId);
+  const loaded = loadPersistedState(runtimeStorageKey);
+  const desiredSessionId = cfg.sessionId?.trim();
+  const visitorSessionId =
+    !desiredSessionId && !loaded?.sessionId && cfg.sessionScope !== 'tab' && resolvedVisitorId
+      ? createVisitorSessionId(cfg.siteId, resolvedVisitorId)
+      : undefined;
+  const fallbackSessionId = desiredSessionId || loaded?.sessionId || visitorSessionId || crypto.randomUUID();
+
+  runtimeState = normalizePersistedState(loaded, fallbackSessionId, runtimeId);
+
+  if (desiredSessionId && runtimeState.sessionId !== desiredSessionId) {
+    runtimeState = createDefaultRuntimeState(desiredSessionId, runtimeId);
+  }
+
+  currentConfig = {
+    ...cfg,
+    visitorId: resolvedVisitorId || cfg.visitorId,
+    sessionId: desiredSessionId || runtimeState.sessionId,
+    taskRouting: {
+      mode: cfg.taskRouting?.mode || 'act',
+      actHeuristicThreshold: cfg.taskRouting?.actHeuristicThreshold,
+      plannerOnActError: cfg.taskRouting?.plannerOnActError,
+    },
+    taskContext: {
+      inactivityMs: cfg.taskContext?.inactivityMs ?? DEFAULT_TASK_INACTIVITY_MS,
+      suggestReset: cfg.taskContext?.suggestReset ?? true,
+      semanticSimilarityThreshold:
+        cfg.taskContext?.semanticSimilarityThreshold ?? DEFAULT_SEMANTIC_SIMILARITY_THRESHOLD,
+    },
+  };
+
+  runtimeState.sessionId = currentConfig.sessionId!;
+  runtimeState.runtimeId = runtimeId;
+  runtimeState.executionMode = runtimeState.executionMode || 'controller';
+  runtimeState.timeline = sanitizeTimelineEvents(runtimeState.timeline);
+  runtimeState.uiMessages = sanitizeUiMessages(runtimeState.uiMessages);
+  runtimeState.activeTask = sanitizeTask(runtimeState.activeTask, createDefaultTaskState('boot'));
+  runtimeState.taskEpoch = Math.max(1, Number(runtimeState.taskEpoch) || 1);
+  currentMode = runtimeState.executionMode;
+  persistRuntimeState();
+
+  workerReady = false;
+  autoResumeAttempted = false;
+
+  createRuntime(currentConfig);
+  if (runtimeStorageKey) {
+    void applyAsyncRuntimeStateHydration(runtimeStorageKey);
+  }
+  ensureUnloadHandler();
+
+  instance = {
+    boot,
+    init,
+    update,
+    shutdown,
+    open,
+    close,
+    show,
+    hide,
+    send,
+    newTask,
+    endTask,
+    getState,
+    registerTool,
+    on,
+  };
+
+  if (pendingToolRegistrations.length) {
+    for (const pending of pendingToolRegistrations) {
+      applyToolRegistration(pending);
+    }
+    pendingToolRegistrations.length = 0;
+  }
+
+  return instance;
+}
+
+export function init(cfg: RoverInit): RoverInstance {
+  return boot(cfg);
+}
+
+export function update(cfg: Partial<RoverInit>): void {
+  if (!instance || !worker || !currentConfig) return;
+  currentConfig = {
+    ...currentConfig,
+    ...cfg,
+    taskRouting: {
+      ...currentConfig.taskRouting,
+      ...cfg.taskRouting,
+    },
+    taskContext: {
+      inactivityMs: cfg.taskContext?.inactivityMs ?? currentConfig.taskContext?.inactivityMs ?? DEFAULT_TASK_INACTIVITY_MS,
+      suggestReset: cfg.taskContext?.suggestReset ?? currentConfig.taskContext?.suggestReset ?? true,
+      semanticSimilarityThreshold:
+        cfg.taskContext?.semanticSimilarityThreshold ??
+        currentConfig.taskContext?.semanticSimilarityThreshold ??
+        DEFAULT_SEMANTIC_SIMILARITY_THRESHOLD,
+    },
+    ui: {
+      ...currentConfig.ui,
+      ...cfg.ui,
+      panel: {
+        ...currentConfig.ui?.panel,
+        ...cfg.ui?.panel,
+      },
+    },
+  };
+  resolvedVisitorId = resolveVisitorId(currentConfig);
+  if (resolvedVisitorId) {
+    currentConfig.visitorId = resolvedVisitorId;
+  }
+
+  if (cfg.sessionId && runtimeState) {
+    runtimeState.sessionId = cfg.sessionId;
+    persistRuntimeState();
+    setupSessionCoordinator(currentConfig);
+  } else if (cfg.sessionScope || cfg.tabPolicy) {
+    setupSessionCoordinator(currentConfig);
+  }
+
+  setupCloudCheckpointing(currentConfig);
+
+  if (bridge) {
+    if (typeof cfg.allowActions === 'boolean') {
+      bridge.setAllowActions(cfg.allowActions && currentMode === 'controller');
+    }
+    if (cfg.allowedDomains || cfg.crossDomainPolicy || cfg.domainScopeMode || cfg.externalNavigationPolicy) {
+      bridge.setNavigationPolicy({
+        allowedDomains: cfg.allowedDomains,
+        domainScopeMode: cfg.domainScopeMode,
+        externalNavigationPolicy: cfg.externalNavigationPolicy,
+        crossDomainPolicy: cfg.crossDomainPolicy,
+      });
+    }
+  }
+
+  worker.postMessage({ type: 'update_config', config: cfg });
+
+  if (typeof cfg.openOnInit === 'boolean') {
+    if (cfg.openOnInit) open();
+    else close();
+  }
+}
+
+export function shutdown(): void {
+  hideTaskSuggestion();
+  persistRuntimeState();
+  cloudCheckpointClient?.markDirty();
+  cloudCheckpointClient?.syncNow();
+  cloudCheckpointClient?.stop();
+  cloudCheckpointClient = null;
+  sessionCoordinator?.stop();
+  sessionCoordinator = null;
+
+  worker?.terminate();
+  worker = null;
+  ui?.destroy();
+  ui = null;
+  bridge = null;
+  currentConfig = null;
+  workerReady = false;
+  autoResumeAttempted = false;
+  runtimeId = '';
+  resolvedVisitorId = undefined;
+  suppressCheckpointSync = false;
+  currentMode = 'controller';
+  pendingTaskSuggestion = null;
+  runtimeStateStore = null;
+  instance = null;
+}
+
+export function open(): void {
+  ui?.show();
+  ui?.open();
+  if (runtimeState) {
+    runtimeState.uiHidden = false;
+    runtimeState.uiOpen = true;
+    persistRuntimeState();
+  }
+}
+
+export function close(): void {
+  ui?.close();
+  if (runtimeState) {
+    runtimeState.uiOpen = false;
+    persistRuntimeState();
+  }
+}
+
+export function show(): void {
+  ui?.show();
+  if (runtimeState) {
+    runtimeState.uiHidden = false;
+    persistRuntimeState();
+  }
+}
+
+export function hide(): void {
+  ui?.hide();
+  if (runtimeState) {
+    runtimeState.uiHidden = true;
+    runtimeState.uiOpen = false;
+    persistRuntimeState();
+  }
+}
+
+export function send(text: string): void {
+  if (!text?.trim()) return;
+  dispatchUserPrompt(text);
+}
+
+export function newTask(options?: { reason?: string; clearUi?: boolean }): void {
+  if (!runtimeState) return;
+
+  const reason = options?.reason || 'manual_new_task';
+  const clearUi = options?.clearUi !== false;
+  const taskEpoch = Math.max(1, Number(runtimeState.taskEpoch) || 1) + 1;
+  const nextTask = createDefaultTaskState(reason);
+
+  runtimeState.taskEpoch = taskEpoch;
+  runtimeState.activeTask = nextTask;
+  runtimeState.pendingRun = undefined;
+  runtimeState.workerState = undefined;
+
+  if (clearUi) {
+    runtimeState.uiMessages = [];
+    runtimeState.timeline = [];
+    runtimeState.uiStatus = undefined;
+    clearTaskUiState();
+  }
+
+  sessionCoordinator?.startNewTask({
+    taskId: nextTask.taskId,
+    startedAt: nextTask.startedAt,
+    boundaryReason: reason,
+    status: 'running',
+    lastUserAt: undefined,
+    lastAssistantAt: undefined,
+  });
+  sessionCoordinator?.setActiveRun(undefined);
+  sessionCoordinator?.setWorkerContext(undefined);
+  setUiStatus('New task started.');
+  persistRuntimeState();
+
+  worker?.postMessage({ type: 'start_new_task', taskId: nextTask.taskId });
+  appendTimelineEvent({
+    kind: 'info',
+    title: 'Started new task',
+    detail: reason,
+    status: 'info',
+  });
+  emit('task_started', {
+    taskId: nextTask.taskId,
+    reason,
+    taskEpoch,
+  });
+}
+
+export function endTask(options?: { reason?: string }): void {
+  if (!runtimeState) return;
+  const reason = options?.reason || 'manual_end_task';
+  const task = ensureActiveTask('manual_end_task');
+  if (!task) return;
+
+  task.status = 'ended';
+  task.endedAt = Date.now();
+  task.boundaryReason = reason;
+  runtimeState.pendingRun = undefined;
+  hideTaskSuggestion();
+  setUiStatus('Task ended. Start a new task to continue.');
+  sessionCoordinator?.endTask(reason);
+  sessionCoordinator?.setActiveRun(undefined);
+  persistRuntimeState();
+
+  appendTimelineEvent({
+    kind: 'info',
+    title: 'Task ended',
+    detail: 'Start a new task when you are ready.',
+    status: 'info',
+  });
+  emit('task_ended', {
+    taskId: task.taskId,
+    reason,
+    endedAt: task.endedAt,
+  });
+}
+
+export function getState(): any {
+  return {
+    mode: currentMode,
+    runtimeId,
+    runtimeState: runtimeState ? cloneRuntimeStateForCheckpoint(runtimeState) : null,
+    sharedState: sessionCoordinator?.getState() || null,
+    pendingTaskSuggestion,
+  };
+}
+
+export function registerTool(
+  nameOrDef: string | ClientToolDefinition,
+  handler: (args: any) => any | Promise<any>,
+): void {
+  const def = toToolDef(nameOrDef);
+  if (!instance || !bridge || !worker) {
+    pendingToolRegistrations.push({ def, handler });
+    return;
+  }
+  applyToolRegistration({ def, handler });
+}
+
+function normalizeCommandName(command: string): keyof RoverInstance | undefined {
+  if (!command) return undefined;
+  const c = String(command);
+  if (c === 'init') return 'init';
+  if (c === 'boot') return 'boot';
+  if (c === 'update') return 'update';
+  if (c === 'shutdown') return 'shutdown';
+  if (c === 'open') return 'open';
+  if (c === 'close') return 'close';
+  if (c === 'show') return 'show';
+  if (c === 'hide') return 'hide';
+  if (c === 'send') return 'send';
+  if (c === 'newTask') return 'newTask';
+  if (c === 'endTask') return 'endTask';
+  if (c === 'getState') return 'getState';
+  if (c === 'registerTool') return 'registerTool';
+  if (c === 'on') return 'on';
+  return undefined;
+}
+
+type RoverGlobalFn = ((command: string, ...args: any[]) => any) & Partial<RoverInstance> & { q?: any[]; l?: number };
+
+export function installGlobal(): void {
+  const w = window as any;
+  const existing = w.rover;
+
+  const apiFn = ((command: string, ...args: any[]) => {
+    const name = normalizeCommandName(command);
+    const target = name ? (apiFn as any)[name] : undefined;
+    if (typeof target === 'function') {
+      return target(...args);
+    }
+  }) as RoverGlobalFn;
+
+  apiFn.boot = boot;
+  apiFn.init = init;
+  apiFn.update = update;
+  apiFn.shutdown = shutdown;
+  apiFn.open = open;
+  apiFn.close = close;
+  apiFn.show = show;
+  apiFn.hide = hide;
+  apiFn.send = send;
+  apiFn.newTask = newTask;
+  apiFn.endTask = endTask;
+  apiFn.getState = getState;
+  apiFn.registerTool = registerTool;
+  apiFn.on = on;
+
+  w.rover = apiFn;
+
+  if (typeof existing === 'function' && Array.isArray(existing.q)) {
+    for (const call of existing.q) {
+      const [method, ...args] = Array.isArray(call) ? call : Array.from(call as any);
+      if (typeof method === 'string') {
+        apiFn(method, ...args);
+      }
+    }
+  }
+}
+
+installGlobal();

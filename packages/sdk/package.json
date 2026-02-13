@@ -1,0 +1,44 @@
+{
+  "name": "@rtrvr-ai/rover",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "main": "dist/rover.js",
+  "module": "dist/rover.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/rover.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./embed": "./dist/embed.js",
+    "./worker": "./dist/worker/rover-worker.js"
+  },
+  "files": [
+    "dist/rover.js",
+    "dist/embed.js",
+    "dist/index.d.ts",
+    "dist/worker/rover-worker.js",
+    "dist/loader.js",
+    "dist/loader.d.ts"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -b && node ./scripts/copy-worker.mjs && node ./scripts/bundle.mjs && node ./scripts/build-embed.mjs",
+    "lint": "eslint .",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@rover/bridge": "workspace:*",
+    "@rover/ui": "workspace:*",
+    "@rover/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@rover/tsconfig": "workspace:*",
+    "@rover/worker": "workspace:*",
+    "@types/node": "^20.11.30",
+    "typescript": "^5.6.3"
+  }
+}

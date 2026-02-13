@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rover Demo Confirmation</title>
+  </head>
+  <body data-page="confirmation">
+    <div class="page-shell">
+      <header class="topbar" data-reveal>
+        <a class="brand" href="./index.html">
+          Rover Mercantile
+          <small>Agent Interaction Lab</small>
+        </a>
+
+        <nav class="nav-links" aria-label="Primary">
+          <a class="nav-link" href="./index.html">Catalog</a>
+          <a class="nav-link" href="./product.html?sku=aurora-mug">Product</a>
+          <a class="nav-link" href="./checkout.html">Checkout</a>
+          <a class="nav-link" href="./confirmation.html">Confirmation</a>
+        </nav>
+
+        <div class="toolbar">
+          <span class="status-pill" id="rover-status-pill">Booting Rover...</span>
+          <button class="btn-ghost" id="open-rover-widget" type="button">Open Rover</button>
+          <button class="btn-ghost" id="close-rover-widget" type="button">Hide Rover</button>
+          <button class="btn-ghost" id="new-rover-task" type="button">New Task</button>
+          <button class="btn-ghost" id="end-rover-task" type="button">End Task</button>
+          <span class="kpi">Cart <strong class="cart-badge" data-cart-count>0</strong></span>
+        </div>
+      </header>
+
+      <details class="rover-config" data-reveal>
+        <summary>Rover API Config</summary>
+        <div class="config-grid">
+          <label>
+            API key
+            <input id="rover-api-key" type="password" placeholder="rtrvr_..." autocomplete="off" />
+          </label>
+          <label>
+            API base
+            <input id="rover-api-base" type="url" placeholder="https://...cloudfunctions.net" autocomplete="off" />
+          </label>
+        </div>
+        <div class="hero-actions">
+          <button id="save-rover-config" type="button">Save Rover Config</button>
+        </div>
+        <p class="inline-note" id="rover-config-status">Use this page to test post-purchase actions and follow-ups.</p>
+      </details>
+
+      <main>
+        <section class="confirm-layout" data-reveal>
+          <article class="panel stack">
+            <h1>Order Confirmation</h1>
+            <p class="inline-note" id="confirmation-message">Waiting for order details...</p>
+
+            <div class="summary-line"><span>Order number</span><strong id="order-number">--</strong></div>
+            <div class="summary-line"><span>Date</span><strong id="order-date">--</strong></div>
+            <div class="summary-line"><span>Email</span><strong id="order-email">--</strong></div>
+            <div class="summary-line total"><span>Total paid</span><strong id="order-total">$0.00</strong></div>
+
+            <h2>Items</h2>
+            <ul class="mini-list" id="confirmation-items"></ul>
+
+            <div class="hero-actions">
+              <button id="track-order-btn" type="button">Track Shipment</button>
+              <button class="btn-secondary" id="receipt-btn" type="button">Download Receipt</button>
+              <button class="btn-ghost" id="shop-again-btn" type="button">Shop Again</button>
+            </div>
+
+            <p class="inline-note" id="tracking-status">Tracking updates will appear here.</p>
+          </article>
+
+          <aside class="panel stack">
+            <h2>Post-purchase feedback</h2>
+            <p class="inline-note">This form is useful for type, select, slider, and submit tests.</p>
+
+            <form id="feedback-form" class="stack">
+              <label>
+                Satisfaction (1-10)
+                <input id="feedback-rating" type="range" min="1" max="10" value="8" />
+              </label>
+
+              <label>
+                Feedback email
+                <input id="feedback-email" type="email" autocomplete="email" placeholder="you@example.com" />
+              </label>
+
+              <label>
+                Notes
+                <textarea id="feedback-notes" rows="5" placeholder="Share your experience..."></textarea>
+              </label>
+
+              <button type="submit">Submit Feedback</button>
+            </form>
+
+            <p class="inline-note" id="feedback-result">No feedback submitted yet.</p>
+
+            <div class="hero-actions">
+              <a class="button-link secondary" href="./checkout.html">Back to Checkout</a>
+              <a class="button-link secondary" href="./index.html">Browse Catalog</a>
+            </div>
+          </aside>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast-wrap" id="toast-wrap" aria-live="polite"></div>
+    <script type="module" src="/rover-site-config.js"></script>
+    <script type="module" src="/src/demo.ts"></script>
+  </body>
+</html>

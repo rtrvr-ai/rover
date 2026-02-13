@@ -1,0 +1,209 @@
+import type { ToolOutput } from '@rover/shared/lib/types/index.js';
+
+export type RoverTab = {
+  id: number;
+  url?: string;
+  title?: string;
+  windowId?: number;
+};
+
+export type ChatMessage = {
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content: string;
+  name?: string;
+};
+
+export type FunctionCall = {
+  name?: string;
+  args?: Record<string, any>;
+};
+
+export type GeminiSchema = {
+  type?: string;
+  properties?: Record<string, GeminiSchema>;
+  required?: string[];
+  description?: string;
+  items?: GeminiSchema;
+  nullable?: boolean;
+};
+
+export type FunctionDeclaration = {
+  name: string;
+  description?: string;
+  parameters?: GeminiSchema;
+};
+
+export type ClientToolDefinition = {
+  name: string;
+  description?: string;
+  parameters?: Record<string, any>;
+  required?: string[];
+  schema?: GeminiSchema;
+  llmCallable?: boolean;
+  mcpUrl?: string;
+};
+
+export type ApiAdditionalToolName = 'generate_sheets' | 'generate_docs' | 'generate_slides' | 'generate_websites';
+
+export type ApiToolsConfig = {
+  mode?: 'allowlist' | 'profile' | 'none';
+  enableAdditionalTools?: ApiAdditionalToolName[];
+  userDefined?: string[];
+};
+
+export type ExecutionState = 'running' | 'paused' | 'cancelled';
+
+export type ExecutionRef = {
+  current: {
+    state: ExecutionState;
+    userInputs: string[];
+  };
+};
+
+export type ToolCall = FunctionCall & { id?: string };
+
+export type PlannerQuestion = {
+  id?: string;
+  question: string;
+  choices?: string[];
+};
+
+export type LLMLogEntry = {
+  role: 'user' | 'model';
+  message?: string;
+};
+
+export type AgentLogState = {
+  prevSteps?: PreviousSteps[];
+  chatLog?: LLMLogEntry[];
+};
+
+export type StatusStage = 'analyze' | 'route' | 'execute' | 'verify' | 'complete';
+
+export type TaskRoutingMode = 'auto' | 'act' | 'planner';
+
+export type TaskRoutingConfig = {
+  mode?: TaskRoutingMode;
+  actHeuristicThreshold?: number;
+  plannerOnActError?: boolean;
+};
+
+export type PlannerPreviousStep = {
+  modelParts?: any[];
+  thought?: string;
+  toolCall?: { name: string; args: Record<string, any> };
+  textOutput?: any;
+  error?: string;
+  questionsAsked?: PlannerQuestion[];
+  userAnswers?: string[];
+  schemaHeaderSheetInfo?: any;
+  generatedContentRef?: any;
+  lastToolPreviousSteps?: PreviousSteps[];
+  userFeedback?: string[];
+};
+
+export type PreviousSteps = {
+  accTreeId?: string;
+  modelParts?: any[];
+  thought?: string;
+  functions?: Array<{
+    name: string;
+    args: Record<string, unknown>;
+    response: { status: 'Success' | 'Failure' | 'Pending execution'; error?: string; output?: any; allowFallback?: boolean };
+  }>;
+  data?: string;
+  fail?: string;
+  userFeedback?: string[];
+};
+
+export type ToolExecutionResult = {
+  output?: ToolOutput | Record<string, any> | unknown[] | string | number | boolean | null;
+  error?: string;
+  errorDetails?: any;
+  creditsUsed?: number;
+  schemaHeaderSheetInfo?: any;
+  generatedContentRef?: any;
+  generatedTools?: any;
+  prevSteps?: PreviousSteps[];
+  warnings?: string[];
+};
+
+export type PlannerResponse = {
+  response: {
+    plan?: { toolName: string; parameters: Record<string, any>; thought?: string };
+    questions?: PlannerQuestion[];
+    taskComplete: boolean;
+    modelParts?: any[];
+    overallThought?: string;
+    accTreeIds?: string[];
+    userUsageData?: { creditsUsed?: number };
+    error?: string;
+    errorDetails?: any;
+    warnings?: string[];
+  };
+  toolResults: ToolExecutionResult[];
+  completedWorkflow?: any;
+  previousSteps?: PlannerPreviousStep[];
+};
+
+export type MessageOrchestratorOptions = {
+  message: string;
+  tabs: RoverTab[];
+  previousMessages?: ChatMessage[];
+  trajectoryId: string;
+  files?: any[];
+  recordingContext?: string;
+  previousSteps?: PlannerPreviousStep[];
+  onStatusUpdate?: (message: string, thought?: string, stage?: StatusStage) => void;
+  toolFunctions?: Record<string, any>;
+  allowActions?: boolean;
+  onAgentCall?: (creditsUsed: number) => void;
+  driveAuthToken?: string;
+  agentLog?: AgentLogState;
+  lastToolPreviousSteps?: PreviousSteps[];
+  taskRouting?: TaskRoutingConfig;
+  onPrevStepsUpdate?: (steps: PreviousSteps[]) => void;
+  onPlannerHistoryUpdate?: (steps: PlannerPreviousStep[]) => void;
+};
+
+export type PlannerOptions = {
+  userInput: string;
+  tabs: RoverTab[];
+  previousMessages?: ChatMessage[];
+  files?: any[];
+  trajectoryId: string;
+  recordingContext?: string;
+  onStatusUpdate?: (message: string, thought?: string, stage?: StatusStage) => void;
+  toolFunctions?: Record<string, any>;
+  previousSteps?: PlannerPreviousStep[];
+  continuePlanning?: boolean;
+  activeWorkflow?: any;
+  onAgentCall?: (creditsUsed: number) => void;
+  driveAuthToken?: string;
+  agentLog?: AgentLogState;
+  lastToolPreviousSteps?: PreviousSteps[];
+  onPrevStepsUpdate?: (steps: PreviousSteps[]) => void;
+  onPlannerHistoryUpdate?: (steps: PlannerPreviousStep[]) => void;
+};
+
+export type ToolExecutionContext = {
+  toolName: string;
+  toolArgs: any;
+  userInput: string;
+  webPageMapInput?: Record<number, any>;
+  tabs: RoverTab[];
+  trajectoryId: string;
+  plannerPrevSteps?: PlannerPreviousStep[];
+  files?: any[];
+  onStatusUpdate?: (message: string, thought?: string, stage?: StatusStage) => void;
+  toolFunctions?: Record<string, any>;
+  previousMessages?: ChatMessage[];
+  recordingContext?: string;
+  onAgentCall?: (creditsUsed: number) => void;
+  bridgeRpc?: (method: string, params?: any) => Promise<any>;
+  ctx?: any;
+  functionDeclarations?: FunctionDeclaration[];
+  driveAuthToken?: string;
+  agentLog?: AgentLogState;
+  onPrevStepsUpdate?: (steps: PreviousSteps[]) => void;
+};

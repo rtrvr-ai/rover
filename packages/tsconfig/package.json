@@ -1,0 +1,7 @@
+{
+  "name": "@rover/tsconfig",
+  "version": "0.1.0",
+  "description": "rover embed - tsconfig",
+  "private": true,
+  "sideEffects": false
+}

@@ -1,0 +1,25 @@
+{
+  "name": "@rover/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/worker.js",
+  "types": "dist/worker.d.ts",
+  "exports": {
+    "./worker": "./src/worker.ts"
+  },
+  "files": ["dist/**"],
+  "scripts": {
+    "build": "tsc -b && node ./scripts/bundle.mjs",
+    "lint": "eslint .",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@rover/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@rover/tsconfig": "workspace:*",
+    "@types/node": "^20.11.30",
+    "typescript": "^5.6.3"
+  }
+}

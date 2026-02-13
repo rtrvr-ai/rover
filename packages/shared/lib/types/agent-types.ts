@@ -1,0 +1,17 @@
+export enum SUB_AGENTS {
+  enhance = 'enhance',
+  plan = 'plan',
+  actOnTabs = 'actOnTabs',
+  extract = 'extract',
+  infer = 'infer',
+  processTabWorkflows = 'processTabWorkflows',
+  processText = 'processText',
+  createSheetFromData = 'createSheetFromData',
+  queryRtrvrDocs = 'queryRtrvrDocs',
+  googleDocGenerator = 'googleDocGenerator',
+  googleSlidesGenerator = 'googleSlidesGenerator',
+  webpageGenerator = 'webpageGenerator',
+  pdfFiller = 'pdfFiller',
+  customToolGenerator = 'customToolGenerator',
+  getPageData = 'getPageData',
+}

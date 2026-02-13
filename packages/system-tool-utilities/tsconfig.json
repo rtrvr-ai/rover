@@ -1,0 +1,9 @@
+{
+  "extends": "@rover/tsconfig/module",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "outDir": "dist",
+    "types": ["chrome"]
+  },
+  "include": ["index.mts", "lib"]
+}

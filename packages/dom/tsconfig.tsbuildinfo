@@ -1,0 +1,1 @@
+{"root":["./src/index.ts","./src/page-data.ts","./src/snapshot.ts","./src/actions/index.ts","./src/actions/main-world-actions.ts","./src/scroll/index.ts","./src/scroll/scroll-detector.ts","./src/scroll/scroll-helpers.ts"],"version":"5.9.3"}
