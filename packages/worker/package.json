@@ -1,6 +1,6 @@
 {
   "name": "@rover/worker",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "main": "dist/worker.js",
@@ -8,7 +8,9 @@
   "exports": {
     "./worker": "./src/worker.ts"
   },
-  "files": ["dist/**"],
+  "files": [
+    "dist/**"
+  ],
   "scripts": {
     "build": "tsc -b && node ./scripts/bundle.mjs",
     "lint": "eslint .",
