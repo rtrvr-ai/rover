@@ -1867,7 +1867,22 @@ function createRuntime(cfg: RoverInit): void {
   channel.port1.start?.();
 
   const workerUrl = cfg.workerUrl ? cfg.workerUrl : new URL('./worker/worker.js', import.meta.url).toString();
-  worker = new Worker(workerUrl, { type: 'module' });
+  // Cross-origin Workers are blocked by browsers. If the worker URL is on a
+  // different origin (e.g. embed.js on www.rtrvr.ai, worker on rover.rtrvr.ai),
+  // create a same-origin blob URL that imports the remote script.
+  let effectiveWorkerUrl = workerUrl;
+  try {
+    const pageOrigin = window.location.origin;
+    const scriptOrigin = new URL(workerUrl).origin;
+    if (pageOrigin !== scriptOrigin) {
+      const blob = new Blob(
+        [`import '${workerUrl}';`],
+        { type: 'application/javascript' },
+      );
+      effectiveWorkerUrl = URL.createObjectURL(blob);
+    }
+  } catch (_e) { /* fall through to direct URL */ }
+  worker = new Worker(effectiveWorkerUrl, { type: 'module' });
   worker.postMessage({ type: 'init', config: cfg, port: channel.port2 }, [channel.port2]);
 
   ui = mountWidget({
