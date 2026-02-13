@@ -36,7 +36,7 @@ export type AgentContext = {
   tabularStore: TabularStore;
 };
 
-const DEFAULT_CLOUD_FUNCTIONS_BASE = 'https://us-central1-rtrvr-cloud-backend.cloudfunctions.net';
+const DEFAULT_CLOUD_FUNCTIONS_BASE = 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net';
 
 const CANONICAL_ADDITIONAL_TOOLS = new Set(['generate_sheets', 'generate_docs', 'generate_slides', 'generate_websites']);
 const LEGACY_ADDITIONAL_TOOL_ALIASES: Record<string, string> = {

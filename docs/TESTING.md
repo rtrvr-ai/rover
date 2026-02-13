@@ -48,8 +48,8 @@ Without auth, Rover emits `auth_required` with code `MISSING_API_KEY`.
 
 | Environment | URL |
 |-------------|-----|
-| **Production** | `https://us-central1-rtrvr-cloud-backend.cloudfunctions.net` |
-| **Firebase Emulator** | `http://127.0.0.1:5002/rtrvr-cloud-backend/us-central1` |
+| **Production** | `https://us-central1-rtrvr-extension-functions.cloudfunctions.net` |
+| **Firebase Emulator** | `http://127.0.0.1:5002/rtrvr-extension-functions/us-central1` |
 
 ---
 
@@ -73,7 +73,7 @@ import { init } from '@rover/sdk';
 
 init({
   siteId: 'demo',
-  apiBase: 'https://us-central1-rtrvr-cloud-backend.cloudfunctions.net',
+  apiBase: 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net',
   apiKey: 'rtrvr_YOUR_API_KEY_HERE',         // REQUIRED for backend calls
   workerUrl: new URL('./worker.ts', import.meta.url).toString(),
   openOnInit: true,
@@ -175,7 +175,7 @@ Run the backend locally for complete end-to-end testing without hitting producti
 
 ```bash
 # Terminal 1: Start Firebase emulators
-cd /Users/bhavanikalisetty/work/act_2/rtrvr-cloud-backend
+cd /Users/bhavanikalisetty/work/act_2/rtrvr-extension-functions
 firebase emulators:start
 # Runs on http://127.0.0.1:5002
 
@@ -189,7 +189,7 @@ Update `apps/demo/src/main.ts` to point to local emulator:
 ```typescript
 init({
   siteId: 'demo',
-  apiBase: 'http://127.0.0.1:5002/rtrvr-cloud-backend/us-central1',
+  apiBase: 'http://127.0.0.1:5002/rtrvr-extension-functions/us-central1',
   apiKey: 'rtrvr_YOUR_KEY',
   workerUrl: new URL('./worker.ts', import.meta.url).toString(),
   openOnInit: true,
@@ -276,7 +276,7 @@ init({
 
   // Backend
   apiBase?: string,            // Override backend URL
-                               // Default: https://us-central1-rtrvr-cloud-backend.cloudfunctions.net
+                               // Default: https://us-central1-rtrvr-extension-functions.cloudfunctions.net
 
   // Worker
   workerUrl?: string,          // Override worker script URL
@@ -321,7 +321,7 @@ init({
 ### CRITICAL: Wrong backend URL in demo app
 **File:** `apps/demo/src/main.ts`
 **Was:** `apiBase: 'http://localhost:8787'` (Cloudflare Workers URL - incorrect)
-**Fixed to:** `apiBase: 'https://us-central1-rtrvr-cloud-backend.cloudfunctions.net'`
+**Fixed to:** `apiBase: 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net'`
 **Impact:** Every backend call would fail with connection refused.
 
 ### CRITICAL: Missing API key in demo config

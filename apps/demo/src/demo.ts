@@ -58,7 +58,7 @@ type StatusTone = 'normal' | 'warning' | 'error' | 'success';
 const STORAGE_KEY = 'rover_demo_state_v2';
 const CONFIG_KEY = 'rover_demo_config_v1';
 const WEBSITE_CONFIG_GLOBAL = '__ROVER_WEBSITE_CONFIG__';
-const DEFAULT_API_BASE = 'https://us-central1-rtrvr-cloud-backend.cloudfunctions.net';
+const DEFAULT_API_BASE = 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net';
 const VISITOR_ID_KEY = 'rover_demo_visitor_id_v1';
 
 const SHIPPING_COST: Record<ShippingMethod, number> = {

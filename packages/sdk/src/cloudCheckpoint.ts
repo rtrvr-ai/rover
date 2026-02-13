@@ -1,7 +1,7 @@
 import type { SharedSessionState } from './sessionCoordinator.js';
 import type { PersistedRuntimeState } from './runtimeTypes.js';
 
-const DEFAULT_CLOUD_FUNCTIONS_BASE = 'https://us-central1-rtrvr-cloud-backend.cloudfunctions.net';
+const DEFAULT_CLOUD_FUNCTIONS_BASE = 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net';
 
 export type RoverCloudCheckpointPayload = {
   version: number;
