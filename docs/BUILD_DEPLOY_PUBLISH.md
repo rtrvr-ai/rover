@@ -43,15 +43,13 @@ node packages/sdk/scripts/prepare-deploy.mjs
 Creates `packages/sdk/dist/deploy/` with:
 - `embed.js` — IIFE bundle for `<script>` tag embedding
 - `rover.js` — ESM bundle for module imports
-- `rover-worker.js` — Web Worker bundle
-- `worker/worker.js` — Nested worker copy for `import.meta.url` resolution
+- `worker/worker.js` — Web Worker bundle (auto-resolved via `import.meta.url`)
 
 ### Step 3: Copy to Cloud Website
 
 ```bash
-cp packages/sdk/dist/deploy/embed.js       ~/work/act_2/rtrvr-cloud-website/public/embed.js
-cp packages/sdk/dist/deploy/rover.js        ~/work/act_2/rtrvr-cloud-website/public/rover.js
-cp packages/sdk/dist/deploy/rover-worker.js ~/work/act_2/rtrvr-cloud-website/public/rover-worker.js
+cp packages/sdk/dist/deploy/embed.js        ~/work/act_2/rtrvr-cloud-website/public/embed.js
+cp packages/sdk/dist/deploy/rover.js         ~/work/act_2/rtrvr-cloud-website/public/rover.js
 mkdir -p ~/work/act_2/rtrvr-cloud-website/public/worker
 cp packages/sdk/dist/deploy/worker/worker.js ~/work/act_2/rtrvr-cloud-website/public/worker/worker.js
 ```
@@ -60,7 +58,7 @@ cp packages/sdk/dist/deploy/worker/worker.js ~/work/act_2/rtrvr-cloud-website/pu
 
 ```bash
 cd ~/work/act_2/rtrvr-cloud-website
-git add public/embed.js public/rover.js public/rover-worker.js public/worker/
+git add public/embed.js public/rover.js public/worker/
 git commit -m "chore: update Rover SDK artifacts"
 git push
 ```
@@ -78,14 +76,14 @@ pnpm build
 node packages/sdk/scripts/prepare-deploy.mjs
 
 # 2. Copy build files to website
-cp packages/sdk/dist/deploy/embed.js       ../rtrvr-cloud-website/public/embed.js
-cp packages/sdk/dist/deploy/rover.js        ../rtrvr-cloud-website/public/rover.js
-cp packages/sdk/dist/deploy/rover-worker.js ../rtrvr-cloud-website/public/rover-worker.js
+cp packages/sdk/dist/deploy/embed.js        ../rtrvr-cloud-website/public/embed.js
+cp packages/sdk/dist/deploy/rover.js         ../rtrvr-cloud-website/public/rover.js
+mkdir -p ../rtrvr-cloud-website/public/worker
 cp packages/sdk/dist/deploy/worker/worker.js ../rtrvr-cloud-website/public/worker/worker.js
 
 # 3. Commit & deploy website
 cd ../rtrvr-cloud-website
-git add public/embed.js public/rover.js public/rover-worker.js public/worker/
+git add public/embed.js public/rover.js public/worker/
 git commit -m "chore: update Rover SDK artifacts"
 git push
 

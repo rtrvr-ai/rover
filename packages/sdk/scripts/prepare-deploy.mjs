@@ -16,8 +16,6 @@ const filesToCopy = [
   { src: resolve(distDir, 'embed.js'), dest: resolve(deployDir, 'embed.js') },
   // rover.js — ESM bundle for <script type="module"> or npm users
   { src: resolve(distDir, 'rover.js'), dest: resolve(deployDir, 'rover.js') },
-  // rover-worker.js — worker bundle at top level (for explicit workerUrl)
-  { src: resolve(distDir, 'worker', 'rover-worker.js'), dest: resolve(deployDir, 'rover-worker.js') },
   // worker/worker.js — worker bundle for auto-resolution via import.meta.url
   { src: resolve(distDir, 'worker', 'rover-worker.js'), dest: resolve(deployWorkerDir, 'worker.js') },
 ];

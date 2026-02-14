@@ -37,7 +37,6 @@ const packageJsonPaths = [
   'packages/ui/package.json',
   'packages/sdk/package.json',
   'packages/tsconfig/package.json',
-  'packages/storage/package.json',
   'packages/system-tool-utilities/package.json',
 ];
 

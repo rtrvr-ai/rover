@@ -146,7 +146,7 @@ export default function RoverTestPage() {
           `,
         }}
       />
-      <script src="https://rover.rtrvr.ai/sdk/rover.js" />
+      <script src="https://rover.rtrvr.ai/embed.js" />
       <script
         dangerouslySetInnerHTML={{
           __html: `
@@ -335,7 +335,7 @@ init({
 **Problem:** TypeScript compiler (`tsc`) outputs individual files with bare module imports (`import { Bridge } from '@rover/bridge'`). These only work when consumed by a bundler (Vite, webpack). Loading the dist files directly via `<script>` or `new Worker()` fails with import resolution errors.
 **Fixed:** Added esbuild bundling:
 - `packages/sdk/dist/rover.js` — Standalone SDK (394KB), self-contained ESM, auto-calls `installGlobal()`
-- `packages/sdk/dist/worker/rover-worker.js` — Standalone Worker (120KB), self-contained ESM
+- `packages/sdk/dist/worker/rover-worker.js` — Bundled Worker (120KB), self-contained ESM (npm export)
 - Build pipeline: `tsc → copy-worker → esbuild bundle`
 
 ### INFO: Worker copy-worker.mjs only copied 2 files
@@ -359,12 +359,12 @@ packages/sdk/dist/
 └── worker/
     ├── worker.js          (6.4KB)  — Unbundled worker (for Vite/webpack)
     ├── worker.bundle.js   (120KB)  — Bundled worker (standalone)
-    ├── rover-worker.js    (120KB)  — Same bundle, named for CDN deployment
+    ├── rover-worker.js    (120KB)  — Bundled worker (npm export via @rtrvr-ai/rover/worker)
     └── worker.d.ts        (11B)
 ```
 
 **For bundler consumers** (Vite, webpack, Next.js): Use `index.js` + `worker.js`
-**For standalone/CDN use**: Use `rover.js` + `rover-worker.js`
+**For standalone/CDN use**: Use `embed.js` (or `rover.js`) + `worker/worker.js` (auto-resolved)
 
 ---
 

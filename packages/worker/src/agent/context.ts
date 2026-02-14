@@ -34,6 +34,7 @@ export type AgentContext = {
   apiMode: boolean;
   apiToolsConfig?: ApiToolsConfig;
   tabularStore: TabularStore;
+  isCancelled?: () => boolean;
 };
 
 const DEFAULT_CLOUD_FUNCTIONS_BASE = 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net';
@@ -109,6 +110,9 @@ export function createAgentContext(
   const base = (config.apiBase || DEFAULT_CLOUD_FUNCTIONS_BASE).replace(/\/$/, '');
   const endpoint = base.endsWith('/extensionRouter') ? base : `${base}/extensionRouter`;
 
+  const RETRY_DELAYS = [1_000, 3_000];
+  const MAX_RETRIES = RETRY_DELAYS.length;
+
   const callExtensionRouter = async (action: string, data: any): Promise<any> => {
     const token = config.apiKey || config.authToken;
     if (!token) {
@@ -121,48 +125,72 @@ export function createAgentContext(
       });
     }
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ action, data }),
-    });
-
-    if (!response.ok) {
-      let errorPayload: any = undefined;
-      try {
-        errorPayload = await response.json();
-      } catch {
-        const text = await response.text().catch(() => '');
-        if (text) errorPayload = { error: text };
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[attempt - 1]));
       }
-      const envelope = toRoverErrorEnvelope(errorPayload, `HTTP ${response.status}`);
-      throw createRoverError({
-        ...envelope,
-        details: {
-          status: response.status,
-          endpoint,
-          action,
-          response: errorPayload,
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
         },
+        body: JSON.stringify({ action, data }),
       });
+
+      if (!response.ok) {
+        if (response.status === 429) {
+          const retryAfter = Number(response.headers.get('Retry-After')) || 0;
+          const err = createRoverError({
+            code: 'RATE_LIMITED',
+            message: 'Rate limited by backend',
+            retryable: true,
+            details: { status: 429, retryAfter },
+          });
+          if (attempt < MAX_RETRIES) {
+            lastError = err;
+            continue;
+          }
+          throw err;
+        }
+
+        let errorPayload: any = undefined;
+        try {
+          errorPayload = await response.json();
+        } catch {
+          const text = await response.text().catch(() => '');
+          if (text) errorPayload = { error: text };
+        }
+        const envelope = toRoverErrorEnvelope(errorPayload, `HTTP ${response.status}`);
+        throw createRoverError({
+          ...envelope,
+          details: {
+            status: response.status,
+            endpoint,
+            action,
+            response: errorPayload,
+          },
+        });
+      }
+
+      const payload = await response.json();
+      if (payload?.success === false) {
+        const envelope = toRoverErrorEnvelope(payload, payload?.error || 'extensionRouter returned success=false');
+        throw createRoverError({
+          ...envelope,
+          details: {
+            endpoint,
+            action,
+            response: payload,
+          },
+        });
+      }
+      return payload;
     }
 
-    const payload = await response.json();
-    if (payload?.success === false) {
-      const envelope = toRoverErrorEnvelope(payload, payload?.error || 'extensionRouter returned success=false');
-      throw createRoverError({
-        ...envelope,
-        details: {
-          endpoint,
-          action,
-          response: payload,
-        },
-      });
-    }
-    return payload;
+    throw lastError || new Error('callExtensionRouter: unexpected retry exhaustion');
   };
 
   const getPageData = async (tabId: number, options?: any) => {

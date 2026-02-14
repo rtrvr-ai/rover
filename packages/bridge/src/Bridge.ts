@@ -181,9 +181,9 @@ export class Bridge {
       );
     }
 
-    if (toolName === SystemToolNames.dispatch_pointer_path) {
+    if (toolName === SystemToolNames.network_run_recipe) {
       return capabilityUnavailableResponse(
-        'dispatch_pointer_path is not yet supported in embed mode.',
+        'network_run_recipe is not supported in embed mode.',
         'CAPABILITY_UNAVAILABLE',
       );
     }
@@ -519,6 +519,7 @@ export class Bridge {
         // no-op
       }
     }
+    const registrationFailed = !logicalTabId && !!this.registerOpenedTab;
 
     if (!popup) {
       const reason = 'Browser popup settings blocked opening a new tab.';
@@ -570,6 +571,7 @@ export class Bridge {
         openedInNewTab: true,
         policyBlocked: !!options?.policyBlocked,
         message,
+        ...(registrationFailed && { warning: 'Tab opened but registration failed — tab may not be targetable' }),
       },
       allowFallback: true,
     };

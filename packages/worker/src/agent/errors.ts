@@ -9,6 +9,7 @@ export type RoverErrorCode =
   | 'CAPABILITY_UNAVAILABLE'
   | 'TOOL_UNSUPPORTED'
   | 'NETWORK_ERROR'
+  | 'RATE_LIMITED'
   | 'UNKNOWN_ERROR';
 
 export type RoverErrorEnvelope = {

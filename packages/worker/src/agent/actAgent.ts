@@ -31,6 +31,7 @@ export type AgenticSeekResult = {
 };
 
 const MAX_RETRIES = 3;
+const MAX_ITERATIONS = 25;
 
 export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<AgenticSeekResult> {
   const {
@@ -58,11 +59,20 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
   const allWarnings: string[] = [];
   const accumulatedPrevSteps: PreviousSteps[] = Array.isArray(previousSteps) ? previousSteps : [];
   let retry = 0;
+  let iterations = 0;
   let pageDataOptions: { disableAutoScroll?: boolean } | undefined;
 
   const tabId = tabOrder[0];
 
   while (retry < MAX_RETRIES) {
+    if (iterations++ >= MAX_ITERATIONS) {
+      return { error: 'Max action iterations reached', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
+    }
+
+    if (ctx.isCancelled?.()) {
+      return { error: 'Run cancelled', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
+    }
+
     try {
       await waitWhilePaused(undefined);
 
