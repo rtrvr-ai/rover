@@ -176,6 +176,9 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
 
       // Continue loop to allow next action cycle
     } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        return { error: 'Run cancelled', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
+      }
       retry++;
       if (retry >= MAX_RETRIES) {
         return { error: error?.message || 'Agentic seek failed', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };

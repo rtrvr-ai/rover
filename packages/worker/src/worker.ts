@@ -45,6 +45,7 @@ let tabularStore: TabularStore | null = null;
 const PLANNER_TOOL_NAME_SET = new Set<string>(Object.values(PLANNER_FUNCTION_CALLS));
 let activeRun: { runId: string; text: string; startedAt: number; resume: boolean } | null = null;
 let cancelledRunId: string | null = null;
+let activeAbortController: AbortController | null = null;
 let lastStatusKey = '';
 let seenStatusKeys = new Set<string>();
 const completedRunIds = new Set<string>();
@@ -684,7 +685,7 @@ async function handleUserMessage(
   if (!tabularStore) {
     tabularStore = new TabularStore(`rover-${trajectoryId}`);
   }
-  const ctx = createAgentContext(config, bridgeRpc, tabularStore);
+  const ctx = createAgentContext({ ...config, signal: activeAbortController?.signal }, bridgeRpc, tabularStore);
   const currentRunId = activeRun?.runId;
   ctx.isCancelled = () => cancelledRunId === currentRunId;
   // Only pass user/client-declared tools. Planner built-ins come from backend.
@@ -835,6 +836,7 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
   const resume = !!meta?.resume;
   lastStatusKey = '';
   seenStatusKeys = new Set<string>();
+  activeAbortController = new AbortController();
   activeRun = { runId, text, startedAt: Date.now(), resume };
   (self as any).postMessage({ type: 'run_started', runId, text, resume });
   postStateSnapshot();
@@ -843,9 +845,14 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
     const route = await handleUserMessage(text, { resume });
     (self as any).postMessage({ type: 'run_completed', runId, ok: true, route });
   } catch (error: any) {
-    (self as any).postMessage({ type: 'run_completed', runId, ok: false, error: error?.message || String(error) });
-    throw error;
+    if (error?.name === 'AbortError') {
+      (self as any).postMessage({ type: 'run_completed', runId, ok: false, error: 'Run cancelled' });
+    } else {
+      (self as any).postMessage({ type: 'run_completed', runId, ok: false, error: error?.message || String(error) });
+      throw error;
+    }
   } finally {
+    activeAbortController = null;
     activeRun = null;
     completedRunIds.add(runId);
     if (completedRunIds.size > 50) {
@@ -931,6 +938,7 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
     if (data.type === 'cancel_run') {
       if (typeof data.runId === 'string' && data.runId) {
         cancelledRunId = data.runId;
+        activeAbortController?.abort();
       }
       return;
     }

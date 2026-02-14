@@ -1165,6 +1165,23 @@ function maybeAutoResumePendingRun(): void {
   const pending = runtimeState.pendingRun;
   if (!pending.autoResume) return;
 
+  // sessionStorage flag distinguishes refresh (flag exists) from fresh tab (flag absent)
+  const siteId = currentConfig?.siteId || '';
+  const isRefresh = !!sessionStorage.getItem(`rover:tab-alive:${siteId}`);
+  if (!isRefresh) {
+    // New tab (not a refresh) — check if any other tabs are alive
+    const tabs = sessionCoordinator?.listTabs() || [];
+    const otherAlive = tabs.some(t =>
+      t.runtimeId !== runtimeId && t.updatedAt > Date.now() - 2 * 2000,
+    );
+    if (!otherAlive && runtimeState?.pendingRun) {
+      // All tabs were closed — don't auto-resume stale task
+      setPendingRun(undefined);
+      setUiStatus('Previous task expired.');
+      return;
+    }
+  }
+
   const ageMs = Date.now() - pending.startedAt;
   if (ageMs > MAX_AUTO_RESUME_AGE_MS) {
     setPendingRun(undefined);
@@ -1810,6 +1827,7 @@ function handleWorkerMessage(msg: any): void {
       }),
     );
     sessionCoordinator?.setActiveRun({ runId: msg.runId, text: String(msg.text || '') });
+    ui?.setRunning(true);
     const startEventId = `run:${String(msg.runId || '')}:start`;
     if (!runtimeState?.timeline.some(event => event.id === startEventId)) {
       appendTimelineEvent({
@@ -1826,6 +1844,7 @@ function handleWorkerMessage(msg: any): void {
   if (msg.type === 'run_completed') {
     lastStatusSignature = '';
     autoResumeAttempted = false;
+    ui?.setRunning(false);
     if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
     if (runtimeState?.pendingRun?.id === msg.runId) {
       setPendingRun(undefined);
@@ -1954,50 +1973,52 @@ function createRuntime(cfg: RoverInit): void {
       const tabId = params?.tabId;
       const localTabId = sessionCoordinator?.getLocalLogicalTabId();
 
-      // Local tab or no tabId specified
+      // Local tab, no tabId, or no coordinator → direct local bridge
       if (!tabId || tabId === localTabId || !sessionCoordinator) {
         return bridge!.getPageData(params);
       }
 
-      // Remote tab: find target runtimeId
+      // Check if target tab belongs to this runtime
       const tabs = sessionCoordinator.listTabs();
       const targetTab = tabs.find(t => t.logicalTabId === tabId);
-      if (!targetTab) {
+      if (!targetTab || targetTab.runtimeId === runtimeId) {
         return bridge!.getPageData(params);
       }
-      if (!targetTab.runtimeId) {
-        return { url: targetTab.url, title: targetTab.title, fallback: true };
-      }
-      if (!sessionCoordinator.isTabAlive(tabId)) {
-        return { url: targetTab.url, title: targetTab.title, fallback: true, stale: true };
+
+      // Only attempt cross-tab RPC if target tab is alive and has a different runtime
+      if (!targetTab.runtimeId || !sessionCoordinator.isTabAlive(tabId)) {
+        return bridge!.getPageData(params);
       }
 
       try {
         return await sessionCoordinator.sendCrossTabRpc(targetTab.runtimeId, 'getPageData', params, 15000);
       } catch {
-        return { url: targetTab.url, title: targetTab.title, fallback: true, error: 'rpc_failed' };
+        // Cross-tab RPC failed → fall back to local bridge
+        return bridge!.getPageData(params);
       }
     },
     executeTool: async (params: any) => {
       const activeTabId = sessionCoordinator?.getActiveLogicalTabId();
       const localTabId = sessionCoordinator?.getLocalLogicalTabId();
 
-      // Local tab or no coordinator
       if (!activeTabId || activeTabId === localTabId || !sessionCoordinator) {
         return bridge!.executeTool(params.call, params.payload);
       }
 
-      // Remote tab: find target runtimeId
       const tabs = sessionCoordinator.listTabs();
       const targetTab = tabs.find(t => t.logicalTabId === activeTabId);
-      if (!targetTab?.runtimeId) {
+      if (!targetTab?.runtimeId || targetTab.runtimeId === runtimeId) {
+        return bridge!.executeTool(params.call, params.payload);
+      }
+
+      if (!sessionCoordinator.isTabAlive(activeTabId)) {
         return bridge!.executeTool(params.call, params.payload);
       }
 
       try {
         return await sessionCoordinator.sendCrossTabRpc(targetTab.runtimeId, 'executeTool', params, 20000);
-      } catch (err: any) {
-        return { success: false, error: err?.message || 'Cross-tab tool execution failed', allowFallback: true };
+      } catch {
+        return bridge!.executeTool(params.call, params.payload);
       }
     },
     executeClientTool: (params: any) => bridge!.executeClientTool(params.name, params.args),
@@ -2053,6 +2074,16 @@ function createRuntime(cfg: RoverInit): void {
           detail: 'This tab is now the active Rover controller.',
           status: 'info',
         });
+      }
+    },
+    onCancelRun: () => {
+      if (runtimeState?.pendingRun) {
+        worker?.postMessage({ type: 'cancel_run', runId: runtimeState.pendingRun.id });
+        sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
+        sessionCoordinator?.setActiveRun(undefined);
+        setPendingRun(undefined);
+        setUiStatus('Task cancelled.');
+        appendUiMessage('system', 'Task cancelled.', true);
       }
     },
     onNewTask: () => {
@@ -2224,6 +2255,9 @@ export function boot(cfg: RoverInit): RoverInstance {
   runtimeState.taskEpoch = Math.max(1, Number(runtimeState.taskEpoch) || 1);
   currentMode = runtimeState.executionMode;
   persistRuntimeState();
+
+  // Mark this tab as alive — sessionStorage survives refresh but is cleared on tab close
+  try { sessionStorage.setItem(`rover:tab-alive:${cfg.siteId}`, '1'); } catch { /* ignore */ }
 
   workerReady = false;
   autoResumeAttempted = false;
@@ -2403,7 +2437,9 @@ export function newTask(options?: { reason?: string; clearUi?: boolean }): void 
   const taskEpoch = Math.max(1, Number(runtimeState.taskEpoch) || 1) + 1;
   const nextTask = createDefaultTaskState(reason);
 
+  // Cancel any running task in the worker
   if (runtimeState.pendingRun) {
+    worker?.postMessage({ type: 'cancel_run', runId: runtimeState.pendingRun.id });
     sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
   }
 
