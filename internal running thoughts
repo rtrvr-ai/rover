@@ -1,0 +1,530 @@
+rover - scorll on other tab so actions atre we cntaining t tabs we id user can duplcaite or go to same site in other tabs or window
+implement tools saying not suported in rover
+
+user can provide config on sound on or off default too
+
+add readme for rover sdk so npm picks it up - https://docs.npmjs.com/about-package-readme-files
+
+with configuration and stuff you done on website all best practice of using the script what various config options available and usage and desc of them 
+
+any cors issues shitelisting they need to do esp if they csp and such?
+
+also how to get api key from rover.rtrvr.ai/workspace
+
+improve rover workspace descripotionve explain may eb trigger rover walking them through steps scrolling to that specific element and highlisghting whats what that would be cool esp voice here.
+
+
+
+I want you to fully revamp the ui of rover the styles colors arent coherent and not modern i made you design rover webpage rtrvr.ai/rover , refer to rover page and its components and styles in rtrvr-cloud-website . and match the same coolness award wining beaufilly design that makes people wanna spend more time with cuteness of rover beautiful design of it. no looking back. design as if you are presenting for awards to win the category of futuristic AI services as we are the world's first SOTA embedded web agent. every single shape corner expanding controls all should be clean modern amazing. and right now the top controls are of diff colors and overlap with the rover name male them uniform and also reserach and determine if showing all is good like that or behind a 3 dots or even something else or hybrid and then also make sure the overlay if dots or so has higher z-index than rover and make sure for every new msg scrolls to the latest one. Understand digest the current state of rover and rover page on cloud-website and reserach more on chat bots their UX and people expectations and outcompete all and build amazing UX refactor plan and then we will implement it end to end without any miss
+
+
+
+not scrolling down automatically with more messages I see option to scroll down too much meta info skip all run stated analyze route selected  just place 1 user doesnt have to know complexity heuristic, then agent thpught is key and tools and eventually the output. which is retained.
+
+now I want you to show all of agent output without a miss no string cap needed just that show in preview X chars then let users click 3 dots or some better UX to see it fully. and for thoughts and tool calls same but cna show less chars in preview but should let users click on 3 dots for full . 
+
+also add one more option on top riht inside 3 dots somewhere better visible without taking too much space mute button so agent wont make any sound and by default its muted rover is mp4 too the mascot so and suers can click on it to enable sound and in future this can be for voice ai inside rover
+
+
+can rover being in the main website interact with cross origin iframe embedded inside the website ? in extension rtrvr-relay by injecting in main world and realm safe rtrvr can take actions isnide those iframes those iframes get Id-ed too with a11y traversal. is it the same with rover ? did we bring in all the changes minus chrome apis for a11y tree construction page data generation and action taking? 
+
+If any is missed make sure everything is transported well and adapted to rover being embedded chat agent inside user's website. how can it take actions inside corss origin iframes, check we arent blocking or failing same origin either. if we missing something brainstorm on the most effective way to tackle these implement these end to end
+
+
+if things are opened in new tab like clickling on links resulted in opening new tab if wesite has target new set in that case we need to track all tab ids opened by the same visitor and look at rtrvr-relay extension integrated with rtrvr-cloud-backend. if tool is planner we can pass taborder and all tabs accessibility trees webpagemap . if tab resulted in opening new tab its made focus computed tree and stuff and agent will always  should access to tabids see how act works very well in rtrvr-relay and see if any is missing in rover in handling this. so state should be managed pretty well. Also, make sure every single system tool supported in rtrvr relay is supported here in rover, unless something is impossible for an embeddebale web agnt and only possible for chrome apis. right now lot of gaps not transported. rtrvr to rrtrvr-relay main world content-runtime actions and that folder since embeddebale web agnet is like running in main world with sophistciated perms
+
+make sure state visitor id are managed and tabids across sessions in a window or diff or incognito etc everything. for a given visitor id if a workflow is in progress let is fnish before letting user create new task but they can be observer in any chrome tab with the website ongoing progress
+
+add one more option in three dots or even somewhere more accessible nd visible to be able to mute rover and default app config they mute or explictly enable because rover is mp4. and also add cancel task option so user can cancel and it should cancel the task udpate any relevant storage browser or firebase an dmake it clean for next to be possible
+
+implement cancel task
+
+add piricing ubscript before getting api keys
+
+expose mute option in config default mute is set true
+
+//Latest
+show details whats the purpose? of no use prob users should see their prev inetractions
+
+ ---
+       SUMMARY TABLE
+
+       ┌─────┬───────────────────┬───────────────────────────────────────┬──────────┬─────────────────────────────┬─────────────────────────────┐
+       │  #  │     Component     │                 Issue                 │ Severity │          Scenario           │           Impact            │
+       ├─────┼───────────────────┼───────────────────────────────────────┼──────────┼─────────────────────────────┼─────────────────────────────┤
+       │ 1   │ Lease Acquisition │ Non-atomic read-modify-write          │ CRITICAL │ Dual tab controller mode    │ Concurrent actions executed │
+       ├─────┼───────────────────┼───────────────────────────────────────┼──────────┼─────────────────────────────┼─────────────────────────────┤
+       │ 2   │ LogicalTabId      │ Race during simultaneous registration │ HIGH     │ Multiple popups/bfcache     │ Wrong tab targeting         │
+       ├─────┼───────────────────┼───────────────────────────────────────┼──────────┼─────────────────────────────┼─────────────────────────────┤
+       │ 3   │ Visitor ID        │ Storage fallback ambiguity            │ HIGH     │ Incognito/blocked storage   │ Analytics fragmentation     │
+       ├─────┼───────────────────┼───────────────────────────────────────┼──────────┼─────────────────────────────┼─────────────────────────────┤
+       │ 4   │ Persistence       │ localStorage setItem not atomic       │ MEDIUM   │ Rapid mutations             │ State divergence            │
+       ├─────┼───────────────────┼───────────────────────────────────────┼──────────┼─────────────────────────────┼─────────────────────────────┤
+       │ 5   │ Heartbeat         │ Race with tab closing                 │ HIGH     │ pagehide + timer            │ Stale tab entries           │
+       ├─────┼───────────────────┼───────────────────────────────────────┼──────────┼─────────────────────────────┼─────────────────────────────┤
+       │ 6   │ BroadcastChannel  │ Message loss on bfcache               │ HIGH     │ Tab in frozen state         │ Stale UI state              │
+       ├─────┼───────────────────┼───────────────────────────────────────┼──────────┼─────────────────────────────┼─────────────────────────────┤
+       │ 7   │ WorkflowLock      │ No holder validation                  │ HIGH     │ Crashed tab holding lock    │ Deadlock for 20-60s         │
+       ├─────┼───────────────────┼───────────────────────────────────────┼──────────┼─────────────────────────────┼─────────────────────────────┤
+       │ 8   │ Lease             │ Rapid transitions under load          │ MEDIUM   │ High-frequency updates      │ Lease flapping              │
+       ├─────┼───────────────────┼───────────────────────────────────────┼──────────┼─────────────────────────────┼─────────────────────────────┤
+       │ 9   │ Visitor ID        │ Random in generation                  │ MEDIUM   │ Storage persistence fails   │ New ID per reload           │
+       ├─────┼───────────────────┼───────────────────────────────────────┼──────────┼─────────────────────────────┼─────────────────────────────┤
+       │ 10  │ Session ID        │ Cross-tab derivation                  │ MEDIUM   │ Simultaneous different VIDs │ Session fragmentation       │
+       ├─────┼───────────────────┼───────────────────────────────────────┼──────────┼─────────────────────────────┼─────────────────────────────┤
+       │ 11  │ Mutations         │ Concurrent paths                      │ MEDIUM   │ Storage event + direct call │ Lost remote updates         │
+       ├─────┼───────────────────┼───────────────────────────────────────┼──────────┼─────────────────────────────┼─────────────────────────────┤
+       │ 12  │ localLogicalTabId │ Desynchronization                     │ MEDIUM   │ Rapid remote updates        │ Stale tab ID in UI          │
+       ├─────┼───────────────────┼───────────────────────────────────────┼──────────┼─────────────────────────────┼─────────────────────────────┤
+       │ 13  │ Cookie Domain     │ Subdomain fragmentation               │ LOW      │ Cross-subdomain access      │ ID fragmentation            │
+       ├─────┼───────────────────┼───────────────────────────────────────┼──────────┼─────────────────────────────┼─────────────────────────────┤
+       │ 14  │ Deserialization   │ Silent tab data loss                  │ LOW      │ Corrupted localStorage      │ Lost history                │
+       ├─────┼───────────────────┼───────────────────────────────────────┼──────────┼─────────────────────────────┼─────────────────────────────┤
+       │ 15  │ RPC               │ No fallback timeout                   │ LOW      │ Slow RPC handler            │ Silent failures             │
+       └─────┴───────────────────┴───────────────────────────────────────┴──────────┴─────────────────────────────┴─────────────────────────────┘
+       ---
+
+ Session Coordination Robustness Hardening                                                                                                                                        
+                                                                                                                                                                                
+ Context
+
+ The previous implementation round (Fixes A-K) addressed 11 agent loop / worker / tool execution issues. This plan addresses the separate set of 15 session coordination issues
+ from the audit table. After verifying each against the current code:
+
+ - 1 of 15 already fixed: #15 (RPC timeout) — by Fix A (30s timeout in createRpcClient)
+ - 14 remaining — all in sessionCoordinator.ts, index.ts, and runtimeStorage.ts
+
+ Many share root causes, so fixes are grouped.
+
+ ---
+ Issue → Fix Status Matrix
+ ┌─────┬─────────────────────────────────────────────────┬──────────┬────────┬───────────┐
+ │  #  │                      Issue                      │ Severity │ Fixed? │ Fix Group │
+ ├─────┼─────────────────────────────────────────────────┼──────────┼────────┼───────────┤
+ │ 1   │ Lease: non-atomic read-modify-write             │ CRITICAL │ NO     │ Group 1   │
+ ├─────┼─────────────────────────────────────────────────┼──────────┼────────┼───────────┤
+ │ 2   │ LogicalTabId: race on simultaneous registration │ HIGH     │ NO     │ Group 1   │
+ ├─────┼─────────────────────────────────────────────────┼──────────┼────────┼───────────┤
+ │ 3   │ Visitor ID: storage fallback ambiguity          │ HIGH     │ NO     │ Group 4   │
+ ├─────┼─────────────────────────────────────────────────┼──────────┼────────┼───────────┤
+ │ 4   │ Persistence: localStorage not atomic            │ MEDIUM   │ NO     │ Group 1   │
+ ├─────┼─────────────────────────────────────────────────┼──────────┼────────┼───────────┤
+ │ 5   │ Heartbeat: race with tab closing                │ HIGH     │ NO     │ Group 2   │
+ ├─────┼─────────────────────────────────────────────────┼──────────┼────────┼───────────┤
+ │ 6   │ BroadcastChannel: message loss on bfcache       │ HIGH     │ NO     │ Group 3   │
+ ├─────┼─────────────────────────────────────────────────┼──────────┼────────┼───────────┤
+ │ 7   │ WorkflowLock: no holder validation              │ HIGH     │ NO     │ Group 2   │
+ ├─────┼─────────────────────────────────────────────────┼──────────┼────────┼───────────┤
+ │ 8   │ Lease: rapid transitions under load             │ MEDIUM   │ NO     │ Group 5   │
+ ├─────┼─────────────────────────────────────────────────┼──────────┼────────┼───────────┤
+ │ 9   │ Visitor ID: random on generation                │ MEDIUM   │ NO     │ Group 4   │
+ ├─────┼─────────────────────────────────────────────────┼──────────┼────────┼───────────┤
+ │ 10  │ Session ID: cross-tab derivation                │ MEDIUM   │ NO     │ Group 4   │
+ ├─────┼─────────────────────────────────────────────────┼──────────┼────────┼───────────┤
+ │ 11  │ Mutations: concurrent paths                     │ MEDIUM   │ NO     │ Group 1   │
+ ├─────┼─────────────────────────────────────────────────┼──────────┼────────┼───────────┤
+ │ 12  │ localLogicalTabId: desynchronization            │ MEDIUM   │ NO     │ Group 2   │
+ ├─────┼─────────────────────────────────────────────────┼──────────┼────────┼───────────┤
+ │ 13  │ Cookie domain: subdomain fragmentation          │ LOW      │ NO     │ Group 4   │
+ ├─────┼─────────────────────────────────────────────────┼──────────┼────────┼───────────┤
+ │ 14  │ Deserialization: silent tab data loss           │ LOW      │ NO     │ Group 6   │
+ ├─────┼─────────────────────────────────────────────────┼──────────┼────────┼───────────┤
+ │ 15  │ RPC: no fallback timeout                        │ LOW      │ YES    │ (Fix A)   │
+ └─────┴─────────────────────────────────────────────────┴──────────┴────────┴───────────┘
+ ---
+ Group 1: Optimistic Locking in mutate() — Fixes #1, #2, #4, #11
+
+ Root cause: mutate('local', updater) clones in-memory this.state, applies the updater, writes to localStorage + broadcasts. If two tabs read the same state simultaneously, both
+  produce seq: N+1 and overwrite each other.
+
+ File: packages/sdk/src/sessionCoordinator.ts — mutate() (lines 1108-1124)
+
+ Change: Re-read localStorage at the start of every local mutation. If the persisted state has a higher seq, merge it before applying the updater:
+
+ private mutate(source: 'local' | 'remote', updater: (draft: SharedSessionState) => void): void {
+   // NEW: Re-read from localStorage before local mutations (optimistic locking)
+   if (source === 'local') {
+     try {
+       const raw = window.localStorage.getItem(this.key);
+       if (raw) {
+         const persisted = sanitizeSharedState(JSON.parse(raw), this.siteId, this.sessionId);
+         if (persisted.seq > this.state.seq ||
+             (persisted.seq === this.state.seq && persisted.updatedAt > this.state.updatedAt)) {
+           this.state = persisted;
+         }
+       }
+     } catch { /* ignore */ }
+   }
+
+   const draft = sanitizeSharedState(this.state, this.siteId, this.sessionId);
+   updater(draft);
+   draft.seq = Math.max(1, Number(draft.seq) || 1) + (source === 'local' ? 1 : 0);
+   draft.updatedAt = now();
+   this.state = draft;
+   // ... rest unchanged
+ }
+
+ This also fixes #2 (LogicalTabId race): two tabs reading the same nextLogicalTabId is prevented because the second tab will re-read and see the first tab's increment.
+
+ Additionally, add duplicate logicalTabId detection in sanitizeSharedState() (line 309-311):
+
+ // After existing nextLogicalTabId recalc, add dedup:
+ const seenTabIds = new Set<number>();
+ state.tabs = state.tabs.filter(tab => {
+   if (seenTabIds.has(tab.logicalTabId)) return false;
+   seenTabIds.add(tab.logicalTabId);
+   return true;
+ });
+ if (state.nextLogicalTabId <= (state.tabs.at(-1)?.logicalTabId ?? 0)) {
+   state.nextLogicalTabId = state.tabs.reduce((max, tab) => Math.max(max, tab.logicalTabId), 0) + 1;
+ }
+
+ ---
+ Group 2: Heartbeat & Lifecycle Fixes — Fixes #5, #7, #12
+
+ File: packages/sdk/src/sessionCoordinator.ts
+
+ Fix #5: Heartbeat race with tab closing
+
+ Problem: broadcastClosing() removes tab entry but doesn't stop heartbeat. The next heartbeat tick can re-create the entry.
+
+ Change: Add a closing flag that heartbeat checks:
+
+ private closing = false;  // new field
+
+ broadcastClosing(): void {
+   this.closing = true;  // ADD THIS
+   // ... existing code
+ }
+
+ private heartbeat(): void {
+   if (this.closing) return;  // ADD THIS at top
+   // ... existing code
+ }
+
+ Fix #7: WorkflowLock holder validation
+
+ Problem: Lock expires after leaseMs * 5 (60s) with no refresh. Dead tabs hold the lock until expiration.
+
+ Changes:
+ 1. In heartbeat(), refresh the workflow lock expiration if this runtime holds it:
+
+ // Inside the heartbeat mutate callback, after lease refresh:
+ if (draft.workflowLock?.runtimeId === this.runtimeId) {
+   draft.workflowLock.expiresAt = now() + this.leaseMs * 5;
+ }
+
+ 2. In acquireWorkflowLock(), add liveness check for the holder:
+
+ acquireWorkflowLock(runId: string): boolean {
+   let acquired = false;
+   this.mutate('local', draft => {
+     const existing = draft.workflowLock;
+     if (existing && existing.runtimeId !== this.runtimeId && existing.expiresAt > now()) {
+       // NEW: Check if holder tab is still alive
+       const holderTab = draft.tabs.find(t => t.runtimeId === existing.runtimeId);
+       const holderAlive = holderTab && holderTab.updatedAt > now() - 2 * this.heartbeatMs;
+       if (holderAlive) {
+         acquired = false;
+         return;
+       }
+       // Holder is dead — steal the lock
+     }
+     draft.workflowLock = {
+       runtimeId: this.runtimeId,
+       runId,
+       lockedAt: now(),
+       expiresAt: now() + this.leaseMs * 5,
+     };
+     acquired = true;
+   });
+   return acquired;
+ }
+
+ Fix #12: localLogicalTabId desynchronization
+
+ Problem: Updated in 3 places independently — can drift from this.state.tabs.
+
+ Change: Add a private helper that always derives from state, and call it after every state change:
+
+ private syncLocalLogicalTabId(): void {
+   const tab = this.state.tabs.find(t => t.runtimeId === this.runtimeId);
+   this.localLogicalTabId = tab?.logicalTabId;
+ }
+
+ Call syncLocalLogicalTabId():
+ - At the end of mutate() (after this.state = draft)
+ - At the end of applyIncomingState() (replacing the inline lookup at line 1132-1133)
+ - Remove the direct this.localLogicalTabId = ... assignments in registerCurrentTab() (line 745), heartbeat() (lines 1044, 1056)
+
+ ---
+ Group 3: BFCache Handling — Fix #6
+
+ File: packages/sdk/src/index.ts (around the pagehide handler, line ~752)
+
+ Problem: When a tab enters bfcache (pagehide without unload), BroadcastChannel messages are lost. When the tab returns (pageshow), it has stale state.
+
+ Change: Add a pageshow listener alongside the existing pagehide one:
+
+ const onPageShow = (event: PageTransitionEvent) => {
+   if (!event.persisted) return;  // Only handle bfcache restores
+   // Re-read shared state from localStorage
+   if (sessionCoordinator) {
+     const freshState = sessionCoordinator.reloadFromStorage();
+     // Re-register current tab (may have been removed by broadcastClosing)
+     sessionCoordinator.registerCurrentTab(window.location.href, document.title || undefined);
+     sessionCoordinator.claimLease(false);
+   }
+   autoResumeAttempted = false;  // Allow auto-resume after bfcache restore
+ };
+ window.addEventListener('pageshow', onPageShow);
+
+ In sessionCoordinator.ts, add a public reloadFromStorage() method:
+
+ reloadFromStorage(): SharedSessionState {
+   const fresh = this.loadState();
+   if (fresh.seq > this.state.seq ||
+       (fresh.seq === this.state.seq && fresh.updatedAt > this.state.updatedAt)) {
+     this.state = fresh;
+     this.syncLocalLogicalTabId();
+     this.onStateChange?.(this.state, 'remote');
+   }
+   this.closing = false;  // Reset closing flag on bfcache restore
+   return this.state;
+ }
+
+ Also make claimLease public (currently private) so index.ts can call it on restore.
+
+ ---
+ Group 4: Visitor ID Resilience — Fixes #3, #9, #10, #13
+
+ File: packages/sdk/src/index.ts — resolveVisitorId() (lines 307-355)
+
+ Fix #3 & #9: Sync visitor ID to ALL available stores
+
+ Problem: When ID is loaded from one store (e.g., cookie), it's only synced to localStorage. Not synced to sessionStorage. When loaded from localStorage, not synced to
+ sessionStorage.
+
+ Change: After resolving the visitor ID from any source, persist to all three stores:
+
+ function resolveVisitorId(cfg: RoverInit): string | undefined {
+   // ... existing resolution logic (cookie → localStorage → sessionStorage → generate) ...
+
+   // NEW: After resolving `result`, ensure it's in all available stores
+   if (result) {
+     syncVisitorIdToAllStores(cfg.siteId, result);
+   }
+   return result;
+ }
+
+ function syncVisitorIdToAllStores(siteId: string, visitorId: string): void {
+   const key = `${VISITOR_ID_PREFIX}${siteId}`;
+   try { window.localStorage.setItem(key, visitorId); } catch { /* ignore */ }
+   try { window.sessionStorage.setItem(key, visitorId); } catch { /* ignore */ }
+   persistVisitorIdCookie(siteId, visitorId);
+ }
+
+ This ensures that once resolved, the ID is available from all fallback paths. Addresses #10 (session ID derivation) transitively since session ID = hash(siteId:visitorId).
+
+ Fix #13: Cookie domain fragmentation
+
+ The current code already tries broadest domain first (candidateCookieDomains returns .example.com before .sub.example.com). The only gap is documentation. No code change needed
+  — this is a browser cookie policy limitation. Add a code comment noting the behavior.
+
+ ---
+ Group 5: Lease Stability — Fix #8
+
+ File: packages/sdk/src/sessionCoordinator.ts
+
+ Problem: notifyRoleChange() fires on every heartbeat and every mutation. Rapid lease transitions cause excessive UI re-renders.
+
+ Change: Debounce role change notifications with a short minimum hold time:
+
+ private lastNotifiedRole: SharedRole | undefined;
+ private roleChangeTimer: number | null = null;
+ private static readonly ROLE_CHANGE_DEBOUNCE_MS = 200;
+
+ private notifyRoleChange(): void {
+   const currentRole = this.getRole();
+   // Immediate notification only if role actually changed
+   if (currentRole === this.lastNotifiedRole) return;
+
+   if (this.roleChangeTimer != null) {
+     window.clearTimeout(this.roleChangeTimer);
+   }
+
+   this.roleChangeTimer = window.setTimeout(() => {
+     this.roleChangeTimer = null;
+     const role = this.getRole();
+     if (role === this.lastNotifiedRole) return;
+     this.lastNotifiedRole = role;
+     this.onRoleChange?.(role, {
+       localLogicalTabId: this.localLogicalTabId,
+       activeLogicalTabId: this.state.activeLogicalTabId,
+       holderRuntimeId: this.state.lease?.holderRuntimeId,
+     });
+   }, SessionCoordinator.ROLE_CHANGE_DEBOUNCE_MS);
+ }
+
+ Also clean up the timer in stop().
+
+ ---
+ Group 6: Deserialization Observability — Fix #14
+
+ File: packages/sdk/src/sessionCoordinator.ts — sanitizeSharedState() and loadState()
+
+ Problem: When data is corrupted or tabs are silently dropped during sanitization, there's no indication.
+
+ Change: Add optional warning tracking to sanitizeSharedState:
+
+ function sanitizeSharedState(raw: any, siteId: string, sessionId: string): SharedSessionState {
+   const fallback = createDefaultSharedState(siteId, sessionId);
+   if (!raw || typeof raw !== 'object') return fallback;
+
+   const inputTabCount = Array.isArray(raw.tabs) ? raw.tabs.length : 0;
+   // ... existing sanitization ...
+   const outputTabCount = state.tabs.length;
+   if (inputTabCount > 0 && outputTabCount < inputTabCount) {
+     console.warn(`[rover] sanitizeSharedState: dropped ${inputTabCount - outputTabCount} invalid tab entries`);
+   }
+   // ... rest unchanged
+ }
+
+ And in loadState():
+
+ private loadState(): SharedSessionState {
+   try {
+     const raw = window.localStorage.getItem(this.key);
+     if (!raw) return createDefaultSharedState(this.siteId, this.sessionId);
+     const parsed = JSON.parse(raw);
+     return sanitizeSharedState(parsed, this.siteId, this.sessionId);
+   } catch (err) {
+     console.warn('[rover] Failed to load shared state from localStorage:', err);
+     return createDefaultSharedState(this.siteId, this.sessionId);
+   }
+ }
+
+ ---
+ Files Modified
+ ┌────────────────────────────────────────┬───────────────────────────────────────────────────────────┬────────────┐
+ │                  File                  │                           Fixes                           │ Est. Lines │
+ ├────────────────────────────────────────┼───────────────────────────────────────────────────────────┼────────────┤
+ │ packages/sdk/src/sessionCoordinator.ts │ #1, #2, #4, #5, #7, #8, #11, #12, #14 (Groups 1, 2, 5, 6) │ ~80        │
+ ├────────────────────────────────────────┼───────────────────────────────────────────────────────────┼────────────┤
+ │ packages/sdk/src/index.ts              │ #3, #6, #9, #10 (Groups 3, 4)                             │ ~25        │
+ └────────────────────────────────────────┴───────────────────────────────────────────────────────────┴────────────┘
+ Total: ~105 lines across 2 files
+
+ No changes to runtimeStorage.ts — its dual-write (sync sessionStorage + async IndexedDB) is acceptable for runtime state since it's per-tab and not shared cross-tab. The
+ critical shared state (sessionCoordinator) is what needs the optimistic locking fix.
+
+ ---
+ Implementation Order
+
+ 1. Group 1 — Optimistic locking in mutate() + tab dedup — fixes the most issues (#1, #2, #4, #11)
+ 2. Group 2 — Heartbeat/lifecycle fixes (#5, #7, #12) — depends on Group 1 for correctness
+ 3. Group 3 — BFCache pageshow handler (#6)
+ 4. Group 4 — Visitor ID sync-to-all-stores (#3, #9, #10, #13)
+ 5. Group 5 — Role change debounce (#8)
+ 6. Group 6 — Deserialization warnings (#14)
+
+ ---
+ Verification
+
+ 1. pnpm build — zero errors
+ 2. Lease race test: Open 2 tabs simultaneously → only one should be controller (not both)
+ 3. Tab ID uniqueness test: Open 3+ tabs rapidly → all logicalTabIds should be unique
+ 4. BFCache test: Navigate away, press Back → tab should resync and resume correctly
+ 5. Dead tab lock test: Tab A acquires lock → kill Tab A → Tab B should steal lock within 2 heartbeats (~4s), not wait 60s
+ 6. Visitor ID test: In incognito, reload → visitor ID should persist within same tab session
+ 7. Rapid role change test: Rapid requestControl() calls → only 1 role change notification per 200ms debounce
+
+ Design a detailed implementation plan for the Rover UI widget overhaul. You have access to the current context of the conversation.
+
+       Background
+
+       The Rover UI widget is in packages/ui/src/mount.ts (1674 lines, single monolithic file). The SDK is in packages/sdk/src/index.ts. Both are in a monorepo at
+       /Users/bhavanikalisetty/work/act_2/rover.
+
+       Current Architecture
+
+       - Shadow DOM widget with: launcher button, panel (header, feed, composer)
+       - Feed shows: user messages (chat bubbles), timeline events (trace cards), typing indicator
+       - Timeline events currently show ALL stages: run started, analyze, route, tool_start, tool_result, complete
+       - Auto-scroll: isNearBottom() checks if within 60px of bottom, shows scroll-to-bottom button if not
+       - Messages have no character cap but trace titles truncate with ellipsis
+       - Mascot is mp4/webm video, plays muted and looped
+       - Header has: avatar, title, status, mode badge, overflow menu (⋯), close button
+
+       Current Message Flow (SDK → UI)
+
+       When a worker processes a task, the SDK emits these to the UI:
+       1. run_started → timeline event "Run started" (kind: plan)
+       2. status → timeline events like "Analyze: ...", "Route: ...", "Complete: ..." (kind: status)
+       3. tool_start → BOTH a system message "Running tool_name..." AND timeline event (kind: tool_start)
+       4. tool_result → BOTH a system message "tool_name done" AND timeline event (kind: tool_result)
+       5. assistant → assistant message bubble AND timeline event "Assistant update" (filtered in UI)
+       6. run_completed → timeline event + status text
+
+       User Requirements
+
+       R1: Simplify Feed - Remove Noise
+
+       User says: "skip all run started, analyze route selected, just place 1 — user doesn't have to know complexity heuristic, then agent thought is key and tools and eventually
+       the output"
+
+       The feed should show a clean hierarchy:
+       1. User message (what was asked)
+       2. Agent thought (key insight — featured prominently)
+       3. Tool calls (compact, expandable)
+       4. Output/assistant response (always retained, full display)
+
+       Everything else (run started, analyze, route selected, complete) should be hidden by default. The existing "Show details" toggle can reveal them.
+
+       R2: Expandable Content UX
+
+       User says: "show all agent output without a miss, no string cap needed. Just show in preview X chars then let users click 3 dots or some better UX to see it fully. For
+       thoughts and tool calls same but can show less chars in preview."
+
+       - Agent output (assistant messages): Full content. If very long (>500 chars), show preview + expand
+       - Agent thoughts: Show ~150 char preview + expand
+       - Tool call details: Show ~100 char preview + expand
+       - UX: "..." or "Show more" link, not a separate button
+
+       R3: Auto-scroll Fix
+
+       User says: "not scrolling down automatically with more messages"
+
+       Current issue: smartScrollToBottom() only scrolls if within 60px of bottom. During rapid message addition, the check can fail because content is added faster than scroll
+       position updates.
+
+       R4: Mute/Unmute Button
+
+       User says: "add one more option on top right inside 3 dots somewhere, better visible without taking too much space, mute button so agent won't make any sound. By default
+       muted. Rover is mp4 too the mascot so users can click to enable sound. In future this can be for voice AI."
+
+       - Small speaker icon button in header area (visible, not hidden in overflow menu)
+       - Default: muted (speaker-off icon)
+       - Click: toggle to unmuted (speaker-on icon), unmutes mascot video
+       - Store preference in localStorage
+       - Prepare for future voice/audio
+
+       Design Constraints
+
+       - All CSS is inline in the same mount.ts file (Shadow DOM style element)
+       - No external dependencies — pure vanilla JS/CSS
+       - Must work in Shadow DOM (closed mode)
+       - Spring animation easing throughout
+       - Orange (#FF4C00) accent color system
+       - 460x680px default panel size
+
+       Please Design
+
+       1. Feed hierarchy redesign — How to categorize events into visible vs hidden, and the rendering approach for each category
+       2. Expandable content system — CSS + JS approach for preview/expand, with different thresholds per content type
+       3. Auto-scroll fix — Better tracking of user intent (scrolled up intentionally vs just not at bottom)
+       4. Mute button — Placement, icon, localStorage key, video element integration
+       5. SDK changes — What to stop emitting vs what to change in index.ts
+       6. Implementation order — What depends on what
+
+       Be very specific about DOM structure, CSS classes, and function signatures. Reference exact line numbers in mount.ts where changes go.

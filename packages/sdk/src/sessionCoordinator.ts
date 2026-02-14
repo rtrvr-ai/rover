@@ -61,6 +61,13 @@ export type SharedWorkerContext = {
   updatedAt: number;
 };
 
+export type SharedWorkflowLock = {
+  runtimeId: string;
+  runId: string;
+  lockedAt: number;
+  expiresAt: number;
+};
+
 export type SharedSessionState = {
   version: number;
   siteId: string;
@@ -78,6 +85,7 @@ export type SharedSessionState = {
   taskEpoch: number;
   task?: SharedTaskState;
   workerContext?: SharedWorkerContext;
+  workflowLock?: SharedWorkflowLock;
 };
 
 export type SessionCoordinatorOptions = {
@@ -207,6 +215,7 @@ function createDefaultSharedState(siteId: string, sessionId: string): SharedSess
     taskEpoch: 1,
     task: undefined,
     workerContext: undefined,
+    workflowLock: undefined,
   };
 }
 
@@ -286,10 +295,33 @@ function sanitizeSharedState(raw: any, siteId: string, sessionId: string): Share
           updatedAt: Number(raw.lease.updatedAt) || now(),
         }
         : undefined,
+    workflowLock:
+      raw.workflowLock && typeof raw.workflowLock === 'object' && raw.workflowLock.runtimeId && raw.workflowLock.runId
+        ? {
+            runtimeId: String(raw.workflowLock.runtimeId),
+            runId: String(raw.workflowLock.runId),
+            lockedAt: Number(raw.workflowLock.lockedAt) || now(),
+            expiresAt: Number(raw.workflowLock.expiresAt) || 0,
+          }
+        : undefined,
   };
 
-  if (state.nextLogicalTabId <= state.tabs.length) {
+  // Deduplicate tabs by logicalTabId (keep first occurrence)
+  const inputTabCount = state.tabs.length;
+  const seenTabIds = new Set<number>();
+  state.tabs = state.tabs.filter(tab => {
+    if (seenTabIds.has(tab.logicalTabId)) return false;
+    seenTabIds.add(tab.logicalTabId);
+    return true;
+  });
+
+  if (state.nextLogicalTabId <= (state.tabs.at(-1)?.logicalTabId ?? 0)) {
     state.nextLogicalTabId = state.tabs.reduce((max, tab) => Math.max(max, tab.logicalTabId), 0) + 1;
+  }
+
+  // Warn if tabs were dropped during sanitization
+  if (inputTabCount > 0 && state.tabs.length < inputTabCount) {
+    console.warn(`[rover] sanitizeSharedState: dropped ${inputTabCount - state.tabs.length} invalid/duplicate tab entries`);
   }
 
   return state;
@@ -315,7 +347,17 @@ export class SessionCoordinator {
   private heartbeatTimer: number | null = null;
   private storageHandler: ((event: StorageEvent) => void) | null = null;
   private localLogicalTabId: number | undefined;
+  private closing = false;
   private started = false;
+  private pendingRpcRequests = new Map<string, {
+    resolve: (result: any) => void;
+    reject: (error: Error) => void;
+    timer: number;
+  }>();
+  private rpcRequestHandler?: (request: { method: string; params: any }) => Promise<any>;
+  private lastNotifiedRole: SharedRole | undefined;
+  private roleChangeTimer: number | null = null;
+  private static readonly ROLE_CHANGE_DEBOUNCE_MS = 200;
 
   constructor(options: SessionCoordinatorOptions) {
     this.siteId = options.siteId;
@@ -364,6 +406,18 @@ export class SessionCoordinator {
         if (payload.type === 'switch_request' && payload.targetRuntimeId === this.runtimeId) {
           this.onSwitchRequested?.(Number(payload.logicalTabId) || 0);
         }
+        if (payload.type === 'rpc_request' && payload.targetRuntimeId === this.runtimeId) {
+          this.handleInboundRpcRequest(payload);
+        }
+        if (payload.type === 'rpc_response' && payload.targetRuntimeId === this.runtimeId) {
+          this.handleInboundRpcResponse(payload);
+        }
+        if (payload.type === 'tab_navigated' && payload.runtimeId && payload.runtimeId !== this.runtimeId) {
+          this.handleRemoteNavigation(payload);
+        }
+        if (payload.type === 'tab_closing' && payload.runtimeId && payload.runtimeId !== this.runtimeId) {
+          this.handleRemoteTabClosing(payload);
+        }
       };
     }
 
@@ -395,6 +449,11 @@ export class SessionCoordinator {
       this.heartbeatTimer = null;
     }
 
+    if (this.roleChangeTimer != null) {
+      window.clearTimeout(this.roleChangeTimer);
+      this.roleChangeTimer = null;
+    }
+
     if (this.storageHandler) {
       window.removeEventListener('storage', this.storageHandler);
       this.storageHandler = null;
@@ -404,6 +463,12 @@ export class SessionCoordinator {
       this.channel.close();
       this.channel = null;
     }
+
+    for (const [, pending] of this.pendingRpcRequests) {
+      window.clearTimeout(pending.timer);
+      pending.reject(new Error('SessionCoordinator stopped'));
+    }
+    this.pendingRpcRequests.clear();
 
     this.mutate('local', draft => {
       draft.tabs = draft.tabs.filter(tab => tab.runtimeId !== this.runtimeId);
@@ -700,9 +765,9 @@ export class SessionCoordinator {
       }
     });
 
-    this.localLogicalTabId = nextLocalTabId;
+    // localLogicalTabId is now synced automatically via syncLocalLogicalTabId() in mutate()
     this.notifyRoleChange();
-    return nextLocalTabId || 1;
+    return this.localLogicalTabId || nextLocalTabId || 1;
   }
 
   registerOpenedTab(payload: {
@@ -781,7 +846,224 @@ export class SessionCoordinator {
     return result;
   }
 
+  // ---- Cross-Tab RPC ----
+
+  sendCrossTabRpc(targetRuntimeId: string, method: string, params: any, timeoutMs = 15000): Promise<any> {
+    return new Promise<any>((resolve, reject) => {
+      if (!this.channel) {
+        reject(new Error('BroadcastChannel not available'));
+        return;
+      }
+
+      const requestId = randomId('rpc');
+      const timer = window.setTimeout(() => {
+        this.pendingRpcRequests.delete(requestId);
+        reject(new Error(`Cross-tab RPC timed out after ${timeoutMs}ms (method=${method}, target=${targetRuntimeId})`));
+      }, timeoutMs);
+
+      this.pendingRpcRequests.set(requestId, { resolve, reject, timer });
+
+      this.channel.postMessage({
+        type: 'rpc_request',
+        requestId,
+        sourceRuntimeId: this.runtimeId,
+        targetRuntimeId,
+        method,
+        params,
+        timeoutMs,
+        createdAt: now(),
+      });
+    });
+  }
+
+  setRpcRequestHandler(handler: (request: { method: string; params: any }) => Promise<any>): void {
+    this.rpcRequestHandler = handler;
+  }
+
+  broadcastNavigation(url: string, title?: string): void {
+    if (!this.channel) return;
+    this.channel.postMessage({
+      type: 'tab_navigated',
+      runtimeId: this.runtimeId,
+      logicalTabId: this.localLogicalTabId,
+      url,
+      title,
+    });
+  }
+
+  broadcastClosing(): void {
+    this.closing = true;
+    if (!this.channel) return;
+    // Remove local tab entry from shared state before broadcasting
+    this.mutate('local', draft => {
+      draft.tabs = draft.tabs.filter(t => t.runtimeId !== this.runtimeId);
+      if (draft.activeLogicalTabId && !draft.tabs.some(t => t.logicalTabId === draft.activeLogicalTabId)) {
+        draft.activeLogicalTabId = undefined;
+      }
+    });
+    this.channel.postMessage({
+      type: 'tab_closing',
+      runtimeId: this.runtimeId,
+      logicalTabId: this.localLogicalTabId,
+    });
+  }
+
+  isTabAlive(logicalTabId: number): boolean {
+    const tab = this.state.tabs.find(t => t.logicalTabId === logicalTabId);
+    if (!tab) return false;
+    return tab.updatedAt > now() - 2 * this.heartbeatMs;
+  }
+
+  // ---- Workflow Lock ----
+
+  acquireWorkflowLock(runId: string): boolean {
+    let acquired = false;
+    this.mutate('local', draft => {
+      const existing = draft.workflowLock;
+      if (existing && existing.runtimeId !== this.runtimeId && existing.expiresAt > now()) {
+        // Check if the holder tab is still alive before respecting the lock
+        const holderTab = draft.tabs.find(t => t.runtimeId === existing.runtimeId);
+        const holderAlive = holderTab && holderTab.updatedAt > now() - 2 * this.heartbeatMs;
+        if (holderAlive) {
+          acquired = false;
+          return;
+        }
+        // Holder is dead — steal the lock
+      }
+      draft.workflowLock = {
+        runtimeId: this.runtimeId,
+        runId,
+        lockedAt: now(),
+        expiresAt: now() + this.leaseMs * 5,
+      };
+      acquired = true;
+    });
+    return acquired;
+  }
+
+  clearActiveRunRuntimeId(runId: string): void {
+    this.mutate('local', draft => {
+      if (draft.activeRun && draft.activeRun.runId === runId) {
+        draft.activeRun.runtimeId = '';
+      }
+    });
+  }
+
+  releaseWorkflowLock(runId: string): void {
+    this.mutate('local', draft => {
+      if (draft.workflowLock && draft.workflowLock.runId === runId) {
+        draft.workflowLock = undefined;
+      }
+    });
+  }
+
+  isWorkflowLocked(): boolean {
+    const lock = this.state.workflowLock;
+    if (!lock) return false;
+    if (lock.runtimeId === this.runtimeId) return false;
+    return lock.expiresAt > now();
+  }
+
+  getWorkflowLockInfo(): { locked: boolean; holderRuntimeId?: string; runId?: string } {
+    const lock = this.state.workflowLock;
+    if (!lock || lock.expiresAt <= now()) {
+      return { locked: false };
+    }
+    return {
+      locked: true,
+      holderRuntimeId: lock.runtimeId,
+      runId: lock.runId,
+    };
+  }
+
+  // ---- Private RPC handlers ----
+
+  private async handleInboundRpcRequest(payload: any): Promise<void> {
+    const { requestId, sourceRuntimeId, method, params } = payload;
+    if (!this.rpcRequestHandler) {
+      this.channel?.postMessage({
+        type: 'rpc_response',
+        requestId,
+        sourceRuntimeId: this.runtimeId,
+        targetRuntimeId: sourceRuntimeId,
+        ok: false,
+        error: { message: 'No RPC handler registered', code: 'NO_HANDLER' },
+      });
+      return;
+    }
+
+    try {
+      const result = await this.rpcRequestHandler({ method, params });
+      this.channel?.postMessage({
+        type: 'rpc_response',
+        requestId,
+        sourceRuntimeId: this.runtimeId,
+        targetRuntimeId: sourceRuntimeId,
+        ok: true,
+        result,
+      });
+    } catch (err: any) {
+      this.channel?.postMessage({
+        type: 'rpc_response',
+        requestId,
+        sourceRuntimeId: this.runtimeId,
+        targetRuntimeId: sourceRuntimeId,
+        ok: false,
+        error: { message: err?.message || String(err) },
+      });
+    }
+  }
+
+  private handleInboundRpcResponse(payload: any): void {
+    const { requestId, ok, result, error } = payload;
+    const pending = this.pendingRpcRequests.get(requestId);
+    if (!pending) return;
+
+    this.pendingRpcRequests.delete(requestId);
+    window.clearTimeout(pending.timer);
+
+    if (ok) {
+      pending.resolve(result);
+    } else {
+      pending.reject(new Error(error?.message || 'Cross-tab RPC failed'));
+    }
+  }
+
+  private handleRemoteNavigation(payload: any): void {
+    const { runtimeId: remoteRuntimeId, url, title } = payload;
+    this.mutate('local', draft => {
+      const tab = draft.tabs.find(t => t.runtimeId === remoteRuntimeId);
+      if (tab) {
+        tab.url = url || tab.url;
+        tab.title = title || tab.title;
+        tab.updatedAt = now();
+      }
+    });
+  }
+
+  private handleRemoteTabClosing(payload: any): void {
+    const { runtimeId: closingRuntimeId } = payload;
+    this.mutate('local', draft => {
+      draft.tabs = draft.tabs.filter(t => t.runtimeId !== closingRuntimeId);
+      if (draft.lease?.holderRuntimeId === closingRuntimeId) {
+        draft.lease = undefined;
+      }
+      if (draft.workflowLock?.runtimeId === closingRuntimeId) {
+        draft.workflowLock = undefined;
+      }
+      if (draft.activeRun?.runtimeId === closingRuntimeId) {
+        draft.activeRun = undefined;
+      }
+      if (draft.activeLogicalTabId && !draft.tabs.some(t => t.logicalTabId === draft.activeLogicalTabId)) {
+        draft.activeLogicalTabId = undefined;
+      }
+    });
+    this.notifyRoleChange();
+  }
+
   private heartbeat(): void {
+    if (this.closing) return;
+
     const currentUrl = normalizeUrl(window.location.href);
     const currentTitle = document.title || undefined;
 
@@ -791,7 +1073,6 @@ export class SessionCoordinator {
         currentTab.url = currentUrl || currentTab.url;
         currentTab.title = currentTitle || currentTab.title;
         currentTab.updatedAt = now();
-        this.localLogicalTabId = currentTab.logicalTabId;
       } else {
         const logicalTabId = draft.nextLogicalTabId++;
         draft.tabs.push({
@@ -803,7 +1084,6 @@ export class SessionCoordinator {
           updatedAt: now(),
           external: false,
         });
-        this.localLogicalTabId = logicalTabId;
       }
 
       const lease = draft.lease;
@@ -818,12 +1098,29 @@ export class SessionCoordinator {
           draft.activeLogicalTabId = this.localLogicalTabId;
         }
       }
+
+      // Refresh workflow lock expiration if this runtime holds it
+      if (draft.workflowLock?.runtimeId === this.runtimeId) {
+        draft.workflowLock.expiresAt = now() + this.leaseMs * 5;
+      }
     });
 
     this.notifyRoleChange();
   }
 
-  private claimLease(force: boolean): boolean {
+  reloadFromStorage(): SharedSessionState {
+    const fresh = this.loadState();
+    if (fresh.seq > this.state.seq ||
+        (fresh.seq === this.state.seq && fresh.updatedAt > this.state.updatedAt)) {
+      this.state = fresh;
+      this.syncLocalLogicalTabId();
+      this.onStateChange?.(this.state, 'remote');
+    }
+    this.closing = false; // Reset closing flag on bfcache restore
+    return this.state;
+  }
+
+  claimLease(force: boolean): boolean {
     let claimed = false;
 
     this.mutate('local', draft => {
@@ -848,20 +1145,54 @@ export class SessionCoordinator {
   }
 
   private notifyRoleChange(): void {
-    this.onRoleChange?.(this.getRole(), {
-      localLogicalTabId: this.localLogicalTabId,
-      activeLogicalTabId: this.state.activeLogicalTabId,
-      holderRuntimeId: this.state.lease?.holderRuntimeId,
-    });
+    const currentRole = this.getRole();
+    // Skip if role hasn't changed
+    if (currentRole === this.lastNotifiedRole) return;
+
+    if (this.roleChangeTimer != null) {
+      window.clearTimeout(this.roleChangeTimer);
+    }
+
+    this.roleChangeTimer = window.setTimeout(() => {
+      this.roleChangeTimer = null;
+      const role = this.getRole();
+      if (role === this.lastNotifiedRole) return;
+      this.lastNotifiedRole = role;
+      this.onRoleChange?.(role, {
+        localLogicalTabId: this.localLogicalTabId,
+        activeLogicalTabId: this.state.activeLogicalTabId,
+        holderRuntimeId: this.state.lease?.holderRuntimeId,
+      });
+    }, SessionCoordinator.ROLE_CHANGE_DEBOUNCE_MS);
+  }
+
+  private syncLocalLogicalTabId(): void {
+    const tab = this.state.tabs.find(t => t.runtimeId === this.runtimeId);
+    this.localLogicalTabId = tab?.logicalTabId;
   }
 
   private mutate(source: 'local' | 'remote', updater: (draft: SharedSessionState) => void): void {
+    // Re-read from localStorage before local mutations (optimistic locking)
+    if (source === 'local') {
+      try {
+        const raw = window.localStorage.getItem(this.key);
+        if (raw) {
+          const persisted = sanitizeSharedState(JSON.parse(raw), this.siteId, this.sessionId);
+          if (persisted.seq > this.state.seq ||
+              (persisted.seq === this.state.seq && persisted.updatedAt > this.state.updatedAt)) {
+            this.state = persisted;
+          }
+        }
+      } catch { /* ignore */ }
+    }
+
     const draft = sanitizeSharedState(this.state, this.siteId, this.sessionId);
     updater(draft);
     draft.seq = Math.max(1, Number(draft.seq) || 1) + (source === 'local' ? 1 : 0);
     draft.updatedAt = now();
 
     this.state = draft;
+    this.syncLocalLogicalTabId();
 
     if (source === 'local') {
       this.persistState();
@@ -879,8 +1210,7 @@ export class SessionCoordinator {
     if (incoming.seq === this.state.seq && incoming.updatedAt <= this.state.updatedAt) return;
     this.state = incoming;
 
-    const localTab = this.state.tabs.find(tab => tab.runtimeId === this.runtimeId);
-    this.localLogicalTabId = localTab?.logicalTabId;
+    this.syncLocalLogicalTabId();
 
     this.onStateChange?.(this.state, 'remote');
     this.notifyRoleChange();
@@ -892,7 +1222,8 @@ export class SessionCoordinator {
       if (!raw) return createDefaultSharedState(this.siteId, this.sessionId);
       const parsed = JSON.parse(raw);
       return sanitizeSharedState(parsed, this.siteId, this.sessionId);
-    } catch {
+    } catch (err) {
+      console.warn('[rover] Failed to load shared state from localStorage:', err);
       return createDefaultSharedState(this.siteId, this.sessionId);
     }
   }

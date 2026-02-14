@@ -44,9 +44,12 @@ let trajectoryId: string = crypto.randomUUID();
 let tabularStore: TabularStore | null = null;
 const PLANNER_TOOL_NAME_SET = new Set<string>(Object.values(PLANNER_FUNCTION_CALLS));
 let activeRun: { runId: string; text: string; startedAt: number; resume: boolean } | null = null;
+let cancelledRunId: string | null = null;
 let lastStatusKey = '';
 let seenStatusKeys = new Set<string>();
 const completedRunIds = new Set<string>();
+
+const RPC_TIMEOUT_MS = 30_000;
 
 function createRpcClient(port: MessagePort) {
   const pending = new Map<string, (res: RpcResponse) => void>();
@@ -62,7 +65,14 @@ function createRpcClient(port: MessagePort) {
   return async function call(method: string, params?: any) {
     const id = crypto.randomUUID();
     const p = new Promise<any>((resolve, reject) => {
-      pending.set(id, res => (res.ok ? resolve(res.result) : reject(new Error(res.error?.message || 'RPC error'))));
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`RPC timeout: ${method} (${RPC_TIMEOUT_MS}ms)`));
+      }, RPC_TIMEOUT_MS);
+      pending.set(id, res => {
+        clearTimeout(timer);
+        res.ok ? resolve(res.result) : reject(new Error(res.error?.message || 'RPC error'));
+      });
     });
     port.postMessage({ t: 'req', id, method, params } satisfies RpcRequest);
     return p;
@@ -301,10 +311,22 @@ function formatObjectBlock(value: Record<string, any>): string {
 
   const lines: string[] = [];
   const limit = 7;
+  const CONTENT_KEYS = new Set(['response', 'message', 'summary', 'result', 'output', 'text', 'content', 'description']);
+  const URL_KEYS = new Set(['url', 'href', 'link', 'sheetUrl', 'downloadUrl', 'storageUrl']);
   for (const [key, raw] of sorted.slice(0, limit)) {
-    const rendered = formatInlineValue(raw);
+    const isContent = CONTENT_KEYS.has(key);
+    const isUrl = URL_KEYS.has(key) || (typeof raw === 'string' && /^https?:\/\/.+/.test(raw.trim()));
+    let rendered: string;
+    if (typeof raw === 'string' && isUrl) {
+      const url = raw.trim();
+      rendered = `[${url}](${url})`;
+    } else if (typeof raw === 'string' && isContent) {
+      rendered = shortText(raw, 2000);
+    } else {
+      rendered = formatInlineValue(raw);
+    }
     if (!rendered) continue;
-    lines.push(`${key}: ${rendered}`);
+    lines.push(`**${key}:** ${rendered}`);
   }
   if (sorted.length > limit) {
     lines.push(`… ${sorted.length - limit} more field(s)`);
@@ -325,8 +347,8 @@ function formatArrayBlock(value: any[]): string {
     if (item && typeof item === 'object') {
       const block = formatObjectBlock(item);
       if (block) {
-        const oneLine = block.replace(/\n+/g, '; ');
-        lines.push(`- ${shortText(oneLine, 280)}`);
+        if (lines.length > 0) lines.push('---');
+        lines.push(block);
       }
       continue;
     }
@@ -356,8 +378,8 @@ function formatToolOutput(output: any): string | null {
     if (output.success === false && output.error) {
       const message = shortText(output.error?.message || output.error, 300) || 'Operation failed';
       const nextAction = shortText(output.next_action || output.error?.next_action, 220);
-      const base = `Error: ${message}`;
-      return nextAction ? `${base}\nNext: ${nextAction}` : base;
+      const base = `[error] ${message}`;
+      return nextAction ? `${base}\n[next] ${nextAction}` : base;
     }
     const block = formatObjectBlock(output);
     if (block) return truncateText(block, 12_000);
@@ -528,24 +550,24 @@ function extractArtifactLinks(toolResult: any): string[] {
 
   const docs = Array.isArray(generated.docs) ? generated.docs : [];
   for (const doc of docs) {
-    if (doc?.url) links.push(`Doc: ${doc.url}`);
+    if (doc?.url) links.push(`[Doc: ${doc.url}](${doc.url})`);
   }
 
   const slides = Array.isArray(generated.slides) ? generated.slides : [];
   for (const slide of slides) {
-    if (slide?.url) links.push(`Slides: ${slide.url}`);
+    if (slide?.url) links.push(`[Slides: ${slide.url}](${slide.url})`);
   }
 
   const webpages = Array.isArray(generated.webpages) ? generated.webpages : [];
   for (const page of webpages) {
     const url = page?.storageUrl || page?.downloadUrl;
-    if (url) links.push(`Webpage: ${url}`);
+    if (url) links.push(`[Webpage: ${url}](${url})`);
   }
 
   const pdfs = Array.isArray(generated.pdfs) ? generated.pdfs : [];
   for (const pdf of pdfs) {
     const url = pdf?.storageUrl || pdf?.downloadUrl;
-    if (url) links.push(`PDF: ${url}`);
+    if (url) links.push(`[PDF: ${url}](${url})`);
   }
 
   const sheets = Array.isArray(toolResult?.schemaHeaderSheetInfo) ? toolResult.schemaHeaderSheetInfo : [];
@@ -556,7 +578,7 @@ function extractArtifactLinks(toolResult: any): string[] {
     const url = tabId
       ? `https://docs.google.com/spreadsheets/d/${sheetId}/edit#gid=${tabId}`
       : `https://docs.google.com/spreadsheets/d/${sheetId}/edit`;
-    links.push(`Sheet: ${url}`);
+    links.push(`[Sheet: ${url}](${url})`);
   }
 
   return links;
@@ -597,6 +619,48 @@ function extractLatestPrevStepsFromPlanner(toolResults: any[] | undefined): Prev
   return undefined;
 }
 
+async function waitForNewTabReady(logicalTabId: number, timeoutMs = 10000): Promise<boolean> {
+  if (!bridgeRpc) return false;
+  const pollInterval = 500;
+  const start = Date.now();
+
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const tabs = await bridgeRpc('listSessionTabs');
+      if (Array.isArray(tabs)) {
+        const target = tabs.find((t: any) => Number(t?.logicalTabId) === logicalTabId);
+        if (target?.runtimeId) {
+          // Tab has registered - wait an additional 1s for DOM to settle
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          return true;
+        }
+      }
+    } catch {
+      // ignore polling errors
+    }
+    await new Promise(resolve => setTimeout(resolve, pollInterval));
+  }
+
+  return false;
+}
+
+function detectOpenedTabFromToolResult(result: any): number | undefined {
+  if (!result || typeof result !== 'object') return undefined;
+  const output = result.output ?? result;
+  if (output?.openedInNewTab && typeof output?.logicalTabId === 'number') {
+    return output.logicalTabId;
+  }
+  return undefined;
+}
+
+async function maybeWaitForNewTab(result: any): Promise<void> {
+  const logicalTabId = detectOpenedTabFromToolResult(result);
+  if (logicalTabId) {
+    postStatus('Waiting for new tab to load...', undefined, 'execute');
+    await waitForNewTabReady(logicalTabId);
+  }
+}
+
 async function handleUserMessage(
   text: string,
   options?: { resume?: boolean },
@@ -621,6 +685,8 @@ async function handleUserMessage(
     tabularStore = new TabularStore(`rover-${trajectoryId}`);
   }
   const ctx = createAgentContext(config, bridgeRpc, tabularStore);
+  const currentRunId = activeRun?.runId;
+  ctx.isCancelled = () => cancelledRunId === currentRunId;
   // Only pass user/client-declared tools. Planner built-ins come from backend.
   const functionDeclarations = dedupeFunctionDeclarations(
     removePlannerNameCollisions(toolRegistry.getFunctionDeclarations()),
@@ -687,6 +753,7 @@ async function handleUserMessage(
   }
 
   if (result.directToolResult) {
+    await maybeWaitForNewTab(result.directToolResult);
     postStatus('Verifying result', undefined, 'verify');
     maybePostNavigationGuardrailFromToolResult(result.directToolResult);
     applyAgentPrevSteps(result.directToolResult.prevSteps, { snapshot: false });
@@ -731,6 +798,7 @@ async function handleUserMessage(
 
     const toolResults = result.plannerResponse.toolResults || [];
     for (const toolResult of toolResults) {
+      await maybeWaitForNewTab(toolResult);
       maybePostNavigationGuardrailFromToolResult(toolResult);
     }
     const formattedOutput = formatPlannerToolResults(toolResults);
@@ -860,6 +928,13 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
       return;
     }
 
+    if (data.type === 'cancel_run') {
+      if (typeof data.runId === 'string' && data.runId) {
+        cancelledRunId = data.runId;
+      }
+      return;
+    }
+
     if (data.type === 'run') {
       await runUserMessage(String(data.text || ''), { runId: data.runId, resume: !!data.resume });
       return;
@@ -872,6 +947,7 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
   } catch (err: any) {
     if (isApiKeyRequiredError(err)) {
       postAuthRequired(err);
+      return;
     }
     (self as any).postMessage({ type: 'error', message: err?.message || String(err), runId: activeRun?.runId });
   }

@@ -16,7 +16,7 @@ await build({
   minify: true,
   sourcemap: false,
   banner: {
-    js: `var __ROVER_SCRIPT_URL__=(document.currentScript&&document.currentScript.src)||'';`,
+    js: `var __ROVER_SCRIPT_EL__=document.currentScript||null;var __ROVER_SCRIPT_URL__=(__ROVER_SCRIPT_EL__&&__ROVER_SCRIPT_EL__.src)||'';`,
   },
   define: {
     'import.meta.url': '__ROVER_SCRIPT_URL__',

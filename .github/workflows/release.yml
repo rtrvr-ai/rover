@@ -17,6 +17,8 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required to push commits, tags, and create releases
     steps:
       - uses: actions/checkout@v4
         with:

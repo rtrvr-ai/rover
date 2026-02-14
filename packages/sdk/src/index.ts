@@ -73,9 +73,11 @@ export type RoverInit = {
   };
   ui?: {
     mascot?: {
+      disabled?: boolean;
       mp4Url?: string;
       webmUrl?: string;
     };
+    muted?: boolean;
     thoughtStyle?: 'concise_cards' | 'minimal';
     panel?: {
       resizable?: boolean;
@@ -171,9 +173,11 @@ let suppressCheckpointSync = false;
 let currentMode: RoverExecutionMode = 'controller';
 let workerReady = false;
 let autoResumeAttempted = false;
+let runSafetyTimer: ReturnType<typeof setTimeout> | null = null;
 let unloadHandlerInstalled = false;
 let pendingTaskSuggestion: { text: string; reason: string; createdAt: number } | null = null;
 let lastStatusSignature = '';
+let lastUserInputText: string | undefined;
 const latestAssistantByRunId = new Map<string, string>();
 const RUN_SCOPED_WORKER_MESSAGE_TYPES = new Set([
   'run_started',
@@ -274,6 +278,10 @@ function writeCookie(name: string, value: string, domain?: string): boolean {
   }
 }
 
+// Returns candidate cookie domains from broadest to narrowest (e.g., .example.com before .sub.example.com).
+// Note: Browsers may reject cookies for certain public suffix domains (e.g., .co.uk).
+// This is a browser cookie policy limitation — subdomain fragmentation may still occur
+// when the browser rejects the broadest domain and falls back to a narrower one.
 function candidateCookieDomains(hostname: string): string[] {
   const host = String(hostname || '').trim().toLowerCase();
   if (!host || host === 'localhost' || /^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
@@ -303,6 +311,17 @@ function persistVisitorIdCookie(siteId: string, visitorId: string): void {
   writeCookie(cookieName, visitorId);
 }
 
+/**
+ * Persist visitor ID to all available storage mechanisms (localStorage, sessionStorage, cookie).
+ * This ensures the ID is recoverable from any fallback path.
+ */
+function syncVisitorIdToAllStores(siteId: string, visitorId: string): void {
+  const key = `${VISITOR_ID_PREFIX}${siteId}`;
+  try { window.localStorage.setItem(key, visitorId); } catch { /* ignore */ }
+  try { window.sessionStorage.setItem(key, visitorId); } catch { /* ignore */ }
+  persistVisitorIdCookie(siteId, visitorId);
+}
+
 function resolveVisitorId(cfg: RoverInit): string | undefined {
   const explicit = sanitizeVisitorId(cfg.visitorId || '');
   if (explicit) return explicit;
@@ -310,33 +329,39 @@ function resolveVisitorId(cfg: RoverInit): string | undefined {
 
   const localStorageKey = `${VISITOR_ID_PREFIX}${cfg.siteId}`;
   const cookieName = `rover_vid_${stableHash(cfg.siteId)}`;
+
+  // Try cookie first
   const cookieValue = sanitizeVisitorId(readCookie(cookieName) || '');
   if (cookieValue) {
-    try {
-      window.localStorage.setItem(localStorageKey, cookieValue);
-    } catch {
-      // ignore local storage failures
-    }
+    syncVisitorIdToAllStores(cfg.siteId, cookieValue);
     return cookieValue;
   }
 
+  // Try localStorage
   try {
     const stored = sanitizeVisitorId(window.localStorage.getItem(localStorageKey) || '');
     if (stored) {
-      persistVisitorIdCookie(cfg.siteId, stored);
+      syncVisitorIdToAllStores(cfg.siteId, stored);
       return stored;
     }
   } catch {
     // ignore local storage failures
   }
 
-  const generated = `v_${stableHash(`${cfg.siteId}:${createId('visitor')}`)}_${Date.now().toString(36)}`;
+  // sessionStorage fallback (incognito / localStorage blocked)
   try {
-    window.localStorage.setItem(localStorageKey, generated);
+    const sessionValue = sanitizeVisitorId(window.sessionStorage.getItem(localStorageKey) || '');
+    if (sessionValue) {
+      syncVisitorIdToAllStores(cfg.siteId, sessionValue);
+      return sessionValue;
+    }
   } catch {
-    // ignore local storage failures
+    // ignore
   }
-  persistVisitorIdCookie(cfg.siteId, generated);
+
+  // Generate new visitor ID and persist to all stores
+  const generated = `v_${stableHash(`${cfg.siteId}:${createId('visitor')}`)}_${Date.now().toString(36)}`;
+  syncVisitorIdToAllStores(cfg.siteId, generated);
   return generated;
 }
 
@@ -438,6 +463,16 @@ function buildStatusSignature(message?: string, stage?: WorkerStatusStage, compa
     String(message || '').trim().toLowerCase(),
     String(compactThought || '').trim().toLowerCase(),
   ].join('|');
+}
+
+function isInternalThought(text: string, lastUserInput?: string): boolean {
+  if (!text) return true;
+  const t = text.trim();
+  if (lastUserInput && t.toLowerCase() === lastUserInput.trim().toLowerCase()) return true;
+  if (/^complexity score\b/i.test(t)) return true;
+  if (/\btool loop$/i.test(t)) return true;
+  if (/^calling \w[\w\s]*(workflow|sub-agent)$/i.test(t)) return true;
+  return false;
 }
 
 function getPendingRunId(): string | undefined {
@@ -737,6 +772,15 @@ function ensureUnloadHandler(): void {
   unloadHandlerInstalled = true;
 
   const onPageHide = () => {
+    // If there's an auto-resumable pending run, clear the runtimeId from activeRun
+    // so the new runtime (after page reload) isn't blocked by stale runtimeId check
+    if (runtimeState?.pendingRun?.autoResume) {
+      sessionCoordinator?.clearActiveRunRuntimeId(runtimeState.pendingRun.id);
+    }
+    sessionCoordinator?.broadcastClosing();
+    if (runtimeState?.pendingRun) {
+      sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
+    }
     persistRuntimeState();
     cloudCheckpointClient?.markDirty();
     cloudCheckpointClient?.syncNow();
@@ -745,6 +789,19 @@ function ensureUnloadHandler(): void {
   };
 
   window.addEventListener('pagehide', onPageHide, { capture: true });
+
+  const onPageShow = (event: PageTransitionEvent) => {
+    if (!event.persisted) return; // Only handle bfcache restores
+    // Re-read shared state from localStorage after bfcache restore
+    if (sessionCoordinator) {
+      sessionCoordinator.reloadFromStorage();
+      // Re-register current tab (may have been removed by broadcastClosing)
+      sessionCoordinator.registerCurrentTab(window.location.href, document.title || undefined);
+      sessionCoordinator.claimLease(false);
+    }
+    autoResumeAttempted = false; // Allow auto-resume after bfcache restore
+  };
+  window.addEventListener('pageshow', onPageShow);
 }
 
 function ensureActiveTask(reason = 'implicit'): PersistedTaskState | undefined {
@@ -1037,8 +1094,24 @@ function postRun(text: string, options?: { runId?: string; resume?: boolean; app
     autoResume: options?.autoResume !== false,
   });
 
+  lastUserInputText = trimmed;
+  sessionCoordinator?.acquireWorkflowLock(runId);
   sessionCoordinator?.setActiveRun({ runId, text: trimmed });
   worker.postMessage({ type: 'run', text: trimmed, runId, resume });
+
+  if (runSafetyTimer) clearTimeout(runSafetyTimer);
+  const safetyRunId = runId;
+  runSafetyTimer = setTimeout(() => {
+    if (runtimeState?.pendingRun?.id === safetyRunId) {
+      setPendingRun(undefined);
+      sessionCoordinator?.releaseWorkflowLock(safetyRunId);
+      sessionCoordinator?.setActiveRun(undefined);
+      setUiStatus('Task timed out.');
+      appendUiMessage('system', 'Task timed out after 5 minutes with no response.', true);
+      emit('error', { message: 'Run safety timeout' });
+    }
+    runSafetyTimer = null;
+  }, 5 * 60_000);
 }
 
 function dispatchUserPrompt(
@@ -1080,7 +1153,11 @@ function maybeAutoResumePendingRun(): void {
   if (currentMode === 'observer') return;
   const sharedActiveRun = sessionCoordinator?.getState()?.activeRun;
   if (sharedActiveRun?.runtimeId && sharedActiveRun.runtimeId !== runtimeId) {
-    return;
+    // Allow resume if this is our own pending run (same runId survives page reload)
+    const isPendingRunMatch = runtimeState?.pendingRun?.id === sharedActiveRun.runId;
+    if (!isPendingRunMatch) {
+      return;
+    }
   }
   if (!workerReady || !worker || autoResumeAttempted || !runtimeState?.pendingRun) return;
   if (runtimeState.activeTask?.status === 'ended') return;
@@ -1517,6 +1594,15 @@ function setupSessionCoordinator(cfg: RoverInit): void {
   });
 
   sessionCoordinator.start();
+
+  // Register local RPC handler for cross-tab requests
+  sessionCoordinator.setRpcRequestHandler(async (request) => {
+    if (!bridge) throw new Error('Bridge not available');
+    if (request.method === 'getPageData') return bridge.getPageData(request.params);
+    if (request.method === 'executeTool') return bridge.executeTool(request.params.call, request.params.payload);
+    throw new Error(`Unknown RPC method: ${request.method}`);
+  });
+
   if (runtimeState?.activeTask) {
     sessionCoordinator.syncTask(
       {
@@ -1585,13 +1671,29 @@ function handleWorkerMessage(msg: any): void {
     if (signature && signature !== lastStatusSignature) {
       lastStatusSignature = signature;
       if (message) {
-        const title = stage ? `${formatStageLabel(stage)}: ${message}` : message;
-        appendTimelineEvent({
-          kind: 'status',
-          title,
-          detail: compactThought || (msg.thought ? String(msg.thought) : undefined),
-          status: stage === 'complete' ? 'success' : msg.thought ? 'pending' : 'info',
-        });
+        const hasThought = !!(msg.thought || compactThought);
+        const thoughtText = compactThought || (msg.thought ? String(msg.thought) : '');
+        // Only classify as 'thought' kind for execute/verify stages with meaningful thoughts
+        const useThoughtKind = hasThought
+          && stage !== 'analyze' && stage !== 'route' && stage !== 'complete'
+          && !isInternalThought(thoughtText, lastUserInputText);
+
+        if (useThoughtKind) {
+          appendTimelineEvent({
+            kind: 'thought',
+            title: thoughtText,
+            detail: msg.thought ? String(msg.thought) : compactThought,
+            status: 'pending',
+          });
+        } else {
+          const title = stage ? `${formatStageLabel(stage)}: ${message}` : message;
+          appendTimelineEvent({
+            kind: 'status',
+            title,
+            detail: compactThought || (msg.thought ? String(msg.thought) : undefined),
+            status: stage === 'complete' ? 'success' : 'info',
+          });
+        }
       }
     }
     emit('status', msg);
@@ -1599,7 +1701,6 @@ function handleWorkerMessage(msg: any): void {
   }
 
   if (msg.type === 'tool_start') {
-    appendUiMessage('system', `Running ${msg.call?.name || 'tool'}...`, true);
     appendTimelineEvent({
       kind: 'tool_start',
       title: `Running ${msg.call?.name || 'tool'}`,
@@ -1611,7 +1712,6 @@ function handleWorkerMessage(msg: any): void {
   }
 
   if (msg.type === 'tool_result') {
-    appendUiMessage('system', `${msg.call?.name || 'tool'} done`, true);
     appendTimelineEvent({
       kind: 'tool_result',
       title: `${msg.call?.name || 'tool'} completed`,
@@ -1725,8 +1825,13 @@ function handleWorkerMessage(msg: any): void {
 
   if (msg.type === 'run_completed') {
     lastStatusSignature = '';
+    autoResumeAttempted = false;
+    if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
     if (runtimeState?.pendingRun?.id === msg.runId) {
       setPendingRun(undefined);
+    }
+    if (typeof msg.runId === 'string' && msg.runId) {
+      sessionCoordinator?.releaseWorkflowLock(msg.runId);
     }
     if (
       runtimeState &&
@@ -1845,8 +1950,56 @@ function createRuntime(cfg: RoverInit): void {
   const channel = new MessageChannel();
   bindRpc(channel.port1, {
     getSnapshot: () => bridge!.getSnapshot(),
-    getPageData: (params: any) => bridge!.getPageData(params),
-    executeTool: (params: any) => bridge!.executeTool(params.call, params.payload),
+    getPageData: async (params: any) => {
+      const tabId = params?.tabId;
+      const localTabId = sessionCoordinator?.getLocalLogicalTabId();
+
+      // Local tab or no tabId specified
+      if (!tabId || tabId === localTabId || !sessionCoordinator) {
+        return bridge!.getPageData(params);
+      }
+
+      // Remote tab: find target runtimeId
+      const tabs = sessionCoordinator.listTabs();
+      const targetTab = tabs.find(t => t.logicalTabId === tabId);
+      if (!targetTab) {
+        return bridge!.getPageData(params);
+      }
+      if (!targetTab.runtimeId) {
+        return { url: targetTab.url, title: targetTab.title, fallback: true };
+      }
+      if (!sessionCoordinator.isTabAlive(tabId)) {
+        return { url: targetTab.url, title: targetTab.title, fallback: true, stale: true };
+      }
+
+      try {
+        return await sessionCoordinator.sendCrossTabRpc(targetTab.runtimeId, 'getPageData', params, 15000);
+      } catch {
+        return { url: targetTab.url, title: targetTab.title, fallback: true, error: 'rpc_failed' };
+      }
+    },
+    executeTool: async (params: any) => {
+      const activeTabId = sessionCoordinator?.getActiveLogicalTabId();
+      const localTabId = sessionCoordinator?.getLocalLogicalTabId();
+
+      // Local tab or no coordinator
+      if (!activeTabId || activeTabId === localTabId || !sessionCoordinator) {
+        return bridge!.executeTool(params.call, params.payload);
+      }
+
+      // Remote tab: find target runtimeId
+      const tabs = sessionCoordinator.listTabs();
+      const targetTab = tabs.find(t => t.logicalTabId === activeTabId);
+      if (!targetTab?.runtimeId) {
+        return bridge!.executeTool(params.call, params.payload);
+      }
+
+      try {
+        return await sessionCoordinator.sendCrossTabRpc(targetTab.runtimeId, 'executeTool', params, 20000);
+      } catch (err: any) {
+        return { success: false, error: err?.message || 'Cross-tab tool execution failed', allowFallback: true };
+      }
+    },
     executeClientTool: (params: any) => bridge!.executeClientTool(params.name, params.args),
     listClientTools: () => bridge!.listClientTools(),
     getTabContext: () => {
@@ -1925,7 +2078,9 @@ function createRuntime(cfg: RoverInit): void {
       });
     },
     showTaskControls: cfg.ui?.showTaskControls !== false,
+    muted: cfg.ui?.muted,
     mascot: {
+      disabled: cfg.ui?.mascot?.disabled,
       mp4Url: cfg.ui?.mascot?.mp4Url,
       webmUrl: cfg.ui?.mascot?.webmUrl,
     },
@@ -1971,6 +2126,28 @@ function createRuntime(cfg: RoverInit): void {
   worker.onmessage = ev => {
     handleWorkerMessage(ev.data || {});
   };
+
+  // Navigation tracking: detect SPA navigations and broadcast to other tabs
+  if (sessionCoordinator) {
+    const navigationHandler = () => {
+      sessionCoordinator?.registerCurrentTab(window.location.href, document.title);
+      sessionCoordinator?.broadcastNavigation(window.location.href, document.title);
+    };
+
+    const origPushState = history.pushState.bind(history);
+    const origReplaceState = history.replaceState.bind(history);
+    history.pushState = function (...args: Parameters<typeof origPushState>) {
+      const result = origPushState(...args);
+      setTimeout(navigationHandler, 0);
+      return result;
+    };
+    history.replaceState = function (...args: Parameters<typeof origReplaceState>) {
+      const result = origReplaceState(...args);
+      setTimeout(navigationHandler, 0);
+      return result;
+    };
+    window.addEventListener('popstate', navigationHandler);
+  }
 
   if (runtimeState?.uiHidden) {
     ui.hide();
@@ -2226,6 +2403,11 @@ export function newTask(options?: { reason?: string; clearUi?: boolean }): void 
   const taskEpoch = Math.max(1, Number(runtimeState.taskEpoch) || 1) + 1;
   const nextTask = createDefaultTaskState(reason);
 
+  if (runtimeState.pendingRun) {
+    sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
+  }
+
+  autoResumeAttempted = false;
   runtimeState.taskEpoch = taskEpoch;
   runtimeState.activeTask = nextTask;
   runtimeState.pendingRun = undefined;
@@ -2274,6 +2456,10 @@ export function endTask(options?: { reason?: string }): void {
   task.status = 'ended';
   task.endedAt = Date.now();
   task.boundaryReason = reason;
+  if (runtimeState.pendingRun) {
+    worker?.postMessage({ type: 'cancel_run', runId: runtimeState.pendingRun.id });
+    sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
+  }
   runtimeState.pendingRun = undefined;
   hideTaskSuggestion();
   setUiStatus('Task ended. Start a new task to continue.');
@@ -2372,6 +2558,39 @@ export function installGlobal(): void {
       const [method, ...args] = Array.isArray(call) ? call : Array.from(call as any);
       if (typeof method === 'string') {
         apiFn(method, ...args);
+      }
+    }
+  }
+
+  // Auto-boot from data attributes on the script element
+  if (!instance) {
+    const scriptEl: HTMLScriptElement | null =
+      typeof (globalThis as any).__ROVER_SCRIPT_EL__ !== 'undefined'
+        ? (globalThis as any).__ROVER_SCRIPT_EL__
+        : null;
+
+    if (scriptEl) {
+      const dataSiteId = scriptEl.getAttribute('data-site-id');
+      const dataApiKey = scriptEl.getAttribute('data-api-key');
+
+      if (dataSiteId && dataApiKey) {
+        const dataConfig: RoverInit = {
+          siteId: dataSiteId,
+          apiKey: dataApiKey,
+        };
+
+        const dataAllowedDomains = scriptEl.getAttribute('data-allowed-domains');
+        if (dataAllowedDomains) {
+          dataConfig.allowedDomains = dataAllowedDomains.split(',').map((d) => d.trim()).filter(Boolean);
+        }
+
+        const dataSiteKeyId = scriptEl.getAttribute('data-site-key-id');
+        if (dataSiteKeyId) dataConfig.siteKeyId = dataSiteKeyId;
+
+        const dataWorkerUrl = scriptEl.getAttribute('data-worker-url');
+        if (dataWorkerUrl) dataConfig.workerUrl = dataWorkerUrl;
+
+        boot(dataConfig);
       }
     }
   }

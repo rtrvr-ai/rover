@@ -102,6 +102,7 @@ const MAIN_PROMOTABLE_TOOLS = new Set<SystemToolNames>([
   SystemToolNames.paste_text,
   SystemToolNames.pinch_zoom,
   SystemToolNames.upload_file,
+  SystemToolNames.dispatch_pointer_path,
 ]);
 
 (() => {
@@ -419,6 +420,13 @@ const MAIN_PROMOTABLE_TOOLS = new Set<SystemToolNames>([
     try {
       ({ doc: targetDocument, win: targetWindow, unresolvedPath } = getDocumentContext(docRoot, args.iframe_id));
     } catch {
+      if (args.iframe_id != null) {
+        return [{
+          name: call.name!,
+          args: call.args!,
+          response: { success: false, error: `Cannot access iframe ${args.iframe_id} (cross-origin or not found)` },
+        }];
+      }
       targetDocument = document;
       targetWindow = winOfDoc(targetDocument);
     }
@@ -599,6 +607,9 @@ const MAIN_PROMOTABLE_TOOLS = new Set<SystemToolNames>([
 
         case SystemToolNames.upload_file:
           return toResponse(await uploadFile(args, doc, win, payload, el, md));
+
+        case SystemToolNames.dispatch_pointer_path:
+          return toResponse(await dispatchPointerPath(args, doc, win));
 
         default:
           return toResponse({ success: false, method: 'unhandled', details: `Unhandled ${tool}`, allowFallback: true });
@@ -911,6 +922,7 @@ const MAIN_PROMOTABLE_TOOLS = new Set<SystemToolNames>([
     md?: FrameworkElementMetadata,
     duration = 500,
   ): Promise<SystemToolActionResult> {
+    const safeDuration = Math.min(Math.max(0, Number(duration) || 500), 30_000);
     const docEl = docOf(el, doc);
     const winEl = winOfDoc(docEl, win);
     const sig = signals(el, md);
@@ -951,7 +963,7 @@ const MAIN_PROMOTABLE_TOOLS = new Set<SystemToolNames>([
     ];
     seq.forEach(e => el.dispatchEvent(e));
 
-    await sleepBgSafe(duration, docEl);
+    await sleepBgSafe(safeDuration, docEl);
     return { success: true, method: 'hover-seq' };
   }
 
@@ -2736,6 +2748,66 @@ const MAIN_PROMOTABLE_TOOLS = new Set<SystemToolNames>([
     } catch (e: any) {
       return { success: false, method: 'upload-file', details: e?.message || 'Upload failed', allowFallback: true };
     }
+  }
+
+  // ---------------- Dispatch Pointer Path ----------------
+
+  async function dispatchPointerPath(args: any, doc: Document, win: Window): Promise<SystemToolActionResult> {
+    const path: Array<{ x: number; y: number; pressure?: number; timestamp?: number }> = Array.isArray(args.path) ? args.path : [];
+    if (!path.length) {
+      return { success: false, method: 'dispatch_pointer_path', details: 'Empty path', allowFallback: true };
+    }
+
+    const PointerEvt = (win as any).PointerEvent || PointerEvent;
+    const MouseEvt = (win as any).MouseEvent || MouseEvent;
+
+    const defaultInterval = 16; // ~60fps
+
+    for (let i = 0; i < path.length; i++) {
+      const point = path[i];
+      const x = Number(point.x) || 0;
+      const y = Number(point.y) || 0;
+      const pressure = Number(point.pressure) || (i === 0 || i === path.length - 1 ? 0 : 0.5);
+      const target = doc.elementFromPoint(x, y) || doc.documentElement;
+
+      const commonInit = {
+        bubbles: true,
+        cancelable: true,
+        clientX: x,
+        clientY: y,
+        screenX: x,
+        screenY: y,
+        view: win,
+      };
+
+      if (i === 0) {
+        // pointerdown + mousedown
+        target.dispatchEvent(new PointerEvt('pointerdown', { ...commonInit, pressure, pointerId: 1, pointerType: 'mouse' }));
+        target.dispatchEvent(new MouseEvt('mousedown', { ...commonInit, button: 0, buttons: 1 }));
+      } else {
+        // pointermove + mousemove
+        target.dispatchEvent(new PointerEvt('pointermove', { ...commonInit, pressure, pointerId: 1, pointerType: 'mouse' }));
+        target.dispatchEvent(new MouseEvt('mousemove', { ...commonInit, button: 0, buttons: 1 }));
+      }
+
+      if (i === path.length - 1) {
+        // pointerup + mouseup
+        target.dispatchEvent(new PointerEvt('pointerup', { ...commonInit, pressure: 0, pointerId: 1, pointerType: 'mouse' }));
+        target.dispatchEvent(new MouseEvt('mouseup', { ...commonInit, button: 0, buttons: 0 }));
+      }
+
+      // Timing between points
+      if (i < path.length - 1) {
+        const currentTs = Number(point.timestamp) || 0;
+        const nextTs = Number(path[i + 1].timestamp) || 0;
+        const delay = currentTs && nextTs ? Math.max(0, Math.min(nextTs - currentTs, 1000)) : defaultInterval;
+        if (delay > 0) {
+          await sleepBgSafe(delay, doc);
+        }
+      }
+    }
+
+    return { success: true, method: 'dispatch_pointer_path', details: `Dispatched ${path.length} point(s)` };
   }
 
   // ---------------- Double / Right Click ----------------

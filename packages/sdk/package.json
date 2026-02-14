@@ -1,6 +1,6 @@
 {
   "name": "@rtrvr-ai/rover",
-  "version": "0.1.2",
+  "version": "1.0.0",
   "private": false,
   "type": "module",
   "main": "dist/rover.js",
@@ -20,7 +20,8 @@
     "dist/index.d.ts",
     "dist/worker/rover-worker.js",
     "dist/loader.js",
-    "dist/loader.d.ts"
+    "dist/loader.d.ts",
+    "README.md"
   ],
   "publishConfig": {
     "access": "public"

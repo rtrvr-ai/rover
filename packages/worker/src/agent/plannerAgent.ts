@@ -3,6 +3,8 @@ import type { PlannerOptions, PlannerResponse, PlannerPreviousStep, FunctionDecl
 import type { AgentContext } from './context.js';
 import { executeToolFromPlan } from './toolExecutor.js';
 
+const MAX_PLANNER_DEPTH = 15;
+
 export async function executePlanner(options: PlannerOptions & { ctx: AgentContext; functionDeclarations?: FunctionDeclaration[] }) {
   const {
     userInput,
@@ -81,7 +83,26 @@ export async function executePlanner(options: PlannerOptions & { ctx: AgentConte
 export async function executePlannerWithTools(
   options: PlannerOptions & { ctx: AgentContext; bridgeRpc: (method: string, params?: any) => Promise<any>; functionDeclarations?: FunctionDeclaration[] },
   accumulatedToolResults: any[] = [],
+  depth = 0,
 ): Promise<PlannerResponse> {
+  if (depth >= MAX_PLANNER_DEPTH) {
+    return {
+      response: { taskComplete: false, error: `Max planner recursion depth reached (${MAX_PLANNER_DEPTH})` },
+      toolResults: accumulatedToolResults,
+      completedWorkflow: undefined,
+      previousSteps: options.previousSteps || [],
+    };
+  }
+
+  if (options.ctx.isCancelled?.()) {
+    return {
+      response: { taskComplete: false, error: 'Run cancelled' },
+      toolResults: accumulatedToolResults,
+      completedWorkflow: undefined,
+      previousSteps: options.previousSteps || [],
+    };
+  }
+
   let currentPreviousSteps: PlannerPreviousStep[] = options.previousSteps || [];
   let lastToolPreviousSteps: PreviousSteps[] | undefined = options.lastToolPreviousSteps || options.agentLog?.prevSteps;
 
@@ -161,6 +182,7 @@ export async function executePlannerWithTools(
           continuePlanning: true,
         },
         accumulatedToolResults,
+        depth + 1,
       );
     }
 
@@ -173,6 +195,7 @@ export async function executePlannerWithTools(
           continuePlanning: true,
         },
         accumulatedToolResults,
+        depth + 1,
       );
     }
 
