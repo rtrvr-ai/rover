@@ -14,7 +14,7 @@ Rover requires an active rtrvr.ai account with available credits. Each Rover tas
 | Enterprise | 12,500 | $99.99/mo |
 | Scale | 60,000 | $499.99/mo |
 
-Check your credit balance in the [Rover Workspace](https://rover.rtrvr.ai/workspace). Manage your subscription at [rtrvr.ai](https://rtrvr.ai/cloud).
+Check your credit balance in the [Rover Workspace](https://rover.rtrvr.ai/workspace). Manage your subscription at [rtrvr.ai](https://www.rtrvr.ai/cloud?view=pricing).
 
 When credits are exhausted, Rover API calls return an `auth_required` event. See [Troubleshooting](#troubleshooting) for details.
 
@@ -480,4 +480,4 @@ When authentication is missing or invalid, Rover emits an `auth_required` event:
 ### No credits remaining
 - Rover emits an `auth_required` event when credits are exhausted.
 - Check your balance in the [Workspace](https://rover.rtrvr.ai/workspace).
-- Upgrade your plan or wait for renewal at [rtrvr.ai](https://rtrvr.ai/cloud).
+- Upgrade your plan or wait for renewal at [rtrvr.ai](https://www.rtrvr.ai/cloud?view=pricing).
