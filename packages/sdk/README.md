@@ -4,7 +4,7 @@ Rover is a DOM-native embedded web agent that lives inside your website. Unlike 
 
 ## Prerequisites
 
-You need an rtrvr.ai account with available credits. Free accounts get 250 credits/month. [Sign up or manage your plan](https://rtrvr.ai/cloud).
+You need an rtrvr.ai account with available credits. Free accounts get 250 credits/month. [Sign up or manage your plan](https://www.rtrvr.ai/cloud?view=pricing).
 
 ## Quick Start (Script Tag)
 
