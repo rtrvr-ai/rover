@@ -412,6 +412,7 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
       }
     }
   } catch (err: any) {
+    if (err?.name === 'AbortError') throw err;
     const envelope = toRoverErrorEnvelope(err, `Failed to execute tool: ${toolName}`);
     return {
       output: buildStructuredErrorOutput(envelope),

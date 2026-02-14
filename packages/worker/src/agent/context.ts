@@ -22,6 +22,7 @@ export type RoverAgentConfig = {
   allowActions?: boolean;
   apiMode?: boolean;
   apiToolsConfig?: ApiToolsConfig;
+  signal?: AbortSignal;
 };
 
 export type AgentContext = {
@@ -35,6 +36,7 @@ export type AgentContext = {
   apiToolsConfig?: ApiToolsConfig;
   tabularStore: TabularStore;
   isCancelled?: () => boolean;
+  signal?: AbortSignal;
 };
 
 const DEFAULT_CLOUD_FUNCTIONS_BASE = 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net';
@@ -138,6 +140,7 @@ export function createAgentContext(
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ action, data }),
+        signal: config.signal,
       });
 
       if (!response.ok) {
@@ -219,6 +222,7 @@ export function createAgentContext(
     apiMode,
     apiToolsConfig: normalizeApiToolsConfig(config.apiToolsConfig ?? defaultApiToolsConfig),
     tabularStore: tabularStore ?? new TabularStore(`rover-${userTimestamp}`),
+    signal: config.signal,
   };
 }
 

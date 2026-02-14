@@ -32,6 +32,7 @@ export type RoverUi = {
   clearTimeline: () => void;
   setTaskSuggestion: (suggestion: RoverTaskSuggestion) => void;
   setStatus: (text: string) => void;
+  setRunning: (running: boolean) => void;
   setExecutionMode: (
     mode: RoverExecutionMode,
     meta?: {
@@ -57,6 +58,7 @@ export type MountOptions = {
   onRequestControl?: () => void;
   onNewTask?: () => void;
   onEndTask?: () => void;
+  onCancelRun?: () => void;
   onTaskSuggestionPrimary?: () => void;
   onTaskSuggestionSecondary?: () => void;
   showTaskControls?: boolean;
@@ -660,6 +662,27 @@ export function mountWidget(opts: MountOptions): RoverUi {
       color: var(--rv-text-secondary);
       background: rgba(0, 0, 0, 0.04);
       border-color: var(--rv-border-strong);
+    }
+
+    .stopBtn {
+      width: 32px; height: 32px;
+      border-radius: var(--rv-radius-sm);
+      border: 1px solid rgba(220, 38, 38, 0.25);
+      background: rgba(220, 38, 38, 0.06);
+      color: var(--rv-error);
+      cursor: pointer;
+      display: none; place-items: center;
+      font-size: 10px;
+      font-weight: 700;
+      transition: background 120ms ease, border-color 120ms ease;
+      flex: 0 0 auto; padding: 0;
+    }
+    .stopBtn:hover {
+      background: rgba(220, 38, 38, 0.12);
+      border-color: rgba(220, 38, 38, 0.35);
+    }
+    .stopBtn.visible {
+      display: grid;
     }
 
     .muteBtn {
@@ -1485,6 +1508,13 @@ export function mountWidget(opts: MountOptions): RoverUi {
     syncMuteState();
   });
 
+  const stopBtn = document.createElement('button');
+  stopBtn.type = 'button';
+  stopBtn.className = 'stopBtn';
+  stopBtn.setAttribute('aria-label', 'Cancel task');
+  stopBtn.textContent = '\u25A0';
+
+  headerActions.appendChild(stopBtn);
   headerActions.appendChild(modeBadge);
   headerActions.appendChild(muteBtn);
   headerActions.appendChild(overflowBtn);
@@ -1614,6 +1644,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   let currentMode: RoverExecutionMode = 'controller';
   let canComposeInObserver = false;
+  let isRunning = false;
+  let pendingConfirmAction: 'new_task' | 'end_task' | null = null;
   let traceExpanded = false;
   let moodResetTimer: number | null = null;
   let overflowOpen = false;
@@ -1923,6 +1955,12 @@ export function mountWidget(opts: MountOptions): RoverUi {
     }
   }
 
+  function setRunning(running: boolean): void {
+    isRunning = running;
+    stopBtn.classList.toggle('visible', running);
+    modeBadge.style.display = running ? 'none' : '';
+  }
+
   function setExecutionMode(
     mode: RoverExecutionMode,
     executionMeta?: {
@@ -1997,12 +2035,32 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   menuNewTask.addEventListener('click', () => {
     closeOverflow();
-    opts.onNewTask?.();
+    if (isRunning && opts.onCancelRun) {
+      pendingConfirmAction = 'new_task';
+      setTaskSuggestion({
+        visible: true,
+        text: 'A task is in progress. Cancel it and start new?',
+        primaryLabel: 'Cancel & start new',
+        secondaryLabel: 'Keep running',
+      });
+    } else {
+      opts.onNewTask?.();
+    }
   });
 
   menuEndTask.addEventListener('click', () => {
     closeOverflow();
-    opts.onEndTask?.();
+    if (isRunning && opts.onCancelRun) {
+      pendingConfirmAction = 'end_task';
+      setTaskSuggestion({
+        visible: true,
+        text: 'A task is in progress. Cancel and end it?',
+        primaryLabel: 'Cancel & end',
+        secondaryLabel: 'Keep running',
+      });
+    } else {
+      opts.onEndTask?.();
+    }
   });
 
   menuToggleDetails.addEventListener('click', () => {
@@ -2015,11 +2073,29 @@ export function mountWidget(opts: MountOptions): RoverUi {
     opts.onRequestControl?.();
   });
 
+  stopBtn.addEventListener('click', () => {
+    opts.onCancelRun?.();
+  });
+
   taskSuggestionPrimaryBtn.addEventListener('click', () => {
+    if (pendingConfirmAction) {
+      const action = pendingConfirmAction;
+      pendingConfirmAction = null;
+      setTaskSuggestion({ visible: false });
+      opts.onCancelRun?.();
+      if (action === 'new_task') opts.onNewTask?.();
+      else if (action === 'end_task') opts.onEndTask?.();
+      return;
+    }
     opts.onTaskSuggestionPrimary?.();
   });
 
   taskSuggestionSecondaryBtn.addEventListener('click', () => {
+    if (pendingConfirmAction) {
+      pendingConfirmAction = null;
+      setTaskSuggestion({ visible: false });
+      return;
+    }
     opts.onTaskSuggestionSecondary?.();
   });
 
@@ -2128,6 +2204,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     clearTimeline,
     setTaskSuggestion,
     setStatus,
+    setRunning,
     setExecutionMode,
     open,
     close,
