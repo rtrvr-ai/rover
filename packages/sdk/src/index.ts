@@ -3600,6 +3600,8 @@ export function boot(cfg: RoverInit): RoverInstance {
       };
     }
     seeded.taskEpoch = crossDomainResume.taskEpoch || 1;
+    // Widget was open (task was running) — preserve that across subdomain navigation
+    seeded.uiOpen = true;
     effectiveLoaded = seeded;
   }
 
