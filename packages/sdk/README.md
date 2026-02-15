@@ -104,14 +104,23 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `apiKey` | `string` | *required* | API key from Rover Workspace |
 | `allowedDomains` | `string[]` | `[]` | Hostnames where Rover may operate |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | Domain matching strategy |
+| `crossDomainPolicy` | `'block_new_tab' \| 'allow' \| 'block'` | `'block_new_tab'` | Policy for cross-subdomain navigation |
 | `openOnInit` | `boolean` | `false` | Open panel immediately on boot |
 | `taskRouting` | `object` | `{ mode: 'act' }` | Task routing strategy |
 | `externalNavigationPolicy` | `string` | `'open_new_tab_notice'` | Policy for out-of-scope links |
+| `tools.web.enableExternalWebContext` | `boolean` | `false` | Best-effort cloud context for external tabs |
+| `tools.web.scrapeMode` | `'off' \| 'on_demand'` | `'off'` | In `on_demand`, only the active external tab attempts cloud page fetch |
+| `tools.web.allowDomains` | `string[]` | `[]` | Optional allowlist for external cloud context fetch |
+| `tools.web.denyDomains` | `string[]` | `[]` | Optional denylist for external cloud context fetch |
+| `taskContext.*` | `object` | — | Task boundaries are completion-driven; Rover starts a fresh task only after the current task completes (or manual `newTask()` / `endTask()`). |
 | `workerUrl` | `string` | auto | Custom worker URL for self-hosting |
 | `ui.muted` | `boolean` | `false` | Start with audio muted (user can toggle via UI) |
+| `ui.agent.name` | `string` | `'Rover'` | Custom assistant name shown in UI and runtime context |
 | `ui.mascot.disabled` | `boolean` | `false` | Disable mascot video (removes `media-src` CSP need) |
 | `visitorId` | `string` | auto | Stable visitor identifier |
 | `sessionScope` | `'shared_site' \| 'tab'` | `'shared_site'` | Session sharing across tabs |
+
+If you enable `tools.web.scrapeMode: 'on_demand'`, use a site key capability profile that includes cloud scrape support.
 
 See [full configuration reference](https://github.com/rtrvr-ai/rover/blob/main/docs/INTEGRATION.md#configuration-reference).
 

@@ -503,10 +503,10 @@ export class Bridge {
     options?: { policyBlocked?: boolean; reason?: string },
   ): Promise<any> {
     const external = !isUrlAllowedByDomains(targetUrl, this.allowedDomains);
-    const popup = window.open(targetUrl, '_blank', 'noopener,noreferrer');
+    const popupAttempt = this.openVerifiedPopup(targetUrl);
 
     let logicalTabId: number | undefined;
-    if (this.registerOpenedTab) {
+    if (popupAttempt.opened && this.registerOpenedTab) {
       try {
         const registered = await this.registerOpenedTab({
           url: targetUrl,
@@ -519,9 +519,9 @@ export class Bridge {
         // no-op
       }
     }
-    const registrationFailed = !logicalTabId && !!this.registerOpenedTab;
+    const registrationFailed = popupAttempt.opened && !logicalTabId && !!this.registerOpenedTab;
 
-    if (!popup) {
+    if (!popupAttempt.opened) {
       const reason = 'Browser popup settings blocked opening a new tab.';
       if (options?.policyBlocked) {
         this.emitNavigationGuardrail({
@@ -562,6 +562,14 @@ export class Bridge {
       });
     }
 
+    const warningMessages: string[] = [];
+    if (registrationFailed) {
+      warningMessages.push('Tab opened but registration failed; tab may not be targetable.');
+    }
+    if (!popupAttempt.verified) {
+      warningMessages.push('Tab open was triggered, but browser did not return a popup handle.');
+    }
+
     return {
       success: true,
       output: {
@@ -569,12 +577,77 @@ export class Bridge {
         external,
         logicalTabId,
         openedInNewTab: true,
+        openVerification: popupAttempt.verified ? 'verified' : 'unverified',
         policyBlocked: !!options?.policyBlocked,
         message,
-        ...(registrationFailed && { warning: 'Tab opened but registration failed — tab may not be targetable' }),
+        ...(warningMessages.length ? { warning: warningMessages.join(' ') } : {}),
       },
       allowFallback: true,
     };
+  }
+
+  private openVerifiedPopup(targetUrl: string): { opened: boolean; verified: boolean } {
+    // Opening about:blank first gives us a reliable handle to detect real popup blocks.
+    const popup = window.open('about:blank', '_blank');
+    if (popup) {
+      try {
+        popup.opener = null;
+      } catch {
+        // noop
+      }
+
+      try {
+        popup.location.href = targetUrl;
+      } catch {
+        // keep the opened tab as success even if navigation assignment fails in this step
+      }
+
+      return { opened: true, verified: true };
+    }
+
+    try {
+      const directPopup = window.open(targetUrl, '_blank');
+      if (directPopup) {
+        try {
+          directPopup.opener = null;
+        } catch {
+          // noop
+        }
+        return { opened: true, verified: true };
+      }
+    } catch {
+      // noop
+    }
+
+    try {
+      const noOpenerPopup = window.open(targetUrl, '_blank', 'noopener,noreferrer');
+      if (noOpenerPopup) {
+        try {
+          noOpenerPopup.opener = null;
+        } catch {
+          // noop
+        }
+        return { opened: true, verified: true };
+      }
+      // Some browsers return null when noopener is used even if the tab opens.
+      return { opened: true, verified: false };
+    } catch {
+      // noop
+    }
+
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = targetUrl;
+      anchor.target = '_blank';
+      anchor.rel = 'noopener noreferrer';
+      anchor.style.display = 'none';
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      return { opened: true, verified: false };
+    } catch {
+      return { opened: false, verified: false };
+    }
   }
 
   private async openElementInNewTab(args: Record<string, any>): Promise<any> {

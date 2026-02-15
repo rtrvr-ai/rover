@@ -5,6 +5,33 @@ export type RoverTab = {
   url?: string;
   title?: string;
   windowId?: number;
+  external?: boolean;
+  accessMode?: 'live_dom' | 'external_placeholder' | 'external_scraped';
+  inaccessibleReason?: string;
+};
+
+export type ExternalWebConfig = {
+  enableExternalWebContext?: boolean;
+  allowDomains?: string[];
+  denyDomains?: string[];
+  scrapeMode?: 'off' | 'on_demand';
+};
+
+export type RoverRuntimeContextExternalTab = {
+  tabId: number;
+  host?: string;
+  title?: string;
+  accessMode: 'external_placeholder' | 'external_scraped';
+  reason?: string;
+};
+
+export type RoverRuntimeContext = {
+  mode: 'rover_embed';
+  embeddedDomain?: string;
+  agentName?: string;
+  externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
+  tabIdContract?: 'tree_index_mapped_by_tab_order';
+  externalTabs?: RoverRuntimeContextExternalTab[];
 };
 
 export type ChatMessage = {

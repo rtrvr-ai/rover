@@ -14,4 +14,5 @@ export enum SUB_AGENTS {
   pdfFiller = 'pdfFiller',
   customToolGenerator = 'customToolGenerator',
   getPageData = 'getPageData',
+  roverExternalPageData = 'roverExternalPageData',
 }

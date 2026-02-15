@@ -21,6 +21,13 @@ import type {
   UiRole,
 } from './runtimeTypes.js';
 
+export type RoverWebToolsConfig = {
+  enableExternalWebContext?: boolean;
+  allowDomains?: string[];
+  denyDomains?: string[];
+  scrapeMode?: 'off' | 'on_demand';
+};
+
 export type RoverInit = {
   siteId: string;
   apiBase?: string;
@@ -56,6 +63,7 @@ export type RoverInit = {
     inactivityMs?: number;
     suggestReset?: boolean;
     semanticSimilarityThreshold?: number;
+    resetMode?: 'auto' | 'ask' | 'off';
   };
   checkpointing?: {
     enabled?: boolean;
@@ -72,6 +80,9 @@ export type RoverInit = {
     userDefined?: string[];
   };
   ui?: {
+    agent?: {
+      name?: string;
+    };
     mascot?: {
       disabled?: boolean;
       mp4Url?: string;
@@ -84,7 +95,10 @@ export type RoverInit = {
     };
     showTaskControls?: boolean;
   };
-  tools?: { client?: ClientToolDefinition[] };
+  tools?: {
+    client?: ClientToolDefinition[];
+    web?: RoverWebToolsConfig;
+  };
 };
 
 export type ClientToolDefinition = {
@@ -153,9 +167,8 @@ const MAX_AUTO_RESUME_AGE_MS = 15 * 60_000;
 const MAX_AUTO_RESUME_ATTEMPTS = 12;
 const VISITOR_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 const CHECKPOINT_PAYLOAD_VERSION = 1;
-const DEFAULT_TASK_INACTIVITY_MS = 5 * 60_000;
-const DEFAULT_SEMANTIC_SIMILARITY_THRESHOLD = 0.18;
-const MAX_RECENT_USER_MESSAGES_FOR_TASK_HEURISTIC = 3;
+const ACTIVE_PENDING_RUN_GRACE_MS = 3_000;
+const STALE_PENDING_RUN_MS = 90_000;
 
 let instance: RoverInstance | null = null;
 let bridge: Bridge | null = null;
@@ -432,6 +445,90 @@ function safeSerialize(value: any): string | undefined {
   }
 }
 
+function resolveEmbeddedDomainLabel(allowedDomains?: string[]): string {
+  const raw = String((allowedDomains || [])[0] || '').trim();
+  if (!raw) return 'the configured domain';
+  return raw.replace(/^\*?\./, '').replace(/^=/, '');
+}
+
+function buildInaccessibleTabPageData(
+  cfg: RoverInit,
+  tab?: { logicalTabId?: number; url?: string; title?: string; external?: boolean },
+  reason = 'tab_not_accessible',
+): Record<string, any> {
+  const logicalTabId = Number(tab?.logicalTabId) || undefined;
+  const url = tab?.url || '';
+  const title = tab?.title || (tab?.external ? 'External Tab (Inaccessible)' : 'Inactive Tab');
+  const embeddedDomain = resolveEmbeddedDomainLabel(cfg.allowedDomains);
+  const normalizedReason = String(reason || '').trim();
+  const reasonLine = normalizedReason ? ` Reason: ${normalizedReason}.` : '';
+  const content = tab?.external
+    ? `Rover is embedded inside ${embeddedDomain}. This tab is outside direct DOM access and only virtual tab context is available.${reasonLine}`
+    : `This tab is currently not attached to an active Rover runtime. Switch to a live tab or reopen it.${reasonLine}`;
+
+  return {
+    url,
+    title,
+    contentType: 'text/html',
+    content,
+    metadata: {
+      inaccessible: true,
+      external: !!tab?.external,
+      accessMode: tab?.external ? 'external_placeholder' : 'inactive_tab',
+      reason,
+      logicalTabId,
+    },
+  };
+}
+
+function buildTabAccessToolError(
+  cfg: RoverInit,
+  tab?: { logicalTabId?: number; url?: string; external?: boolean },
+  reason = 'tab_not_accessible',
+): Record<string, any> {
+  const logicalTabId = Number(tab?.logicalTabId) || 0;
+  const blockedUrl = tab?.url || '';
+  const embeddedDomain = resolveEmbeddedDomainLabel(cfg.allowedDomains);
+  const message = tab?.external
+    ? `Tab ${logicalTabId} is outside Rover's embedded domain scope (${embeddedDomain}) and cannot be controlled directly.`
+    : `Tab ${logicalTabId} is not attached to an active Rover runtime.`;
+  const code = tab?.external ? 'DOMAIN_SCOPE_BLOCKED' : 'TAB_NOT_ACCESSIBLE';
+
+  return {
+    success: false,
+    error: message,
+    allowFallback: true,
+    output: {
+      success: false,
+      error: {
+        code,
+        message,
+        missing: [],
+        next_action: tab?.external
+          ? 'Use open_new_tab for external context or continue on an in-scope tab.'
+          : 'Switch to an active tab and retry.',
+        retryable: false,
+      },
+      blocked_url: blockedUrl || undefined,
+      logical_tab_id: logicalTabId || undefined,
+      external: !!tab?.external,
+      policy_action: tab?.external ? cfg.externalNavigationPolicy || 'open_new_tab_notice' : undefined,
+      reason,
+    },
+    errorDetails: {
+      code,
+      message,
+      retryable: false,
+      details: {
+        logicalTabId,
+        blockedUrl,
+        external: !!tab?.external,
+        reason,
+      },
+    },
+  };
+}
+
 type WorkerStatusStage = 'analyze' | 'route' | 'execute' | 'verify' | 'complete';
 
 function normalizeStatusStage(input: unknown): WorkerStatusStage | undefined {
@@ -514,12 +611,25 @@ function shouldIgnoreRunScopedWorkerMessage(msg: any): boolean {
   }
 
   if (type === 'run_completed') {
-    if (!pendingRunId) return true;
+    if (!pendingRunId) {
+      const sharedRunId = sessionCoordinator?.getState()?.activeRun?.runId;
+      if (sharedRunId && sharedRunId === messageRunId) return false;
+      return true;
+    }
     return pendingRunId !== messageRunId;
   }
 
   if (!pendingRunId) return true;
   return pendingRunId !== messageRunId;
+}
+
+function normalizeRunCompletionState(msg: any): { taskComplete: boolean; needsUserInput: boolean } {
+  if (!msg || typeof msg !== 'object') {
+    return { taskComplete: false, needsUserInput: false };
+  }
+  const needsUserInput = msg.needsUserInput === true;
+  const taskComplete = msg.taskComplete === true && !needsUserInput;
+  return { taskComplete, needsUserInput };
 }
 
 function getLatestAssistantText(runId?: string): string | undefined {
@@ -826,6 +936,31 @@ function markTaskActivity(role: UiRole, timestamp = Date.now()): void {
   }
 }
 
+function markTaskRunning(reason = 'worker_task_active', timestamp = Date.now()): void {
+  if (!runtimeState) return;
+  const task = ensureActiveTask(reason);
+  if (!task) return;
+  task.status = 'running';
+  task.endedAt = undefined;
+  task.boundaryReason = reason;
+  if (!task.lastUserAt && !task.lastAssistantAt) {
+    task.lastAssistantAt = timestamp;
+  }
+  sessionCoordinator?.syncTask({ ...task }, runtimeState.taskEpoch);
+  persistRuntimeState();
+}
+
+function markTaskCompleted(reason = 'worker_task_complete', timestamp = Date.now()): void {
+  if (!runtimeState) return;
+  const task = ensureActiveTask(reason);
+  if (!task) return;
+  task.status = 'completed';
+  task.endedAt = timestamp;
+  task.boundaryReason = reason;
+  sessionCoordinator?.syncTask({ ...task }, runtimeState.taskEpoch);
+  persistRuntimeState();
+}
+
 function hideTaskSuggestion(): void {
   pendingTaskSuggestion = null;
   ui?.setTaskSuggestion({ visible: false });
@@ -837,65 +972,36 @@ function clearTaskUiState(): void {
   hideTaskSuggestion();
 }
 
-function collectRecentUserTextsForHeuristic(): string[] {
-  if (!runtimeState) return [];
-  const userMessages = runtimeState.uiMessages.filter(message => message.role === 'user');
-  return userMessages
-    .slice(-MAX_RECENT_USER_MESSAGES_FOR_TASK_HEURISTIC)
-    .map(message => message.text.trim())
-    .filter(Boolean);
-}
+function isPendingRunLikelyActive(): boolean {
+  const pending = runtimeState?.pendingRun;
+  if (!pending) return false;
+  if (!sessionCoordinator) return true;
 
-function tokenizeForSimilarity(input: string): Set<string> {
-  return new Set(
-    String(input || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .split(/\s+/)
-      .map(token => token.trim())
-      .filter(token => token.length > 2),
-  );
-}
-
-function computeSemanticOverlap(a: string, b: string): number {
-  const ta = tokenizeForSimilarity(a);
-  const tb = tokenizeForSimilarity(b);
-  if (!ta.size || !tb.size) return 0;
-  let intersection = 0;
-  for (const token of ta) {
-    if (tb.has(token)) intersection += 1;
+  const sharedActiveRun = sessionCoordinator?.getState()?.activeRun;
+  if (sharedActiveRun?.runId && sharedActiveRun.runId === pending.id) {
+    return true;
   }
-  return intersection / Math.max(ta.size, tb.size);
+  if (sharedActiveRun?.runtimeId && sharedActiveRun.runtimeId !== runtimeId) {
+    return true;
+  }
+
+  const ageMs = Date.now() - Number(pending.startedAt || 0);
+  return ageMs >= 0 && ageMs <= ACTIVE_PENDING_RUN_GRACE_MS;
 }
 
-function shouldSuggestResetForPrompt(text: string): { suggest: boolean; reason?: string } {
-  if (!runtimeState || !currentConfig) return { suggest: false };
-  const suggestEnabled = currentConfig.taskContext?.suggestReset !== false;
-  if (!suggestEnabled) return { suggest: false };
-  if (runtimeState.pendingRun) return { suggest: false };
+function maybeClearStalePendingRun(): void {
+  if (!runtimeState?.pendingRun) return;
+  if (isPendingRunLikelyActive()) return;
+  if (!sessionCoordinator) return;
 
-  const task = ensureActiveTask('implicit');
-  if (!task || task.status === 'ended') return { suggest: false };
+  const pending = runtimeState.pendingRun;
+  const ageMs = Date.now() - Number(pending.startedAt || 0);
+  if (!Number.isFinite(ageMs) || ageMs < STALE_PENDING_RUN_MS) return;
 
-  const inactivityMs = Math.max(60_000, Number(currentConfig.taskContext?.inactivityMs) || DEFAULT_TASK_INACTIVITY_MS);
-  const now = Date.now();
-  const latestActivity = Math.max(task.lastUserAt || 0, task.lastAssistantAt || 0, task.startedAt || 0);
-  if (!latestActivity || now - latestActivity < inactivityMs) return { suggest: false };
-
-  const recent = collectRecentUserTextsForHeuristic();
-  if (!recent.length) return { suggest: true, reason: 'inactivity_only' };
-
-  const baseline = recent.join(' ');
-  const overlap = computeSemanticOverlap(baseline, text);
-  const threshold = Math.max(
-    0.05,
-    Math.min(0.9, Number(currentConfig.taskContext?.semanticSimilarityThreshold) || DEFAULT_SEMANTIC_SIMILARITY_THRESHOLD),
-  );
-
-  if (overlap < threshold) {
-    return { suggest: true, reason: `low_similarity_${overlap.toFixed(2)}` };
-  }
-  return { suggest: false };
+  setPendingRun(undefined);
+  sessionCoordinator?.clearActiveRunRuntimeId(pending.id);
+  sessionCoordinator?.releaseWorkflowLock(pending.id);
+  sessionCoordinator?.setActiveRun(undefined);
 }
 
 function appendUiMessage(
@@ -1120,29 +1226,24 @@ function dispatchUserPrompt(
 ): void {
   const trimmed = String(text || '').trim();
   if (!trimmed) return;
+  maybeClearStalePendingRun();
 
-  if (options?.startNewTask) {
-    newTask({ reason: options.reason || 'suggested_new_task', clearUi: true });
-  } else if (!options?.bypassSuggestion) {
-    const decision = shouldSuggestResetForPrompt(trimmed);
-    if (decision.suggest) {
-      pendingTaskSuggestion = {
-        text: trimmed,
-        reason: decision.reason || 'heuristic',
-        createdAt: Date.now(),
-      };
-      ui?.setTaskSuggestion({
-        visible: true,
-        text: 'This looks like a different request. Start a new task or continue this one?',
-        primaryLabel: 'Start new',
-        secondaryLabel: 'Continue',
-      });
-      emit('task_suggested_reset', {
-        text: trimmed,
-        reason: pendingTaskSuggestion.reason,
-      });
-      return;
-    }
+  const activeTaskStatus = runtimeState?.activeTask?.status;
+  const shouldStartFreshTask =
+    !!options?.startNewTask ||
+    activeTaskStatus === 'completed' ||
+    activeTaskStatus === 'ended';
+
+  sessionCoordinator?.pruneTabs({
+    dropRuntimeDetached: true,
+    dropAllDetachedExternal: shouldStartFreshTask,
+  });
+
+  if (shouldStartFreshTask) {
+    const autoReason =
+      options?.reason ||
+      (activeTaskStatus === 'completed' ? 'auto_after_task_complete' : 'auto_after_task_end');
+    newTask({ reason: autoReason, clearUi: true });
   }
 
   hideTaskSuggestion();
@@ -1867,6 +1968,7 @@ function handleWorkerMessage(msg: any): void {
     }
     sessionCoordinator?.setActiveRun(undefined);
     if (!msg.ok && msg.error) {
+      markTaskRunning('worker_run_failed');
       setUiStatus(`Task failed: ${String(msg.error)}`);
       latestAssistantByRunId.delete(String(msg.runId || ''));
       appendTimelineEvent({
@@ -1876,8 +1978,25 @@ function handleWorkerMessage(msg: any): void {
         status: 'error',
       });
     } else if (msg.ok) {
-      setUiStatus('Execution completed');
-      finalizeSuccessfulRunTimeline(typeof msg.runId === 'string' ? msg.runId : undefined);
+      const completionState = normalizeRunCompletionState(msg);
+      const taskComplete = completionState.taskComplete;
+      const needsUserInput = completionState.needsUserInput;
+      if (taskComplete) {
+        markTaskCompleted('worker_task_complete');
+        setUiStatus('Task completed');
+        finalizeSuccessfulRunTimeline(typeof msg.runId === 'string' ? msg.runId : undefined);
+      } else {
+        markTaskRunning(needsUserInput ? 'worker_waiting_for_input' : 'worker_continuation');
+        setUiStatus(needsUserInput ? 'Need more input to continue' : 'Execution finished. Continue when ready.');
+        appendTimelineEvent({
+          kind: 'status',
+          title: needsUserInput ? 'Waiting for your input' : 'Continuation available',
+          detail: needsUserInput
+            ? 'Planner requested more information before marking the task complete.'
+            : 'Task is still active and will continue with your next message.',
+          status: 'info',
+        });
+      }
       if (typeof msg.runId === 'string' && msg.runId) {
         latestAssistantByRunId.delete(msg.runId);
       }
@@ -1970,34 +2089,47 @@ function createRuntime(cfg: RoverInit): void {
   bindRpc(channel.port1, {
     getSnapshot: () => bridge!.getSnapshot(),
     getPageData: async (params: any) => {
-      const tabId = params?.tabId;
+      const runtimeCfg = currentConfig || cfg;
+      const tabId = Number(params?.tabId);
       const localTabId = sessionCoordinator?.getLocalLogicalTabId();
 
       // Local tab, no tabId, or no coordinator → direct local bridge
-      if (!tabId || tabId === localTabId || !sessionCoordinator) {
+      if (!Number.isFinite(tabId) || tabId <= 0 || tabId === localTabId || !sessionCoordinator) {
         return bridge!.getPageData(params);
       }
 
       // Check if target tab belongs to this runtime
       const tabs = sessionCoordinator.listTabs();
       const targetTab = tabs.find(t => t.logicalTabId === tabId);
-      if (!targetTab || targetTab.runtimeId === runtimeId) {
+      if (!targetTab) {
+        return buildInaccessibleTabPageData(
+          runtimeCfg,
+          { logicalTabId: tabId, external: true },
+          'target_tab_missing',
+        );
+      }
+
+      if (targetTab.runtimeId === runtimeId) {
         return bridge!.getPageData(params);
       }
 
-      // Only attempt cross-tab RPC if target tab is alive and has a different runtime
+      if (targetTab.external && runtimeCfg.externalNavigationPolicy !== 'allow') {
+        return buildInaccessibleTabPageData(runtimeCfg, targetTab, 'external_domain_inaccessible');
+      }
+
+      // Never fall back to local-tab page data for an inaccessible different tab.
       if (!targetTab.runtimeId || !sessionCoordinator.isTabAlive(tabId)) {
-        return bridge!.getPageData(params);
+        return buildInaccessibleTabPageData(runtimeCfg, targetTab, 'target_tab_inactive');
       }
 
       try {
         return await sessionCoordinator.sendCrossTabRpc(targetTab.runtimeId, 'getPageData', params, 15000);
       } catch {
-        // Cross-tab RPC failed → fall back to local bridge
-        return bridge!.getPageData(params);
+        return buildInaccessibleTabPageData(runtimeCfg, targetTab, 'cross_tab_rpc_failed');
       }
     },
     executeTool: async (params: any) => {
+      const runtimeCfg = currentConfig || cfg;
       const activeTabId = sessionCoordinator?.getActiveLogicalTabId();
       const localTabId = sessionCoordinator?.getLocalLogicalTabId();
 
@@ -2007,18 +2139,30 @@ function createRuntime(cfg: RoverInit): void {
 
       const tabs = sessionCoordinator.listTabs();
       const targetTab = tabs.find(t => t.logicalTabId === activeTabId);
-      if (!targetTab?.runtimeId || targetTab.runtimeId === runtimeId) {
+      if (!targetTab) {
+        return buildTabAccessToolError(
+          runtimeCfg,
+          { logicalTabId: activeTabId, external: true },
+          'target_tab_missing',
+        );
+      }
+
+      if (targetTab.external && runtimeCfg.externalNavigationPolicy !== 'allow') {
+        return buildTabAccessToolError(runtimeCfg, targetTab, 'external_tab_action_blocked');
+      }
+
+      if (targetTab.runtimeId === runtimeId) {
         return bridge!.executeTool(params.call, params.payload);
       }
 
-      if (!sessionCoordinator.isTabAlive(activeTabId)) {
-        return bridge!.executeTool(params.call, params.payload);
+      if (!targetTab.runtimeId || !sessionCoordinator.isTabAlive(activeTabId)) {
+        return buildTabAccessToolError(runtimeCfg, targetTab, 'target_tab_inactive');
       }
 
       try {
         return await sessionCoordinator.sendCrossTabRpc(targetTab.runtimeId, 'executeTool', params, 20000);
       } catch {
-        return bridge!.executeTool(params.call, params.payload);
+        return buildTabAccessToolError(runtimeCfg, targetTab, 'cross_tab_execute_failed');
       }
     },
     executeClientTool: (params: any) => bridge!.executeClientTool(params.name, params.args),
@@ -2110,6 +2254,9 @@ function createRuntime(cfg: RoverInit): void {
     },
     showTaskControls: cfg.ui?.showTaskControls !== false,
     muted: cfg.ui?.muted,
+    agent: {
+      name: cfg.ui?.agent?.name,
+    },
     mascot: {
       disabled: cfg.ui?.mascot?.disabled,
       mp4Url: cfg.ui?.mascot?.mp4Url,
@@ -2239,10 +2386,7 @@ export function boot(cfg: RoverInit): RoverInstance {
       plannerOnActError: cfg.taskRouting?.plannerOnActError,
     },
     taskContext: {
-      inactivityMs: cfg.taskContext?.inactivityMs ?? DEFAULT_TASK_INACTIVITY_MS,
-      suggestReset: cfg.taskContext?.suggestReset ?? true,
-      semanticSimilarityThreshold:
-        cfg.taskContext?.semanticSimilarityThreshold ?? DEFAULT_SEMANTIC_SIMILARITY_THRESHOLD,
+      ...cfg.taskContext,
     },
   };
 
@@ -2309,19 +2453,28 @@ export function update(cfg: Partial<RoverInit>): void {
       ...cfg.taskRouting,
     },
     taskContext: {
-      inactivityMs: cfg.taskContext?.inactivityMs ?? currentConfig.taskContext?.inactivityMs ?? DEFAULT_TASK_INACTIVITY_MS,
-      suggestReset: cfg.taskContext?.suggestReset ?? currentConfig.taskContext?.suggestReset ?? true,
-      semanticSimilarityThreshold:
-        cfg.taskContext?.semanticSimilarityThreshold ??
-        currentConfig.taskContext?.semanticSimilarityThreshold ??
-        DEFAULT_SEMANTIC_SIMILARITY_THRESHOLD,
+      ...currentConfig.taskContext,
+      ...cfg.taskContext,
     },
     ui: {
       ...currentConfig.ui,
       ...cfg.ui,
+      agent: {
+        ...currentConfig.ui?.agent,
+        ...cfg.ui?.agent,
+      },
       panel: {
         ...currentConfig.ui?.panel,
         ...cfg.ui?.panel,
+      },
+    },
+    tools: {
+      ...currentConfig.tools,
+      ...cfg.tools,
+      client: cfg.tools?.client ?? currentConfig.tools?.client,
+      web: {
+        ...currentConfig.tools?.web,
+        ...cfg.tools?.web,
       },
     },
   };

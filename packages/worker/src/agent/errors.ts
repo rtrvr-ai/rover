@@ -55,10 +55,15 @@ function defaultNextActionForCode(code: RoverErrorCode): string | undefined {
 }
 
 export function toRoverErrorEnvelope(err: any, fallbackMessage = 'Operation failed'): RoverErrorEnvelope {
+  const directCandidate =
+    err && typeof err === 'object' && typeof err.code === 'string' && typeof err.message === 'string'
+      ? err
+      : undefined;
   const candidate =
     err?.roverError ||
     err?.errorDetails ||
-    (typeof err?.error === 'object' ? err.error : undefined);
+    (typeof err?.error === 'object' ? err.error : undefined) ||
+    directCandidate;
 
   if (candidate && typeof candidate === 'object' && candidate.code && candidate.message) {
     return {

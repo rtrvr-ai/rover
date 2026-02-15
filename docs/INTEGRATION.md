@@ -328,6 +328,12 @@ rover.boot(config);
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | `registrable_domain` matches `app.example.com` to an `example.com` entry |
 | `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | Policy for links outside allowed domains |
 | `crossDomainPolicy` | `'block_new_tab' \| 'allow' \| 'block'` | `'block_new_tab'` | Policy for cross-subdomain navigation |
+| `tools.web.enableExternalWebContext` | `boolean` | `false` | Best-effort cloud page-data context for external tabs |
+| `tools.web.scrapeMode` | `'off' \| 'on_demand'` | `'off'` | `on_demand` attempts cloud scrape for the active external tab (background external tabs remain placeholders) |
+| `tools.web.allowDomains` | `string[]` | `[]` | Optional allowlist for external cloud context fetch |
+| `tools.web.denyDomains` | `string[]` | `[]` | Optional denylist for external cloud context fetch |
+
+When `tools.web.scrapeMode` is `on_demand`, ensure your Rover site key includes cloud scrape capability (Workspace "embed + cloud" profile).
 
 ### Session
 
@@ -350,9 +356,7 @@ rover.boot(config);
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `taskContext.inactivityMs` | `number` | `300000` | Inactivity timeout before suggesting reset (ms) |
-| `taskContext.suggestReset` | `boolean` | `true` | Show "new task" suggestion on context shift |
-| `taskContext.semanticSimilarityThreshold` | `number` | `0.18` | Threshold for detecting new intent |
+| `taskContext.*` | object | — | Task boundaries are completion-driven. Rover keeps one task active until the worker marks it complete or you call `newTask()` / `endTask()`. |
 
 ### Checkpointing
 
@@ -376,6 +380,7 @@ rover.boot(config);
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `ui.muted` | `boolean` | `false` | Start with audio muted. User can still toggle via the mute button in the header. |
+| `ui.agent.name` | `string` | `'Rover'` | Custom assistant name shown in UI and runtime context |
 | `ui.mascot.disabled` | `boolean` | `false` | Disable mascot video entirely |
 | `ui.mascot.mp4Url` | `string` | default | Custom mascot MP4 URL |
 | `ui.mascot.webmUrl` | `string` | default | Custom mascot WebM URL |
@@ -410,7 +415,6 @@ off(); // unsubscribe
 | `mode_change` | `{ mode }` | Switched between `controller` and `observer` |
 | `task_started` | `{ reason }` | New task started |
 | `task_ended` | `{ reason }` | Task ended |
-| `task_suggested_reset` | `{ text }` | Inactivity/shift detected, suggesting new task |
 | `context_restored` | — | Session restored from checkpoint |
 | `open` | — | Panel opened |
 | `close` | — | Panel closed |

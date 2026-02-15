@@ -3,6 +3,7 @@ import type { PlannerPreviousStep } from './types.js';
 import { processActionResponse, formatFunctionResultsIntoPrevSteps, managePrevStepsSize, waitWhilePaused } from './utils.js';
 import type { FunctionCall, PreviousSteps, FunctionDeclaration, StatusStage } from './types.js';
 import type { AgentContext } from './context.js';
+import { resolveRuntimeTabs } from './runtimeTabs.js';
 
 export type AgenticSeekOptions = {
   tabOrder: number[];
@@ -58,11 +59,10 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
   let totalCreditsUsed = 0;
   const allWarnings: string[] = [];
   const accumulatedPrevSteps: PreviousSteps[] = Array.isArray(previousSteps) ? previousSteps : [];
+  const fallbackTabs = tabOrder.map(id => ({ id }));
   let retry = 0;
   let iterations = 0;
   let pageDataOptions: { disableAutoScroll?: boolean } | undefined;
-
-  const tabId = tabOrder[0];
 
   while (retry < MAX_RETRIES) {
     if (iterations++ >= MAX_ITERATIONS) {
@@ -78,14 +78,51 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
 
       onStatusUpdate?.('Analyzing page content...', 'Calling seek workflow', 'analyze');
 
-      const pageData = await ctx.getPageData(tabId, pageDataOptions);
+      const { tabOrder: runtimeTabOrder, activeTabId } = await resolveRuntimeTabs(bridgeRpc, fallbackTabs);
+      const scopedTabOrder = runtimeTabOrder.length ? runtimeTabOrder : tabOrder;
+      const webPageMap: Record<number, any> = {};
+
+      try {
+        webPageMap[activeTabId] = await ctx.getPageData(activeTabId, {
+          ...(pageDataOptions || {}),
+          __roverAllowExternalFetch: true,
+        });
+      } catch {
+        retry++;
+        continue;
+      }
+
+      const backgroundTabIds = scopedTabOrder.filter(currentTabId => currentTabId !== activeTabId);
+      const backgroundResults = await Promise.all(
+        backgroundTabIds.map(async currentTabId => {
+          try {
+            const pageData = await ctx.getPageData(currentTabId);
+            return { tabId: currentTabId, pageData };
+          } catch {
+            return { tabId: currentTabId, pageData: undefined };
+          }
+        }),
+      );
+
+      for (const result of backgroundResults) {
+        if (result.pageData) {
+          webPageMap[result.tabId] = result.pageData;
+        } else {
+          allWarnings.push(`Could not load page data for tab ${result.tabId}; continuing with remaining tabs.`);
+        }
+      }
+
+      if (!webPageMap[activeTabId]) {
+        retry++;
+        continue;
+      }
 
       const request = {
         siteId: ctx.siteId,
         customTabWorkflow: 'Seek',
-        webPageMap: { [tabId]: pageData },
-        tabOrder: [tabId],
-        activeTabId: tabId,
+        webPageMap,
+        tabOrder: scopedTabOrder,
+        activeTabId,
         userInput,
         dataJsonSchema: schema,
         files,
@@ -110,7 +147,7 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
       const data = response.data;
       totalCreditsUsed += data?.creditsUsed || 0;
 
-      const tabResponse = data?.tabResponses?.[tabId];
+      const tabResponse = data?.tabResponses?.[activeTabId];
       if (!tabResponse) {
         retry++;
         continue;
@@ -125,7 +162,7 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
       const processResult = await processActionResponse({
         request,
         response: tabResponse,
-        tabId,
+        tabId: activeTabId,
         prevSteps: accumulatedPrevSteps,
         thought: tabResponse.thought,
         bridgeRpc,
