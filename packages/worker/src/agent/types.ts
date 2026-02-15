@@ -94,6 +94,7 @@ export type PlannerQuestion = {
   id?: string;
   question?: string; // backward-compatible alias from older payloads
   choices?: string[];
+  required?: boolean;
 };
 
 export type LLMLogEntry = {

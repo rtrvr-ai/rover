@@ -946,17 +946,6 @@ export class SessionCoordinator {
         external: !!payload.external,
         openerRuntimeId: payload.openerRuntimeId,
       });
-
-      // For in-scope tabs, immediately move active context so next turn targets
-      // the newly opened tab index space.
-      if (!payload.external) {
-        draft.activeLogicalTabId = logicalTabId;
-        draft.lease = {
-          holderRuntimeId: this.runtimeId,
-          expiresAt: now() + this.leaseMs,
-          updatedAt: now(),
-        };
-      }
     });
 
     return { logicalTabId };

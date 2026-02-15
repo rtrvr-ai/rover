@@ -86,6 +86,12 @@ export type RoverInit = {
     actHeuristicThreshold?: number;
     plannerOnActError?: boolean;
   };
+  navigation?: {
+    crossHostPolicy?: 'open_new_tab' | 'same_tab';
+  };
+  task?: {
+    autoResumePolicy?: 'auto' | 'confirm' | 'never';
+  };
   taskContext?: {
     inactivityMs?: number;
     suggestReset?: boolean;
@@ -283,7 +289,10 @@ let workerReady = false;
 let autoResumeAttempted = false;
 let runSafetyTimer: ReturnType<typeof setTimeout> | null = null;
 let unloadHandlerInstalled = false;
-let pendingTaskSuggestion: { text: string; reason: string; createdAt: number } | null = null;
+type PendingTaskSuggestion =
+  | { kind: 'task_reset'; text: string; reason: string; createdAt: number }
+  | { kind: 'resume_run'; runId: string; text: string; createdAt: number };
+let pendingTaskSuggestion: PendingTaskSuggestion | null = null;
 let lastStatusSignature = '';
 let lastUserInputText: string | undefined;
 const latestAssistantByRunId = new Map<string, string>();
@@ -588,6 +597,16 @@ function normalizeTelemetryConfig(cfg: RoverInit | null): {
     maxBatchSize,
     includePayloads: raw?.includePayloads === true,
   };
+}
+
+function normalizeCrossHostPolicy(policy?: 'open_new_tab' | 'same_tab'): 'open_new_tab' | 'same_tab' {
+  if (policy === 'same_tab' || policy === 'open_new_tab') return policy;
+  return 'open_new_tab';
+}
+
+function normalizeTaskAutoResumePolicy(policy?: 'auto' | 'confirm' | 'never'): 'auto' | 'confirm' | 'never' {
+  if (policy === 'auto' || policy === 'confirm' || policy === 'never') return policy;
+  return 'confirm';
 }
 
 function canUseTelemetry(cfg: RoverInit | null): boolean {
@@ -944,16 +963,23 @@ function normalizeAskUserQuestions(input: any): RoverAskUserQuestion[] {
     const key = String(raw.key || raw.id || '').trim() || `clarification_${i + 1}`;
     const query = String(raw.query || raw.question || '').trim();
     if (!query) continue;
+    const hasRequired = typeof raw.required === 'boolean';
+    const hasOptional = typeof raw.optional === 'boolean';
+    const required = hasRequired ? !!raw.required : (hasOptional ? !raw.optional : true);
     const dedupeKey = `${key}::${query}`.toLowerCase();
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
-    out.push({
+    const normalized: RoverAskUserQuestion = {
       key,
       query,
       ...(typeof raw.id === 'string' && raw.id.trim() ? { id: raw.id.trim() } : {}),
       ...(typeof raw.question === 'string' && raw.question.trim() ? { question: raw.question.trim() } : {}),
       ...(Array.isArray(raw.choices) ? { choices: raw.choices } : {}),
-    });
+    };
+    if (!required) {
+      (normalized as any).required = false;
+    }
+    out.push(normalized);
   }
   return out.slice(0, 6);
 }
@@ -1329,6 +1355,13 @@ function sanitizePendingRun(input: any): PersistedPendingRun | undefined {
     startedAt: Number(input.startedAt) || Date.now(),
     attempts: Math.max(0, Number(input.attempts) || 0),
     autoResume: input.autoResume !== false,
+    resumeRequired: input.resumeRequired === true,
+    resumeReason:
+      input.resumeReason === 'cross_host_navigation'
+      || input.resumeReason === 'handoff'
+      || input.resumeReason === 'page_reload'
+        ? input.resumeReason
+        : undefined,
   };
 }
 
@@ -1353,7 +1386,15 @@ function ensureUnloadHandler(): void {
     // If there's an auto-resumable pending run, clear the runtimeId from activeRun
     // so the new runtime (after page reload) isn't blocked by stale runtimeId check
     if (runtimeState?.pendingRun?.autoResume) {
-      sessionCoordinator?.clearActiveRunRuntimeId(runtimeState.pendingRun.id);
+      const markedPending = sanitizePendingRun({
+        ...runtimeState.pendingRun,
+        resumeRequired: true,
+        resumeReason: runtimeState.pendingRun.resumeReason || 'page_reload',
+      });
+      runtimeState.pendingRun = markedPending;
+      if (markedPending) {
+        sessionCoordinator?.clearActiveRunRuntimeId(markedPending.id);
+      }
     }
     sessionCoordinator?.broadcastClosing();
     if (runtimeState?.pendingRun) {
@@ -1435,6 +1476,22 @@ function markTaskCompleted(reason = 'worker_task_complete', timestamp = Date.now
 function hideTaskSuggestion(): void {
   pendingTaskSuggestion = null;
   ui?.setTaskSuggestion({ visible: false });
+}
+
+function showResumeSuggestion(pending: PersistedPendingRun): void {
+  pendingTaskSuggestion = {
+    kind: 'resume_run',
+    runId: pending.id,
+    text: pending.text,
+    createdAt: Date.now(),
+  };
+  ui?.setTaskSuggestion({
+    visible: true,
+    text: 'Previous task was interrupted by navigation. Resume it?',
+    primaryLabel: 'Resume',
+    secondaryLabel: 'Start fresh',
+  });
+  setUiStatus('Task paused after navigation. Resume to continue.');
 }
 
 function clearTaskUiState(): void {
@@ -1689,6 +1746,8 @@ function postRun(
     startedAt: Date.now(),
     attempts: resume ? previousAttempts + 1 : 0,
     autoResume: options?.autoResume !== false,
+    resumeRequired: false,
+    resumeReason: undefined,
   });
   markTaskRunning(resume ? 'worker_task_resumed' : 'worker_task_active');
 
@@ -1774,6 +1833,14 @@ function maybeAutoResumePendingRun(): void {
 
   const pending = runtimeState.pendingRun;
   if (!pending.autoResume) return;
+  const resumePolicy = normalizeTaskAutoResumePolicy(currentConfig?.task?.autoResumePolicy);
+  if (resumePolicy === 'never') {
+    addIgnoredRunId(pending.id);
+    setPendingRun(undefined);
+    sessionCoordinator?.setActiveRun(undefined);
+    setUiStatus('Previous task dismissed after navigation.');
+    return;
+  }
 
   // sessionStorage flag distinguishes refresh (flag exists) from fresh tab (flag absent)
   const siteId = currentConfig?.siteId || '';
@@ -1805,6 +1872,12 @@ function maybeAutoResumePendingRun(): void {
     addIgnoredRunId(pending.id);
     setPendingRun(undefined);
     appendUiMessage('system', 'Auto-resume stopped after too many navigation attempts.', true);
+    return;
+  }
+
+  if (resumePolicy === 'confirm') {
+    autoResumeAttempted = true;
+    showResumeSuggestion(pending);
     return;
   }
 
@@ -3034,8 +3107,9 @@ function createRuntime(cfg: RoverInit): void {
     allowedDomains: cfg.allowedDomains,
     domainScopeMode: cfg.domainScopeMode,
     externalNavigationPolicy: cfg.externalNavigationPolicy,
-    registerOpenedTab: payload => sessionCoordinator?.registerOpenedTab(payload),
-    switchToLogicalTab: logicalTabId => sessionCoordinator?.switchToLogicalTab(logicalTabId) || { ok: false, reason: 'No session coordinator' },
+    crossHostPolicy: normalizeCrossHostPolicy(cfg.navigation?.crossHostPolicy),
+    registerOpenedTab: (payload: any) => sessionCoordinator?.registerOpenedTab(payload),
+    switchToLogicalTab: (logicalTabId: number) => sessionCoordinator?.switchToLogicalTab(logicalTabId) || { ok: false, reason: 'No session coordinator' },
     listKnownTabs: () =>
       (sessionCoordinator?.listTabs() || []).map(tab => ({
         logicalTabId: tab.logicalTabId,
@@ -3044,7 +3118,7 @@ function createRuntime(cfg: RoverInit): void {
         title: tab.title,
         external: !!tab.external,
       })),
-    onNavigationGuardrail: event => {
+    onNavigationGuardrail: (event: any) => {
       emit('navigation_guardrail', event);
       appendTimelineEvent({
         kind: 'status',
@@ -3054,7 +3128,7 @@ function createRuntime(cfg: RoverInit): void {
       });
     },
     instrumentationOptions: cfg.mode === 'safe' ? { observeInlineMutations: false } : undefined,
-  });
+  } as any);
 
   const channel = new MessageChannel();
   bindRpc(channel.port1, {
@@ -3233,6 +3307,16 @@ function createRuntime(cfg: RoverInit): void {
     onTaskSuggestionPrimary: () => {
       const suggestion = pendingTaskSuggestion;
       if (!suggestion) return;
+      if (suggestion.kind === 'resume_run') {
+        hideTaskSuggestion();
+        postRun(suggestion.text, {
+          runId: suggestion.runId,
+          resume: true,
+          appendUserMessage: false,
+          autoResume: true,
+        });
+        return;
+      }
       dispatchUserPrompt(suggestion.text, {
         bypassSuggestion: true,
         startNewTask: true,
@@ -3242,6 +3326,21 @@ function createRuntime(cfg: RoverInit): void {
     onTaskSuggestionSecondary: () => {
       const suggestion = pendingTaskSuggestion;
       if (!suggestion) return;
+      if (suggestion.kind === 'resume_run') {
+        if (runtimeState?.pendingRun?.id === suggestion.runId) {
+          addIgnoredRunId(suggestion.runId);
+          sessionCoordinator?.releaseWorkflowLock(suggestion.runId);
+          sessionCoordinator?.setActiveRun(undefined);
+          setPendingRun(undefined);
+        }
+        if (runSafetyTimer) {
+          clearTimeout(runSafetyTimer);
+          runSafetyTimer = null;
+        }
+        hideTaskSuggestion();
+        newTask({ reason: 'resume_declined_start_fresh', clearUi: true });
+        return;
+      }
       dispatchUserPrompt(suggestion.text, {
         bypassSuggestion: true,
       });
@@ -3389,6 +3488,12 @@ export function boot(cfg: RoverInit): RoverInstance {
       actHeuristicThreshold: cfg.taskRouting?.actHeuristicThreshold,
       plannerOnActError: cfg.taskRouting?.plannerOnActError,
     },
+    navigation: {
+      crossHostPolicy: normalizeCrossHostPolicy(cfg.navigation?.crossHostPolicy),
+    },
+    task: {
+      autoResumePolicy: normalizeTaskAutoResumePolicy(cfg.task?.autoResumePolicy),
+    },
     taskContext: {
       ...cfg.taskContext,
     },
@@ -3458,6 +3563,16 @@ export function update(cfg: Partial<RoverInit>): void {
       ...currentConfig.taskRouting,
       ...cfg.taskRouting,
     },
+    navigation: {
+      ...currentConfig.navigation,
+      ...cfg.navigation,
+      crossHostPolicy: normalizeCrossHostPolicy(cfg.navigation?.crossHostPolicy ?? currentConfig.navigation?.crossHostPolicy),
+    },
+    task: {
+      ...currentConfig.task,
+      ...cfg.task,
+      autoResumePolicy: normalizeTaskAutoResumePolicy(cfg.task?.autoResumePolicy ?? currentConfig.task?.autoResumePolicy),
+    },
     taskContext: {
       ...currentConfig.taskContext,
       ...cfg.taskContext,
@@ -3513,12 +3628,13 @@ export function update(cfg: Partial<RoverInit>): void {
     if (typeof cfg.allowActions === 'boolean') {
       bridge.setAllowActions(cfg.allowActions && currentMode === 'controller');
     }
-    if (cfg.allowedDomains || cfg.domainScopeMode || cfg.externalNavigationPolicy) {
+    if (cfg.allowedDomains || cfg.domainScopeMode || cfg.externalNavigationPolicy || cfg.navigation?.crossHostPolicy) {
       bridge.setNavigationPolicy({
         allowedDomains: cfg.allowedDomains,
         domainScopeMode: cfg.domainScopeMode,
         externalNavigationPolicy: cfg.externalNavigationPolicy,
-      });
+        crossHostPolicy: cfg.navigation?.crossHostPolicy,
+      } as any);
     }
   }
 

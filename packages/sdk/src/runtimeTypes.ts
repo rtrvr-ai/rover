@@ -67,6 +67,8 @@ export type PersistedPendingRun = {
   startedAt: number;
   attempts: number;
   autoResume: boolean;
+  resumeRequired?: boolean;
+  resumeReason?: 'cross_host_navigation' | 'page_reload' | 'handoff';
 };
 
 export type PersistedRuntimeState = {
