@@ -53,7 +53,7 @@ export type AgentContext = {
   signal?: AbortSignal;
 };
 
-const DEFAULT_CLOUD_FUNCTIONS_BASE = 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net';
+const DEFAULT_EXTENSION_ROUTER_BASE = 'https://extensionrouter.rtrvr.ai';
 
 const CANONICAL_ADDITIONAL_TOOLS = new Set(['generate_sheets', 'generate_docs', 'generate_slides', 'generate_websites']);
 const LEGACY_ADDITIONAL_TOOL_ALIASES: Record<string, string> = {
@@ -171,6 +171,22 @@ function normalizeRuntimeExternalTabs(input?: RoverRuntimeContextExternalTab[]):
   return Array.from(deduped.values());
 }
 
+function resolveExtensionRouterEndpoint(apiBase?: string): string {
+  const fallback = DEFAULT_EXTENSION_ROUTER_BASE;
+  const base = String(apiBase || fallback).trim().replace(/\/+$/, '');
+  if (!base) return fallback;
+  if (base.endsWith('/extensionRouter')) return base;
+  try {
+    const parsed = new URL(base);
+    const pathname = parsed.pathname.replace(/\/+$/, '');
+    if (pathname && pathname !== '/') return base;
+    if (parsed.hostname.toLowerCase() === 'extensionrouter.rtrvr.ai') return base;
+  } catch {
+    // no-op: fallback to legacy suffix behavior
+  }
+  return `${base}/extensionRouter`;
+}
+
 function buildRoverRuntimeContext(config: RoverAgentConfig): RoverRuntimeContext | undefined {
   const runtimeContext = config.runtimeContext;
   if (!runtimeContext || runtimeContext.mode !== 'rover_embed') return undefined;
@@ -251,8 +267,7 @@ export function createAgentContext(
     llmIntegration.enableGoogleAiStudioApiKey = true;
   }
 
-  const base = (config.apiBase || DEFAULT_CLOUD_FUNCTIONS_BASE).replace(/\/$/, '');
-  const endpoint = base.endsWith('/extensionRouter') ? base : `${base}/extensionRouter`;
+  const endpoint = resolveExtensionRouterEndpoint(config.apiBase);
   const runtimeContext = buildRoverRuntimeContext(config);
   const externalWebConfig = normalizeExternalWebConfig(config.tools?.web);
   const externalPageDataCache = new Map<string, { data: any; ts: number }>();

@@ -214,7 +214,7 @@ If your site sets a `Content-Security-Policy` header or `<meta>` tag, add the fo
 |---|---|---|
 | `script-src` | `https://rover.rtrvr.ai blob:` | Loads the SDK script. `blob:` is needed because the Web Worker is created from a blob URL via `importScripts()`. |
 | `worker-src` | `blob: https://rover.rtrvr.ai` | Allows the Web Worker to execute. The worker handles AI task processing off the main thread. |
-| `connect-src` | `https://us-central1-rtrvr-extension-functions.cloudfunctions.net` | API calls for task execution, authentication, and checkpointing. |
+| `connect-src` | `https://extensionrouter.rtrvr.ai` | API calls for task execution, authentication, and checkpointing. |
 | `style-src` | `'unsafe-inline'` | Rover renders inside a Shadow DOM and injects its styles inline. This is standard for Shadow DOM components. |
 | `font-src` | `https://rover.rtrvr.ai` | Loads the self-hosted Manrope font used in the widget UI. |
 
@@ -230,7 +230,7 @@ If your site sets a `Content-Security-Policy` header or `<meta>` tag, add the fo
 <meta http-equiv="Content-Security-Policy" content="
   script-src 'self' https://rover.rtrvr.ai blob:;
   worker-src blob: https://rover.rtrvr.ai;
-  connect-src 'self' https://us-central1-rtrvr-extension-functions.cloudfunctions.net;
+  connect-src 'self' https://extensionrouter.rtrvr.ai;
   style-src 'self' 'unsafe-inline';
   font-src 'self' https://rover.rtrvr.ai;
   media-src 'self' https://www.rtrvr.ai;
@@ -325,7 +325,7 @@ rover.boot(config);
 | `sessionId` | `string` | auto | Explicit session ID |
 | `sessionScope` | `'shared_site' \| 'tab'` | `'shared_site'` | Shared cross-tab session or tab-isolated session |
 | `mode` | `'full' \| 'safe'` | `'full'` | Runtime mode |
-| `apiBase` | `string` | auto | Custom API base URL |
+| `apiBase` | `string` | `https://extensionrouter.rtrvr.ai` | Custom API base URL. Custom domains can be passed directly (no `/extensionRouter` suffix required). |
 | `workerUrl` | `string` | auto | Custom worker URL (self-hosting) |
 
 ### Domain Guardrails & Navigation
@@ -508,7 +508,7 @@ When authentication is missing or invalid, Rover emits an `auth_required` event:
 - CSP may be blocking `font-src https://rover.rtrvr.ai`. Add this directive, or self-host the font.
 
 ### API errors / "Failed to fetch"
-- Add `connect-src https://us-central1-rtrvr-extension-functions.cloudfunctions.net` to your CSP.
+- Add `connect-src https://extensionrouter.rtrvr.ai` to your CSP.
 
 ### Auth errors
 - Ensure `apiKey` is present and valid in the boot config.

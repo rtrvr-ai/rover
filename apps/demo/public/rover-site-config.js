@@ -7,7 +7,7 @@ window.__ROVER_WEBSITE_CONFIG__ = {
   apiKey: 'rtrvr_drCfCgfsaNkES8ydNbmub62gfZCMIi79JyaM9vH0atQ',
 
   // Change if you want to point to another backend.
-  apiBase: 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net', //'http://127.0.0.1:5002/rtrvr-extension-functions/us-central1'
+  apiBase: 'https://extensionrouter.rtrvr.ai', //'http://127.0.0.1:5002/rtrvr-extension-functions/us-central1'
 
   // Stable visitor identity for cross-subdomain checkpoint restore.
   // In production this should come from your own session/user identity.

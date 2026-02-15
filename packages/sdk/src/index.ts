@@ -570,9 +570,26 @@ function stopTelemetry(): void {
   }
 }
 
+const DEFAULT_EXTENSION_ROUTER_BASE = 'https://extensionrouter.rtrvr.ai';
+
+function resolveExtensionRouterEndpoint(apiBase?: string): string {
+  const fallback = DEFAULT_EXTENSION_ROUTER_BASE;
+  const base = String(apiBase || fallback).trim().replace(/\/+$/, '');
+  if (!base) return fallback;
+  if (base.endsWith('/extensionRouter')) return base;
+  try {
+    const parsed = new URL(base);
+    const pathname = parsed.pathname.replace(/\/+$/, '');
+    if (pathname && pathname !== '/') return base;
+    if (parsed.hostname.toLowerCase() === 'extensionrouter.rtrvr.ai') return base;
+  } catch {
+    // no-op: fallback to legacy suffix behavior
+  }
+  return `${base}/extensionRouter`;
+}
+
 function getTelemetryEndpoint(cfg: RoverInit): string {
-  const base = (cfg.apiBase || 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net').replace(/\/$/, '');
-  return base.endsWith('/extensionRouter') ? base : `${base}/extensionRouter`;
+  return resolveExtensionRouterEndpoint(cfg.apiBase);
 }
 
 async function flushTelemetry(force = false): Promise<void> {

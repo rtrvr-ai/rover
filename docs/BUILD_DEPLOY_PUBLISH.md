@@ -185,7 +185,7 @@ The embed script loads from `https://rover.rtrvr.ai/embed.js` and boots with:
 window.rover('boot', {
   siteId: 'rtrvr-website',
   apiKey: '...',
-  apiBase: 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net',
+  apiBase: 'https://extensionrouter.rtrvr.ai',
   // ... other config
 });
 ```

@@ -48,7 +48,7 @@ Without auth, Rover emits `auth_required` with code `MISSING_API_KEY`.
 
 | Environment | URL |
 |-------------|-----|
-| **Production** | `https://us-central1-rtrvr-extension-functions.cloudfunctions.net` |
+| **Production** | `https://extensionrouter.rtrvr.ai` |
 | **Firebase Emulator** | `http://127.0.0.1:5002/rtrvr-extension-functions/us-central1` |
 
 ---
@@ -73,7 +73,7 @@ import { init } from '@rover/sdk';
 
 init({
   siteId: 'demo',
-  apiBase: 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net',
+  apiBase: 'https://extensionrouter.rtrvr.ai',
   apiKey: 'rtrvr_YOUR_API_KEY_HERE',         // REQUIRED for backend calls
   workerUrl: new URL('./worker.ts', import.meta.url).toString(),
   openOnInit: true,
@@ -240,7 +240,9 @@ init({
 - Tool execution: Set breakpoint in `Bridge.executeTool()` at `packages/bridge/src/Bridge.ts:73`
 
 **Network tab:**
-- Watch for `POST /extensionRouter` calls to the backend
+- Watch for Rover backend POST calls:
+  - `https://extensionrouter.rtrvr.ai` (custom-domain production base), or
+  - `*/extensionRouter` when using cloudfunctions/emulator-style bases
 - Check request payload has: `action`, `data.userInput`, `data.webPageMap`
 - Check response has: `success: true`, `data.plan` or `data.questions`
 
@@ -276,7 +278,7 @@ init({
 
   // Backend
   apiBase?: string,            // Override backend URL
-                               // Default: https://us-central1-rtrvr-extension-functions.cloudfunctions.net
+                               // Default: https://extensionrouter.rtrvr.ai
 
   // Worker
   workerUrl?: string,          // Override worker script URL
@@ -321,7 +323,7 @@ init({
 ### CRITICAL: Wrong backend URL in demo app
 **File:** `apps/demo/src/main.ts`
 **Was:** `apiBase: 'http://localhost:8787'` (Cloudflare Workers URL - incorrect)
-**Fixed to:** `apiBase: 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net'`
+**Fixed to:** `apiBase: 'https://extensionrouter.rtrvr.ai'`
 **Impact:** Every backend call would fail with connection refused.
 
 ### CRITICAL: Missing API key in demo config
