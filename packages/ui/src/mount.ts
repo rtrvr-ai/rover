@@ -63,6 +63,9 @@ export type MountOptions = {
   onTaskSuggestionSecondary?: () => void;
   showTaskControls?: boolean;
   muted?: boolean;
+  agent?: {
+    name?: string;
+  };
   mascot?: {
     disabled?: boolean;
     mp4Url?: string;
@@ -70,6 +73,7 @@ export type MountOptions = {
   };
 };
 
+const DEFAULT_AGENT_NAME = 'Rover';
 const DEFAULT_MASCOT_MP4 = 'https://www.rtrvr.ai/rover/mascot.mp4';
 const DEFAULT_MASCOT_WEBM = 'https://www.rtrvr.ai/rover/mascot.webm';
 
@@ -120,6 +124,26 @@ function deriveTraceKey(event: RoverTimelineEvent): string {
 
 function sanitizeText(text: string): string {
   return String(text || '').trim();
+}
+
+function resolveAgentName(input?: string): string {
+  const normalized = String(input || '').trim();
+  if (!normalized) return DEFAULT_AGENT_NAME;
+  return normalized.slice(0, 64);
+}
+
+function deriveAgentInitial(name: string): string {
+  const normalized = String(name || '').trim();
+  if (!normalized) return 'R';
+  return normalized[0].toUpperCase();
+}
+
+function deriveLauncherToken(name: string): string {
+  const compact = String(name || '')
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .slice(0, 3)
+    .toUpperCase();
+  return compact || 'RVR';
 }
 
 function parseStageFromTitle(title: string): { stage?: string; plainTitle: string } {
@@ -336,6 +360,10 @@ function createExpandableRichContent(text: string, threshold: number): HTMLDivEl
 }
 
 export function mountWidget(opts: MountOptions): RoverUi {
+  const agentName = resolveAgentName(opts.agent?.name);
+  const agentInitial = deriveAgentInitial(agentName);
+  const launcherToken = deriveLauncherToken(agentName);
+
   const host = document.createElement('div');
   host.id = 'rover-widget-root';
   document.documentElement.appendChild(host);
@@ -1389,7 +1417,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   /* ── Launcher ── */
   const launcher = document.createElement('button');
   launcher.className = 'launcher';
-  launcher.setAttribute('aria-label', 'Open Rover assistant');
+  launcher.setAttribute('aria-label', `Open ${agentName} assistant`);
 
   const mascotDisabled = opts.mascot?.disabled === true;
 
@@ -1414,7 +1442,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   const launcherFallback = document.createElement('span');
   launcherFallback.className = 'launcherFallback';
-  launcherFallback.textContent = 'RVR';
+  launcherFallback.textContent = launcherToken;
 
   const launcherShine = document.createElement('div');
   launcherShine.className = 'launcherShine';
@@ -1439,14 +1467,14 @@ export function mountWidget(opts: MountOptions): RoverUi {
   }
   const avatarFallback = document.createElement('span');
   avatarFallback.className = 'avatarFallback';
-  avatarFallback.textContent = 'R';
+  avatarFallback.textContent = agentInitial;
   avatar.appendChild(avatarFallback);
 
   const meta = document.createElement('div');
   meta.className = 'meta';
   const titleEl = document.createElement('div');
   titleEl.className = 'title';
-  titleEl.textContent = 'Rover';
+  titleEl.textContent = agentName;
   const statusEl = document.createElement('div');
   statusEl.className = 'status';
   const statusDot = document.createElement('span');
@@ -1608,7 +1636,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   const composerTextarea = document.createElement('textarea');
   composerTextarea.rows = 1;
-  composerTextarea.placeholder = 'Ask Rover to act on this website...';
+  composerTextarea.placeholder = `Ask ${agentName} to act on this website...`;
   composer.appendChild(composerTextarea);
 
   const sendButton = document.createElement('button');
@@ -1982,7 +2010,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     if (mode === 'controller') {
       modeBadge.textContent = 'active';
       menuTakeControl.style.display = 'none';
-      inputEl.placeholder = 'Ask Rover to act on this website...';
+      inputEl.placeholder = `Ask ${agentName} to act on this website...`;
     } else {
       modeBadge.textContent = 'observer';
       if (executionMeta?.canTakeControl !== false) {
@@ -1996,7 +2024,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       } else if (canComposeInObserver) {
         inputEl.placeholder = 'Send to take control and run here.';
       } else if (executionMeta?.activeLogicalTabId && executionMeta?.localLogicalTabId && executionMeta.activeLogicalTabId !== executionMeta.localLogicalTabId) {
-        inputEl.placeholder = `Observing: Rover is acting in tab #${executionMeta.activeLogicalTabId}`;
+        inputEl.placeholder = `Observing: ${agentName} is acting in tab #${executionMeta.activeLogicalTabId}`;
       } else {
         inputEl.placeholder = 'Observer mode. Take control to run actions here.';
       }

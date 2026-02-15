@@ -10,6 +10,10 @@ import type { AgentContext } from './context.js';
 import { attachSheetData, buildHeaders, publishObjectsToMemory, publishRowsToMemory, resolveHistorySheetInfo, resolveMemoryTarget } from './memorySheets.js';
 import { isMemorySheetId } from '../tabular-memory/tabular-store.js';
 import { toRoverErrorEnvelope } from './errors.js';
+import { resolveRuntimeTabs } from './runtimeTabs.js';
+
+const MAX_AGENT_CHATLOG_ENTRIES = 24;
+const MAX_AGENT_CHATLOG_MESSAGE_CHARS = 1000;
 
 function unsupportedToolResult(toolName: string, message: string): ToolExecutionResult {
   return {
@@ -51,13 +55,22 @@ function buildStructuredErrorOutput(envelope: {
 function normalizeAgentLog(agentLog: ToolExecutionContext['agentLog']) {
   // Preserve the same mutable reference so step updates survive page transitions.
   const prevSteps = Array.isArray(agentLog?.prevSteps) ? agentLog.prevSteps : [];
+
+  const sanitizeMessage = (value: string): string => {
+    const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!normalized) return '';
+    if (normalized.length <= MAX_AGENT_CHATLOG_MESSAGE_CHARS) return normalized;
+    return `${normalized.slice(0, MAX_AGENT_CHATLOG_MESSAGE_CHARS - 1)}…`;
+  };
+
   const chatLog: Array<{ role: 'user' | 'model'; message: string }> = Array.isArray(agentLog?.chatLog)
     ? agentLog.chatLog
         .map(entry => ({
           role: entry?.role === 'user' ? ('user' as const) : ('model' as const),
-          message: typeof entry?.message === 'string' ? entry.message : '',
+          message: typeof entry?.message === 'string' ? sanitizeMessage(entry.message) : '',
         }))
         .filter(entry => !!entry.message)
+        .slice(-MAX_AGENT_CHATLOG_ENTRIES)
     : [];
 
   return { prevSteps, chatLog };
@@ -88,7 +101,9 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
     return { error: 'Agent context unavailable' };
   }
 
-  const tabOrder = tabs?.length ? tabs.map(t => t.id) : [1];
+  const fallbackTabs = Array.isArray(tabs) && tabs.length ? tabs : [{ id: 1 }];
+  const resolvedTabs = await resolveRuntimeTabs(bridgeRpc, fallbackTabs);
+  const tabOrder = resolvedTabs.tabOrder.length ? resolvedTabs.tabOrder : fallbackTabs.map(tab => tab.id);
   const effectiveAgentLog = normalizeAgentLog(agentLog);
 
   try {

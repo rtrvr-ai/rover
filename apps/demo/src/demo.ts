@@ -51,6 +51,27 @@ type DemoConfig = {
   apiKey: string;
   apiBase: string;
   visitorId: string;
+  allowedDomains: string[];
+  domainScopeMode: 'host_only' | 'registrable_domain';
+  externalNavigationPolicy: 'open_new_tab_notice' | 'block' | 'allow';
+  ui?: {
+    agent?: {
+      name?: string;
+    };
+    mascot?: {
+      disabled?: boolean;
+      mp4Url?: string;
+      webmUrl?: string;
+    };
+  };
+  tools?: {
+    web?: {
+      enableExternalWebContext?: boolean;
+      scrapeMode?: 'off' | 'on_demand';
+      allowDomains?: string[];
+      denyDomains?: string[];
+    };
+  };
 };
 
 type StatusTone = 'normal' | 'warning' | 'error' | 'success';
@@ -174,7 +195,9 @@ function initRover(config: DemoConfig): ReturnType<typeof init> {
     workerUrl,
     allowActions: true,
     sessionScope: 'shared_site',
-    allowedDomains: [window.location.hostname],
+    allowedDomains: config.allowedDomains,
+    domainScopeMode: config.domainScopeMode,
+    externalNavigationPolicy: config.externalNavigationPolicy,
     crossDomainPolicy: 'block_new_tab',
     tabPolicy: { observerByDefault: true, actionLeaseMs: 12000 },
     taskRouting: {
@@ -196,7 +219,9 @@ function initRover(config: DemoConfig): ReturnType<typeof init> {
     },
     apiMode: true,
     openOnInit: false,
+    tools: config.tools,
     ui: {
+      ...config.ui,
       showTaskControls: true,
     },
   });
@@ -247,6 +272,11 @@ function bindRoverControls(config: DemoConfig): void {
       apiKey: (apiKeyInput?.value || '').trim(),
       apiBase: (apiBaseInput?.value || '').trim() || DEFAULT_API_BASE,
       visitorId: config.visitorId,
+      allowedDomains: config.allowedDomains,
+      domainScopeMode: config.domainScopeMode,
+      externalNavigationPolicy: config.externalNavigationPolicy,
+      ui: config.ui,
+      tools: config.tools,
     };
 
     saveConfig(nextConfig);
@@ -928,10 +958,16 @@ function defaultState(): DemoState {
 
 function loadConfig(): DemoConfig {
   const visitorId = getOrCreateDemoVisitorId();
+  const defaultAllowedDomains = [window.location.hostname].filter(Boolean);
   const fallback: DemoConfig = {
     apiKey: '',
     apiBase: DEFAULT_API_BASE,
     visitorId,
+    allowedDomains: defaultAllowedDomains,
+    domainScopeMode: 'registrable_domain',
+    externalNavigationPolicy: 'open_new_tab_notice',
+    ui: undefined,
+    tools: undefined,
   };
 
   const website = loadWebsiteConfig();
@@ -943,6 +979,11 @@ function loadConfig(): DemoConfig {
         apiKey: website.apiKey || fallback.apiKey,
         apiBase: website.apiBase || fallback.apiBase,
         visitorId: website.visitorId || fallback.visitorId,
+        allowedDomains: website.allowedDomains?.length ? website.allowedDomains : fallback.allowedDomains,
+        domainScopeMode: website.domainScopeMode || fallback.domainScopeMode,
+        externalNavigationPolicy: website.externalNavigationPolicy || fallback.externalNavigationPolicy,
+        ui: website.ui || fallback.ui,
+        tools: website.tools || fallback.tools,
       };
     }
     const parsed = JSON.parse(raw) as Partial<DemoConfig>;
@@ -951,23 +992,108 @@ function loadConfig(): DemoConfig {
       apiKey: (parsed.apiKey || '').trim() || website.apiKey || fallback.apiKey,
       apiBase: (parsed.apiBase || '').trim() || website.apiBase || fallback.apiBase,
       visitorId: (parsed.visitorId || '').trim() || website.visitorId || fallback.visitorId,
+      allowedDomains:
+        normalizeDomainList(parsed.allowedDomains).length
+          ? normalizeDomainList(parsed.allowedDomains)
+          : (website.allowedDomains?.length ? website.allowedDomains : fallback.allowedDomains),
+      domainScopeMode: normalizeDomainScopeMode(parsed.domainScopeMode) || website.domainScopeMode || fallback.domainScopeMode,
+      externalNavigationPolicy:
+        normalizeExternalNavigationPolicy(parsed.externalNavigationPolicy)
+        || website.externalNavigationPolicy
+        || fallback.externalNavigationPolicy,
+      ui: parsed.ui || website.ui || fallback.ui,
+      tools: parsed.tools || website.tools || fallback.tools,
     };
   } catch {
     return {
       apiKey: website.apiKey || fallback.apiKey,
       apiBase: website.apiBase || fallback.apiBase,
       visitorId: website.visitorId || fallback.visitorId,
+      allowedDomains: website.allowedDomains?.length ? website.allowedDomains : fallback.allowedDomains,
+      domainScopeMode: website.domainScopeMode || fallback.domainScopeMode,
+      externalNavigationPolicy: website.externalNavigationPolicy || fallback.externalNavigationPolicy,
+      ui: website.ui || fallback.ui,
+      tools: website.tools || fallback.tools,
     };
   }
 }
 
 function loadWebsiteConfig(): DemoConfig {
   const raw = window[WEBSITE_CONFIG_GLOBAL];
+  const allowedDomains = normalizeDomainList(raw?.allowedDomains);
+  const uiAgentName = typeof raw?.ui?.agent?.name === 'string' ? raw.ui.agent.name.trim() : undefined;
+  const mascotDisabled = typeof raw?.ui?.mascot?.disabled === 'boolean' ? raw.ui.mascot.disabled : undefined;
+  const mascotMp4Url = typeof raw?.ui?.mascot?.mp4Url === 'string' ? raw.ui.mascot.mp4Url.trim() : undefined;
+  const mascotWebmUrl = typeof raw?.ui?.mascot?.webmUrl === 'string' ? raw.ui.mascot.webmUrl.trim() : undefined;
+  const toolsWebAllowDomains = normalizeDomainList(raw?.tools?.web?.allowDomains);
+  const toolsWebDenyDomains = normalizeDomainList(raw?.tools?.web?.denyDomains);
+  const hasMascot =
+    typeof mascotDisabled === 'boolean'
+    || !!mascotMp4Url
+    || !!mascotWebmUrl;
+  const hasUi = !!uiAgentName || hasMascot;
+  const hasWebTools =
+    typeof raw?.tools?.web?.enableExternalWebContext === 'boolean'
+    || raw?.tools?.web?.scrapeMode === 'on_demand'
+    || toolsWebAllowDomains.length > 0
+    || toolsWebDenyDomains.length > 0;
+
   return {
     apiKey: typeof raw?.apiKey === 'string' ? raw.apiKey.trim() : '',
     apiBase: typeof raw?.apiBase === 'string' && raw.apiBase.trim() ? raw.apiBase.trim() : DEFAULT_API_BASE,
     visitorId: typeof raw?.visitorId === 'string' ? raw.visitorId.trim() : '',
+    allowedDomains,
+    domainScopeMode: normalizeDomainScopeMode(raw?.domainScopeMode) || 'registrable_domain',
+    externalNavigationPolicy: normalizeExternalNavigationPolicy(raw?.externalNavigationPolicy) || 'open_new_tab_notice',
+    ui: hasUi
+      ? {
+          ...(uiAgentName ? { agent: { name: uiAgentName } } : {}),
+          ...(hasMascot
+            ? {
+                mascot: {
+                  ...(typeof mascotDisabled === 'boolean' ? { disabled: mascotDisabled } : {}),
+                  ...(mascotMp4Url ? { mp4Url: mascotMp4Url } : {}),
+                  ...(mascotWebmUrl ? { webmUrl: mascotWebmUrl } : {}),
+                },
+              }
+            : {}),
+        }
+      : undefined,
+    tools: hasWebTools
+      ? {
+          web: {
+            ...(typeof raw?.tools?.web?.enableExternalWebContext === 'boolean'
+              ? { enableExternalWebContext: !!raw.tools.web.enableExternalWebContext }
+              : {}),
+            ...(raw?.tools?.web?.scrapeMode === 'on_demand' ? { scrapeMode: 'on_demand' as const } : { scrapeMode: 'off' as const }),
+            ...(toolsWebAllowDomains.length ? { allowDomains: toolsWebAllowDomains } : {}),
+            ...(toolsWebDenyDomains.length ? { denyDomains: toolsWebDenyDomains } : {}),
+          },
+        }
+      : undefined,
   };
+}
+
+function normalizeDomainList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out = new Set<string>();
+  for (const value of raw) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized) out.add(normalized);
+  }
+  return Array.from(out);
+}
+
+function normalizeDomainScopeMode(value: unknown): 'host_only' | 'registrable_domain' | undefined {
+  if (value === 'host_only' || value === 'registrable_domain') return value;
+  return undefined;
+}
+
+function normalizeExternalNavigationPolicy(
+  value: unknown,
+): 'open_new_tab_notice' | 'block' | 'allow' | undefined {
+  if (value === 'open_new_tab_notice' || value === 'block' || value === 'allow') return value;
+  return undefined;
 }
 
 function getOrCreateDemoVisitorId(): string {

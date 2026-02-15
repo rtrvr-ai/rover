@@ -528,3 +528,58 @@ show details whats the purpose? of no use prob users should see their prev inetr
        6. Implementation order — What depends on what
 
        Be very specific about DOM structure, CSS classes, and function signatures. Reference exact line numbers in mount.ts where changes go.
+
+
+       Let me reconsider. If it's happening on localhost demo app, it means the sessionCoordinator IS active there too (or the issue is elsewhere). Let me think about what could cause
+   this on localhost.
+
+  Actually wait - the user just deployed the new build to the website AND rebuilt the demo app. The demo app also got the new SDK code with the cross-tab getPageData routing. So
+  the demo app now has the same cross-tab routing logic.
+
+  On localhost, the issue could be:
+
+  The sessionCoordinator might have stale tab entries lingering from previous sessions, or the worker is requesting page data with a tabId that doesn't match the current
+  localTabId - essentially the same cross-tab routing bug. But if this is happening on fresh page loads rather than just auto-resume scenarios, then something else is going on.
+  Let me trace through what happens when the demo app opens fresh: the SDK boots and sessionCoordinator starts, then registerCurrentTab assigns a logical tab ID, the worker
+  starts and calls getCurrentTab to get that same ID via getTabContext, and then...
+
+  I'm looking at the getPageData handler to understand the condition check - it's comparing the incoming tabId against the local logical tab ID, and if they match it should route
+   to the local bridge. The issue might be that localLogicalTabId is undefined at the time of the check because sessionCoordinator hasn't registered the tab yet, or there's a
+  race condition where tabId is defined but localTabId hasn't been set.
+
+  Actually, I'm realizing the timing here - registerCurrentTab() is called during sessionCoordinator.start(), which happens before the worker is created, so by the time the
+  worker sends its first getPageData call, the tab should already be registered and localTabId should be defined. But I need to verify what happens in those edge cases right
+  after initialization.
+
+  The user mentioned this is reproducible on localhost too, and the key symptom is fallback: true, stale: true. Let me trace through what isTabAlive actually checks to understand
+   why it might be returning false for the current tab.
+
+  The function looks up the tab by logicalTabId and checks if its updatedAt timestamp is recent enough—within the last 4 seconds based on the heartbeat interval. The tab gets its
+   timestamp updated both during heartbeat pings every 2 seconds and immediately when it's first registered. So the tab should be marked alive right after registration unless
+  something is clearing or resetting the tabs array between registration and the check.
+
+  Now I'm wondering if there's a mismatch between what getTabContext returns as the logicalTabId versus what getLocalLogicalTabId() actually returns. Looking at how the SDK
+  constructs the tab context, it uses the local logical tab ID if available, defaulting to 1 otherwise. But in the worker's getCurrentTab() method, it's extracting the
+  logicalTabId from that context...
+
+  The issue might be that when getLocalLogicalTabId() is undefined, getTabContext returns 1 as a fallback, but then getLocalLogicalTabId() still returns undefined in the handler,
+   causing a mismatch where tabId becomes 1 but localTabId stays undefined. This would trigger the cross-tab logic incorrectly.
+
+  I need to trace back to when getLocalLogicalTabId() gets initialized—it's set during registerCurrentTab() through syncLocalLogicalTabId(), which is called in the start() 
+  method...
+
+  Actually, let me refocus on what the user is experiencing right now rather than getting lost in the initialization flow.
+
+  The issue appeared after the recent deploy, which means something in the cleanup branch broke it. The cross-tab getPageData routing is new in this branch—before, it was just a
+  direct bridge call that always worked. Now with the new routing logic, there's a path where getPageData might not be called at all, which could explain why page data isn't
+  coming through.
+
+  The fix is to make getPageData fall back to the local bridge when the cross-tab RPC fails or the target tab is stale, rather than returning empty data. The local bridge can
+  always retrieve the current page's data.
+
+  Writing the fallback logic... Completing the fallback logic...
+
+  The key insight is that when cross-tab communication fails, falling back to the local bridge is the right move since it can access the current page's DOM directly. This is a
+  straightforward resilience improvement that fixes the production issue without requiring a full redesign of the task lifecycle. I should prioritize getting this critical bug
+  fix documented in the plan first, then address the broader architectural improvements. I'm also noticing the executeTool handler likely has the same pattern that needs fixing.
+

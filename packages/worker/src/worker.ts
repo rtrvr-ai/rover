@@ -2,6 +2,9 @@ import type {
   ClientToolDefinition,
   ChatMessage,
   FunctionDeclaration,
+  ExternalWebConfig,
+  RoverRuntimeContext,
+  RoverRuntimeContextExternalTab,
   RoverTab,
   PreviousSteps,
   StatusStage,
@@ -13,6 +16,7 @@ import { handleSendMessageWithFunctions } from './agent/messageOrchestrator.js';
 import { TabularStore } from './tabular-memory/tabular-store.js';
 import { PLANNER_FUNCTION_CALLS } from '@rover/shared/lib/utils/constants.js';
 import { isApiKeyRequiredError, toRoverErrorEnvelope } from './agent/errors.js';
+import { resolveRuntimeTabs } from './agent/runtimeTabs.js';
 
 type RpcRequest = { t: 'req'; id: string; method: string; params?: unknown };
 type RpcResponse = { t: 'res'; id: string; ok: boolean; result?: unknown; error?: { message: string } };
@@ -21,7 +25,12 @@ type RoverWorkerConfig = RoverAgentConfig & {
   siteId: string;
   allowActions?: boolean;
   maxToolSteps?: number;
-  tools?: { client?: ClientToolDefinition[] } | ClientToolDefinition[];
+  tools?: { client?: ClientToolDefinition[]; web?: ExternalWebConfig } | ClientToolDefinition[];
+  ui?: {
+    agent?: {
+      name?: string;
+    };
+  };
   sessionId?: string;
   taskRouting?: TaskRoutingConfig;
 };
@@ -32,6 +41,12 @@ type PersistedWorkerState = {
   plannerHistory: unknown[];
   agentPrevSteps: PreviousSteps[];
   lastToolPreviousSteps?: PreviousSteps[];
+};
+
+type RunOutcome = {
+  route?: { mode?: 'act' | 'planner'; score?: number; reason?: string };
+  taskComplete: boolean;
+  needsUserInput?: boolean;
 };
 
 const history: ChatMessage[] = [];
@@ -49,8 +64,115 @@ let activeAbortController: AbortController | null = null;
 let lastStatusKey = '';
 let seenStatusKeys = new Set<string>();
 const completedRunIds = new Set<string>();
+const completedRunOutcomes = new Map<string, RunOutcome>();
 
 const RPC_TIMEOUT_MS = 30_000;
+const DETACHED_EXTERNAL_TAB_MAX_AGE_MS = 90_000;
+const MAX_CHATLOG_ENTRIES = 24;
+const MAX_CHATLOG_MESSAGE_CHARS = 1000;
+
+function resolveEmbeddedDomain(config: RoverWorkerConfig | null): string | undefined {
+  const domains = Array.isArray(config?.allowedDomains) ? config!.allowedDomains : [];
+  const first = String(domains[0] || '').trim();
+  if (!first) return undefined;
+  return first.replace(/^\*?\./, '').replace(/^=/, '');
+}
+
+function resolveAgentName(config: RoverWorkerConfig | null): string {
+  const raw = String(config?.ui?.agent?.name || '').trim();
+  if (!raw) return 'Rover';
+  return raw.slice(0, 64);
+}
+
+function hostFromUrl(url?: string): string | undefined {
+  const raw = String(url || '').trim();
+  if (!raw) return undefined;
+  try {
+    return new URL(raw).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
+function extractWebToolsConfig(config: RoverWorkerConfig | null): ExternalWebConfig | undefined {
+  if (!config?.tools || Array.isArray(config.tools)) return undefined;
+  return config.tools.web;
+}
+
+function buildRoverRuntimeContext(params: {
+  tabs: RoverTab[];
+  embeddedDomain?: string;
+  agentName: string;
+  externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
+}): RoverRuntimeContext {
+  const externalTabs = params.tabs
+    .map((tab, index): RoverRuntimeContextExternalTab | undefined => {
+      if (!tab.external && tab.accessMode !== 'external_placeholder' && tab.accessMode !== 'external_scraped') {
+        return undefined;
+      }
+      const accessMode: 'external_placeholder' | 'external_scraped' =
+        tab.accessMode === 'external_scraped' ? 'external_scraped' : 'external_placeholder';
+      return {
+        tabId: index,
+        host: hostFromUrl(tab.url),
+        title: String(tab.title || '').trim() || undefined,
+        accessMode,
+        reason: String(tab.inaccessibleReason || '').trim() || undefined,
+      };
+    })
+    .filter((tab): tab is RoverRuntimeContextExternalTab => !!tab)
+    .slice(0, 8);
+
+  return {
+    mode: 'rover_embed',
+    embeddedDomain: params.embeddedDomain,
+    agentName: params.agentName,
+    externalNavigationPolicy: params.externalNavigationPolicy,
+    tabIdContract: 'tree_index_mapped_by_tab_order',
+    ...(externalTabs.length ? { externalTabs } : {}),
+  };
+}
+
+function mergeWorkerTools(
+  current: RoverWorkerConfig['tools'],
+  incoming: RoverWorkerConfig['tools'] | undefined,
+): RoverWorkerConfig['tools'] {
+  if (incoming === undefined) return current;
+  if (Array.isArray(incoming)) return incoming;
+  if (Array.isArray(current)) {
+    return {
+      ...incoming,
+      client: incoming.client ?? current,
+      web: {
+        ...(incoming.web || {}),
+      },
+    };
+  }
+  return {
+    ...current,
+    ...incoming,
+    client: incoming.client ?? current?.client,
+    web: {
+      ...(current?.web || {}),
+      ...(incoming.web || {}),
+    },
+  };
+}
+
+function mergeWorkerUi(
+  current: RoverWorkerConfig['ui'],
+  incoming: RoverWorkerConfig['ui'] | undefined,
+): RoverWorkerConfig['ui'] {
+  if (!incoming) return current;
+  return {
+    ...current,
+    ...incoming,
+    agent: {
+      ...(current?.agent || {}),
+      ...(incoming.agent || {}),
+    },
+  };
+}
 
 function createRpcClient(port: MessagePort) {
   const pending = new Map<string, (res: RpcResponse) => void>();
@@ -89,6 +211,8 @@ async function getCurrentTab(): Promise<RoverTab> {
         id: Number((tabContext as any).logicalTabId || (tabContext as any).id || 1),
         url: (tabContext as any).url,
         title: (tabContext as any).title,
+        external: false,
+        accessMode: 'live_dom',
       };
     }
   } catch {
@@ -97,9 +221,9 @@ async function getCurrentTab(): Promise<RoverTab> {
 
   try {
     const pageData = await bridgeRpc('getPageData');
-    return { id: 1, url: pageData?.url, title: pageData?.title };
+    return { id: 1, url: pageData?.url, title: pageData?.title, external: false, accessMode: 'live_dom' };
   } catch {
-    return { id: 1 };
+    return { id: 1, external: false, accessMode: 'live_dom' };
   }
 }
 
@@ -109,13 +233,38 @@ async function getKnownTabs(): Promise<RoverTab[]> {
   try {
     const listed = await bridgeRpc('listSessionTabs');
     if (Array.isArray(listed) && listed.length > 0) {
+      const nowMs = Date.now();
       const mapped = listed
-        .map((tab: any) => ({
-          id: Number(tab?.logicalTabId || tab?.id || 0),
-          url: typeof tab?.url === 'string' ? tab.url : undefined,
-          title: typeof tab?.title === 'string' ? tab.title : undefined,
-        }))
-        .filter((tab: RoverTab) => Number.isFinite(tab.id) && tab.id > 0);
+        .map((tab: any) => {
+          const id = Number(tab?.logicalTabId || tab?.id || 0);
+          const external = !!tab?.external;
+          return {
+            id,
+            runtimeId: typeof tab?.runtimeId === 'string' ? tab.runtimeId : undefined,
+            updatedAt: Number(tab?.updatedAt) || 0,
+            url: typeof tab?.url === 'string' ? tab.url : undefined,
+            title: typeof tab?.title === 'string' ? tab.title : undefined,
+            external,
+            accessMode:
+              tab?.accessMode === 'external_scraped' || tab?.accessMode === 'external_placeholder'
+                ? tab.accessMode
+                : (external ? 'external_placeholder' : 'live_dom'),
+            inaccessibleReason: typeof tab?.inaccessibleReason === 'string' ? tab.inaccessibleReason : undefined,
+          };
+        })
+        .filter(tab => Number.isFinite(tab.id) && tab.id > 0)
+        .filter(tab => {
+          if (!tab.external || tab.runtimeId) return true;
+          return nowMs - (tab.updatedAt || 0) <= DETACHED_EXTERNAL_TAB_MAX_AGE_MS;
+        })
+        .map((tab): RoverTab => ({
+          id: tab.id,
+          url: tab.url,
+          title: tab.title,
+          external: tab.external,
+          accessMode: tab.accessMode,
+          inaccessibleReason: tab.inaccessibleReason,
+        }));
 
       if (mapped.length) return mapped;
     }
@@ -513,28 +662,62 @@ function maybePostNavigationGuardrailFromToolResult(toolResult: any): void {
 }
 
 function buildChatLogFromHistory(input: ChatMessage[], currentUserInput?: string): Array<{ role: 'user' | 'model'; message: string }> {
+  const sanitizeChatText = (raw: string, role: 'user' | 'assistant'): string => {
+    let text = String(raw || '').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+
+    // Prevent large structured payloads from dominating context while keeping the key signal.
+    if (role === 'assistant') {
+      if (/^\w[\w_]*:\s*\{/.test(text) || /^\[error\]/i.test(text) || /"success":\s*false/.test(text)) {
+        const firstSentence = text.split(/(?<=\.)\s+/)[0] || text;
+        text = firstSentence.trim();
+      }
+    }
+
+    if (text.length > MAX_CHATLOG_MESSAGE_CHARS) {
+      text = `${text.slice(0, MAX_CHATLOG_MESSAGE_CHARS - 1)}…`;
+    }
+    return text;
+  };
+
+  const normalizedCurrentUserInput = currentUserInput
+    ? sanitizeChatText(currentUserInput, 'user')
+    : '';
+
   const entries = input
     .filter(message => message.role === 'user' || message.role === 'assistant')
     .map(message => ({
-      role: message.role,
-      content: String(message.content || ''),
-    }));
+      role: message.role as 'user' | 'assistant',
+      content: sanitizeChatText(String(message.content || ''), message.role as 'user' | 'assistant'),
+    }))
+    .filter(message => !!message.content);
 
-  if (currentUserInput) {
+  if (normalizedCurrentUserInput) {
     for (let i = entries.length - 1; i >= 0; i -= 1) {
-      if (entries[i].role === 'user' && entries[i].content === currentUserInput) {
+      if (entries[i].role === 'user' && entries[i].content === normalizedCurrentUserInput) {
         entries.splice(i, 1);
         break;
       }
     }
   }
 
-  return entries
-    .slice(-40)
-    .map(message => ({
-      role: message.role === 'user' ? 'user' : 'model',
-      message: message.content,
-    }));
+  const deduped: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  for (const entry of entries) {
+    const previous = deduped[deduped.length - 1];
+    if (previous && previous.role === entry.role && previous.content === entry.content) continue;
+    deduped.push(entry);
+  }
+
+  // Keep latest turns and ensure chat log starts with a user turn when possible.
+  const tail = deduped.slice(-MAX_CHATLOG_ENTRIES);
+  while (tail.length > 1 && tail[0]?.role !== 'user') {
+    tail.shift();
+  }
+
+  return tail.map(message => ({
+    role: message.role === 'user' ? 'user' : 'model',
+    message: message.content,
+  }));
 }
 
 function applyAgentPrevSteps(next?: any[], options?: { snapshot?: boolean }): void {
@@ -630,6 +813,9 @@ async function waitForNewTabReady(logicalTabId: number, timeoutMs = 10000): Prom
       const tabs = await bridgeRpc('listSessionTabs');
       if (Array.isArray(tabs)) {
         const target = tabs.find((t: any) => Number(t?.logicalTabId) === logicalTabId);
+        if (target?.external) {
+          return true;
+        }
         if (target?.runtimeId) {
           // Tab has registered - wait an additional 1s for DOM to settle
           await new Promise(resolve => setTimeout(resolve, 1000));
@@ -654,6 +840,77 @@ function detectOpenedTabFromToolResult(result: any): number | undefined {
   return undefined;
 }
 
+function deriveDirectToolRunOutcome(result: any): RunOutcome {
+  if (!result || typeof result !== 'object') {
+    return { taskComplete: false };
+  }
+
+  if (result.error) {
+    return { taskComplete: false };
+  }
+
+  const output = result.output;
+  if (output && typeof output === 'object') {
+    if (Array.isArray(output)) {
+      return { taskComplete: true };
+    }
+
+    if ((output as any).needsUserInput === true || (output as any).waitingForUserInput === true) {
+      return { taskComplete: false, needsUserInput: true };
+    }
+
+    if (Array.isArray((output as any).questions) && (output as any).questions.length > 0) {
+      return { taskComplete: false, needsUserInput: true };
+    }
+
+    if (typeof (output as any).taskComplete === 'boolean') {
+      return { taskComplete: !!(output as any).taskComplete };
+    }
+
+    const taskStatus = String((output as any).taskStatus || (output as any).status || '').toLowerCase();
+    if (taskStatus) {
+      if (taskStatus === 'waiting_input' || taskStatus === 'needs_input' || taskStatus === 'pending_user_input') {
+        return { taskComplete: false, needsUserInput: true };
+      }
+      if (taskStatus === 'running' || taskStatus === 'in_progress' || taskStatus === 'pending') {
+        return { taskComplete: false };
+      }
+      if (taskStatus === 'completed' || taskStatus === 'complete' || taskStatus === 'done' || taskStatus === 'success') {
+        return { taskComplete: true };
+      }
+    }
+
+    if ((output as any).success === false) {
+      return { taskComplete: false };
+    }
+  }
+
+  if (output != null) {
+    return { taskComplete: true };
+  }
+
+  return { taskComplete: false };
+}
+
+function normalizeRunOutcome(outcome?: Partial<RunOutcome> | null): RunOutcome {
+  if (!outcome || typeof outcome !== 'object') {
+    return { taskComplete: false, needsUserInput: false };
+  }
+  const needsUserInput = outcome.needsUserInput === true;
+  const taskComplete = outcome.taskComplete === true && !needsUserInput;
+  return {
+    route: outcome.route,
+    taskComplete,
+    needsUserInput,
+  };
+}
+
+function clearTaskScopedContextAfterCompletion(): void {
+  history.length = 0;
+  plannerHistory = [];
+  agentPrevSteps = [];
+}
+
 async function maybeWaitForNewTab(result: any): Promise<void> {
   const logicalTabId = detectOpenedTabFromToolResult(result);
   if (logicalTabId) {
@@ -665,7 +922,7 @@ async function maybeWaitForNewTab(result: any): Promise<void> {
 async function handleUserMessage(
   text: string,
   options?: { resume?: boolean },
-): Promise<{ mode?: 'act' | 'planner'; score?: number; reason?: string } | undefined> {
+): Promise<RunOutcome> {
   if (!config) throw new Error('Worker not initialized');
   if (!bridgeRpc) throw new Error('Bridge RPC not initialized');
   postStatus('Analyzing request', text, 'analyze');
@@ -682,10 +939,61 @@ async function handleUserMessage(
   }
 
   const tabs = await getKnownTabs();
+  const fallbackTabs: RoverTab[] =
+    tabs.length > 0
+      ? tabs
+      : [
+          {
+            id: 1,
+            external: false,
+            accessMode: 'live_dom',
+          },
+        ];
+  const resolvedTabs = await resolveRuntimeTabs(bridgeRpc, fallbackTabs);
+  const tabsById = new Map<number, RoverTab>(tabs.map(tab => [tab.id, tab]));
+  const orderedTabs = resolvedTabs.tabOrder
+    .map(tabId => {
+      const knownTab = tabsById.get(tabId);
+      if (knownTab) return knownTab;
+
+      const tabMeta = resolvedTabs.tabMetaById[tabId];
+      if (!tabMeta) return { id: tabId } as RoverTab;
+      const external = !!tabMeta.external;
+      return {
+        id: tabId,
+        url: tabMeta.url,
+        title: tabMeta.title,
+        external,
+        accessMode: tabMeta.accessMode || (external ? 'external_placeholder' : 'live_dom'),
+        inaccessibleReason: tabMeta.inaccessibleReason,
+      } as RoverTab;
+    })
+    .filter(tab => Number.isFinite(tab.id) && tab.id > 0);
+  const tabsForRun = orderedTabs.length > 0 ? orderedTabs : fallbackTabs;
+
   if (!tabularStore) {
     tabularStore = new TabularStore(`rover-${trajectoryId}`);
   }
-  const ctx = createAgentContext({ ...config, signal: activeAbortController?.signal }, bridgeRpc, tabularStore);
+  const embeddedDomain = resolveEmbeddedDomain(config);
+  const agentName = resolveAgentName(config);
+  const runtimeContext = buildRoverRuntimeContext({
+    tabs: tabsForRun,
+    embeddedDomain,
+    agentName,
+    externalNavigationPolicy: config.externalNavigationPolicy,
+  });
+  const ctx = createAgentContext(
+    {
+      ...config,
+      signal: activeAbortController?.signal,
+      runtimeContext,
+      tools: {
+        web: extractWebToolsConfig(config),
+      },
+    },
+    bridgeRpc,
+    tabularStore,
+  );
   const currentRunId = activeRun?.runId;
   ctx.isCancelled = () => cancelledRunId === currentRunId;
   // Only pass user/client-declared tools. Planner built-ins come from backend.
@@ -703,7 +1011,7 @@ async function handleUserMessage(
   };
 
   const result = await handleSendMessageWithFunctions(text, {
-    tabs,
+    tabs: tabsForRun,
     previousMessages: history,
     trajectoryId,
     files: [],
@@ -734,7 +1042,7 @@ async function handleUserMessage(
     history.push({ role: 'assistant', content: errorMsg });
     postStatus('Execution failed', errorPayload.error.message, 'complete');
     postStateSnapshot();
-    return result.route;
+    return { route: result.route, taskComplete: false };
   }
 
   if (result.executedFunctions?.length) {
@@ -750,7 +1058,7 @@ async function handleUserMessage(
     history.push({ role: 'assistant', content: msg });
     postStatus('Execution completed', 'Function calls finished', 'complete');
     postStateSnapshot();
-    return result.route;
+    return { route: result.route, taskComplete: true };
   }
 
   if (result.directToolResult) {
@@ -774,7 +1082,12 @@ async function handleUserMessage(
     history.push({ role: 'assistant', content: msg });
     postStatus('Execution completed', structuredError?.error.message, 'complete');
     postStateSnapshot();
-    return result.route;
+    const outcome = deriveDirectToolRunOutcome(result.directToolResult);
+    return {
+      route: result.route,
+      taskComplete: outcome.taskComplete,
+      needsUserInput: outcome.needsUserInput,
+    };
   }
 
   if (result.plannerResponse) {
@@ -794,7 +1107,7 @@ async function handleUserMessage(
       history.push({ role: 'assistant', content: msg });
       postStatus('Planner needs user input', undefined, 'verify');
       postStateSnapshot();
-      return result.route;
+      return { route: result.route, taskComplete: false, needsUserInput: true };
     }
 
     const toolResults = result.plannerResponse.toolResults || [];
@@ -814,20 +1127,32 @@ async function handleUserMessage(
     history.push({ role: 'assistant', content: msg });
     postStatus('Planner execution completed', response.overallThought, 'complete');
     postStateSnapshot();
-    return result.route;
+    return {
+      route: result.route,
+      taskComplete: !!response.taskComplete && !responseError,
+      needsUserInput: false,
+    };
   }
 
   postAssistantMessage('Done.');
   history.push({ role: 'assistant', content: 'Done.' });
   postStatus('Completed', undefined, 'complete');
   postStateSnapshot();
-  return result.route;
+  return { route: result.route, taskComplete: true };
 }
 
 async function runUserMessage(text: string, meta?: { runId?: string; resume?: boolean }): Promise<void> {
   const runId = meta?.runId || crypto.randomUUID();
   if (completedRunIds.has(runId)) {
-    (self as any).postMessage({ type: 'run_completed', runId, ok: true, route: undefined });
+    const cachedOutcome = normalizeRunOutcome(completedRunOutcomes.get(runId));
+    (self as any).postMessage({
+      type: 'run_completed',
+      runId,
+      ok: true,
+      route: cachedOutcome.route,
+      taskComplete: cachedOutcome.taskComplete,
+      needsUserInput: cachedOutcome.needsUserInput,
+    });
     return;
   }
   if (activeRun && activeRun.runId === runId) {
@@ -842,13 +1167,39 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
   postStateSnapshot();
 
   try {
-    const route = await handleUserMessage(text, { resume });
-    (self as any).postMessage({ type: 'run_completed', runId, ok: true, route });
+    const outcome = normalizeRunOutcome(await handleUserMessage(text, { resume }));
+    completedRunOutcomes.set(runId, outcome);
+    (self as any).postMessage({
+      type: 'run_completed',
+      runId,
+      ok: true,
+      route: outcome.route,
+      taskComplete: outcome.taskComplete,
+      needsUserInput: outcome.needsUserInput,
+    });
+    if (outcome.taskComplete && !outcome.needsUserInput) {
+      clearTaskScopedContextAfterCompletion();
+      postStateSnapshot();
+    }
   } catch (error: any) {
     if (error?.name === 'AbortError') {
-      (self as any).postMessage({ type: 'run_completed', runId, ok: false, error: 'Run cancelled' });
+      (self as any).postMessage({
+        type: 'run_completed',
+        runId,
+        ok: false,
+        error: 'Run cancelled',
+        taskComplete: false,
+        needsUserInput: false,
+      });
     } else {
-      (self as any).postMessage({ type: 'run_completed', runId, ok: false, error: error?.message || String(error) });
+      (self as any).postMessage({
+        type: 'run_completed',
+        runId,
+        ok: false,
+        error: error?.message || String(error),
+        taskComplete: false,
+        needsUserInput: false,
+      });
       throw error;
     }
   } finally {
@@ -857,7 +1208,10 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
     completedRunIds.add(runId);
     if (completedRunIds.size > 50) {
       const oldest = completedRunIds.values().next().value;
-      if (oldest) completedRunIds.delete(oldest);
+      if (oldest) {
+        completedRunIds.delete(oldest);
+        completedRunOutcomes.delete(oldest);
+      }
     }
     postStateSnapshot();
   }
@@ -898,7 +1252,12 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
     if (data.type === 'update_config') {
       if (!config) throw new Error('Worker not initialized');
       const partial = (data.config || {}) as Partial<RoverWorkerConfig>;
-      config = { ...config, ...partial };
+      config = {
+        ...config,
+        ...partial,
+        ui: mergeWorkerUi(config.ui, partial.ui),
+        tools: mergeWorkerTools(config.tools, partial.tools),
+      };
       if (typeof partial.sessionId === 'string' && partial.sessionId.trim() && partial.sessionId.trim() !== trajectoryId) {
         trajectoryId = partial.sessionId.trim();
         plannerHistory = [];

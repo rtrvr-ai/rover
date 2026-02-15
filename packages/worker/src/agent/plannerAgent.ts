@@ -2,10 +2,38 @@ import { SUB_AGENTS } from '@rover/shared';
 import type { PlannerOptions, PlannerResponse, PlannerPreviousStep, FunctionDeclaration, PreviousSteps } from './types.js';
 import type { AgentContext } from './context.js';
 import { executeToolFromPlan } from './toolExecutor.js';
+import { resolveRuntimeTabs } from './runtimeTabs.js';
 
 const MAX_PLANNER_DEPTH = 15;
+const MAX_CHATLOG_ENTRIES = 24;
+const MAX_CHATLOG_MESSAGE_CHARS = 1000;
 
-export async function executePlanner(options: PlannerOptions & { ctx: AgentContext; functionDeclarations?: FunctionDeclaration[] }) {
+function normalizeChatLog(
+  entries: Array<{ role?: 'user' | 'model'; message?: string }> | undefined,
+): Array<{ role: 'user' | 'model'; message: string }> {
+  if (!Array.isArray(entries) || !entries.length) return [];
+
+  return entries
+    .map(entry => ({
+      role: entry?.role === 'user' ? ('user' as const) : ('model' as const),
+      message: String(entry?.message || '').replace(/\s+/g, ' ').trim(),
+    }))
+    .filter(entry => !!entry.message)
+    .map(entry => ({
+      role: entry.role,
+      message:
+        entry.message.length > MAX_CHATLOG_MESSAGE_CHARS
+          ? `${entry.message.slice(0, MAX_CHATLOG_MESSAGE_CHARS - 1)}…`
+          : entry.message,
+    }))
+    .slice(-MAX_CHATLOG_ENTRIES);
+}
+
+export async function executePlanner(options: PlannerOptions & {
+  ctx: AgentContext;
+  bridgeRpc?: (method: string, params?: any) => Promise<any>;
+  functionDeclarations?: FunctionDeclaration[];
+}) {
   const {
     userInput,
     tabs,
@@ -19,25 +47,51 @@ export async function executePlanner(options: PlannerOptions & { ctx: AgentConte
     agentLog,
     lastToolPreviousSteps,
     ctx,
+    bridgeRpc,
     functionDeclarations,
   } = options;
 
-  const tabOrder = tabs.map(t => t.id);
+  const fallbackTabs = Array.isArray(tabs) && tabs.length ? tabs : [{ id: 1 }];
+  const resolvedTabs = await resolveRuntimeTabs(bridgeRpc, fallbackTabs);
+  const tabOrder = resolvedTabs.tabOrder.length ? resolvedTabs.tabOrder : fallbackTabs.map(tab => tab.id);
+  const activeTabId = resolvedTabs.activeTabId;
+  const tabMetaById = resolvedTabs.tabMetaById;
   const webPageMap: Record<number, any> = {};
-  for (const tab of tabs) {
+
+  const loadPageData = async (tabId: number, options?: { allowExternalFetch?: boolean }) => {
     try {
-      webPageMap[tab.id] = await ctx.getPageData(tab.id, { onlyTextContent: false });
+      return await ctx.getPageData(tabId, {
+        onlyTextContent: false,
+        ...(options?.allowExternalFetch ? { __roverAllowExternalFetch: true } : {}),
+      });
     } catch {
-      webPageMap[tab.id] = { url: tab.url || '', title: tab.title || '', content: '', contentType: 'text/html' };
+      const tab = tabMetaById[tabId];
+      return {
+        url: tab?.url || '',
+        title: tab?.title || (tab?.external ? 'External Tab (Inaccessible)' : ''),
+        content: '',
+        contentType: 'text/html',
+      };
     }
+  };
+
+  webPageMap[activeTabId] = await loadPageData(activeTabId, { allowExternalFetch: true });
+  const backgroundTabIds = tabOrder.filter(tabId => tabId !== activeTabId);
+  const backgroundResults = await Promise.all(
+    backgroundTabIds.map(async tabId => ({ tabId, pageData: await loadPageData(tabId) })),
+  );
+  for (const { tabId, pageData } of backgroundResults) {
+    webPageMap[tabId] = pageData;
   }
 
   const chatLog =
     agentLog?.chatLog?.length
-      ? agentLog.chatLog
-      : previousMessages
-          .filter(m => m.role === 'user' || m.role === 'assistant')
-          .map(m => ({ role: m.role === 'user' ? 'user' : 'model', message: m.content }));
+      ? normalizeChatLog(agentLog.chatLog)
+      : normalizeChatLog(
+          previousMessages
+            .filter(m => m.role === 'user' || m.role === 'assistant')
+            .map(m => ({ role: m.role === 'user' ? 'user' : 'model', message: m.content })),
+        );
 
   const request = {
     siteId: ctx.siteId,

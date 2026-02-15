@@ -2,6 +2,7 @@ import { SUB_AGENTS } from '@rover/shared/lib/types/agent-types.js';
 import type { PlannerPreviousStep, PreviousSteps, StatusStage } from './types.js';
 import { processActionResponse, waitWhilePaused } from './utils.js';
 import type { AgentContext } from './context.js';
+import { resolveRuntimeTabs } from './runtimeTabs.js';
 
 export type ExtractOptions = {
   tabOrder: number[];
@@ -57,14 +58,22 @@ export async function executeExtract(options: ExtractOptions): Promise<ExtractRe
 
   let totalCreditsUsed = 0;
   const warnings: string[] = [];
-  const tabId = tabOrder[0];
+  const fallbackTabs = tabOrder.map(id => ({ id }));
   const prevSteps: PreviousSteps[] = Array.isArray(previousSteps) ? previousSteps : [];
   let pageDataOptions: { disableAutoScroll?: boolean } | undefined;
 
   for (let retry = 0; retry < MAX_RETRIES; retry++) {
     await waitWhilePaused(undefined);
+    const { activeTabId } = await resolveRuntimeTabs(bridgeRpc, fallbackTabs);
+    const tabId = activeTabId;
 
-    const pageData = await ctx.getPageData(tabId, pageDataOptions);
+    let pageData: any;
+    try {
+      pageData = await ctx.getPageData(tabId, pageDataOptions);
+    } catch {
+      warnings.push(`Could not load page data for tab ${tabId}; retrying.`);
+      continue;
+    }
 
     const request = {
       siteId: ctx.siteId,
@@ -72,8 +81,8 @@ export async function executeExtract(options: ExtractOptions): Promise<ExtractRe
       schema,
       outputDestination,
       schemaHeaderSheetInfo,
-      webPageMap: { [tabId]: pageData },
-      tabOrder: [tabId],
+      webPageMap: { [activeTabId]: pageData },
+      tabOrder: [activeTabId],
       plannerPrevSteps,
       llmIntegration: ctx.llmIntegration,
       apiMode: ctx.apiMode,
@@ -109,12 +118,12 @@ export async function executeExtract(options: ExtractOptions): Promise<ExtractRe
     }
 
     // Handle action-required responses
-    const tabResponse = data?.tabResponses?.[tabId];
+    const tabResponse = data?.tabResponses?.[activeTabId];
     if (tabResponse) {
       const processResult = await processActionResponse({
         request,
         response: tabResponse,
-        tabId,
+        tabId: activeTabId,
         prevSteps,
         thought: tabResponse.thought,
         bridgeRpc,

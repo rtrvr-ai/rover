@@ -104,6 +104,9 @@ export type SessionCoordinatorOptions = {
 const SHARED_VERSION = 2;
 const SHARED_KEY_PREFIX = 'rover:shared:';
 const SHARED_CHANNEL_PREFIX = 'rover:channel:';
+const STALE_DETACHED_EXTERNAL_TAB_MS = 2 * 60_000;
+const STALE_DETACHED_TAB_MS = 10 * 60_000;
+const STALE_RUNTIME_TAB_MS = 45_000;
 
 function now(): number {
   return Date.now();
@@ -359,6 +362,43 @@ export class SessionCoordinator {
   private roleChangeTimer: number | null = null;
   private static readonly ROLE_CHANGE_DEBOUNCE_MS = 200;
 
+  private pruneDetachedTabs(
+    draft: SharedSessionState,
+    options?: { dropRuntimeDetached?: boolean; dropAllDetachedExternal?: boolean },
+  ): void {
+    const dropRuntimeDetached = !!options?.dropRuntimeDetached;
+    const dropAllDetachedExternal = !!options?.dropAllDetachedExternal;
+    const nowMs = now();
+    const before = draft.tabs.length;
+
+    draft.tabs = draft.tabs.filter(tab => {
+      if (tab.runtimeId) {
+        if (tab.runtimeId === this.runtimeId) return true;
+        return nowMs - Math.max(tab.updatedAt || 0, tab.openedAt || 0) <= STALE_RUNTIME_TAB_MS;
+      }
+
+      if (dropRuntimeDetached && tab.openerRuntimeId === this.runtimeId) {
+        return false;
+      }
+
+      if (tab.external) {
+        if (dropAllDetachedExternal) return false;
+        return nowMs - Math.max(tab.updatedAt || 0, tab.openedAt || 0) <= STALE_DETACHED_EXTERNAL_TAB_MS;
+      }
+
+      return nowMs - Math.max(tab.updatedAt || 0, tab.openedAt || 0) <= STALE_DETACHED_TAB_MS;
+    });
+
+    if (before !== draft.tabs.length) {
+      if (draft.activeLogicalTabId && !draft.tabs.some(tab => tab.logicalTabId === draft.activeLogicalTabId)) {
+        draft.activeLogicalTabId = this.localLogicalTabId || draft.tabs[0]?.logicalTabId;
+      }
+      if (draft.nextLogicalTabId <= (draft.tabs.at(-1)?.logicalTabId ?? 0)) {
+        draft.nextLogicalTabId = draft.tabs.reduce((max, tab) => Math.max(max, tab.logicalTabId), 0) + 1;
+      }
+    }
+  }
+
   constructor(options: SessionCoordinatorOptions) {
     this.siteId = options.siteId;
     this.sessionId = options.sessionId;
@@ -380,6 +420,11 @@ export class SessionCoordinator {
   start(): void {
     if (this.started) return;
     this.started = true;
+
+    this.mutate('local', draft => {
+      // Page refreshes can leave detached virtual tabs from previous runs.
+      this.pruneDetachedTabs(draft, { dropRuntimeDetached: true, dropAllDetachedExternal: true });
+    });
 
     this.registerCurrentTab(window.location.href, document.title || undefined);
     this.claimLease(false);
@@ -532,12 +577,27 @@ export class SessionCoordinator {
 
   hydrateExternalState(raw: any): boolean {
     const incoming = sanitizeSharedState(raw, this.siteId, this.sessionId);
+    this.pruneDetachedTabs(incoming, { dropRuntimeDetached: true, dropAllDetachedExternal: true });
     const beforeSeq = this.state.seq;
     const beforeUpdatedAt = this.state.updatedAt;
 
     this.applyIncomingState(incoming);
 
-    const changed = this.state.seq !== beforeSeq || this.state.updatedAt !== beforeUpdatedAt;
+    let changed = this.state.seq !== beforeSeq || this.state.updatedAt !== beforeUpdatedAt;
+    if (!changed) {
+      const hasDetachedCandidates = this.state.tabs.some(tab => {
+        if (tab.runtimeId) return false;
+        if (tab.external) return true;
+        return tab.openerRuntimeId === this.runtimeId;
+      });
+      if (hasDetachedCandidates) {
+        const beforeTabCount = this.state.tabs.length;
+        this.mutate('local', draft => {
+          this.pruneDetachedTabs(draft, { dropRuntimeDetached: true, dropAllDetachedExternal: true });
+        });
+        changed = this.state.tabs.length !== beforeTabCount;
+      }
+    }
     if (!changed) return false;
 
     this.persistState();
@@ -551,7 +611,23 @@ export class SessionCoordinator {
   }
 
   listTabs(): SharedTabEntry[] {
-    return [...this.state.tabs];
+    const nowMs = now();
+    return this.state.tabs.filter(tab => {
+      if (tab.runtimeId) {
+        if (tab.runtimeId === this.runtimeId) return true;
+        return nowMs - Math.max(tab.updatedAt || 0, tab.openedAt || 0) <= STALE_RUNTIME_TAB_MS;
+      }
+      if (tab.external) {
+        return nowMs - Math.max(tab.updatedAt || 0, tab.openedAt || 0) <= STALE_DETACHED_EXTERNAL_TAB_MS;
+      }
+      return nowMs - Math.max(tab.updatedAt || 0, tab.openedAt || 0) <= STALE_DETACHED_TAB_MS;
+    });
+  }
+
+  pruneTabs(options?: { dropRuntimeDetached?: boolean; dropAllDetachedExternal?: boolean }): void {
+    this.mutate('local', draft => {
+      this.pruneDetachedTabs(draft, options);
+    });
   }
 
   startNewTask(task: Omit<SharedTaskState, 'status'> & { status?: SharedTaskState['status'] }): SharedTaskState {
@@ -574,6 +650,7 @@ export class SessionCoordinator {
       draft.uiStatus = undefined;
       draft.activeRun = undefined;
       draft.workerContext = undefined;
+      this.pruneDetachedTabs(draft, { dropAllDetachedExternal: true });
     });
 
     return nextTask;
@@ -699,9 +776,6 @@ export class SessionCoordinator {
     this.mutate('local', draft => {
       if (!activeRun) {
         draft.activeRun = undefined;
-        if (draft.task && draft.task.status === 'running') {
-          draft.task.status = 'completed';
-        }
         return;
       }
       draft.activeRun = {
@@ -1103,6 +1177,8 @@ export class SessionCoordinator {
       if (draft.workflowLock?.runtimeId === this.runtimeId) {
         draft.workflowLock.expiresAt = now() + this.leaseMs * 5;
       }
+
+      this.pruneDetachedTabs(draft);
     });
 
     this.notifyRoleChange();
@@ -1208,6 +1284,7 @@ export class SessionCoordinator {
     if (!incoming) return;
     if (incoming.seq < this.state.seq) return;
     if (incoming.seq === this.state.seq && incoming.updatedAt <= this.state.updatedAt) return;
+    this.pruneDetachedTabs(incoming);
     this.state = incoming;
 
     this.syncLocalLogicalTabId();
