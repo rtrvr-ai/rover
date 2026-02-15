@@ -49,6 +49,18 @@ type RunOutcome = {
   needsUserInput?: boolean;
 };
 
+type TerminalRunResult =
+  | {
+      ok: true;
+      outcome: RunOutcome;
+    }
+  | {
+      ok: false;
+      error: string;
+      taskComplete: false;
+      needsUserInput: false;
+    };
+
 const history: ChatMessage[] = [];
 let config: RoverWorkerConfig | null = null;
 let bridgeRpc: ((method: string, params?: any) => Promise<any>) | null = null;
@@ -59,12 +71,11 @@ let trajectoryId: string = crypto.randomUUID();
 let tabularStore: TabularStore | null = null;
 const PLANNER_TOOL_NAME_SET = new Set<string>(Object.values(PLANNER_FUNCTION_CALLS));
 let activeRun: { runId: string; text: string; startedAt: number; resume: boolean } | null = null;
-let cancelledRunId: string | null = null;
+const cancelledRunIds = new Set<string>();
 let activeAbortController: AbortController | null = null;
 let lastStatusKey = '';
 let seenStatusKeys = new Set<string>();
-const completedRunIds = new Set<string>();
-const completedRunOutcomes = new Map<string, RunOutcome>();
+const terminalRuns = new Map<string, TerminalRunResult>();
 
 const RPC_TIMEOUT_MS = 30_000;
 const DETACHED_EXTERNAL_TAB_MAX_AGE_MS = 90_000;
@@ -908,7 +919,8 @@ function deriveDirectToolRunOutcome(result: any): RunOutcome {
     return { taskComplete: true };
   }
 
-  return { taskComplete: false };
+  // Direct tool invocation without explicit continuation signals is treated as complete.
+  return { taskComplete: true };
 }
 
 function normalizeRunOutcome(outcome?: Partial<RunOutcome> | null): RunOutcome {
@@ -922,6 +934,24 @@ function normalizeRunOutcome(outcome?: Partial<RunOutcome> | null): RunOutcome {
     taskComplete,
     needsUserInput,
   };
+}
+
+function rememberTerminalRun(runId: string, result: TerminalRunResult): void {
+  terminalRuns.set(runId, result);
+  while (terminalRuns.size > 80) {
+    const oldest = terminalRuns.keys().next().value;
+    if (!oldest) break;
+    terminalRuns.delete(oldest);
+  }
+}
+
+function rememberCancelledRun(runId: string): void {
+  cancelledRunIds.add(runId);
+  while (cancelledRunIds.size > 80) {
+    const oldest = cancelledRunIds.values().next().value;
+    if (!oldest) break;
+    cancelledRunIds.delete(oldest);
+  }
 }
 
 function clearTaskScopedContextAfterCompletion(): void {
@@ -1012,7 +1042,7 @@ async function handleUserMessage(
     tabularStore,
   );
   const currentRunId = activeRun?.runId;
-  ctx.isCancelled = () => cancelledRunId === currentRunId;
+  ctx.isCancelled = () => !!(currentRunId && cancelledRunIds.has(currentRunId));
   // Only pass user/client-declared tools. Planner built-ins come from backend.
   const functionDeclarations = dedupeFunctionDeclarations(
     removePlannerNameCollisions(toolRegistry.getFunctionDeclarations()),
@@ -1160,16 +1190,28 @@ async function handleUserMessage(
 
 async function runUserMessage(text: string, meta?: { runId?: string; resume?: boolean }): Promise<void> {
   const runId = meta?.runId || crypto.randomUUID();
-  if (completedRunIds.has(runId)) {
-    const cachedOutcome = normalizeRunOutcome(completedRunOutcomes.get(runId));
-    (self as any).postMessage({
-      type: 'run_completed',
-      runId,
-      ok: true,
-      route: cachedOutcome.route,
-      taskComplete: cachedOutcome.taskComplete,
-      needsUserInput: cachedOutcome.needsUserInput,
-    });
+  const terminal = terminalRuns.get(runId);
+  if (terminal) {
+    if (terminal.ok) {
+      const cachedOutcome = normalizeRunOutcome(terminal.outcome);
+      (self as any).postMessage({
+        type: 'run_completed',
+        runId,
+        ok: true,
+        route: cachedOutcome.route,
+        taskComplete: cachedOutcome.taskComplete,
+        needsUserInput: cachedOutcome.needsUserInput,
+      });
+    } else {
+      (self as any).postMessage({
+        type: 'run_completed',
+        runId,
+        ok: false,
+        error: terminal.error,
+        taskComplete: false,
+        needsUserInput: false,
+      });
+    }
     return;
   }
   if (activeRun && activeRun.runId === runId) {
@@ -1178,6 +1220,7 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
   const resume = !!meta?.resume;
   lastStatusKey = '';
   seenStatusKeys = new Set<string>();
+  cancelledRunIds.delete(runId);
   activeAbortController = new AbortController();
   activeRun = { runId, text, startedAt: Date.now(), resume };
   (self as any).postMessage({ type: 'run_started', runId, text, resume });
@@ -1185,7 +1228,7 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
 
   try {
     const outcome = normalizeRunOutcome(await handleUserMessage(text, { resume }));
-    completedRunOutcomes.set(runId, outcome);
+    rememberTerminalRun(runId, { ok: true, outcome });
     (self as any).postMessage({
       type: 'run_completed',
       runId,
@@ -1200,6 +1243,12 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
     }
   } catch (error: any) {
     if (error?.name === 'AbortError') {
+      rememberTerminalRun(runId, {
+        ok: false,
+        error: 'Run cancelled',
+        taskComplete: false,
+        needsUserInput: false,
+      });
       (self as any).postMessage({
         type: 'run_completed',
         runId,
@@ -1209,6 +1258,12 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
         needsUserInput: false,
       });
     } else {
+      rememberTerminalRun(runId, {
+        ok: false,
+        error: error?.message || String(error),
+        taskComplete: false,
+        needsUserInput: false,
+      });
       (self as any).postMessage({
         type: 'run_completed',
         runId,
@@ -1222,14 +1277,6 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
   } finally {
     activeAbortController = null;
     activeRun = null;
-    completedRunIds.add(runId);
-    if (completedRunIds.size > 50) {
-      const oldest = completedRunIds.values().next().value;
-      if (oldest) {
-        completedRunIds.delete(oldest);
-        completedRunOutcomes.delete(oldest);
-      }
-    }
     postStateSnapshot();
   }
 }
@@ -1279,6 +1326,8 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
         trajectoryId = partial.sessionId.trim();
         plannerHistory = [];
         agentPrevSteps = [];
+        terminalRuns.clear();
+        cancelledRunIds.clear();
         tabularStore = new TabularStore(`rover-${trajectoryId}`);
       }
       const tools = partial.tools;
@@ -1300,12 +1349,16 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
     if (data.type === 'start_new_task') {
       if (!config) throw new Error('Worker not initialized');
       const nextTaskId = typeof data.taskId === 'string' && data.taskId.trim() ? data.taskId.trim() : crypto.randomUUID();
+      activeAbortController?.abort();
       history.length = 0;
       plannerHistory = [];
       agentPrevSteps = [];
+      terminalRuns.clear();
+      cancelledRunIds.clear();
       trajectoryId = nextTaskId;
       tabularStore = new TabularStore(`rover-${trajectoryId}`);
       activeRun = null;
+      activeAbortController = null;
       postStateSnapshot();
       (self as any).postMessage({ type: 'task_started', taskId: nextTaskId });
       return;
@@ -1313,7 +1366,7 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
 
     if (data.type === 'cancel_run') {
       if (typeof data.runId === 'string' && data.runId) {
-        cancelledRunId = data.runId;
+        rememberCancelledRun(data.runId);
         activeAbortController?.abort();
       }
       return;

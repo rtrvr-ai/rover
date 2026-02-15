@@ -686,12 +686,9 @@ export class SessionCoordinator {
         };
         return;
       }
+      if (draft.task.status !== 'running') return;
       if (role === 'user') draft.task.lastUserAt = timestamp;
       if (role === 'assistant') draft.task.lastAssistantAt = timestamp;
-      if (draft.task.status === 'ended') {
-        draft.task.status = 'running';
-        draft.task.endedAt = undefined;
-      }
     });
   }
 
@@ -778,6 +775,10 @@ export class SessionCoordinator {
         draft.activeRun = undefined;
         return;
       }
+      if (draft.task && draft.task.status !== 'running') {
+        draft.activeRun = undefined;
+        return;
+      }
       draft.activeRun = {
         runId: activeRun.runId,
         text: activeRun.text,
@@ -791,8 +792,6 @@ export class SessionCoordinator {
           status: 'running',
           startedAt: now(),
         };
-      } else if (draft.task.status !== 'ended') {
-        draft.task.status = 'running';
       }
     });
   }
