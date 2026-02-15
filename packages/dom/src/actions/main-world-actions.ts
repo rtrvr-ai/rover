@@ -16,6 +16,7 @@ import {
   extractFirebaseFileName,
   FrameworkCodeToName,
   getDocumentContext,
+  SYSTEM_TOOLS_ELEMENT_ID_KEYS,
   resolveInteractiveElementById,
   safeBasename,
   sleepBgSafe,
@@ -61,6 +62,43 @@ import {
   ScrollDirectionEnum,
 } from '../scroll/scroll-helpers.js';
 type FunctionCall = { name?: string; args?: Record<string, any> };
+
+function normalizePositiveElementId(raw: any): number | null {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  const id = Math.trunc(n);
+  return id > 0 ? id : null;
+}
+
+function collectElementIdsFromArgs(args: Record<string, any>): number[] {
+  const ids: number[] = [];
+  for (const key of SYSTEM_TOOLS_ELEMENT_ID_KEYS) {
+    const value = (args as any)?.[key];
+    if (value == null) continue;
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const id = normalizePositiveElementId(item);
+        if (id != null) ids.push(id);
+      }
+      continue;
+    }
+
+    const id = normalizePositiveElementId(value);
+    if (id != null) ids.push(id);
+  }
+
+  return Array.from(new Set(ids));
+}
+
+function hasAnyElementContext(args: Record<string, any>): boolean {
+  return collectElementIdsFromArgs(args).length > 0;
+}
+
+function getPrimaryElementId(args: Record<string, any>): number | null {
+  const ids = collectElementIdsFromArgs(args);
+  return ids.length ? ids[0] : null;
+}
 
 // content-runtime/actions.iffe.js
 interface SystemToolActionResult {
@@ -413,27 +451,85 @@ const MAIN_PROMOTABLE_TOOLS = new Set<SystemToolNames>([
     })();
 
     const args = call.args as any;
+    const hasElementContext = hasAnyElementContext(args);
     let targetDocument: Document;
     let targetWindow: Window;
-    let unresolvedPath: IframePath;
+    let requestedPath: IframePath = [];
+    let resolvedPath: IframePath = [];
+    let unresolvedPath: IframePath = [];
 
     try {
-      ({ doc: targetDocument, win: targetWindow, unresolvedPath } = getDocumentContext(docRoot, args.iframe_id));
+      ({
+        doc: targetDocument,
+        win: targetWindow,
+        iframePath: requestedPath,
+        resolvedPath,
+        unresolvedPath,
+      } = getDocumentContext(docRoot, args.iframe_id));
     } catch {
       if (args.iframe_id != null) {
+        const message = `Cannot access iframe ${args.iframe_id} (cross-origin or not found)`;
         return [{
           name: call.name!,
           args: call.args!,
-          response: { success: false, error: `Cannot access iframe ${args.iframe_id} (cross-origin or not found)` },
+          response: {
+            success: false,
+            error: message,
+            allowFallback: false,
+            output: {
+              success: false,
+              error: {
+                code: 'IFRAME_CONTEXT_UNAVAILABLE',
+                message,
+                retryable: false,
+              },
+              iframe_context: {
+                requested_iframe_id: args.iframe_id,
+              },
+            },
+          },
         }];
       }
       targetDocument = document;
       targetWindow = winOfDoc(targetDocument);
     }
 
+    if (args.iframe_id != null && unresolvedPath.length > 0 && !hasElementContext) {
+      const unresolved = unresolvedPath.join('>');
+      const message =
+        `iframe_id unresolved: remaining=${unresolved || '(none)'} ` +
+        `(cross-origin, not-ready, or not found)`;
+
+      return [{
+        name: call.name!,
+        args: call.args!,
+        response: {
+          success: false,
+          error: message,
+          allowFallback: false,
+          details: `requested=${requestedPath.join('>') || '(none)'} resolved=${resolvedPath.join('>') || '(none)'}`,
+          output: {
+            success: false,
+            error: {
+              code: 'IFRAME_CONTEXT_UNAVAILABLE',
+              message,
+              retryable: false,
+            },
+            iframe_context: {
+              requested_iframe_id: args.iframe_id,
+              requested_path: requestedPath,
+              resolved_path: resolvedPath,
+              unresolved_path: unresolvedPath,
+            },
+          },
+        },
+      }];
+    }
+
     const toolName = call.name as SystemToolNames;
 
-    const targetElement = args.element_id ? resolveInteractiveElementById(targetDocument, args.element_id) : null;
+    const primaryElementId = getPrimaryElementId(args);
+    const targetElement = primaryElementId ? resolveInteractiveElementById(targetDocument, primaryElementId) : null;
 
     const targetElOwnerDoc = targetElement?.ownerDocument ?? null;
 

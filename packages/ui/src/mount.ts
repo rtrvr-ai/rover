@@ -1,3 +1,28 @@
+export type RoverShortcut = {
+  id: string;
+  label: string;
+  description?: string;
+  icon?: string;
+  prompt: string;
+  enabled?: boolean;
+  order?: number;
+  routing?: 'auto' | 'act' | 'planner';
+};
+
+export type RoverAskUserQuestion = {
+  key: string;
+  query: string;
+  id?: string;
+  question?: string;
+  choices?: string[];
+};
+
+export type RoverAskUserAnswerMeta = {
+  answersByKey: Record<string, string>;
+  rawText: string;
+  keys: string[];
+};
+
 export type RoverTimelineKind =
   | 'status'
   | 'plan'
@@ -14,9 +39,22 @@ export type RoverTimelineEvent = {
   kind: RoverTimelineKind;
   title: string;
   detail?: string;
+  detailBlocks?: RoverMessageBlock[];
   status?: 'pending' | 'success' | 'error' | 'info';
   ts?: number;
 };
+
+export type RoverMessageBlock =
+  | {
+      type: 'text';
+      text: string;
+    }
+  | {
+      type: 'tool_output' | 'json';
+      data: unknown;
+      label?: string;
+      toolName?: string;
+    };
 
 export type RoverTaskSuggestion = {
   visible: boolean;
@@ -26,7 +64,12 @@ export type RoverTaskSuggestion = {
 };
 
 export type RoverUi = {
-  addMessage: (role: 'user' | 'assistant' | 'system', text: string) => void;
+  addMessage: (
+    role: 'user' | 'assistant' | 'system',
+    text: string,
+    options?: { blocks?: RoverMessageBlock[] },
+  ) => void;
+  setQuestionPrompt: (prompt?: { questions: RoverAskUserQuestion[] }) => void;
   clearMessages: () => void;
   addTimelineEvent: (event: RoverTimelineEvent) => void;
   clearTimeline: () => void;
@@ -44,6 +87,10 @@ export type RoverUi = {
       note?: string;
     },
   ) => void;
+  setShortcuts: (shortcuts: RoverShortcut[]) => void;
+  showGreeting: (text: string) => void;
+  dismissGreeting: () => void;
+  setVisitorName: (name: string) => void;
   open: () => void;
   close: () => void;
   show: () => void;
@@ -52,7 +99,7 @@ export type RoverUi = {
 };
 
 export type MountOptions = {
-  onSend: (text: string) => void;
+  onSend: (text: string, meta?: { askUserAnswers?: RoverAskUserAnswerMeta }) => void;
   onOpen?: () => void;
   onClose?: () => void;
   onRequestControl?: () => void;
@@ -61,6 +108,8 @@ export type MountOptions = {
   onCancelRun?: () => void;
   onTaskSuggestionPrimary?: () => void;
   onTaskSuggestionSecondary?: () => void;
+  shortcuts?: RoverShortcut[];
+  onShortcutClick?: (shortcut: RoverShortcut) => void;
   showTaskControls?: boolean;
   muted?: boolean;
   agent?: {
@@ -71,6 +120,13 @@ export type MountOptions = {
     mp4Url?: string;
     webmUrl?: string;
   };
+  greeting?: {
+    text?: string;
+    delay?: number;
+    duration?: number;
+    disabled?: boolean;
+  };
+  visitorName?: string;
 };
 
 const DEFAULT_AGENT_NAME = 'Rover';
@@ -80,6 +136,10 @@ const DEFAULT_MASCOT_WEBM = 'https://www.rtrvr.ai/rover/mascot.webm';
 const EXPAND_THRESHOLD_OUTPUT = 280;
 const EXPAND_THRESHOLD_THOUGHT = 150;
 const EXPAND_THRESHOLD_TOOL = 100;
+const STRUCTURED_PAGE_SIZE = 25;
+const STRUCTURED_MAX_DEPTH = 4;
+const SHORTCUTS_RENDER_LIMIT = 12;
+const GREETING_REVEAL_DELAY_MS = 800;
 
 function createId(prefix: string): string {
   try {
@@ -158,6 +218,7 @@ function parseStageFromTitle(title: string): { stage?: string; plainTitle: strin
 function classifyVisibility(event: RoverTimelineEvent): 'primary' | 'detail' {
   const title = (event.title || '').toLowerCase();
   if (title === 'run started' || title === 'run resumed' || title === 'run completed') return 'detail';
+  if (title === 'started new task' || title === 'execution completed') return 'detail';
   if (event.kind === 'status') {
     const parsed = parseStageFromTitle(event.title || '');
     if (parsed.stage === 'analyze' || parsed.stage === 'route' || parsed.stage === 'complete') return 'detail';
@@ -359,10 +420,416 @@ function createExpandableRichContent(text: string, threshold: number): HTMLDivEl
   return wrapper;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+function toSummaryText(value: unknown): string {
+  if (value == null) return 'null';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return `[${value.length} item${value.length === 1 ? '' : 's'}]`;
+  if (isPlainObject(value)) {
+    const keys = Object.keys(value);
+    if (!keys.length) return '{}';
+    const listed = keys.slice(0, 4).join(', ');
+    return `{ ${listed}${keys.length > 4 ? ', ...' : ''} }`;
+  }
+  try {
+    return String(value);
+  } catch {
+    return 'value';
+  }
+}
+
+function safeJsonStringify(value: unknown): string {
+  try {
+    const seen = new WeakSet<object>();
+    return JSON.stringify(
+      value,
+      (_key, val) => {
+        if (!val || typeof val !== 'object') return val;
+        if (seen.has(val)) return '[Circular]';
+        seen.add(val);
+        return val;
+      },
+      2,
+    ) || 'null';
+  } catch {
+    return toSummaryText(value);
+  }
+}
+
+function appendLoadMoreControl(params: {
+  total: number;
+  shown: number;
+  onLoadMore: () => void;
+}): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'rvStructuredMore';
+  button.textContent = `Show ${Math.min(STRUCTURED_PAGE_SIZE, params.total - params.shown)} more (${params.total - params.shown} left)`;
+  button.addEventListener('click', (event) => {
+    event.stopPropagation();
+    params.onLoadMore();
+  });
+  return button;
+}
+
+function createRawToggle(value: unknown): HTMLDivElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'rvRawToggleWrap';
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'rvRawToggle';
+  button.textContent = 'View raw JSON';
+
+  const pre = document.createElement('pre');
+  pre.className = 'rvRawJson';
+  pre.textContent = safeJsonStringify(value);
+  pre.style.display = 'none';
+
+  button.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const hidden = pre.style.display === 'none';
+    pre.style.display = hidden ? 'block' : 'none';
+    button.textContent = hidden ? 'Hide raw JSON' : 'View raw JSON';
+  });
+
+  wrap.appendChild(button);
+  wrap.appendChild(pre);
+  return wrap;
+}
+
+function renderPrimitiveValue(value: string | number | boolean | null): HTMLElement {
+  const node = document.createElement('div');
+  node.className = 'rvStructuredPrimitive';
+  if (value === null) {
+    node.textContent = 'null';
+    node.classList.add('isNull');
+    return node;
+  }
+  if (typeof value === 'string') {
+    const clean = sanitizeText(value);
+    if (!clean) {
+      node.textContent = '""';
+      return node;
+    }
+    if (clean.length > EXPAND_THRESHOLD_OUTPUT) {
+      node.appendChild(createExpandableRichContent(clean, EXPAND_THRESHOLD_OUTPUT));
+    } else {
+      node.appendChild(renderRichContent(clean));
+    }
+    return node;
+  }
+  node.textContent = String(value);
+  return node;
+}
+
+function canRenderObjectArrayAsTable(items: unknown[]): string[] | undefined {
+  const candidates = items.slice(0, 25);
+  if (!candidates.length) return undefined;
+  const columns: string[] = [];
+
+  for (const item of candidates) {
+    if (!isPlainObject(item)) return undefined;
+    for (const key of Object.keys(item)) {
+      if (!columns.includes(key)) columns.push(key);
+    }
+    if (columns.length > 8) return undefined;
+  }
+
+  for (const item of candidates) {
+    const record = item as Record<string, unknown>;
+    for (const key of columns) {
+      const value = record[key];
+      if (value == null) continue;
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') continue;
+      return undefined;
+    }
+  }
+
+  return columns.length ? columns : undefined;
+}
+
+function renderStructuredArray(
+  items: unknown[],
+  depth: number,
+  renderValue: (value: unknown, depth: number) => HTMLElement,
+): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'rvStructuredArray';
+
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'rvStructuredEmpty';
+    empty.textContent = 'No items';
+    wrap.appendChild(empty);
+    return wrap;
+  }
+
+  const tableColumns = canRenderObjectArrayAsTable(items);
+  let visibleCount = Math.min(STRUCTURED_PAGE_SIZE, items.length);
+
+  const list = document.createElement('div');
+  list.className = tableColumns ? 'rvStructuredTable' : 'rvStructuredList';
+  wrap.appendChild(list);
+
+  const controls = document.createElement('div');
+  controls.className = 'rvStructuredControls';
+  wrap.appendChild(controls);
+
+  const renderRows = () => {
+    list.innerHTML = '';
+
+    if (tableColumns) {
+      const table = document.createElement('table');
+      table.className = 'rvTable';
+      const thead = document.createElement('thead');
+      const headerRow = document.createElement('tr');
+      const indexHeader = document.createElement('th');
+      indexHeader.textContent = '#';
+      headerRow.appendChild(indexHeader);
+      for (const column of tableColumns) {
+        const th = document.createElement('th');
+        th.textContent = column;
+        headerRow.appendChild(th);
+      }
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      for (let index = 0; index < visibleCount; index += 1) {
+        const row = document.createElement('tr');
+        const indexCell = document.createElement('td');
+        indexCell.textContent = String(index + 1);
+        row.appendChild(indexCell);
+        const record = (items[index] as Record<string, unknown>) || {};
+        for (const column of tableColumns) {
+          const cell = document.createElement('td');
+          const raw = record[column];
+          if (raw == null) {
+            cell.textContent = '—';
+          } else {
+            cell.textContent = toSummaryText(raw);
+          }
+          row.appendChild(cell);
+        }
+        tbody.appendChild(row);
+      }
+      table.appendChild(tbody);
+      list.appendChild(table);
+    } else {
+      for (let index = 0; index < visibleCount; index += 1) {
+        const item = items[index];
+        const row = document.createElement('div');
+        row.className = 'rvStructuredItem';
+
+        const label = document.createElement('div');
+        label.className = 'rvStructuredItemLabel';
+        label.textContent = `#${index + 1}`;
+        row.appendChild(label);
+
+        const body = document.createElement('div');
+        body.className = 'rvStructuredItemBody';
+        body.appendChild(renderValue(item, depth + 1));
+        row.appendChild(body);
+
+        list.appendChild(row);
+      }
+    }
+
+    controls.innerHTML = '';
+    if (visibleCount < items.length) {
+      controls.appendChild(appendLoadMoreControl({
+        total: items.length,
+        shown: visibleCount,
+        onLoadMore: () => {
+          visibleCount = Math.min(items.length, visibleCount + STRUCTURED_PAGE_SIZE);
+          renderRows();
+        },
+      }));
+    }
+  };
+
+  renderRows();
+  return wrap;
+}
+
+function renderStructuredObject(
+  value: Record<string, unknown>,
+  depth: number,
+  renderValue: (entry: unknown, depth: number) => HTMLElement,
+): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'rvStructuredObject';
+
+  const entries = Object.entries(value);
+  if (!entries.length) {
+    const empty = document.createElement('div');
+    empty.className = 'rvStructuredEmpty';
+    empty.textContent = 'No fields';
+    wrap.appendChild(empty);
+    return wrap;
+  }
+
+  let visibleCount = Math.min(STRUCTURED_PAGE_SIZE, entries.length);
+  const list = document.createElement('div');
+  list.className = 'rvStructuredObjectRows';
+  wrap.appendChild(list);
+
+  const controls = document.createElement('div');
+  controls.className = 'rvStructuredControls';
+  wrap.appendChild(controls);
+
+  const renderRows = () => {
+    list.innerHTML = '';
+
+    for (let index = 0; index < visibleCount; index += 1) {
+      const [key, raw] = entries[index];
+      const row = document.createElement('div');
+      row.className = 'rvStructuredRow';
+
+      const keyEl = document.createElement('div');
+      keyEl.className = 'rvStructuredKey';
+      keyEl.textContent = key;
+
+      const valueEl = document.createElement('div');
+      valueEl.className = 'rvStructuredValue';
+      valueEl.appendChild(renderValue(raw, depth + 1));
+
+      row.appendChild(keyEl);
+      row.appendChild(valueEl);
+      list.appendChild(row);
+    }
+
+    controls.innerHTML = '';
+    if (visibleCount < entries.length) {
+      controls.appendChild(appendLoadMoreControl({
+        total: entries.length,
+        shown: visibleCount,
+        onLoadMore: () => {
+          visibleCount = Math.min(entries.length, visibleCount + STRUCTURED_PAGE_SIZE);
+          renderRows();
+        },
+      }));
+    }
+  };
+
+  renderRows();
+  return wrap;
+}
+
+function renderStructuredValue(value: unknown, depth = 0): HTMLElement {
+  if (depth >= STRUCTURED_MAX_DEPTH) {
+    const capped = document.createElement('div');
+    capped.className = 'rvStructuredCapped';
+    capped.textContent = toSummaryText(value);
+    return capped;
+  }
+
+  if (value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return renderPrimitiveValue(value as string | number | boolean | null);
+  }
+
+  if (Array.isArray(value)) {
+    return renderStructuredArray(value, depth, renderStructuredValue);
+  }
+
+  if (isPlainObject(value)) {
+    return renderStructuredObject(value, depth, renderStructuredValue);
+  }
+
+  const fallback = document.createElement('div');
+  fallback.className = 'rvStructuredPrimitive';
+  fallback.textContent = toSummaryText(value);
+  return fallback;
+}
+
+function renderMessageBlock(block: RoverMessageBlock): HTMLElement | undefined {
+  if (block.type === 'text') {
+    const clean = sanitizeText(block.text);
+    if (!clean) return undefined;
+    return createExpandableRichContent(clean, EXPAND_THRESHOLD_OUTPUT);
+  }
+
+  const card = document.createElement('section');
+  card.className = 'rvStructuredCard';
+
+  const header = document.createElement('div');
+  header.className = 'rvStructuredHeader';
+
+  const label = document.createElement('span');
+  label.className = 'rvStructuredLabel';
+  label.textContent = sanitizeText(block.label || (block.type === 'tool_output' ? (block.toolName ? `${block.toolName} output` : 'Tool output') : 'JSON output'));
+  header.appendChild(label);
+
+  const typeBadge = document.createElement('span');
+  typeBadge.className = 'rvStructuredType';
+  if (Array.isArray(block.data)) {
+    typeBadge.textContent = `array · ${block.data.length}`;
+  } else if (isPlainObject(block.data)) {
+    typeBadge.textContent = `object · ${Object.keys(block.data).length}`;
+  } else {
+    typeBadge.textContent = typeof block.data;
+  }
+  header.appendChild(typeBadge);
+  card.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'rvStructuredBody';
+  body.appendChild(renderStructuredValue(block.data));
+  card.appendChild(body);
+  card.appendChild(createRawToggle(block.data));
+  return card;
+}
+
+function renderAssistantMessageContent(
+  text: string,
+  blocks: RoverMessageBlock[] | undefined,
+): DocumentFragment {
+  const fragment = document.createDocumentFragment();
+  const normalizedBlocks = Array.isArray(blocks) ? blocks : [];
+  let hasRenderedBlock = false;
+
+  for (const block of normalizedBlocks) {
+    const node = renderMessageBlock(block);
+    if (!node) continue;
+    hasRenderedBlock = true;
+    fragment.appendChild(node);
+  }
+
+  if (!hasRenderedBlock) {
+    const clean = sanitizeText(text);
+    if (!clean) return fragment;
+    if (clean.length > EXPAND_THRESHOLD_OUTPUT) {
+      fragment.appendChild(createExpandableRichContent(clean, EXPAND_THRESHOLD_OUTPUT));
+    } else {
+      fragment.appendChild(renderRichContent(clean));
+    }
+    return fragment;
+  }
+
+  const trailingText = sanitizeText(text);
+  const hasTextBlock = normalizedBlocks.some(block => block.type === 'text' && sanitizeText(block.text) === trailingText);
+  if (trailingText && !hasTextBlock) {
+    const line = document.createElement('div');
+    line.className = 'rvLine';
+    line.appendChild(renderRichContent(trailingText));
+    fragment.insertBefore(line, fragment.firstChild);
+  }
+
+  return fragment;
+}
+
 export function mountWidget(opts: MountOptions): RoverUi {
   const agentName = resolveAgentName(opts.agent?.name);
   const agentInitial = deriveAgentInitial(agentName);
   const launcherToken = deriveLauncherToken(agentName);
+  let visitorName: string | undefined = opts.visitorName;
 
   const host = document.createElement('div');
   host.id = 'rover-widget-root';
@@ -1090,6 +1557,208 @@ export function mountWidget(opts: MountOptions): RoverUi {
       line-height: 1.5;
     }
 
+    .rvStructuredCard {
+      border: 1px solid var(--rv-border-strong);
+      background: var(--rv-surface);
+      border-radius: var(--rv-radius-sm);
+      padding: 8px 10px;
+      margin: 6px 0;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .rvStructuredHeader {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .rvStructuredLabel {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--rv-text);
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .rvStructuredType {
+      font-size: 11px;
+      color: var(--rv-text-secondary);
+      border: 1px solid var(--rv-border);
+      border-radius: 999px;
+      padding: 2px 8px;
+      white-space: nowrap;
+      flex: 0 0 auto;
+      background: var(--rv-bg-alt);
+    }
+
+    .rvStructuredBody {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .rvStructuredPrimitive {
+      font-size: 12.5px;
+      color: var(--rv-text);
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
+    .rvStructuredPrimitive.isNull {
+      color: var(--rv-text-tertiary);
+      font-style: italic;
+    }
+
+    .rvStructuredArray,
+    .rvStructuredObject {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .rvStructuredObjectRows {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .rvStructuredRow {
+      display: grid;
+      grid-template-columns: minmax(88px, 130px) 1fr;
+      gap: 8px;
+      align-items: start;
+    }
+
+    .rvStructuredKey {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--rv-text-secondary);
+      word-break: break-word;
+      padding-top: 2px;
+    }
+
+    .rvStructuredValue {
+      min-width: 0;
+    }
+
+    .rvStructuredList {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .rvStructuredItem {
+      border: 1px solid var(--rv-border);
+      border-radius: var(--rv-radius-sm);
+      background: rgba(0, 0, 0, 0.01);
+      padding: 6px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .rvStructuredItemLabel {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--rv-text-secondary);
+    }
+
+    .rvStructuredItemBody {
+      min-width: 0;
+    }
+
+    .rvStructuredEmpty,
+    .rvStructuredCapped {
+      color: var(--rv-text-tertiary);
+      font-size: 12px;
+      font-style: italic;
+    }
+
+    .rvStructuredControls {
+      display: flex;
+      justify-content: flex-start;
+    }
+
+    .rvStructuredMore {
+      border: 1px solid var(--rv-border-strong);
+      background: var(--rv-surface);
+      color: var(--rv-text-secondary);
+      font-size: 11.5px;
+      font-weight: 600;
+      border-radius: var(--rv-radius-sm);
+      padding: 4px 8px;
+      cursor: pointer;
+      transition: background 120ms ease, border-color 120ms ease;
+    }
+
+    .rvStructuredMore:hover {
+      background: var(--rv-bg-alt);
+      border-color: var(--rv-accent-border);
+      color: var(--rv-text);
+    }
+
+    .rvRawToggleWrap {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .rvRawToggle {
+      align-self: flex-start;
+      border: none;
+      background: transparent;
+      color: var(--rv-accent);
+      font-size: 11.5px;
+      font-weight: 700;
+      cursor: pointer;
+      padding: 0;
+    }
+
+    .rvRawToggle:hover {
+      text-decoration: underline;
+    }
+
+    .rvRawJson {
+      margin: 0;
+      border: 1px solid var(--rv-border);
+      border-radius: var(--rv-radius-sm);
+      background: #fff;
+      padding: 8px;
+      font-size: 11px;
+      line-height: 1.45;
+      max-height: 240px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--rv-text-secondary);
+    }
+
+    .rvTable {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11.5px;
+    }
+
+    .rvTable th,
+    .rvTable td {
+      border: 1px solid var(--rv-border);
+      padding: 4px 6px;
+      text-align: left;
+      vertical-align: top;
+      word-break: break-word;
+    }
+
+    .rvTable th {
+      background: var(--rv-bg-alt);
+      color: var(--rv-text-secondary);
+      font-weight: 700;
+    }
+
     /* Override inherited pre-wrap inside bubbles and trace details */
     .rvKv,
     .rvList,
@@ -1155,6 +1824,92 @@ export function mountWidget(opts: MountOptions): RoverUi {
     }
     .taskSuggestionBtn.primary:hover {
       background: rgba(255, 76, 0, 0.10);
+    }
+
+    .questionPrompt {
+      display: none;
+      border-top: 1px solid var(--rv-border);
+      border-bottom: 1px solid var(--rv-border);
+      padding: 10px 14px;
+      background: rgba(255, 76, 0, 0.04);
+      gap: 10px;
+      flex-direction: column;
+    }
+
+    .questionPrompt.visible {
+      display: flex;
+    }
+
+    .questionPromptTitle {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: var(--rv-text-secondary);
+    }
+
+    .questionPromptForm {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .questionPromptItem {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .questionPromptLabel {
+      font-size: 12px;
+      line-height: 1.35;
+      color: var(--rv-text);
+      font-weight: 600;
+    }
+
+    .questionPromptInput {
+      width: 100%;
+      border: 1px solid var(--rv-border-strong);
+      border-radius: var(--rv-radius-sm);
+      padding: 8px 10px;
+      font-size: 12.5px;
+      line-height: 1.35;
+      font-family: inherit;
+      color: var(--rv-text);
+      background: var(--rv-surface);
+      outline: none;
+    }
+
+    .questionPromptInput:focus {
+      border-color: var(--rv-accent);
+      box-shadow: 0 0 0 3px var(--rv-accent-glow);
+    }
+
+    .questionPromptInput.invalid {
+      border-color: #d63a1e;
+      box-shadow: 0 0 0 2px rgba(214, 58, 30, 0.15);
+    }
+
+    .questionPromptActions {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+    }
+
+    .questionPromptSubmit {
+      border: 1px solid var(--rv-accent-border);
+      background: var(--rv-accent-soft);
+      color: var(--rv-accent);
+      border-radius: var(--rv-radius-sm);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+
+    .questionPromptSubmit:hover {
+      background: rgba(255, 76, 0, 0.1);
     }
 
     /* ── Step 10: Composer Enhancement ── */
@@ -1328,6 +2083,250 @@ export function mountWidget(opts: MountOptions): RoverUi {
     .typingDot:nth-child(2) { animation-delay: 0.15s; }
     .typingDot:nth-child(3) { animation-delay: 0.30s; }
 
+    /* ── Shortcuts: Empty State Cards ── */
+    .shortcutsEmptyState {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      padding: 20px 8px 12px;
+      animation: msgIn 400ms var(--rv-ease-spring) forwards;
+    }
+
+    .shortcutsEmptyState.visible {
+      display: flex;
+    }
+
+    .shortcutsHeading {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--rv-text-secondary);
+      text-align: center;
+    }
+
+    .shortcutsGrid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      width: 100%;
+    }
+
+    .shortcutCard {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 12px;
+      border: 1px solid var(--rv-border-strong);
+      border-radius: var(--rv-radius-md);
+      background: var(--rv-surface);
+      cursor: pointer;
+      transition: background 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+      text-align: left;
+    }
+
+    .shortcutCard:hover {
+      background: var(--rv-accent-soft);
+      border-color: var(--rv-accent-border);
+      box-shadow: var(--rv-shadow-sm);
+      border-left: 2px solid var(--rv-accent);
+    }
+
+    .shortcutCard:active {
+      transform: scale(0.98);
+    }
+
+    .shortcutCardIcon {
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .shortcutCardLabel {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--rv-text);
+      line-height: 1.3;
+    }
+
+    .shortcutCardDesc {
+      font-size: 11.5px;
+      color: var(--rv-text-secondary);
+      line-height: 1.35;
+    }
+
+    /* ── Shortcuts: Compact Chips Bar ── */
+    .shortcutsBar {
+      display: none;
+      gap: 6px;
+      padding: 8px 14px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      border-top: 1px solid var(--rv-border);
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+      animation: msgIn 300ms var(--rv-ease-spring) forwards;
+    }
+
+    .shortcutsBar::-webkit-scrollbar {
+      display: none;
+    }
+
+    .shortcutsBar.visible {
+      display: flex;
+    }
+
+    .shortcutChip {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 5px 12px;
+      border: 1px solid var(--rv-border-strong);
+      border-radius: 999px;
+      background: var(--rv-surface);
+      font-size: 12px;
+      font-weight: 500;
+      font-family: inherit;
+      color: var(--rv-text);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 120ms ease, border-color 120ms ease;
+    }
+
+    .shortcutChip:hover {
+      background: var(--rv-accent-soft);
+      border-color: var(--rv-accent-border);
+    }
+
+    .shortcutChip:active {
+      transform: scale(0.97);
+    }
+
+    .shortcutChipIcon {
+      font-size: 13px;
+      line-height: 1;
+    }
+
+    /* ── Greeting Bubble ── */
+    @keyframes greetingIn {
+      0%   { opacity: 0; transform: translateY(8px) scale(0.97); }
+      70%  { opacity: 1; transform: translateY(-1px) scale(1.005); }
+      100% { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes greetingOut {
+      from { opacity: 1; transform: translateY(0) scale(1); }
+      to   { opacity: 0; transform: translateY(4px) scale(0.98); }
+    }
+    @keyframes dotPulse {
+      0%, 100% { opacity: 0.3; transform: scale(1); }
+      50% { opacity: 0.8; transform: scale(1.15); }
+    }
+    @keyframes textReveal {
+      from { opacity: 0; transform: translateY(3px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .greetingBubble {
+      position: fixed;
+      right: 20px;
+      bottom: 88px;
+      max-width: 220px;
+      padding: 9px 24px 9px 12px;
+      background:
+        radial-gradient(120% 80% at 100% 0%, rgba(255, 76, 0, 0.05), transparent 52%),
+        linear-gradient(180deg, rgba(250, 250, 247, 0.72), rgba(243, 241, 236, 0.72));
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(255, 255, 255, 0.45);
+      border-radius: var(--rv-radius-lg);
+      box-shadow: var(--rv-shadow-lg);
+      z-index: 2147483647;
+      display: none;
+      cursor: pointer;
+      animation: greetingIn 380ms var(--rv-ease-spring) forwards;
+    }
+
+    .greetingBubble.visible { display: block; }
+    .greetingBubble.dismissing { animation: greetingOut 250ms var(--rv-ease-smooth) forwards; }
+
+    .greetingBubble::after {
+      content: '';
+      position: absolute;
+      bottom: -6px;
+      right: 22px;
+      width: 12px;
+      height: 12px;
+      background: rgba(243, 241, 236, 0.72);
+      border-right: 1px solid rgba(255, 255, 255, 0.45);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.45);
+      transform: rotate(45deg);
+    }
+
+    .greetingDots {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      height: 20px;
+      transition: opacity 200ms ease, max-height 200ms ease;
+    }
+
+    .greetingDot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--rv-text-tertiary);
+      animation: dotPulse 1.4s ease-in-out infinite;
+    }
+    .greetingDot:nth-child(2) { animation-delay: 200ms; }
+    .greetingDot:nth-child(3) { animation-delay: 400ms; }
+
+    .greetingBubble.textVisible .greetingDots {
+      opacity: 0;
+      max-height: 0;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .greetingText {
+      font-size: 13.5px;
+      font-weight: 500;
+      color: var(--rv-text);
+      line-height: 1.45;
+      letter-spacing: -0.01em;
+      opacity: 0;
+      transform: translateY(3px);
+    }
+
+    .greetingBubble.textVisible .greetingText {
+      animation: textReveal 350ms var(--rv-ease-smooth) forwards;
+    }
+
+    .greetingClose {
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 18px;
+      height: 18px;
+      border: none;
+      background: transparent;
+      color: var(--rv-text-tertiary);
+      font-size: 13px;
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      opacity: 0;
+      transition: opacity 150ms ease, background 120ms ease, color 120ms ease;
+    }
+
+    .greetingBubble:hover .greetingClose {
+      opacity: 1;
+    }
+
+    .greetingClose:hover {
+      background: var(--rv-bg-alt);
+      color: var(--rv-text);
+    }
+
     /* ── Step 14: Mobile Responsive ── */
     @media (max-width: 640px) {
       .launcher {
@@ -1407,6 +2406,33 @@ export function mountWidget(opts: MountOptions): RoverUi {
         padding: 12px 12px 8px;
         gap: 8px;
       }
+
+      .shortcutsGrid {
+        grid-template-columns: 1fr;
+      }
+
+      .shortcutsBar {
+        padding: 6px 12px;
+      }
+
+      .questionPrompt {
+        padding: 10px 12px;
+      }
+
+      .questionPromptLabel {
+        font-size: 11.5px;
+      }
+
+      .questionPromptInput {
+        font-size: 12px;
+      }
+
+      .greetingBubble {
+        right: 14px;
+        bottom: 76px;
+        max-width: 190px;
+        padding: 8px 22px 8px 10px;
+      }
     }
   `;
 
@@ -1449,6 +2475,31 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   launcher.appendChild(launcherFallback);
   launcher.appendChild(launcherShine);
+
+  /* ── Greeting Bubble ── */
+  const greetingBubble = document.createElement('div');
+  greetingBubble.className = 'greetingBubble';
+
+  const greetingText = document.createElement('span');
+  greetingText.className = 'greetingText';
+
+  const greetingClose = document.createElement('button');
+  greetingClose.type = 'button';
+  greetingClose.className = 'greetingClose';
+  greetingClose.textContent = '\u00D7';
+  greetingClose.setAttribute('aria-label', 'Dismiss');
+
+  const greetingDots = document.createElement('div');
+  greetingDots.className = 'greetingDots';
+  for (let i = 0; i < 3; i++) {
+    const dot = document.createElement('span');
+    dot.className = 'greetingDot';
+    greetingDots.appendChild(dot);
+  }
+
+  greetingBubble.appendChild(greetingDots);
+  greetingBubble.appendChild(greetingText);
+  greetingBubble.appendChild(greetingClose);
 
   /* ── Panel ── */
   const panel = document.createElement('div');
@@ -1630,6 +2681,55 @@ export function mountWidget(opts: MountOptions): RoverUi {
     </div>
   `;
 
+  /* ── Shortcuts: Empty State (cards inside feed) ── */
+  const shortcutsEmptyState = document.createElement('div');
+  shortcutsEmptyState.className = 'shortcutsEmptyState';
+
+  const shortcutsHeading = document.createElement('div');
+  shortcutsHeading.className = 'shortcutsHeading';
+  shortcutsHeading.textContent = visitorName
+    ? `Hey ${visitorName}! What can I help with?`
+    : `What can ${agentName} help you with?`;
+
+  const shortcutsGrid = document.createElement('div');
+  shortcutsGrid.className = 'shortcutsGrid';
+
+  shortcutsEmptyState.appendChild(shortcutsHeading);
+  shortcutsEmptyState.appendChild(shortcutsGrid);
+  feed.appendChild(shortcutsEmptyState);
+
+  /* ── Shortcuts: Compact Chips Bar (above composer) ── */
+  const shortcutsBar = document.createElement('div');
+  shortcutsBar.className = 'shortcutsBar';
+
+  /* ── Ask User Prompt ── */
+  const questionPrompt = document.createElement('div');
+  questionPrompt.className = 'questionPrompt';
+
+  const questionPromptTitle = document.createElement('div');
+  questionPromptTitle.className = 'questionPromptTitle';
+  questionPromptTitle.textContent = 'Need a bit more info';
+
+  const questionPromptForm = document.createElement('form');
+  questionPromptForm.className = 'questionPromptForm';
+
+  const questionPromptList = document.createElement('div');
+  questionPromptList.className = 'questionPromptList';
+  questionPromptForm.appendChild(questionPromptList);
+
+  const questionPromptActions = document.createElement('div');
+  questionPromptActions.className = 'questionPromptActions';
+
+  const questionPromptSubmit = document.createElement('button');
+  questionPromptSubmit.type = 'submit';
+  questionPromptSubmit.className = 'questionPromptSubmit';
+  questionPromptSubmit.textContent = 'Continue';
+  questionPromptActions.appendChild(questionPromptSubmit);
+  questionPromptForm.appendChild(questionPromptActions);
+
+  questionPrompt.appendChild(questionPromptTitle);
+  questionPrompt.appendChild(questionPromptForm);
+
   /* ── Composer ── */
   const composer = document.createElement('form');
   composer.className = 'composer';
@@ -1653,10 +2753,13 @@ export function mountWidget(opts: MountOptions): RoverUi {
   panel.appendChild(header);
   panel.appendChild(feedWrapper);
   panel.appendChild(taskSuggestion);
+  panel.appendChild(shortcutsBar);
+  panel.appendChild(questionPrompt);
   panel.appendChild(composer);
   panel.appendChild(resizeHandle);
 
   wrapper.appendChild(launcher);
+  wrapper.appendChild(greetingBubble);
   wrapper.appendChild(panel);
   shadow.appendChild(style);
   shadow.appendChild(wrapper);
@@ -1673,12 +2776,19 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let currentMode: RoverExecutionMode = 'controller';
   let canComposeInObserver = false;
   let isRunning = false;
+  let hasMessages = false;
+  let currentShortcuts: RoverShortcut[] = opts.shortcuts?.slice(0, SHORTCUTS_RENDER_LIMIT) || [];
   let pendingConfirmAction: 'new_task' | 'end_task' | null = null;
   let traceExpanded = false;
   let moodResetTimer: number | null = null;
   let overflowOpen = false;
   let userScrolledUp = false;
   let lastAutoScrollTs = 0;
+  let greetingShown = false;
+  let greetingDismissTimer: ReturnType<typeof setTimeout> | null = null;
+  let greetingRevealTimer: ReturnType<typeof setTimeout> | null = null;
+  let waitingForFirstModelSignal = false;
+  let currentQuestionPrompt: { questions: RoverAskUserQuestion[] } | null = null;
 
   /* ── Overflow menu logic ── */
   function toggleOverflow(): void {
@@ -1691,6 +2801,186 @@ export function mountWidget(opts: MountOptions): RoverUi {
     overflowMenu.classList.remove('visible');
   }
 
+  function renderShortcuts(shortcuts: RoverShortcut[]): void {
+    currentShortcuts = shortcuts
+      .filter(shortcut => shortcut && shortcut.enabled !== false)
+      .slice(0, SHORTCUTS_RENDER_LIMIT);
+
+    // Render empty-state cards
+    shortcutsGrid.innerHTML = '';
+    for (const sc of currentShortcuts) {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'shortcutCard';
+      if (sc.icon) {
+        const iconEl = document.createElement('span');
+        iconEl.className = 'shortcutCardIcon';
+        iconEl.textContent = sc.icon;
+        card.appendChild(iconEl);
+      }
+      const labelEl = document.createElement('span');
+      labelEl.className = 'shortcutCardLabel';
+      labelEl.textContent = sc.label;
+      card.appendChild(labelEl);
+      if (sc.description) {
+        const descEl = document.createElement('span');
+        descEl.className = 'shortcutCardDesc';
+        descEl.textContent = sc.description;
+        card.appendChild(descEl);
+      }
+      card.addEventListener('click', () => opts.onShortcutClick?.(sc));
+      shortcutsGrid.appendChild(card);
+    }
+
+    // Render compact chips
+    shortcutsBar.innerHTML = '';
+    for (const sc of currentShortcuts) {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'shortcutChip';
+      if (sc.icon) {
+        const chipIcon = document.createElement('span');
+        chipIcon.className = 'shortcutChipIcon';
+        chipIcon.textContent = sc.icon;
+        chip.appendChild(chipIcon);
+      }
+      const chipLabel = document.createTextNode(sc.label);
+      chip.appendChild(chipLabel);
+      chip.addEventListener('click', () => opts.onShortcutClick?.(sc));
+      shortcutsBar.appendChild(chip);
+    }
+
+    syncShortcutsVisibility();
+  }
+
+  function syncShortcutsVisibility(): void {
+    const hasShortcuts = currentShortcuts.length > 0;
+    const hasQuestionPrompt = !!currentQuestionPrompt?.questions?.length;
+    const showEmpty = hasShortcuts && !hasMessages && !isRunning;
+    const showChips = hasShortcuts && hasMessages && !isRunning && !hasQuestionPrompt;
+    shortcutsEmptyState.classList.toggle('visible', showEmpty);
+    shortcutsBar.classList.toggle('visible', showChips);
+  }
+
+  function showGreeting(text: string): void {
+    const cleanText = sanitizeText(text);
+    if (!cleanText) return;
+    greetingText.textContent = cleanText;
+    if (greetingBubble.classList.contains('visible')) {
+      greetingBubble.classList.add('textVisible');
+      return;
+    }
+    if (greetingShown) return;
+    if (panel.classList.contains('open')) return;
+    greetingShown = true;
+    greetingBubble.classList.remove('dismissing', 'textVisible');
+    greetingBubble.classList.add('visible');
+    if (greetingRevealTimer) {
+      clearTimeout(greetingRevealTimer);
+      greetingRevealTimer = null;
+    }
+    greetingRevealTimer = setTimeout(() => {
+      greetingRevealTimer = null;
+      greetingBubble.classList.add('textVisible');
+    }, GREETING_REVEAL_DELAY_MS);
+  }
+
+  function dismissGreeting(): void {
+    if (greetingRevealTimer) {
+      clearTimeout(greetingRevealTimer);
+      greetingRevealTimer = null;
+    }
+    if (!greetingBubble.classList.contains('visible')) return;
+    greetingBubble.classList.add('dismissing');
+    const onEnd = () => {
+      greetingBubble.classList.remove('visible', 'dismissing');
+      greetingBubble.removeEventListener('animationend', onEnd);
+    };
+    greetingBubble.addEventListener('animationend', onEnd);
+    if (greetingDismissTimer) { clearTimeout(greetingDismissTimer); greetingDismissTimer = null; }
+  }
+
+  function setVisitorName(name: string): void {
+    visitorName = name || undefined;
+    if (visitorName) {
+      shortcutsHeading.textContent = `Hey ${visitorName}! What can I help with?`;
+    } else {
+      shortcutsHeading.textContent = `What can ${agentName} help you with?`;
+    }
+  }
+
+  function normalizeQuestionPrompt(prompt?: { questions: RoverAskUserQuestion[] }): RoverAskUserQuestion[] {
+    if (!prompt || !Array.isArray(prompt.questions)) return [];
+    const out: RoverAskUserQuestion[] = [];
+    const seen = new Set<string>();
+    for (let i = 0; i < prompt.questions.length; i += 1) {
+      const item = prompt.questions[i];
+      if (!item || typeof item !== 'object') continue;
+      const key = String(item.key || item.id || '').trim() || `clarification_${i + 1}`;
+      const query = String(item.query || item.question || '').trim();
+      if (!query) continue;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        key,
+        query,
+        ...(typeof item.id === 'string' && item.id.trim() ? { id: item.id.trim() } : {}),
+        ...(typeof item.question === 'string' && item.question.trim() ? { question: item.question.trim() } : {}),
+        ...(Array.isArray(item.choices) ? { choices: item.choices } : {}),
+      });
+    }
+    return out.slice(0, 6);
+  }
+
+  function setQuestionPrompt(prompt?: { questions: RoverAskUserQuestion[] }): void {
+    const questions = normalizeQuestionPrompt(prompt);
+    currentQuestionPrompt = questions.length ? { questions } : null;
+    questionPromptList.innerHTML = '';
+
+    if (!currentQuestionPrompt) {
+      questionPrompt.classList.remove('visible');
+      syncShortcutsVisibility();
+      return;
+    }
+
+    for (const question of currentQuestionPrompt.questions) {
+      const item = document.createElement('label');
+      item.className = 'questionPromptItem';
+
+      const label = document.createElement('span');
+      label.className = 'questionPromptLabel';
+      label.textContent = question.query;
+      item.appendChild(label);
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'questionPromptInput';
+      input.dataset.key = question.key;
+      input.placeholder = `Answer for ${question.key}`;
+      input.required = true;
+      input.addEventListener('input', () => {
+        input.classList.remove('invalid');
+      });
+      item.appendChild(input);
+
+      questionPromptList.appendChild(item);
+    }
+
+    questionPrompt.classList.add('visible');
+    syncShortcutsVisibility();
+  }
+
+  function syncProcessingIndicator(): void {
+    const shouldShow = isRunning && waitingForFirstModelSignal;
+    if (shouldShow) {
+      typingIndicator.classList.add('visible');
+      feed.appendChild(typingIndicator);
+      smartScrollToBottom();
+    } else {
+      typingIndicator.classList.remove('visible');
+    }
+  }
+
   function setMascotMood(mood: 'idle' | 'typing' | 'running' | 'success' | 'error', holdMs = 0): void {
     wrapper.dataset.mood = mood;
     if (moodResetTimer != null) {
@@ -1698,19 +2988,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
       moodResetTimer = null;
     }
 
-    /* Step 15: Show/hide typing indicator */
-    if (mood === 'typing' || mood === 'running') {
-      typingIndicator.classList.add('visible');
-      feed.appendChild(typingIndicator);
-      smartScrollToBottom();
-    } else {
-      typingIndicator.classList.remove('visible');
-    }
-
     if (holdMs > 0 && mood !== 'idle') {
       moodResetTimer = window.setTimeout(() => {
         wrapper.dataset.mood = 'idle';
-        typingIndicator.classList.remove('visible');
+        syncProcessingIndicator();
         moodResetTimer = null;
       }, holdMs);
     }
@@ -1752,7 +3033,12 @@ export function mountWidget(opts: MountOptions): RoverUi {
   });
 
   function syncComposerDisabledState(): void {
-    inputEl.disabled = currentMode === 'observer' && !canComposeInObserver;
+    const disabled = currentMode === 'observer' && !canComposeInObserver;
+    inputEl.disabled = disabled;
+    questionPromptSubmit.disabled = disabled;
+    for (const node of Array.from(questionPromptForm.querySelectorAll('.questionPromptInput'))) {
+      (node as HTMLInputElement).disabled = disabled;
+    }
   }
 
   function setTraceExpanded(next: boolean): void {
@@ -1771,6 +3057,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     wrapper.style.display = '';
     panel.classList.remove('closing');
     panel.classList.add('open');
+    dismissGreeting();
     setMascotMood('idle');
     opts.onOpen?.();
     if (!inputEl.disabled) inputEl.focus();
@@ -1803,9 +3090,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
     wrapper.style.display = 'none';
   }
 
-  function addMessage(role: 'user' | 'assistant' | 'system', text: string): void {
+  function addMessage(role: 'user' | 'assistant' | 'system', text: string, options?: { blocks?: RoverMessageBlock[] }): void {
     const clean = sanitizeText(text);
-    if (!clean) return;
+    const blocks = options?.blocks;
+    if (!clean && (!blocks || blocks.length === 0)) return;
 
     const entry = document.createElement('div');
     entry.className = `entry message ${role}`;
@@ -1813,11 +3101,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
     if (role === 'assistant') {
-      if (clean.length > EXPAND_THRESHOLD_OUTPUT) {
-        bubble.appendChild(createExpandableRichContent(clean, EXPAND_THRESHOLD_OUTPUT));
-      } else {
-        bubble.appendChild(renderRichContent(clean));
-      }
+      bubble.appendChild(renderAssistantMessageContent(clean, blocks));
     } else {
       bubble.textContent = clean;
     }
@@ -1829,6 +3113,12 @@ export function mountWidget(opts: MountOptions): RoverUi {
     entry.appendChild(bubble);
     entry.appendChild(stamp);
     feed.appendChild(entry);
+    if (role === 'assistant' && isRunning && waitingForFirstModelSignal) {
+      waitingForFirstModelSignal = false;
+      syncProcessingIndicator();
+    }
+    hasMessages = true;
+    syncShortcutsVisibility();
     if (role === 'user') setMascotMood('typing', 1200);
     else if (role === 'assistant') setMascotMood('success', 1400);
     else setMascotMood('running', 900);
@@ -1839,6 +3129,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
     for (const node of Array.from(feed.querySelectorAll('.entry.message'))) {
       node.remove();
     }
+    hasMessages = false;
+    setQuestionPrompt(undefined);
+    syncShortcutsVisibility();
   }
 
   function ensureTraceEntry(key: string): HTMLDivElement {
@@ -1898,8 +3191,22 @@ export function mountWidget(opts: MountOptions): RoverUi {
     tsEl.textContent = formatTime(ts);
 
     detail.innerHTML = '';
+    const detailBlocks = Array.isArray(event.detailBlocks) ? event.detailBlocks : [];
     const detailText = sanitizeText(event.detail || '');
-    if (detailText) {
+    if (detailBlocks.length > 0) {
+      for (const block of detailBlocks) {
+        const node = renderMessageBlock(block);
+        if (!node) continue;
+        detail.appendChild(node);
+      }
+      if (detailText) {
+        const line = document.createElement('div');
+        line.className = 'rvLine';
+        line.appendChild(renderRichContent(detailText));
+        detail.insertBefore(line, detail.firstChild);
+      }
+      detail.style.display = '';
+    } else if (detailText) {
       const threshold = event.kind === 'thought' ? EXPAND_THRESHOLD_THOUGHT
         : (event.kind === 'tool_start' || event.kind === 'tool_result') ? EXPAND_THRESHOLD_TOOL
         : EXPAND_THRESHOLD_OUTPUT;
@@ -1947,6 +3254,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
     const entry = useStableKey ? ensureTraceEntry(key) : ensureTraceEntry(`${key}:${id}`);
 
     updateTraceEntry(entry, { ...event, title });
+    if (event.kind === 'thought' && isRunning && waitingForFirstModelSignal) {
+      waitingForFirstModelSignal = false;
+      syncProcessingIndicator();
+    }
     if (title.toLowerCase() === 'run completed') {
       setTraceExpanded(false);
     }
@@ -1985,8 +3296,15 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   function setRunning(running: boolean): void {
     isRunning = running;
+    if (running) {
+      waitingForFirstModelSignal = true;
+    } else {
+      waitingForFirstModelSignal = false;
+    }
+    syncProcessingIndicator();
     stopBtn.classList.toggle('visible', running);
     modeBadge.style.display = running ? 'none' : '';
+    syncShortcutsVisibility();
   }
 
   function setExecutionMode(
@@ -2036,6 +3354,14 @@ export function mountWidget(opts: MountOptions): RoverUi {
       window.clearTimeout(moodResetTimer);
       moodResetTimer = null;
     }
+    if (greetingRevealTimer) {
+      window.clearTimeout(greetingRevealTimer);
+      greetingRevealTimer = null;
+    }
+    if (greetingDismissTimer) {
+      window.clearTimeout(greetingDismissTimer);
+      greetingDismissTimer = null;
+    }
     document.removeEventListener('keydown', globalToggleHandler);
     fontStyle.remove();
     host.remove();
@@ -2045,6 +3371,16 @@ export function mountWidget(opts: MountOptions): RoverUi {
   launcher.addEventListener('click', () => {
     if (panel.classList.contains('open')) close();
     else open();
+  });
+
+  greetingClose.addEventListener('click', (e) => {
+    e.stopPropagation();
+    dismissGreeting();
+  });
+
+  greetingBubble.addEventListener('click', () => {
+    dismissGreeting();
+    open();
   });
 
   closeBtn.addEventListener('click', () => close());
@@ -2130,6 +3466,47 @@ export function mountWidget(opts: MountOptions): RoverUi {
   inputEl.addEventListener('input', () => {
     inputEl.style.height = 'auto';
     inputEl.style.height = `${Math.min(96, Math.max(44, inputEl.scrollHeight))}px`;
+  });
+
+  questionPromptForm.addEventListener('submit', ev => {
+    ev.preventDefault();
+    if (inputEl.disabled) return;
+    if (!currentQuestionPrompt?.questions?.length) return;
+
+    const answersByKey: Record<string, string> = {};
+    const rawLines: string[] = [];
+    let firstInvalid: HTMLInputElement | null = null;
+
+    for (const question of currentQuestionPrompt.questions) {
+      const input = Array.from(questionPromptForm.querySelectorAll('.questionPromptInput'))
+        .find(node => (node as HTMLInputElement).dataset.key === question.key) as HTMLInputElement | undefined;
+      if (!input) continue;
+      const value = sanitizeText(input.value);
+      if (!value) {
+        input.classList.add('invalid');
+        if (!firstInvalid) firstInvalid = input;
+        continue;
+      }
+      input.classList.remove('invalid');
+      answersByKey[question.key] = value;
+      rawLines.push(`${question.key}: ${value}`);
+    }
+
+    if (firstInvalid) {
+      firstInvalid.focus();
+      return;
+    }
+
+    const keys = currentQuestionPrompt.questions.map(question => question.key);
+    const rawText = rawLines.join('\n');
+    opts.onSend(rawText, {
+      askUserAnswers: {
+        answersByKey,
+        rawText,
+        keys,
+      },
+    });
+    setQuestionPrompt(undefined);
   });
 
   /* Enter to send, Shift+Enter for newline */
@@ -2224,9 +3601,13 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   setExecutionMode('controller');
   setTraceExpanded(false);
+  if (currentShortcuts.length > 0) {
+    renderShortcuts(currentShortcuts);
+  }
 
   return {
     addMessage,
+    setQuestionPrompt,
     clearMessages,
     addTimelineEvent,
     clearTimeline,
@@ -2234,6 +3615,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
     setStatus,
     setRunning,
     setExecutionMode,
+    setShortcuts: renderShortcuts,
+    showGreeting,
+    dismissGreeting,
+    setVisitorName,
     open,
     close,
     show,

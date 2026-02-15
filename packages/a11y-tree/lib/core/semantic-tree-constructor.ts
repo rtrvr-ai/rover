@@ -5,7 +5,7 @@
 
 import { EXCLUDED_ELEMENT_TAGS, CODE_ELEMENT_TAG, PREFORMATTED_TAG } from '../mappings/role-mappings.js';
 // NEW
-import { SemanticRoleReverseMap } from '../types/aria-types.js';
+import { DOMNodeCategory, SemanticRoleReverseMap } from '../types/aria-types.js';
 import { annotateSemanticNode, clearAnnotatedElementIndex } from '../utilities/annotation-manager.js';
 import { semanticNodeIdGenerator } from '../utilities/id-generators.js';
 import { clearAgentAnnotations } from '../utilities/dom-scanner.js';
@@ -33,7 +33,7 @@ import type { ElementProcessingContext, SemanticNode, SemanticRole } from '../ty
 import {
   CURRENT_TREE_OPTS,
   docOf,
-  iframeDoc,
+  getResourceLocator,
   setTreeExtractionContext,
   TreeExtractionOptions,
   winOf,
@@ -234,9 +234,74 @@ function processFrameNode({
 /** Process elements inside an iframe if accessible */
 function processFrameContent(frameElement: HTMLIFrameElement): number[] {
   if (!CURRENT_TREE_OPTS.includeFrameContents) return [];
-  const d = iframeDoc(frameElement);
-  const body = d?.body ?? null;
-  return body ? constructSemanticTree(body) : [];
+  const frameContentRoot = resolveFrameContentRoot(frameElement);
+  if (frameContentRoot.kind === 'content') {
+    return constructSemanticTree(frameContentRoot.rootElement);
+  }
+
+  return buildUnavailableFrameSubtree(frameElement, frameContentRoot.reason);
+}
+
+type FrameContentUnavailableReason = 'cross_origin_blocked' | 'iframe_not_ready_or_empty';
+
+function resolveFrameContentRoot(
+  frameElement: HTMLIFrameElement,
+):
+  | { kind: 'content'; rootElement: Element }
+  | { kind: 'unavailable'; reason: FrameContentUnavailableReason } {
+  let frameDocument: Document | null = null;
+
+  try {
+    frameDocument = frameElement.contentDocument || frameElement.contentWindow?.document || null;
+  } catch {
+    return { kind: 'unavailable', reason: 'cross_origin_blocked' };
+  }
+
+  const rootElement = frameDocument?.body || frameDocument?.documentElement || null;
+  if (!rootElement) {
+    return { kind: 'unavailable', reason: 'iframe_not_ready_or_empty' };
+  }
+
+  return { kind: 'content', rootElement };
+}
+
+function buildUnavailableFrameSubtree(
+  frameElement: HTMLIFrameElement,
+  reason: FrameContentUnavailableReason,
+): number[] {
+  const containerNodeId = semanticNodeIdGenerator.generateId();
+  const textNodeId = semanticNodeIdGenerator.generateId();
+
+  const computedName =
+    frameElement.getAttribute('title')?.trim() ||
+    frameElement.getAttribute('name')?.trim() ||
+    frameElement.id?.trim() ||
+    'Embedded frame';
+
+  const resourceLocator = getResourceLocator(frameElement) || undefined;
+  const reasonText =
+    reason === 'cross_origin_blocked'
+      ? 'Iframe content is not accessible from this origin (cross-origin).'
+      : 'Iframe content is not ready yet or has no readable DOM.';
+
+  SEMANTIC_NODE_COLLECTION[containerNodeId] = {
+    nodeCategory: DOMNodeCategory.ELEMENT,
+    semanticRole: 'embedded_document_unavailable',
+    computedName,
+    syntheticKind: 'embedded_container',
+    frameContent: [textNodeId],
+    ...(resourceLocator ? { resourceLocator } : {}),
+  };
+
+  SEMANTIC_NODE_COLLECTION[textNodeId] = {
+    nodeCategory: DOMNodeCategory.TEXT,
+    parent: containerNodeId,
+    textContent: reasonText,
+    preventTextMerge: true,
+    syntheticKind: 'embedded_unavailable_text',
+  };
+
+  return [containerNodeId];
 }
 
 function isValidTextualNode(textNode: Text, parentNode?: SemanticNode): boolean {

@@ -3,7 +3,7 @@ import {
   MAX_PREV_STEPS,
 } from '@rover/shared/lib/utils/constants.js';
 import { systemToolNamesSet } from '@rover/shared/lib/system-tools/tools.js';
-import type { FunctionCall, FunctionDeclaration, PreviousSteps, StatusStage } from './types.js';
+import type { FunctionCall, FunctionDeclaration, PlannerQuestion, PreviousSteps, StatusStage } from './types.js';
 import type { LLMFunction } from './systemTools.js';
 import { executeSystemToolCallsSequentially } from './systemTools.js';
 
@@ -79,6 +79,8 @@ export async function processActionResponse({
   data?: Record<string, unknown>[];
   functionCalls?: FunctionCall[];
   disableAutoScroll?: boolean;
+  needsUserInput?: boolean;
+  questions?: PlannerQuestion[];
 }> {
   const { functionCalls, modelParts, data, accTreeId } = response || {};
   let disableAutoScroll = false;
@@ -92,6 +94,63 @@ export async function processActionResponse({
   }
 
   if (Array.isArray(functionCalls) && functionCalls.length > 0) {
+    const askUserCall = functionCalls.find(call => String(call?.name || '').trim().toLowerCase() === 'ask_user');
+    if (askUserCall) {
+      const questions = normalizeAskUserQuestions((askUserCall as any)?.args?.questions_to_ask);
+      if (!questions.length) {
+        prevSteps.push({
+          accTreeId,
+          thought,
+          modelParts,
+          fail: "ask_user called with invalid or empty 'questions_to_ask'",
+          functions: [
+            {
+              name: 'ask_user',
+              args: (askUserCall as any)?.args || {},
+              response: {
+                status: 'Failure',
+                error: "Missing/invalid 'questions_to_ask'",
+                allowFallback: false,
+              },
+            },
+          ],
+        });
+        limitPrevSteps(prevSteps);
+        onPrevStepsUpdate?.(prevSteps);
+        return { needsRetry: true };
+      }
+
+      prevSteps.push({
+        accTreeId,
+        thought,
+        modelParts,
+        functions: [
+          {
+            name: 'ask_user',
+            args: {
+              questions_to_ask: questions.map(question => ({ key: question.key, query: question.query })),
+            },
+            response: {
+              status: 'Success',
+              output: {
+                status: 'waiting_input',
+                needsUserInput: true,
+                questions,
+              },
+            },
+          },
+        ],
+      });
+      limitPrevSteps(prevSteps);
+      onPrevStepsUpdate?.(prevSteps);
+      onStatusUpdate?.('Need user clarification to continue', thought, 'verify');
+      return {
+        needsRetry: false,
+        needsUserInput: true,
+        questions,
+      };
+    }
+
     const systemCalls: FunctionCall[] = [];
     const externalCalls: FunctionCall[] = [];
 
@@ -183,6 +242,41 @@ export async function processActionResponse({
   limitPrevSteps(prevSteps);
   onPrevStepsUpdate?.(prevSteps);
   return { needsRetry: true };
+}
+
+function normalizeAskUserQuestions(rawQuestions: unknown): PlannerQuestion[] {
+  if (!Array.isArray(rawQuestions)) return [];
+  const out: PlannerQuestion[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const item of rawQuestions) {
+    if (!item || typeof item !== 'object') continue;
+    const rawKey = String((item as any).key || '').trim();
+    const query = resolveQuestionText(item);
+    if (!rawKey || !query) continue;
+    if (seenKeys.has(rawKey)) continue;
+    seenKeys.add(rawKey);
+    out.push({
+      key: rawKey,
+      query,
+      ...(typeof (item as any).question === 'string' && (item as any).question.trim()
+        ? { question: String((item as any).question).trim() }
+        : {}),
+      ...(typeof (item as any).id === 'string' && (item as any).id.trim()
+        ? { id: String((item as any).id).trim() }
+        : {}),
+      ...(Array.isArray((item as any).choices) ? { choices: (item as any).choices } : {}),
+    });
+  }
+
+  return out.slice(0, 6);
+}
+
+function resolveQuestionText(raw: unknown): string {
+  if (!raw || typeof raw !== 'object') return '';
+  const question = String((raw as any).query || (raw as any).question || '').trim();
+  if (!question) return '';
+  return question;
 }
 
 export function limitPrevSteps(prevSteps: PreviousSteps[]): void {

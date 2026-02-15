@@ -1,4 +1,4 @@
-import type { RoverExecutionMode, RoverTimelineEvent } from '@rover/ui';
+import type { RoverExecutionMode, RoverMessageBlock, RoverTimelineEvent } from '@rover/ui';
 
 export type UiRole = 'user' | 'assistant' | 'system';
 
@@ -6,6 +6,7 @@ export type PersistedUiMessage = {
   id: string;
   role: UiRole;
   text: string;
+  blocks?: RoverMessageBlock[];
   ts: number;
   sourceRuntimeId?: string;
 };
@@ -15,6 +16,7 @@ export type PersistedTimelineEvent = {
   kind: RoverTimelineEvent['kind'];
   title: string;
   detail?: string;
+  detailBlocks?: RoverMessageBlock[];
   status?: RoverTimelineEvent['status'];
   ts: number;
   sourceRuntimeId?: string;
@@ -25,12 +27,27 @@ export type PersistedWorkerHistoryMessage = {
   content: string;
 };
 
+export type PersistedPlannerQuestion = {
+  key: string;
+  query: string;
+  id?: string;
+  question?: string;
+  choices?: string[];
+};
+
+export type PersistedPendingAskUser = {
+  questions: PersistedPlannerQuestion[];
+  source: 'act' | 'planner';
+  askedAt: number;
+};
+
 export type PersistedWorkerState = {
   trajectoryId?: string;
   history?: PersistedWorkerHistoryMessage[];
   plannerHistory?: unknown[];
   agentPrevSteps?: unknown[];
   lastToolPreviousSteps?: unknown[];
+  pendingAskUser?: PersistedPendingAskUser;
   updatedAt?: number;
 };
 
@@ -72,5 +89,6 @@ export type PersistedRuntimeState = {
     reason?: string;
     ts: number;
   };
+  visitor?: { name?: string; email?: string };
   updatedAt: number;
 };

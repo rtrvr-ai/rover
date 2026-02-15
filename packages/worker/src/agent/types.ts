@@ -89,8 +89,10 @@ export type ExecutionRef = {
 export type ToolCall = FunctionCall & { id?: string };
 
 export type PlannerQuestion = {
+  key: string;
+  query: string;
   id?: string;
-  question: string;
+  question?: string; // backward-compatible alias from older payloads
   choices?: string[];
 };
 
@@ -121,7 +123,7 @@ export type PlannerPreviousStep = {
   textOutput?: any;
   error?: string;
   questionsAsked?: PlannerQuestion[];
-  userAnswers?: string[];
+  userAnswers?: Record<string, any> | string[];
   schemaHeaderSheetInfo?: any;
   generatedContentRef?: any;
   lastToolPreviousSteps?: PreviousSteps[];
@@ -147,6 +149,8 @@ export type ToolExecutionResult = {
   error?: string;
   errorDetails?: any;
   creditsUsed?: number;
+  needsUserInput?: boolean;
+  questions?: PlannerQuestion[];
   schemaHeaderSheetInfo?: any;
   generatedContentRef?: any;
   generatedTools?: any;

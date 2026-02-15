@@ -219,11 +219,30 @@ function initRover(config: DemoConfig): ReturnType<typeof init> {
     apiMode: true,
     openOnInit: false,
     tools: config.tools,
+    visitor: {
+      name: 'Demo User',
+    },
     ui: {
       ...config.ui,
       showTaskControls: true,
+      greeting: {
+        text: 'Hey {name}! I can help you shop',
+        delay: 2000,
+        duration: 8000,
+      },
+      shortcuts: [
+        { id: 'explore', label: 'Explore this page', icon: '🔍', prompt: 'What is on this page?', routing: 'act' },
+        { id: 'help', label: 'Get help', icon: '💬', prompt: 'How can you help me?', routing: 'act' },
+        { id: 'cart', label: 'Add to cart', description: 'Add the first product', icon: '🛒', prompt: 'Add the first product to my cart', routing: 'act' },
+        { id: 'pricing', label: 'Find pricing', description: 'Show product prices', icon: '💰', prompt: 'What are the prices of all products?', routing: 'act' },
+      ],
     },
   });
+
+  // Simulate async login — websites would call this from their auth callback
+  setTimeout(() => {
+    instance.identify({ name: 'Jordan', email: 'jordan@example.com' });
+  }, 5000);
 
   setRoverStatus(config.apiKey ? 'Rover ready to chat' : 'Rover booted. Add API key to run planner.', config.apiKey ? 'success' : 'warning');
 
