@@ -104,6 +104,7 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `apiKey` | `string` | — | API key from Rover Workspace |
 | `siteKeyId` | `string` | — | Site key ID from Workspace |
 | `authToken` | `string` | — | Optional bearer token override (takes precedence over `apiKey` when both are set) |
+| `visitor` | `{ name?: string; email?: string }` | — | Optional visitor profile used for greeting personalization |
 | `apiBase` | `string` | `https://extensionrouter.rtrvr.ai` | Optional API base override. For custom domain routing you can pass the base directly (no `/extensionRouter` suffix required). |
 | `allowedDomains` | `string[]` | `[]` | Hostnames where Rover may operate |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | Domain matching strategy |
@@ -141,6 +142,11 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `ui.thoughtStyle` | `'concise_cards' \| 'minimal'` | `'concise_cards'` | Thought rendering style |
 | `ui.panel.resizable` | `boolean` | `true` | Panel resizable preference |
 | `ui.showTaskControls` | `boolean` | `true` | Show new/end task controls |
+| `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced) |
+| `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | — | Greeting bubble config (`{name}` token supported) |
+
+When a site key is used, Rover also fetches cloud site config via `roverGetSiteConfig` (shortcuts + greeting).  
+If the same field exists in both cloud config and boot config, boot config wins.
 
 If you enable `tools.web.scrapeMode: 'on_demand'`, use a site key capability profile that includes cloud scrape support.
 
@@ -174,6 +180,7 @@ rover.send('Hello');
 | `getState()` | Get current runtime state |
 | `update(config)` | Update configuration without rebooting |
 | `registerTool(def, handler)` | Register a client-side tool |
+| `identify(visitor)` | Update visitor profile after boot (for async login/user hydration) |
 | `on(event, handler)` | Subscribe to events (returns unsubscribe fn) |
 
 ## Events

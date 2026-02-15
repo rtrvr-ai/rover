@@ -143,11 +143,11 @@ function isAllowedByRules(url: string, rules: { allowDomains: string[]; denyDoma
   const host = hostFromUrl(url);
   if (!host) return { allowed: false, reason: 'invalid_url' };
   if (rules.denyDomains.some(rule => matchesDomainRule(host, rule))) {
-    return { allowed: false, reason: `deny_rule:${host}` };
+    return { allowed: false, reason: 'deny_rule' };
   }
   if (!rules.allowDomains.length) return { allowed: true };
   if (rules.allowDomains.some(rule => matchesDomainRule(host, rule))) return { allowed: true };
-  return { allowed: false, reason: `not_in_allowlist:${host}` };
+  return { allowed: false, reason: 'not_in_allowlist' };
 }
 
 function normalizeRuntimeExternalTabs(input?: RoverRuntimeContextExternalTab[]): RoverRuntimeContextExternalTab[] {

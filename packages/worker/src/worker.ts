@@ -6,6 +6,7 @@ import type {
   RoverRuntimeContext,
   RoverRuntimeContextExternalTab,
   RoverTab,
+  PlannerQuestion,
   PreviousSteps,
   StatusStage,
   TaskRoutingConfig,
@@ -41,12 +42,35 @@ type PersistedWorkerState = {
   plannerHistory: unknown[];
   agentPrevSteps: PreviousSteps[];
   lastToolPreviousSteps?: PreviousSteps[];
+  pendingAskUser?: PendingAskUserPrompt;
 };
 
 type RunOutcome = {
   route?: { mode?: 'act' | 'planner'; score?: number; reason?: string };
   taskComplete: boolean;
   needsUserInput?: boolean;
+  questions?: PlannerQuestion[];
+};
+
+type AskUserAnswerMeta = {
+  answersByKey?: Record<string, string>;
+  rawText?: string;
+  keys?: string[];
+};
+
+type PendingAskUserPrompt = {
+  questions: PlannerQuestion[];
+  source: 'act' | 'planner';
+  askedAt: number;
+};
+
+type AssistantMessageBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_output' | 'json'; data: unknown; label?: string; toolName?: string };
+
+type AssistantMessagePayload = {
+  text?: string;
+  blocks?: AssistantMessageBlock[];
 };
 
 type TerminalRunResult =
@@ -67,6 +91,7 @@ let bridgeRpc: ((method: string, params?: any) => Promise<any>) | null = null;
 let toolRegistry = new ToolRegistry();
 let plannerHistory: any[] = [];
 let agentPrevSteps: PreviousSteps[] = [];
+let pendingAskUser: PendingAskUserPrompt | undefined;
 let trajectoryId: string = crypto.randomUUID();
 let tabularStore: TabularStore | null = null;
 const PLANNER_TOOL_NAME_SET = new Set<string>(Object.values(PLANNER_FUNCTION_CALLS));
@@ -79,8 +104,7 @@ const terminalRuns = new Map<string, TerminalRunResult>();
 
 const RPC_TIMEOUT_MS = 30_000;
 const DETACHED_EXTERNAL_TAB_MAX_AGE_MS = 90_000;
-const MAX_CHATLOG_ENTRIES = 24;
-const MAX_CHATLOG_MESSAGE_CHARS = 1000;
+const MAX_CHATLOG_ENTRIES = 12;
 
 function resolveAgentName(config: RoverWorkerConfig | null): string {
   const raw = String(config?.ui?.agent?.name || '').trim();
@@ -320,11 +344,6 @@ function postStatus(message: string, thought?: string, stage?: StatusStage) {
   postStateSnapshot();
 }
 
-function truncateText(value: string, max = 8_000): string {
-  if (value.length <= max) return value;
-  return `${value.slice(0, max)}…`;
-}
-
 function cloneUnknown<T>(value: T): T | undefined {
   if (value == null) return value;
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
@@ -367,6 +386,95 @@ function sanitizeAgentPrevStepsForPersist(input: PreviousSteps[]): PreviousSteps
   return out;
 }
 
+function normalizePlannerQuestion(input: any, index: number): PlannerQuestion | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const keyCandidate = String(input.key || input.id || '').trim();
+  const queryCandidate = String(input.query || input.question || '').trim();
+  const key = keyCandidate || `clarification_${index + 1}`;
+  if (!queryCandidate) return undefined;
+  return {
+    key,
+    query: queryCandidate,
+    ...(typeof input.id === 'string' && input.id.trim() ? { id: input.id.trim() } : {}),
+    ...(typeof input.question === 'string' && input.question.trim() ? { question: input.question.trim() } : {}),
+    ...(Array.isArray(input.choices) ? { choices: input.choices } : {}),
+  };
+}
+
+function normalizePlannerQuestions(input: any): PlannerQuestion[] {
+  if (!Array.isArray(input)) return [];
+  const out: PlannerQuestion[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < input.length; i += 1) {
+    const question = normalizePlannerQuestion(input[i], i);
+    if (!question) continue;
+    const key = `${question.key}::${question.query}`.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(question);
+  }
+  return out.slice(0, 6);
+}
+
+function questionToDisplayText(question: PlannerQuestion): string {
+  return String(question.query || question.question || '').trim();
+}
+
+function normalizeAskUserAnswerMeta(
+  raw: AskUserAnswerMeta | undefined,
+  questions: PlannerQuestion[],
+  fallbackText: string,
+): { answersByKey: Record<string, string>; rawText: string } | undefined {
+  const validKeys = new Set(questions.map(question => question.key));
+  const answersByKey: Record<string, string> = {};
+
+  if (raw?.answersByKey && typeof raw.answersByKey === 'object') {
+    for (const [key, value] of Object.entries(raw.answersByKey)) {
+      if (!validKeys.has(key)) continue;
+      const normalizedValue = String(value || '').trim();
+      if (!normalizedValue) continue;
+      answersByKey[key] = normalizedValue;
+    }
+  }
+
+  const fallback = String(fallbackText || '').trim();
+  if (Object.keys(answersByKey).length === 0 && fallback) {
+    if (questions.length === 1) {
+      answersByKey[questions[0].key] = fallback;
+    } else {
+      const lines = fallback.split('\n').map(line => line.trim()).filter(Boolean);
+      for (const line of lines) {
+        const splitIndex = line.indexOf(':');
+        if (splitIndex <= 0) continue;
+        const key = line.slice(0, splitIndex).trim();
+        const value = line.slice(splitIndex + 1).trim();
+        if (!key || !value || !validKeys.has(key)) continue;
+        answersByKey[key] = value;
+      }
+    }
+  }
+
+  const rawText = String(raw?.rawText || fallback || '').trim();
+  if (!rawText && Object.keys(answersByKey).length === 0) return undefined;
+  return { answersByKey, rawText };
+}
+
+function buildAskUserAnswerContext(
+  questions: PlannerQuestion[],
+  answers: { answersByKey: Record<string, string>; rawText: string },
+): string {
+  const lines: string[] = ['[ASK_USER_ANSWERS]'];
+  for (const question of questions) {
+    const answer = String(answers.answersByKey[question.key] || '').trim();
+    lines.push(`${question.key}: ${answer || '(no answer provided)'}`);
+  }
+  if (answers.rawText) {
+    lines.push('[RAW_USER_REPLY]');
+    lines.push(answers.rawText);
+  }
+  return lines.join('\n');
+}
+
 function buildPersistedState(): PersistedWorkerState {
   const safePrevSteps = sanitizeAgentPrevStepsForPersist(Array.isArray(agentPrevSteps) ? agentPrevSteps : []);
   return {
@@ -375,6 +483,13 @@ function buildPersistedState(): PersistedWorkerState {
     plannerHistory: sanitizePlannerHistoryForPersist(Array.isArray(plannerHistory) ? plannerHistory : []),
     agentPrevSteps: safePrevSteps,
     lastToolPreviousSteps: safePrevSteps,
+    pendingAskUser: pendingAskUser
+      ? {
+          questions: normalizePlannerQuestions(pendingAskUser.questions),
+          source: pendingAskUser.source,
+          askedAt: Number(pendingAskUser.askedAt) || Date.now(),
+        }
+      : undefined,
   };
 }
 
@@ -414,6 +529,17 @@ function hydrateState(raw: any): void {
     agentPrevSteps = sanitizeAgentPrevStepsForPersist(snapshot.lastToolPreviousSteps as PreviousSteps[]);
   }
 
+  const hydratedQuestions = normalizePlannerQuestions((snapshot as any).pendingAskUser?.questions);
+  if (hydratedQuestions.length > 0) {
+    pendingAskUser = {
+      questions: hydratedQuestions,
+      source: (snapshot as any).pendingAskUser?.source === 'planner' ? 'planner' : 'act',
+      askedAt: Number((snapshot as any).pendingAskUser?.askedAt) || Date.now(),
+    };
+  } else {
+    pendingAskUser = undefined;
+  }
+
   if (typeof snapshot.trajectoryId === 'string' && snapshot.trajectoryId.trim()) {
     trajectoryId = snapshot.trajectoryId.trim();
   }
@@ -425,136 +551,136 @@ function hydrateState(raw: any): void {
   postStateSnapshot();
 }
 
-function shortText(value: any, max = 240): string {
-  if (value == null) return '';
-  const text = typeof value === 'string' ? value : String(value);
-  const clean = text.trim();
-  if (!clean) return '';
-  return clean.length <= max ? clean : `${clean.slice(0, max - 1)}…`;
-}
+function sanitizeAssistantBlocks(input: unknown): AssistantMessageBlock[] | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const out: AssistantMessageBlock[] = [];
 
-function formatInlineValue(value: any): string {
-  if (value == null) return '';
-  if (typeof value === 'string') return shortText(value, 200);
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (Array.isArray(value)) return `${value.length} item(s)`;
-  if (typeof value === 'object') {
-    if (typeof value.message === 'string') return shortText(value.message, 200);
-    const keys = Object.keys(value);
-    if (!keys.length) return '{}';
-    return `{ ${keys.slice(0, 4).join(', ')}${keys.length > 4 ? ', …' : ''} }`;
-  }
-  return shortText(value, 200);
-}
-
-function formatObjectBlock(value: Record<string, any>): string {
-  const preferredKeys = [
-    'message',
-    'summary',
-    'status',
-    'result',
-    'url',
-    'title',
-    'name',
-    'count',
-    'total',
-    'next_action',
-  ];
-  const entries = Object.entries(value).filter(([, v]) => v !== undefined && v !== null && !(typeof v === 'string' && !v.trim()));
-  if (!entries.length) return '';
-
-  const sorted = entries.sort((a, b) => {
-    const ai = preferredKeys.indexOf(a[0]);
-    const bi = preferredKeys.indexOf(b[0]);
-    const ar = ai === -1 ? preferredKeys.length : ai;
-    const br = bi === -1 ? preferredKeys.length : bi;
-    return ar - br;
-  });
-
-  const lines: string[] = [];
-  const limit = 7;
-  const CONTENT_KEYS = new Set(['response', 'message', 'summary', 'result', 'output', 'text', 'content', 'description']);
-  const URL_KEYS = new Set(['url', 'href', 'link', 'sheetUrl', 'downloadUrl', 'storageUrl']);
-  for (const [key, raw] of sorted.slice(0, limit)) {
-    const isContent = CONTENT_KEYS.has(key);
-    const isUrl = URL_KEYS.has(key) || (typeof raw === 'string' && /^https?:\/\/.+/.test(raw.trim()));
-    let rendered: string;
-    if (typeof raw === 'string' && isUrl) {
-      const url = raw.trim();
-      rendered = `[${url}](${url})`;
-    } else if (typeof raw === 'string' && isContent) {
-      rendered = shortText(raw, 2000);
-    } else {
-      rendered = formatInlineValue(raw);
-    }
-    if (!rendered) continue;
-    lines.push(`**${key}:** ${rendered}`);
-  }
-  if (sorted.length > limit) {
-    lines.push(`… ${sorted.length - limit} more field(s)`);
-  }
-  return lines.join('\n');
-}
-
-function formatArrayBlock(value: any[]): string {
-  if (!value.length) return '';
-  const lines: string[] = [];
-  const limit = 6;
-  for (const item of value.slice(0, limit)) {
-    if (typeof item === 'string') {
-      const text = shortText(item, 260);
-      if (text) lines.push(`- ${text}`);
+  for (const raw of input) {
+    if (!raw || typeof raw !== 'object') continue;
+    const type = (raw as any).type;
+    if (type === 'text') {
+      const text = String((raw as any).text || '').trim();
+      if (!text) continue;
+      out.push({ type: 'text', text });
       continue;
     }
-    if (item && typeof item === 'object') {
-      const block = formatObjectBlock(item);
-      if (block) {
-        if (lines.length > 0) lines.push('---');
-        lines.push(block);
-      }
-      continue;
-    }
-    if (item != null) {
-      lines.push(`- ${shortText(item, 260)}`);
+
+    if (type === 'tool_output' || type === 'json') {
+      out.push({
+        type,
+        data: cloneUnknown((raw as any).data),
+        label: typeof (raw as any).label === 'string' ? (raw as any).label : undefined,
+        toolName: typeof (raw as any).toolName === 'string' ? (raw as any).toolName : undefined,
+      });
     }
   }
-  if (value.length > limit) {
-    lines.push(`- … ${value.length - limit} more item(s)`);
-  }
-  return lines.join('\n');
+
+  return out.length ? out : undefined;
 }
 
-function formatToolOutput(output: any): string | null {
-  if (output == null) return null;
+function summarizeOutputText(output: any): string | undefined {
+  if (output == null) return undefined;
   if (typeof output === 'string') {
     const clean = output.trim();
-    return clean ? truncateText(clean, 12_000) : null;
+    return clean || undefined;
   }
   if (typeof output === 'number' || typeof output === 'boolean') {
     return String(output);
   }
   if (Array.isArray(output)) {
-    const block = formatArrayBlock(output);
-    if (block) return truncateText(block, 12_000);
-  } else if (typeof output === 'object') {
-    if (output.success === false && output.error) {
-      const message = shortText(output.error?.message || output.error, 300) || 'Operation failed';
-      const nextAction = shortText(output.next_action || output.error?.next_action, 220);
-      const base = `[error] ${message}`;
-      return nextAction ? `${base}\n[next] ${nextAction}` : base;
+    const lines: string[] = [];
+    for (const item of output.slice(0, 4)) {
+      const candidate = summarizeOutputText(item);
+      if (candidate) lines.push(candidate);
+      if (lines.length >= 3) break;
     }
-    const block = formatObjectBlock(output);
-    if (block) return truncateText(block, 12_000);
+    if (lines.length) return lines.join('\n');
+    return `Received ${output.length} item(s).`;
   }
-  try {
-    return truncateText(JSON.stringify(output, null, 2), 12_000);
-  } catch {
-    return truncateText(String(output), 12_000);
+  if (typeof output === 'object') {
+    const preferredKeys = ['response', 'message', 'summary', 'text', 'content', 'result', 'description'];
+    for (const key of preferredKeys) {
+      const value = (output as Record<string, unknown>)[key];
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+    const keys = Object.keys(output);
+    if (!keys.length) return undefined;
+    return `Received ${keys.length} field(s).`;
   }
+  return undefined;
 }
 
-function postAssistantMessage(text: string): void {
-  (self as any).postMessage({ type: 'assistant', text, runId: activeRun?.runId });
+function isSingleTextWrapperObject(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const entries = Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== undefined && v !== null);
+  if (entries.length !== 1) return false;
+  const [key, raw] = entries[0];
+  if (typeof raw !== 'string' || !raw.trim()) return false;
+  const textKeys = new Set(['response', 'message', 'summary', 'text', 'content', 'result', 'description']);
+  return textKeys.has(key);
+}
+
+function shouldAttachStructuredBlock(output: any, summaryText?: string): boolean {
+  if (output == null) return false;
+  if (typeof output === 'string') {
+    const clean = output.trim();
+    if (!clean) return false;
+    return !summaryText || clean !== summaryText.trim();
+  }
+  if (Array.isArray(output)) {
+    const meaningful = output.filter(item => item !== undefined && item !== null);
+    if (meaningful.length === 1) {
+      const first = meaningful[0];
+      if (typeof first === 'string' || typeof first === 'number' || typeof first === 'boolean') {
+        return false;
+      }
+      if (isSingleTextWrapperObject(first)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (isSingleTextWrapperObject(output)) {
+    return false;
+  }
+  return true;
+}
+
+function buildAssistantPayloadFromToolOutput(
+  output: any,
+  options?: { label?: string; toolName?: string; fallbackText?: string },
+): AssistantMessagePayload {
+  const summaryText = summarizeOutputText(output);
+  const text = summaryText || options?.fallbackText || 'Done.';
+  const blocks: AssistantMessageBlock[] = [];
+  if (shouldAttachStructuredBlock(output, summaryText)) {
+    blocks.push({
+      type: 'tool_output',
+      label: options?.label,
+      toolName: options?.toolName,
+      data: cloneUnknown(output),
+    });
+  }
+  return { text, blocks: blocks.length ? blocks : undefined };
+}
+
+function postAssistantMessage(payload: string | AssistantMessagePayload): string {
+  const text = typeof payload === 'string'
+    ? String(payload || '').trim()
+    : String(payload?.text || '').trim();
+  const blocks = typeof payload === 'string' ? undefined : sanitizeAssistantBlocks(payload.blocks);
+  const firstTextBlock = blocks?.find((block): block is Extract<AssistantMessageBlock, { type: 'text' }> => block.type === 'text');
+  const firstStructuredBlock = blocks?.find((block): block is Extract<AssistantMessageBlock, { type: 'tool_output' | 'json' }> =>
+    block.type === 'tool_output' || block.type === 'json');
+  const resolvedText =
+    text
+    || firstTextBlock?.text
+    || summarizeOutputText(firstStructuredBlock?.data)
+    || 'Done.';
+  (self as any).postMessage({ type: 'assistant', text: resolvedText, blocks, runId: activeRun?.runId });
+  return resolvedText;
 }
 
 function dedupeFunctionDeclarations(declarations: FunctionDeclaration[]): FunctionDeclaration[] {
@@ -614,11 +740,6 @@ function toStructuredErrorPayload(err: any, fallbackMessage = 'Operation failed'
   return payload;
 }
 
-function formatStructuredErrorForAssistant(payload: StructuredErrorPayload): string {
-  const summary = `${payload.error.code}: ${payload.error.message}`;
-  return `${summary}\n${JSON.stringify(payload, null, 2)}`;
-}
-
 function extractStructuredErrorFromToolResult(result: any): StructuredErrorPayload | undefined {
   if (!result || typeof result !== 'object') return undefined;
 
@@ -674,33 +795,19 @@ function maybePostNavigationGuardrailFromToolResult(toolResult: any): void {
 }
 
 function buildChatLogFromHistory(input: ChatMessage[], currentUserInput?: string): Array<{ role: 'user' | 'model'; message: string }> {
-  const sanitizeChatText = (raw: string, role: 'user' | 'assistant'): string => {
-    let text = String(raw || '').replace(/\s+/g, ' ').trim();
-    if (!text) return '';
-
-    // Prevent large structured payloads from dominating context while keeping the key signal.
-    if (role === 'assistant') {
-      if (/^\w[\w_]*:\s*\{/.test(text) || /^\[error\]/i.test(text) || /"success":\s*false/.test(text)) {
-        const firstSentence = text.split(/(?<=\.)\s+/)[0] || text;
-        text = firstSentence.trim();
-      }
-    }
-
-    if (text.length > MAX_CHATLOG_MESSAGE_CHARS) {
-      text = `${text.slice(0, MAX_CHATLOG_MESSAGE_CHARS - 1)}…`;
-    }
-    return text;
+  const sanitizeChatText = (raw: string): string => {
+    return String(raw || '').replace(/\s+/g, ' ').trim();
   };
 
   const normalizedCurrentUserInput = currentUserInput
-    ? sanitizeChatText(currentUserInput, 'user')
+    ? sanitizeChatText(currentUserInput)
     : '';
 
   const entries = input
     .filter(message => message.role === 'user' || message.role === 'assistant')
     .map(message => ({
       role: message.role as 'user' | 'assistant',
-      content: sanitizeChatText(String(message.content || ''), message.role as 'user' | 'assistant'),
+      content: sanitizeChatText(String(message.content || '')),
     }))
     .filter(message => !!message.content);
 
@@ -720,13 +827,32 @@ function buildChatLogFromHistory(input: ChatMessage[], currentUserInput?: string
     deduped.push(entry);
   }
 
-  // Keep latest turns and ensure chat log starts with a user turn when possible.
-  const tail = deduped.slice(-MAX_CHATLOG_ENTRIES);
-  while (tail.length > 1 && tail[0]?.role !== 'user') {
-    tail.shift();
+  // Keep original user goal as anchor, plus latest conversational context.
+  const firstUser = deduped.find(message => message.role === 'user');
+  const tailBudget = firstUser ? Math.max(1, MAX_CHATLOG_ENTRIES - 1) : MAX_CHATLOG_ENTRIES;
+  let selected = deduped.slice(-tailBudget);
+
+  if (firstUser) {
+    const hasAnchor = selected.some(
+      message => message.role === 'user' && message.content === firstUser.content,
+    );
+    if (!hasAnchor) {
+      selected = [firstUser, ...selected];
+    }
   }
 
-  return tail.map(message => ({
+  if (selected.length > MAX_CHATLOG_ENTRIES) {
+    selected = selected.slice(-MAX_CHATLOG_ENTRIES);
+  }
+
+  if (selected.length > 1 && selected[0]?.role !== 'user') {
+    const firstUserIndex = selected.findIndex(message => message.role === 'user');
+    if (firstUserIndex > 0) {
+      selected = selected.slice(firstUserIndex);
+    }
+  }
+
+  return selected.map(message => ({
     role: message.role === 'user' ? 'user' : 'model',
     message: message.content,
   }));
@@ -780,28 +906,63 @@ function extractArtifactLinks(toolResult: any): string[] {
   return links;
 }
 
-function formatPlannerToolResults(toolResults: any[] | undefined): string | null {
-  if (!Array.isArray(toolResults) || toolResults.length === 0) return null;
-  const sections: string[] = [];
+function buildPlannerToolResultBlocks(toolResults: any[] | undefined): AssistantMessageBlock[] | undefined {
+  if (!Array.isArray(toolResults) || !toolResults.length) return undefined;
+  const blocks: AssistantMessageBlock[] = [];
 
   for (let i = 0; i < toolResults.length; i += 1) {
     const result = toolResults[i];
     if (!result) continue;
+    const stepLabel = `Step ${i + 1}`;
     const output = result.output ?? result.generatedContentRef ?? result.schemaHeaderSheetInfo;
-    const outputText = formatToolOutput(output);
+    const summary = summarizeOutputText(output);
+    if (output !== undefined && shouldAttachStructuredBlock(output, summary)) {
+      blocks.push({
+        type: 'tool_output',
+        label: result.toolName ? `${stepLabel}: ${result.toolName}` : stepLabel,
+        toolName: typeof result.toolName === 'string' ? result.toolName : undefined,
+        data: cloneUnknown(output),
+      });
+    }
+
+    if (result.error || result.errorDetails) {
+      blocks.push({
+        type: 'json',
+        label: `${stepLabel} error`,
+        data: cloneUnknown({
+          error: result.error,
+          errorDetails: result.errorDetails,
+        }),
+      });
+    }
+
     const links = extractArtifactLinks(result);
-    const lines: string[] = [];
-
-    if (outputText) lines.push(outputText);
-    if (result.error) lines.push(`Error: ${String(result.error)}`);
-    if (links.length) lines.push(`Artifacts:\n${links.map(link => `- ${link}`).join('\n')}`);
-    if (!lines.length) continue;
-
-    sections.push(`Step ${i + 1}\n${lines.join('\n')}`);
+    if (links.length) {
+      blocks.push({
+        type: 'text',
+        text: `${stepLabel} artifacts:\n${links.map(link => `- ${link}`).join('\n')}`,
+      });
+    }
   }
 
-  if (!sections.length) return null;
-  return truncateText(sections.join('\n\n'), 12_000);
+  return blocks.length ? blocks : undefined;
+}
+
+function summarizePlannerToolResults(toolResults: any[] | undefined): string | undefined {
+  if (!Array.isArray(toolResults) || !toolResults.length) return undefined;
+  const lines: string[] = [];
+  for (let i = 0; i < toolResults.length; i += 1) {
+    const result = toolResults[i];
+    if (!result) continue;
+    const output = result.output ?? result.generatedContentRef ?? result.schemaHeaderSheetInfo;
+    const summary = summarizeOutputText(output);
+    if (summary) {
+      lines.push(summary);
+      if (lines.length >= 3) break;
+    }
+  }
+  if (!lines.length) return undefined;
+  return lines.join('\n\n');
 }
 
 function extractLatestPrevStepsFromPlanner(toolResults: any[] | undefined): PreviousSteps[] | undefined {
@@ -852,17 +1013,48 @@ function detectOpenedTabFromToolResult(result: any): number | undefined {
   return undefined;
 }
 
+function extractQuestionsFromResult(result: any): PlannerQuestion[] | undefined {
+  if (!result || typeof result !== 'object') return undefined;
+  const topLevel = normalizePlannerQuestions((result as any).questions);
+  if (topLevel.length) return topLevel;
+  const output = (result as any).output;
+  const outputQuestions = normalizePlannerQuestions(output?.questions);
+  if (outputQuestions.length) return outputQuestions;
+  return undefined;
+}
+
+function extractPlannerQuestionsFromToolResults(toolResults: any[] | undefined): PlannerQuestion[] {
+  if (!Array.isArray(toolResults) || toolResults.length === 0) return [];
+  const combined: PlannerQuestion[] = [];
+  const seen = new Set<string>();
+
+  for (const toolResult of toolResults) {
+    const questions = extractQuestionsFromResult(toolResult);
+    if (!questions || !questions.length) continue;
+    for (const question of questions) {
+      const key = `${question.key}::${question.query}`.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      combined.push(question);
+    }
+  }
+
+  return combined.slice(0, 6);
+}
+
 function deriveDirectToolRunOutcome(result: any): RunOutcome {
   if (!result || typeof result !== 'object') {
     return { taskComplete: false };
   }
+
+  const questions = extractQuestionsFromResult(result);
 
   const topLevelStatus = String(result.status || '').trim().toLowerCase();
   if (topLevelStatus === 'failure' || topLevelStatus === 'failed' || topLevelStatus === 'error') {
     return { taskComplete: false };
   }
   if (topLevelStatus === 'waiting_input' || topLevelStatus === 'needs_input' || topLevelStatus === 'pending_user_input') {
-    return { taskComplete: false, needsUserInput: true };
+    return { taskComplete: false, needsUserInput: true, questions };
   }
   if (result.error) {
     return { taskComplete: false };
@@ -875,11 +1067,11 @@ function deriveDirectToolRunOutcome(result: any): RunOutcome {
     }
 
     if ((output as any).needsUserInput === true || (output as any).waitingForUserInput === true) {
-      return { taskComplete: false, needsUserInput: true };
+      return { taskComplete: false, needsUserInput: true, questions };
     }
 
     if (Array.isArray((output as any).questions) && (output as any).questions.length > 0) {
-      return { taskComplete: false, needsUserInput: true };
+      return { taskComplete: false, needsUserInput: true, questions };
     }
 
     if ((output as any).error) {
@@ -929,10 +1121,12 @@ function normalizeRunOutcome(outcome?: Partial<RunOutcome> | null): RunOutcome {
   }
   const needsUserInput = outcome.needsUserInput === true;
   const taskComplete = outcome.taskComplete === true && !needsUserInput;
+  const questions = normalizePlannerQuestions((outcome as any).questions);
   return {
     route: outcome.route,
     taskComplete,
     needsUserInput,
+    questions: questions.length ? questions : undefined,
   };
 }
 
@@ -958,6 +1152,7 @@ function clearTaskScopedContextAfterCompletion(): void {
   history.length = 0;
   plannerHistory = [];
   agentPrevSteps = [];
+  pendingAskUser = undefined;
 }
 
 async function maybeWaitForNewTab(result: any): Promise<void> {
@@ -970,7 +1165,7 @@ async function maybeWaitForNewTab(result: any): Promise<void> {
 
 async function handleUserMessage(
   text: string,
-  options?: { resume?: boolean },
+  options?: { resume?: boolean; routing?: 'auto' | 'act' | 'planner'; askUserAnswers?: AskUserAnswerMeta },
 ): Promise<RunOutcome> {
   if (!config) throw new Error('Worker not initialized');
   if (!bridgeRpc) throw new Error('Bridge RPC not initialized');
@@ -985,6 +1180,38 @@ async function handleUserMessage(
   if (!shouldSkipUserPush) {
     history.push({ role: 'user', content: text });
     postStateSnapshot();
+  }
+
+  let effectiveUserInput = text;
+  if (pendingAskUser?.questions?.length) {
+    const normalizedAnswers = normalizeAskUserAnswerMeta(options?.askUserAnswers, pendingAskUser.questions, text);
+    if (normalizedAnswers) {
+      const answerContext = buildAskUserAnswerContext(pendingAskUser.questions, normalizedAnswers);
+      effectiveUserInput = answerContext;
+
+      plannerHistory = sanitizePlannerHistoryForPersist([
+        ...plannerHistory,
+        {
+          thought: 'User provided clarification answers.',
+          questionsAsked: pendingAskUser.questions,
+          userAnswers: normalizedAnswers.answersByKey,
+        },
+      ]);
+
+      applyAgentPrevSteps([
+        ...agentPrevSteps,
+        {
+          thought: 'User provided clarification answers.',
+          data: JSON.stringify({
+            ask_user_answers: normalizedAnswers.answersByKey,
+            raw_user_reply: normalizedAnswers.rawText,
+          }),
+        },
+      ], { snapshot: false });
+
+      pendingAskUser = undefined;
+      postStateSnapshot();
+    }
   }
 
   const tabs = await getKnownTabs();
@@ -1057,7 +1284,7 @@ async function handleUserMessage(
     postStateSnapshot();
   };
 
-  const result = await handleSendMessageWithFunctions(text, {
+  const result = await handleSendMessageWithFunctions(effectiveUserInput, {
     tabs: tabsForRun,
     previousMessages: history,
     trajectoryId,
@@ -1071,7 +1298,9 @@ async function handleUserMessage(
       chatLog,
     },
     lastToolPreviousSteps: agentPrevSteps,
-    taskRouting: config.taskRouting,
+    taskRouting: options?.routing
+      ? { ...config.taskRouting, mode: options.routing }
+      : config.taskRouting,
     ctx,
     bridgeRpc,
     functionDeclarations,
@@ -1084,8 +1313,16 @@ async function handleUserMessage(
     if (errorPayload.error.requires_api_key) {
       postAuthRequired(errorPayload.error);
     }
-    const errorMsg = formatStructuredErrorForAssistant(errorPayload);
-    postAssistantMessage(errorMsg);
+    const errorMsg = postAssistantMessage({
+      text: `${errorPayload.error.code}: ${errorPayload.error.message}`,
+      blocks: [
+        {
+          type: 'json',
+          label: 'Error details',
+          data: cloneUnknown(errorPayload),
+        },
+      ],
+    });
     history.push({ role: 'assistant', content: errorMsg });
     postStatus('Execution failed', errorPayload.error.message, 'complete');
     postStateSnapshot();
@@ -1096,12 +1333,31 @@ async function handleUserMessage(
     for (const fn of result.executedFunctions) {
       applyAgentPrevSteps(fn.prevSteps, { snapshot: false });
     }
-    const lines = result.executedFunctions.map(fn => {
-      const out = formatToolOutput(fn.result);
-      return out ? `@${fn.name}: ${out}` : `@${fn.name}: ${fn.error || 'ok'}`;
+    const blocks: AssistantMessageBlock[] = [];
+    const lines: string[] = [];
+    for (const fn of result.executedFunctions) {
+      const summary = summarizeOutputText(fn.result);
+      if (fn.result !== undefined && shouldAttachStructuredBlock(fn.result, summary)) {
+        blocks.push({
+          type: 'tool_output',
+          toolName: fn.name,
+          label: `${fn.name} output`,
+          data: cloneUnknown(fn.result),
+        });
+      }
+      if (fn.error) {
+        blocks.push({
+          type: 'json',
+          label: `${fn.name} error`,
+          data: cloneUnknown({ error: fn.error }),
+        });
+      }
+      lines.push(summary ? `@${fn.name}: ${summary}` : `@${fn.name}: ${fn.error || 'ok'}`);
+    }
+    const msg = postAssistantMessage({
+      text: lines.join('\n') || 'Done.',
+      blocks,
     });
-    const msg = lines.join('\n');
-    postAssistantMessage(msg);
     history.push({ role: 'assistant', content: msg });
     postStatus('Execution completed', 'Function calls finished', 'complete');
     postStateSnapshot();
@@ -1113,64 +1369,138 @@ async function handleUserMessage(
     postStatus('Verifying result', undefined, 'verify');
     maybePostNavigationGuardrailFromToolResult(result.directToolResult);
     applyAgentPrevSteps(result.directToolResult.prevSteps, { snapshot: false });
+    const outcome = deriveDirectToolRunOutcome(result.directToolResult);
+    const questions = normalizePlannerQuestions(outcome.questions);
+    if (outcome.needsUserInput && questions.length > 0) {
+      pendingAskUser = {
+        questions,
+        source: 'act',
+        askedAt: Date.now(),
+      };
+      plannerHistory = sanitizePlannerHistoryForPersist([
+        ...plannerHistory,
+        {
+          thought: 'Need user clarification before continuing act workflow.',
+          questionsAsked: questions,
+        },
+      ]);
+      const qText = questions.map(question => `- ${question.key}: ${questionToDisplayText(question)}`).join('\n');
+      const msg = postAssistantMessage(`I need a bit more info before continuing:\n${qText}`);
+      history.push({ role: 'assistant', content: msg });
+      postStatus('Need more input to continue', undefined, 'verify');
+      postStateSnapshot();
+      return {
+        route: result.route,
+        taskComplete: false,
+        needsUserInput: true,
+        questions,
+      };
+    }
+
+    pendingAskUser = undefined;
     const output =
       result.directToolResult.output ??
       result.directToolResult.generatedContentRef ??
       result.directToolResult.schemaHeaderSheetInfo;
-    const formattedOutput = output ? formatToolOutput(output) : null;
     const structuredError = extractStructuredErrorFromToolResult(result.directToolResult);
     if (structuredError?.error.requires_api_key) {
       postAuthRequired(structuredError.error);
     }
     const msg = structuredError
-      ? formatStructuredErrorForAssistant(structuredError)
-      : formattedOutput ?? 'Done.';
-    postAssistantMessage(msg);
+      ? postAssistantMessage({
+          text: `${structuredError.error.code}: ${structuredError.error.message}`,
+          blocks: [
+            {
+              type: 'json',
+              label: 'Error details',
+              data: cloneUnknown(structuredError),
+            },
+          ],
+        })
+      : postAssistantMessage(buildAssistantPayloadFromToolOutput(output, {
+          label: 'Tool output',
+          fallbackText: 'Done.',
+        }));
     history.push({ role: 'assistant', content: msg });
     postStatus('Execution completed', structuredError?.error.message, 'complete');
     postStateSnapshot();
-    const outcome = deriveDirectToolRunOutcome(result.directToolResult);
     return {
       route: result.route,
       taskComplete: outcome.taskComplete,
       needsUserInput: outcome.needsUserInput,
+      questions: normalizePlannerQuestions(outcome.questions),
     };
   }
 
   if (result.plannerResponse) {
     postStatus('Verifying planner output', undefined, 'verify');
     const response = result.plannerResponse.response;
+    const toolResults = result.plannerResponse.toolResults || [];
     if (result.plannerResponse.previousSteps) {
       plannerHistory = result.plannerResponse.previousSteps;
       postStateSnapshot();
     }
-    const latestToolPrevSteps = extractLatestPrevStepsFromPlanner(result.plannerResponse.toolResults);
+    const latestToolPrevSteps = extractLatestPrevStepsFromPlanner(toolResults);
     applyAgentPrevSteps(latestToolPrevSteps, { snapshot: false });
 
-    if (response.questions?.length) {
-      const qText = response.questions.map((q: any) => `- ${q.question}`).join('\n');
+    const responseQuestions = normalizePlannerQuestions(response.questions);
+    const fallbackQuestions = responseQuestions.length
+      ? []
+      : extractPlannerQuestionsFromToolResults(toolResults);
+    const plannerQuestions = responseQuestions.length ? responseQuestions : fallbackQuestions;
+
+    if (plannerQuestions.length) {
+      const questions = plannerQuestions;
+      pendingAskUser = questions.length
+        ? {
+            questions,
+            source: 'planner',
+            askedAt: Date.now(),
+          }
+        : undefined;
+      const qText = questions.map(question => `- ${question.key}: ${questionToDisplayText(question)}`).join('\n');
       const msg = `I need a bit more info:\n${qText}`;
       postAssistantMessage(msg);
       history.push({ role: 'assistant', content: msg });
       postStatus('Planner needs user input', undefined, 'verify');
       postStateSnapshot();
-      return { route: result.route, taskComplete: false, needsUserInput: true };
+      return {
+        route: result.route,
+        taskComplete: false,
+        needsUserInput: true,
+        questions,
+      };
     }
 
-    const toolResults = result.plannerResponse.toolResults || [];
+    pendingAskUser = undefined;
+
     for (const toolResult of toolResults) {
       await maybeWaitForNewTab(toolResult);
       maybePostNavigationGuardrailFromToolResult(toolResult);
     }
-    const formattedOutput = formatPlannerToolResults(toolResults);
+    const toolBlocks = buildPlannerToolResultBlocks(toolResults);
     const responseError = response.error || response.errorDetails
       ? toStructuredErrorPayload(response.errorDetails || { message: response.error }, 'Planner failed')
       : undefined;
     if (responseError?.error.requires_api_key) {
       postAuthRequired(responseError.error);
     }
-    const msg = formattedOutput ?? (responseError ? formatStructuredErrorForAssistant(responseError) : response.overallThought ?? 'Done.');
-    postAssistantMessage(msg);
+    const msg = responseError
+      ? postAssistantMessage({
+          text: `${responseError.error.code}: ${responseError.error.message}`,
+          blocks: [
+            {
+              type: 'json',
+              label: 'Planner error',
+              data: cloneUnknown(responseError),
+            },
+            ...(toolBlocks || []),
+          ],
+        })
+      : postAssistantMessage({
+          text: String(response.overallThought || summarizePlannerToolResults(toolResults) || 'Done.'),
+          blocks: toolBlocks,
+        });
     history.push({ role: 'assistant', content: msg });
     postStatus('Planner execution completed', response.overallThought, 'complete');
     postStateSnapshot();
@@ -1181,14 +1511,17 @@ async function handleUserMessage(
     };
   }
 
-  postAssistantMessage('Done.');
-  history.push({ role: 'assistant', content: 'Done.' });
+  const doneMsg = postAssistantMessage('Done.');
+  history.push({ role: 'assistant', content: doneMsg });
   postStatus('Completed', undefined, 'complete');
   postStateSnapshot();
   return { route: result.route, taskComplete: true };
 }
 
-async function runUserMessage(text: string, meta?: { runId?: string; resume?: boolean }): Promise<void> {
+async function runUserMessage(
+  text: string,
+  meta?: { runId?: string; resume?: boolean; routing?: 'auto' | 'act' | 'planner'; askUserAnswers?: AskUserAnswerMeta },
+): Promise<void> {
   const runId = meta?.runId || crypto.randomUUID();
   const terminal = terminalRuns.get(runId);
   if (terminal) {
@@ -1201,6 +1534,7 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
         route: cachedOutcome.route,
         taskComplete: cachedOutcome.taskComplete,
         needsUserInput: cachedOutcome.needsUserInput,
+        questions: cachedOutcome.questions,
       });
     } else {
       (self as any).postMessage({
@@ -1227,7 +1561,11 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
   postStateSnapshot();
 
   try {
-    const outcome = normalizeRunOutcome(await handleUserMessage(text, { resume }));
+    const outcome = normalizeRunOutcome(await handleUserMessage(text, {
+      resume,
+      routing: meta?.routing,
+      askUserAnswers: meta?.askUserAnswers,
+    }));
     rememberTerminalRun(runId, { ok: true, outcome });
     (self as any).postMessage({
       type: 'run_completed',
@@ -1236,6 +1574,7 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
       route: outcome.route,
       taskComplete: outcome.taskComplete,
       needsUserInput: outcome.needsUserInput,
+      questions: outcome.questions,
     });
     if (outcome.taskComplete && !outcome.needsUserInput) {
       clearTaskScopedContextAfterCompletion();
@@ -1326,6 +1665,7 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
         trajectoryId = partial.sessionId.trim();
         plannerHistory = [];
         agentPrevSteps = [];
+        pendingAskUser = undefined;
         terminalRuns.clear();
         cancelledRunIds.clear();
         tabularStore = new TabularStore(`rover-${trajectoryId}`);
@@ -1353,6 +1693,7 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
       history.length = 0;
       plannerHistory = [];
       agentPrevSteps = [];
+      pendingAskUser = undefined;
       terminalRuns.clear();
       cancelledRunIds.clear();
       trajectoryId = nextTaskId;
@@ -1369,16 +1710,27 @@ async function runUserMessage(text: string, meta?: { runId?: string; resume?: bo
         rememberCancelledRun(data.runId);
         activeAbortController?.abort();
       }
+      pendingAskUser = undefined;
+      postStateSnapshot();
       return;
     }
 
     if (data.type === 'run') {
-      await runUserMessage(String(data.text || ''), { runId: data.runId, resume: !!data.resume });
+      await runUserMessage(String(data.text || ''), {
+        runId: data.runId,
+        resume: !!data.resume,
+        routing: data.routing,
+        askUserAnswers: data.askUserAnswers,
+      });
       return;
     }
 
     if (data.type === 'user') {
-      await runUserMessage(String(data.text || ''), { runId: data.runId, resume: !!data.resume });
+      await runUserMessage(String(data.text || ''), {
+        runId: data.runId,
+        resume: !!data.resume,
+        askUserAnswers: data.askUserAnswers,
+      });
       return;
     }
   } catch (err: any) {

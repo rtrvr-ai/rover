@@ -12,8 +12,7 @@ import { isMemorySheetId } from '../tabular-memory/tabular-store.js';
 import { toRoverErrorEnvelope } from './errors.js';
 import { resolveRuntimeTabs } from './runtimeTabs.js';
 
-const MAX_AGENT_CHATLOG_ENTRIES = 24;
-const MAX_AGENT_CHATLOG_MESSAGE_CHARS = 1000;
+const MAX_AGENT_CHATLOG_ENTRIES = 12;
 
 function unsupportedToolResult(toolName: string, message: string): ToolExecutionResult {
   return {
@@ -57,21 +56,39 @@ function normalizeAgentLog(agentLog: ToolExecutionContext['agentLog']) {
   const prevSteps = Array.isArray(agentLog?.prevSteps) ? agentLog.prevSteps : [];
 
   const sanitizeMessage = (value: string): string => {
-    const normalized = String(value || '').replace(/\s+/g, ' ').trim();
-    if (!normalized) return '';
-    if (normalized.length <= MAX_AGENT_CHATLOG_MESSAGE_CHARS) return normalized;
-    return `${normalized.slice(0, MAX_AGENT_CHATLOG_MESSAGE_CHARS - 1)}…`;
+    return String(value || '').replace(/\s+/g, ' ').trim();
   };
 
-  const chatLog: Array<{ role: 'user' | 'model'; message: string }> = Array.isArray(agentLog?.chatLog)
+  const normalizedChatLog: Array<{ role: 'user' | 'model'; message: string }> = Array.isArray(agentLog?.chatLog)
     ? agentLog.chatLog
-        .map(entry => ({
-          role: entry?.role === 'user' ? ('user' as const) : ('model' as const),
-          message: typeof entry?.message === 'string' ? sanitizeMessage(entry.message) : '',
-        }))
-        .filter(entry => !!entry.message)
-        .slice(-MAX_AGENT_CHATLOG_ENTRIES)
+      .map(entry => ({
+        role: entry?.role === 'user' ? ('user' as const) : ('model' as const),
+        message: typeof entry?.message === 'string' ? sanitizeMessage(entry.message) : '',
+      }))
+      .filter(entry => !!entry.message)
     : [];
+
+  const dedupedChatLog: Array<{ role: 'user' | 'model'; message: string }> = [];
+  for (const entry of normalizedChatLog) {
+    const previous = dedupedChatLog[dedupedChatLog.length - 1];
+    if (previous && previous.role === entry.role && previous.message === entry.message) continue;
+    dedupedChatLog.push(entry);
+  }
+
+  const firstUser = dedupedChatLog.find(entry => entry.role === 'user');
+  const tailBudget = firstUser ? Math.max(1, MAX_AGENT_CHATLOG_ENTRIES - 1) : MAX_AGENT_CHATLOG_ENTRIES;
+  let chatLog = dedupedChatLog.slice(-tailBudget);
+
+  if (firstUser) {
+    const hasAnchor = chatLog.some(entry => entry.role === 'user' && entry.message === firstUser.message);
+    if (!hasAnchor) {
+      chatLog = [firstUser, ...chatLog];
+    }
+  }
+
+  if (chatLog.length > MAX_AGENT_CHATLOG_ENTRIES) {
+    chatLog = chatLog.slice(-MAX_AGENT_CHATLOG_ENTRIES);
+  }
 
   return { prevSteps, chatLog };
 }
@@ -126,7 +143,16 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
         ctx: effectiveCtx,
         onPrevStepsUpdate,
       });
-      return { ...actResult, output: actResult.data };
+      const actOutput =
+        actResult.data
+        ?? (actResult.needsUserInput
+          ? {
+              status: 'waiting_input',
+              needsUserInput: true,
+              questions: Array.isArray(actResult.questions) ? actResult.questions : [],
+            }
+          : undefined);
+      return { ...actResult, output: actOutput };
     }
 
     case PLANNER_FUNCTION_CALLS.EXTRACT: {

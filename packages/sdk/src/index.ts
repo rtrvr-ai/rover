@@ -1,6 +1,15 @@
 import { Bridge } from '@rover/bridge';
 import { bindRpc } from '@rover/bridge';
-import { mountWidget, type RoverExecutionMode, type RoverTimelineEvent, type RoverUi } from '@rover/ui';
+import {
+  mountWidget,
+  type RoverAskUserAnswerMeta,
+  type RoverAskUserQuestion,
+  type RoverExecutionMode,
+  type RoverMessageBlock,
+  type RoverShortcut,
+  type RoverTimelineEvent,
+  type RoverUi,
+} from '@rover/ui';
 import {
   SessionCoordinator,
   type SharedSessionState,
@@ -113,6 +122,10 @@ export type RoverInit = {
     enableAdditionalTools?: string[];
     userDefined?: string[];
   };
+  visitor?: {
+    name?: string;
+    email?: string;
+  };
   ui?: {
     agent?: {
       name?: string;
@@ -122,12 +135,19 @@ export type RoverInit = {
       mp4Url?: string;
       webmUrl?: string;
     };
+    shortcuts?: RoverShortcut[];
     muted?: boolean;
     thoughtStyle?: 'concise_cards' | 'minimal';
     panel?: {
       resizable?: boolean;
     };
     showTaskControls?: boolean;
+    greeting?: {
+      text?: string;
+      delay?: number;
+      duration?: number;
+      disabled?: boolean;
+    };
   };
   tools?: {
     client?: ClientToolDefinition[];
@@ -182,6 +202,7 @@ export type RoverInstance = {
     nameOrDef: string | ClientToolDefinition,
     handler: (args: any) => any | Promise<any>,
   ) => void;
+  identify: (visitor: { name?: string; email?: string }) => void;
   on: (event: RoverEventName, handler: RoverEventHandler) => () => void;
 };
 
@@ -208,6 +229,14 @@ const STALE_PENDING_RUN_MS = 90_000;
 const TELEMETRY_DEFAULT_FLUSH_INTERVAL_MS = 12_000;
 const TELEMETRY_DEFAULT_MAX_BATCH_SIZE = 30;
 const TELEMETRY_MAX_BUFFER_SIZE = 240;
+const SHORTCUTS_CACHE_TTL_MS = 5 * 60_000;
+const SHORTCUTS_MAX_STORED = 100;
+const SHORTCUTS_MAX_RENDERED = 12;
+const SHORTCUT_LABEL_MAX_CHARS = 80;
+const SHORTCUT_DESCRIPTION_MAX_CHARS = 200;
+const SHORTCUT_PROMPT_MAX_CHARS = 700;
+const SHORTCUT_ICON_MAX_CHARS = 8;
+const GREETING_TEXT_MAX_CHARS = 240;
 
 type TelemetryEventRecord = {
   name: RoverEventName;
@@ -233,6 +262,21 @@ let telemetryInFlight = false;
 let telemetryPausedAuth = false;
 let telemetrySeq = 0;
 let resolvedVisitorId: string | undefined = undefined;
+let resolvedVisitor: { name?: string; email?: string } | undefined = undefined;
+let greetingDismissed = false;
+let greetingShownInSession = false;
+let greetingShowTimer: ReturnType<typeof setTimeout> | null = null;
+let greetingAutoDismissTimer: ReturnType<typeof setTimeout> | null = null;
+type RoverShortcutLimits = {
+  shortcutMaxStored: number;
+  shortcutMaxRendered: number;
+};
+let backendSiteConfig: {
+  shortcuts: RoverShortcut[];
+  greeting?: { text?: string; delay?: number; duration?: number; disabled?: boolean };
+  limits?: RoverShortcutLimits;
+  version?: string;
+} | null = null;
 let suppressCheckpointSync = false;
 let currentMode: RoverExecutionMode = 'controller';
 let workerReady = false;
@@ -386,6 +430,24 @@ function syncVisitorIdToAllStores(siteId: string, visitorId: string): void {
   try { window.localStorage.setItem(key, visitorId); } catch { /* ignore */ }
   try { window.sessionStorage.setItem(key, visitorId); } catch { /* ignore */ }
   persistVisitorIdCookie(siteId, visitorId);
+}
+
+function syncVisitorToAllStores(siteId: string, visitor: { name?: string; email?: string }): void {
+  if (runtimeState) {
+    runtimeState.visitor = visitor;
+    persistRuntimeState();
+  }
+  try { localStorage.setItem(`rover:visitor:${siteId}`, JSON.stringify(visitor)); } catch { /* ignore */ }
+}
+
+function loadPersistedVisitor(siteId: string): { name?: string; email?: string } | undefined {
+  if (runtimeState?.visitor?.name || runtimeState?.visitor?.email) {
+    return runtimeState.visitor;
+  }
+  try {
+    const raw = localStorage.getItem(`rover:visitor:${siteId}`);
+    return raw ? JSON.parse(raw) : undefined;
+  } catch { return undefined; }
 }
 
 function resolveVisitorId(cfg: RoverInit): string | undefined {
@@ -872,13 +934,38 @@ function shouldIgnoreRunScopedWorkerMessage(msg: any): boolean {
   });
 }
 
-function normalizeRunCompletionState(msg: any): { taskComplete: boolean; needsUserInput: boolean } {
+function normalizeAskUserQuestions(input: any): RoverAskUserQuestion[] {
+  if (!Array.isArray(input)) return [];
+  const out: RoverAskUserQuestion[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < input.length; i += 1) {
+    const raw = input[i];
+    if (!raw || typeof raw !== 'object') continue;
+    const key = String(raw.key || raw.id || '').trim() || `clarification_${i + 1}`;
+    const query = String(raw.query || raw.question || '').trim();
+    if (!query) continue;
+    const dedupeKey = `${key}::${query}`.toLowerCase();
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    out.push({
+      key,
+      query,
+      ...(typeof raw.id === 'string' && raw.id.trim() ? { id: raw.id.trim() } : {}),
+      ...(typeof raw.question === 'string' && raw.question.trim() ? { question: raw.question.trim() } : {}),
+      ...(Array.isArray(raw.choices) ? { choices: raw.choices } : {}),
+    });
+  }
+  return out.slice(0, 6);
+}
+
+function normalizeRunCompletionState(msg: any): { taskComplete: boolean; needsUserInput: boolean; questions?: RoverAskUserQuestion[] } {
   if (!msg || typeof msg !== 'object') {
     return { taskComplete: false, needsUserInput: false };
   }
   const needsUserInput = msg.needsUserInput === true;
   const taskComplete = msg.taskComplete === true && !needsUserInput;
-  return { taskComplete, needsUserInput };
+  const questions = normalizeAskUserQuestions(msg.questions);
+  return { taskComplete, needsUserInput, ...(questions.length ? { questions } : {}) };
 }
 
 function getLatestAssistantText(runId?: string): string | undefined {
@@ -889,8 +976,10 @@ function getLatestAssistantText(runId?: string): string | undefined {
   if (!runtimeState?.uiMessages?.length) return undefined;
   for (let i = runtimeState.uiMessages.length - 1; i >= 0; i -= 1) {
     const message = runtimeState.uiMessages[i];
-    if (message.role === 'assistant' && message.text) {
-      return message.text;
+    if (message.role === 'assistant') {
+      if (message.text) return message.text;
+      const fromBlocks = deriveTextFromMessageBlocks(message.blocks);
+      if (fromBlocks) return fromBlocks;
     }
   }
   return undefined;
@@ -913,6 +1002,115 @@ function cloneUnknown<T>(value: T): T | undefined {
       return undefined;
     }
   }
+}
+
+function sanitizeMessageBlocks(input: any): RoverMessageBlock[] | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const out: RoverMessageBlock[] = [];
+
+  for (const block of input) {
+    if (!block || typeof block !== 'object') continue;
+    const type = block.type;
+
+    if (type === 'text') {
+      const text = String(block.text || '');
+      if (!text) continue;
+      out.push({ type: 'text', text });
+      continue;
+    }
+
+    if (type === 'tool_output' || type === 'json') {
+      out.push({
+        type,
+        data: cloneUnknown(block.data),
+        label: typeof block.label === 'string' ? block.label : undefined,
+        toolName: typeof block.toolName === 'string' ? block.toolName : undefined,
+      });
+    }
+  }
+
+  return out.length ? out : undefined;
+}
+
+function isSingleTextWrapperObject(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const entries = Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== undefined && v !== null);
+  if (entries.length !== 1) return false;
+  const [key, raw] = entries[0];
+  if (typeof raw !== 'string' || !raw.trim()) return false;
+  const textKeys = new Set(['response', 'message', 'summary', 'text', 'content', 'result', 'description']);
+  return textKeys.has(key);
+}
+
+function shouldAttachStructuredBlock(output: unknown, summaryText?: string): boolean {
+  if (output == null) return false;
+  if (typeof output === 'string') {
+    const clean = output.trim();
+    if (!clean) return false;
+    return !summaryText || clean !== summaryText.trim();
+  }
+  if (Array.isArray(output)) {
+    const meaningful = output.filter(item => item !== undefined && item !== null);
+    if (meaningful.length === 1) {
+      const first = meaningful[0];
+      if (typeof first === 'string' || typeof first === 'number' || typeof first === 'boolean') {
+        return false;
+      }
+      if (isSingleTextWrapperObject(first)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (isSingleTextWrapperObject(output)) {
+    return false;
+  }
+  return true;
+}
+
+function deriveTextFromMessageBlocks(blocks?: RoverMessageBlock[]): string | undefined {
+  if (!Array.isArray(blocks) || !blocks.length) return undefined;
+  const textParts = blocks
+    .filter((block): block is Extract<RoverMessageBlock, { type: 'text' }> => block.type === 'text')
+    .map(block => String(block.text || '').trim())
+    .filter(Boolean);
+  if (textParts.length) return textParts.join('\n\n');
+
+  const firstStructured = blocks.find(
+    (block): block is Extract<RoverMessageBlock, { type: 'tool_output' | 'json' }> =>
+      block.type === 'tool_output' || block.type === 'json',
+  );
+  if (!firstStructured) return undefined;
+
+  if (Array.isArray(firstStructured.data)) {
+    return `Received ${firstStructured.data.length} item(s).`;
+  }
+  if (firstStructured.data && typeof firstStructured.data === 'object') {
+    return `Received ${Object.keys(firstStructured.data as Record<string, unknown>).length} field(s).`;
+  }
+  return typeof firstStructured.data === 'string' ? firstStructured.data : String(firstStructured.data ?? 'Done.');
+}
+
+function buildToolResultBlocks(result: any): RoverMessageBlock[] | undefined {
+  if (result == null) return undefined;
+  const output =
+    result?.output
+    ?? result?.generatedContentRef
+    ?? result?.schemaHeaderSheetInfo
+    ?? result;
+  const summary = deriveTextFromMessageBlocks(
+    sanitizeMessageBlocks([{ type: 'tool_output', data: output }]),
+  );
+  if (!shouldAttachStructuredBlock(output, summary)) {
+    return undefined;
+  }
+  return sanitizeMessageBlocks([
+    {
+      type: 'tool_output',
+      label: typeof result?.name === 'string' ? `${result.name} output` : 'Tool output',
+      data: output,
+    },
+  ]);
 }
 
 function toWorkerHistoryEntry(input: unknown): { role: string; content: string } | null {
@@ -954,13 +1152,14 @@ function sanitizeUiMessages(input: any): PersistedUiMessage[] {
     out.push({
       id: typeof message?.id === 'string' && message.id ? message.id : createId('msg'),
       role,
-      text: truncateText(String(message?.text || '')),
+      text: String(message?.text || ''),
+      blocks: sanitizeMessageBlocks(message?.blocks),
       ts: Number(message?.ts) || Date.now(),
       sourceRuntimeId: typeof message?.sourceRuntimeId === 'string' ? message.sourceRuntimeId : undefined,
     });
   }
 
-  return out;
+  return out.filter(message => !!message.text || !!message.blocks?.length);
 }
 
 function sanitizeTimelineEvents(input: any): PersistedTimelineEvent[] {
@@ -976,7 +1175,8 @@ function sanitizeTimelineEvents(input: any): PersistedTimelineEvent[] {
       id: typeof event?.id === 'string' && event.id ? event.id : createId('timeline'),
       kind,
       title,
-      detail: event?.detail ? truncateText(String(event.detail), 1200) : undefined,
+      detail: event?.detail ? String(event.detail) : undefined,
+      detailBlocks: sanitizeMessageBlocks(event?.detailBlocks),
       status:
         status === 'pending' || status === 'success' || status === 'error' || status === 'info'
           ? status
@@ -1009,6 +1209,14 @@ function sanitizeWorkerState(input: any): PersistedWorkerState | undefined {
     .filter((message): message is { role: string; content: string } => !!message);
   const plannerHistory = cloneUnknownArrayTail(plannerRaw, MAX_WORKER_STEPS);
   const agentPrevSteps = cloneUnknownArrayTail(agentPrevStepsRaw, MAX_WORKER_STEPS * 2);
+  const pendingQuestions = normalizeAskUserQuestions(input?.pendingAskUser?.questions);
+  const pendingAskUser: PersistedWorkerState['pendingAskUser'] = pendingQuestions.length
+    ? {
+        questions: pendingQuestions,
+        source: (input?.pendingAskUser?.source === 'planner' ? 'planner' : 'act') as 'act' | 'planner',
+        askedAt: Number(input?.pendingAskUser?.askedAt) || Date.now(),
+      }
+    : undefined;
 
   return {
     trajectoryId: typeof input.trajectoryId === 'string' ? input.trajectoryId : undefined,
@@ -1016,6 +1224,7 @@ function sanitizeWorkerState(input: any): PersistedWorkerState | undefined {
     plannerHistory,
     agentPrevSteps,
     lastToolPreviousSteps: agentPrevSteps,
+    pendingAskUser,
     updatedAt: Number(input.updatedAt) || Date.now(),
   };
 }
@@ -1085,6 +1294,7 @@ function toPersistedTask(task: SharedTaskState | undefined, fallback: PersistedT
 
 function toSharedWorkerContext(state: PersistedWorkerState | undefined): SharedWorkerContext | undefined {
   if (!state) return undefined;
+  const pendingQuestions = normalizeAskUserQuestions(state.pendingAskUser?.questions);
   return {
     trajectoryId: state.trajectoryId,
     history: Array.isArray(state.history)
@@ -1095,6 +1305,13 @@ function toSharedWorkerContext(state: PersistedWorkerState | undefined): SharedW
       : [],
     plannerHistory: cloneUnknownArrayTail(state.plannerHistory, MAX_WORKER_STEPS),
     agentPrevSteps: cloneUnknownArrayTail(state.agentPrevSteps, MAX_WORKER_STEPS * 2),
+    pendingAskUser: pendingQuestions.length
+      ? {
+          questions: pendingQuestions,
+          source: state.pendingAskUser?.source === 'planner' ? 'planner' : 'act',
+          askedAt: Number(state.pendingAskUser?.askedAt) || Date.now(),
+        }
+      : undefined,
     updatedAt: Number(state.updatedAt) || Date.now(),
   };
 }
@@ -1223,7 +1440,17 @@ function hideTaskSuggestion(): void {
 function clearTaskUiState(): void {
   ui?.clearMessages();
   ui?.clearTimeline();
+  ui?.setQuestionPrompt(undefined);
   hideTaskSuggestion();
+}
+
+function syncQuestionPromptFromWorkerState(): void {
+  const questions = normalizeAskUserQuestions(runtimeState?.workerState?.pendingAskUser?.questions);
+  if (!questions.length) {
+    ui?.setQuestionPrompt(undefined);
+    return;
+  }
+  ui?.setQuestionPrompt({ questions });
 }
 
 function isPendingRunLikelyActive(): boolean {
@@ -1263,20 +1490,22 @@ function appendUiMessage(
   role: UiRole,
   text: string,
   persist = true,
-  options?: { id?: string; ts?: number; sourceRuntimeId?: string; publishShared?: boolean },
+  options?: { id?: string; ts?: number; sourceRuntimeId?: string; publishShared?: boolean; blocks?: RoverMessageBlock[] },
 ): PersistedUiMessage | undefined {
-  const clean = truncateText(String(text || ''));
-  if (!clean) return undefined;
+  const clean = String(text || '');
+  const blocks = sanitizeMessageBlocks(options?.blocks);
+  if (!clean && (!blocks || blocks.length === 0)) return undefined;
 
   const message: PersistedUiMessage = {
     id: options?.id || createId('msg'),
     role,
     text: clean,
+    blocks,
     ts: options?.ts || Date.now(),
     sourceRuntimeId: options?.sourceRuntimeId,
   };
 
-  ui?.addMessage(message.role, message.text);
+  ui?.addMessage(message.role, message.text, { blocks: message.blocks });
 
   if (runtimeState && persist) {
     runtimeState.uiMessages.push(message);
@@ -1292,6 +1521,7 @@ function appendUiMessage(
       id: message.id,
       role: message.role,
       text: message.text,
+      blocks: message.blocks,
       ts: message.ts,
     });
     sessionCoordinator.markTaskActivity(message.role, message.ts);
@@ -1307,6 +1537,7 @@ function replayUiMessages(messages: PersistedUiMessage[]): void {
       ts: message.ts,
       sourceRuntimeId: message.sourceRuntimeId,
       publishShared: false,
+      blocks: message.blocks,
     });
   }
 }
@@ -1319,7 +1550,8 @@ function appendTimelineEvent(
     id: event.id || createId('timeline'),
     kind: event.kind,
     title: truncateText(event.title, 400),
-    detail: event.detail ? truncateText(event.detail, 1200) : undefined,
+    detail: event.detail ? String(event.detail) : undefined,
+    detailBlocks: sanitizeMessageBlocks(event.detailBlocks),
     status: event.status,
     ts: event.ts || Date.now(),
     sourceRuntimeId: event.sourceRuntimeId,
@@ -1341,6 +1573,7 @@ function appendTimelineEvent(
       kind: timelineEvent.kind,
       title: timelineEvent.title,
       detail: timelineEvent.detail,
+      detailBlocks: timelineEvent.detailBlocks,
       status: timelineEvent.status,
       ts: timelineEvent.ts,
     });
@@ -1358,6 +1591,7 @@ function replayTimeline(events: PersistedTimelineEvent[]): void {
         kind: event.kind,
         title: event.title,
         detail: event.detail,
+        detailBlocks: event.detailBlocks,
         status: event.status,
         ts: event.ts,
         sourceRuntimeId: event.sourceRuntimeId,
@@ -1405,7 +1639,17 @@ function setPendingRun(next: PersistedPendingRun | undefined): void {
   persistRuntimeState();
 }
 
-function postRun(text: string, options?: { runId?: string; resume?: boolean; appendUserMessage?: boolean; autoResume?: boolean }): void {
+function postRun(
+  text: string,
+  options?: {
+    runId?: string;
+    resume?: boolean;
+    appendUserMessage?: boolean;
+    autoResume?: boolean;
+    routing?: 'auto' | 'act' | 'planner';
+    askUserAnswers?: RoverAskUserAnswerMeta;
+  },
+): void {
   const trimmed = String(text || '').trim();
   if (!trimmed) return;
   if (!worker) return;
@@ -1451,7 +1695,14 @@ function postRun(text: string, options?: { runId?: string; resume?: boolean; app
   lastUserInputText = trimmed;
   sessionCoordinator?.acquireWorkflowLock(runId);
   sessionCoordinator?.setActiveRun({ runId, text: trimmed });
-  worker.postMessage({ type: 'run', text: trimmed, runId, resume });
+  worker.postMessage({
+    type: 'run',
+    text: trimmed,
+    runId,
+    resume,
+    routing: options?.routing,
+    askUserAnswers: options?.askUserAnswers,
+  });
 
   if (runSafetyTimer) clearTimeout(runSafetyTimer);
   const safetyRunId = runId;
@@ -1471,7 +1722,13 @@ function postRun(text: string, options?: { runId?: string; resume?: boolean; app
 
 function dispatchUserPrompt(
   text: string,
-  options?: { bypassSuggestion?: boolean; startNewTask?: boolean; reason?: string },
+  options?: {
+    bypassSuggestion?: boolean;
+    startNewTask?: boolean;
+    reason?: string;
+    routing?: 'auto' | 'act' | 'planner';
+    askUserAnswers?: RoverAskUserAnswerMeta;
+  },
 ): void {
   const trimmed = String(text || '').trim();
   if (!trimmed) return;
@@ -1493,7 +1750,13 @@ function dispatchUserPrompt(
   }
 
   hideTaskSuggestion();
-  postRun(trimmed, { appendUserMessage: true, resume: false, autoResume: true });
+  postRun(trimmed, {
+    appendUserMessage: true,
+    resume: false,
+    autoResume: true,
+    routing: options?.routing,
+    askUserAnswers: options?.askUserAnswers,
+  });
 }
 
 function maybeAutoResumePendingRun(): void {
@@ -1592,6 +1855,7 @@ async function applyAsyncRuntimeStateHydration(key: string): Promise<void> {
     if (runtimeState.uiStatus) {
       ui.setStatus(runtimeState.uiStatus);
     }
+    syncQuestionPromptFromWorkerState();
     if (runtimeState.uiHidden) {
       ui.hide();
     } else {
@@ -1646,6 +1910,7 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
           ts: message.ts,
           sourceRuntimeId: message.sourceRuntimeId,
           publishShared: false,
+          blocks: message.blocks,
         });
         existingMessageIds.add(message.id);
       }
@@ -1670,6 +1935,7 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
             kind: event.kind as RoverTimelineEvent['kind'],
             title: event.title,
             detail: event.detail,
+            detailBlocks: event.detailBlocks,
             status: event.status,
             ts: event.ts,
             sourceRuntimeId: event.sourceRuntimeId,
@@ -1746,6 +2012,7 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
   runtimeState.uiMessages = sanitizeUiMessages(runtimeState.uiMessages);
   runtimeState.timeline = sanitizeTimelineEvents(runtimeState.timeline);
   runtimeState.workerState = sanitizeWorkerState(runtimeState.workerState);
+  syncQuestionPromptFromWorkerState();
   runtimeState.activeTask = sanitizeTask(runtimeState.activeTask, createDefaultTaskState('implicit'));
   persistRuntimeState();
 }
@@ -2054,13 +2321,6 @@ function finalizeSuccessfulRunTimeline(runId?: string): void {
   }
   sessionCoordinator?.clearTimeline();
 
-  appendTimelineEvent({
-    id: runId ? `run:${runId}:final` : undefined,
-    kind: 'tool_result',
-    title: 'Execution completed',
-    detail,
-    status: 'success',
-  });
 }
 
 function handleWorkerMessage(msg: any): void {
@@ -2068,7 +2328,8 @@ function handleWorkerMessage(msg: any): void {
   if (shouldIgnoreRunScopedWorkerMessage(msg)) return;
 
   if (msg.type === 'assistant') {
-    const text = String(msg.text || '');
+    const blocks = sanitizeMessageBlocks(msg.blocks);
+    const text = String(msg.text || deriveTextFromMessageBlocks(blocks) || '');
     if (typeof msg.runId === 'string' && msg.runId) {
       latestAssistantByRunId.set(msg.runId, text);
       if (latestAssistantByRunId.size > 80) {
@@ -2076,11 +2337,12 @@ function handleWorkerMessage(msg: any): void {
         if (oldestKey) latestAssistantByRunId.delete(oldestKey);
       }
     }
-    appendUiMessage('assistant', text, true);
+    appendUiMessage('assistant', text, true, { blocks });
     appendTimelineEvent({
       kind: 'tool_result',
       title: 'Assistant update',
       detail: text,
+      detailBlocks: blocks,
       status: 'success',
     });
     return;
@@ -2140,10 +2402,12 @@ function handleWorkerMessage(msg: any): void {
   }
 
   if (msg.type === 'tool_result') {
+    const detailBlocks = sanitizeMessageBlocks(msg.detailBlocks) || buildToolResultBlocks(msg.result);
     appendTimelineEvent({
       kind: 'tool_result',
       title: `${msg.call?.name || 'tool'} completed`,
       detail: safeSerialize(msg.result),
+      detailBlocks,
       status: msg?.result?.success === false ? 'error' : 'success',
     });
     emit('tool_result', msg);
@@ -2224,6 +2488,7 @@ function handleWorkerMessage(msg: any): void {
       if (runtimeState.workerState) {
         sessionCoordinator?.setWorkerContext(toSharedWorkerContext(runtimeState.workerState));
       }
+      syncQuestionPromptFromWorkerState();
       persistRuntimeState();
     }
     return;
@@ -2262,6 +2527,7 @@ function handleWorkerMessage(msg: any): void {
     );
     sessionCoordinator?.setActiveRun({ runId: msg.runId, text: String(msg.text || '') });
     ui?.setRunning(true);
+    ui?.setQuestionPrompt(undefined);
     const startEventId = `run:${String(msg.runId || '')}:start`;
     if (!runtimeState?.timeline.some(event => event.id === startEventId)) {
       appendTimelineEvent({
@@ -2311,6 +2577,7 @@ function handleWorkerMessage(msg: any): void {
       if (!isTaskRunning()) {
         return;
       }
+      ui?.setQuestionPrompt(undefined);
       markTaskRunning('worker_run_failed');
       setUiStatus(`Task failed: ${String(msg.error)}`);
       if (completedRunId) {
@@ -2329,7 +2596,9 @@ function handleWorkerMessage(msg: any): void {
       const completionState = normalizeRunCompletionState(msg);
       const taskComplete = completionState.taskComplete;
       const needsUserInput = completionState.needsUserInput;
+      const questions = completionState.questions || normalizeAskUserQuestions(msg.questions);
       if (taskComplete) {
+        ui?.setQuestionPrompt(undefined);
         markTaskCompleted('worker_task_complete');
         sessionCoordinator?.pruneTabs({
           dropRuntimeDetached: true,
@@ -2339,12 +2608,19 @@ function handleWorkerMessage(msg: any): void {
         finalizeSuccessfulRunTimeline(typeof msg.runId === 'string' ? msg.runId : undefined);
       } else {
         markTaskRunning(needsUserInput ? 'worker_waiting_for_input' : 'worker_continuation');
+        if (needsUserInput && questions.length > 0) {
+          ui?.setQuestionPrompt({ questions });
+        } else {
+          ui?.setQuestionPrompt(undefined);
+        }
         setUiStatus(needsUserInput ? 'Need more input to continue' : 'Execution finished. Continue when ready.');
         appendTimelineEvent({
           kind: 'status',
           title: needsUserInput ? 'Waiting for your input' : 'Continuation available',
           detail: needsUserInput
-            ? 'Planner requested more information before marking the task complete.'
+            ? (questions.length
+              ? `Please answer: ${questions.map(question => `${question.key} (${question.query})`).join('; ')}`
+              : 'Planner requested more information before marking the task complete.')
             : 'Task is still active and will continue with your next message.',
           status: 'info',
         });
@@ -2357,6 +2633,11 @@ function handleWorkerMessage(msg: any): void {
     workerReady = true;
     setUiStatus('ready');
     emit('ready');
+
+    // Non-blocking: load backend shortcuts and merge with config shortcuts
+    if (currentConfig) {
+      loadAndMergeShortcuts(currentConfig);
+    }
 
     const sharedWorkerContext = sessionCoordinator?.getWorkerContext();
     const sharedWorkerState = sanitizeWorkerState(sharedWorkerContext);
@@ -2388,6 +2669,347 @@ function handleWorkerMessage(msg: any): void {
 
   if (msg.type === 'updated') {
     emit('updated');
+  }
+}
+
+/* ── Site config: shortcuts + greeting (cache, merge, fetch) ── */
+
+type RoverGreetingConfig = {
+  text?: string;
+  delay?: number;
+  duration?: number;
+  disabled?: boolean;
+};
+
+type RoverResolvedSiteConfig = {
+  shortcuts: RoverShortcut[];
+  greeting?: RoverGreetingConfig;
+  limits?: RoverShortcutLimits;
+  version?: string;
+};
+
+function normalizeShortcutLimit(
+  input: unknown,
+  options: { min: number; max: number; fallback: number },
+): number {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed)) return options.fallback;
+  return Math.max(options.min, Math.min(options.max, Math.floor(parsed)));
+}
+
+function sanitizeSiteConfigLimits(raw: any): RoverShortcutLimits | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const shortcutMaxStored = normalizeShortcutLimit(raw.shortcutMaxStored, {
+    min: 1,
+    max: SHORTCUTS_MAX_STORED,
+    fallback: SHORTCUTS_MAX_STORED,
+  });
+  const shortcutMaxRendered = normalizeShortcutLimit(raw.shortcutMaxRendered, {
+    min: 1,
+    max: SHORTCUTS_MAX_RENDERED,
+    fallback: SHORTCUTS_MAX_RENDERED,
+  });
+  return { shortcutMaxStored, shortcutMaxRendered };
+}
+
+function clearGreetingTimers(): void {
+  if (greetingShowTimer) {
+    clearTimeout(greetingShowTimer);
+    greetingShowTimer = null;
+  }
+  if (greetingAutoDismissTimer) {
+    clearTimeout(greetingAutoDismissTimer);
+    greetingAutoDismissTimer = null;
+  }
+}
+
+function getCachedSiteConfig(siteId: string): RoverResolvedSiteConfig | null {
+  try {
+    const raw = localStorage.getItem(`rover:site-config:${siteId}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed.ts !== 'number' || typeof parsed.data !== 'object' || !parsed.data) return null;
+      if (Date.now() - parsed.ts > SHORTCUTS_CACHE_TTL_MS) return null;
+      return {
+        shortcuts: sanitizeShortcutList(parsed.data.shortcuts),
+        greeting: sanitizeGreetingConfig(parsed.data.greeting),
+        limits: sanitizeSiteConfigLimits(parsed.data.limits),
+        version: typeof parsed.version === 'string' ? parsed.version : undefined,
+      };
+    }
+  } catch {
+    // no-op
+  }
+
+  // Backward-compatible fallback for older cache key.
+  try {
+    const raw = localStorage.getItem(`rover:shortcuts:${siteId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed.ts !== 'number' || !Array.isArray(parsed.data)) return null;
+    if (Date.now() - parsed.ts > SHORTCUTS_CACHE_TTL_MS) return null;
+    return {
+      shortcuts: sanitizeShortcutList(parsed.data),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function setCachedSiteConfig(siteId: string, data: RoverResolvedSiteConfig): void {
+  try {
+    localStorage.setItem(`rover:site-config:${siteId}`, JSON.stringify({
+      ts: Date.now(),
+      version: data.version,
+      data: {
+        shortcuts: sanitizeShortcutList(data.shortcuts),
+        greeting: sanitizeGreetingConfig(data.greeting),
+        limits: sanitizeSiteConfigLimits(data.limits),
+      },
+    }));
+  } catch {
+    // ignore cache failures
+  }
+}
+
+function sanitizeGreetingConfig(raw: any): RoverGreetingConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const next: RoverGreetingConfig = {};
+  const text = String(raw.text || '').trim();
+  if (text) {
+    next.text = text.slice(0, GREETING_TEXT_MAX_CHARS);
+  }
+  const delay = Number(raw.delay);
+  if (Number.isFinite(delay)) {
+    next.delay = Math.max(0, Math.min(60_000, Math.floor(delay)));
+  }
+  const duration = Number(raw.duration);
+  if (Number.isFinite(duration)) {
+    next.duration = Math.max(1_200, Math.min(60_000, Math.floor(duration)));
+  }
+  if (typeof raw.disabled === 'boolean') {
+    next.disabled = raw.disabled;
+  }
+  return Object.keys(next).length ? next : undefined;
+}
+
+function sanitizeShortcut(raw: any): RoverShortcut | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = String(raw.id || '').trim().slice(0, 80);
+  const label = String(raw.label || '').trim().slice(0, SHORTCUT_LABEL_MAX_CHARS);
+  const prompt = String(raw.prompt || '').trim().slice(0, SHORTCUT_PROMPT_MAX_CHARS);
+  if (!id || !label || !prompt) return null;
+  const sc: RoverShortcut = {
+    id,
+    label,
+    prompt,
+    enabled: raw.enabled !== false,
+  };
+  if (raw.description) sc.description = String(raw.description).trim().slice(0, SHORTCUT_DESCRIPTION_MAX_CHARS);
+  if (raw.icon) sc.icon = String(raw.icon).trim().slice(0, SHORTCUT_ICON_MAX_CHARS);
+  if (raw.routing === 'auto' || raw.routing === 'act' || raw.routing === 'planner') sc.routing = raw.routing;
+  const order = Number(raw.order);
+  if (Number.isFinite(order)) sc.order = Math.trunc(order);
+  return sc;
+}
+
+function sanitizeShortcutList(raw: any): RoverShortcut[] {
+  if (!Array.isArray(raw)) return [];
+  const out: RoverShortcut[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (out.length >= SHORTCUTS_MAX_STORED) break;
+    const normalized = sanitizeShortcut(item);
+    if (!normalized || seen.has(normalized.id)) continue;
+    seen.add(normalized.id);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function sortShortcuts(shortcuts: RoverShortcut[]): RoverShortcut[] {
+  return shortcuts
+    .map((item, index) => ({ item, index }))
+    .sort((a, b) => {
+      const aHasOrder = Number.isFinite(a.item.order);
+      const bHasOrder = Number.isFinite(b.item.order);
+      if (aHasOrder && bHasOrder) return Number(a.item.order) - Number(b.item.order);
+      if (aHasOrder) return -1;
+      if (bHasOrder) return 1;
+      return a.index - b.index;
+    })
+    .map(entry => entry.item);
+}
+
+function mergeShortcuts(configShortcuts: RoverShortcut[], backendShortcuts: RoverShortcut[]): RoverShortcut[] {
+  const merged = new Map<string, RoverShortcut>();
+
+  // Boot config wins conflicts.
+  for (const shortcut of backendShortcuts) {
+    merged.set(shortcut.id, shortcut);
+  }
+  for (const shortcut of configShortcuts) {
+    const prev = merged.get(shortcut.id);
+    merged.set(shortcut.id, prev ? { ...prev, ...shortcut } : shortcut);
+  }
+
+  return sortShortcuts(Array.from(merged.values())).slice(0, SHORTCUTS_MAX_STORED);
+}
+
+function getRenderableShortcuts(shortcuts: RoverShortcut[]): RoverShortcut[] {
+  const renderLimit = normalizeShortcutLimit(backendSiteConfig?.limits?.shortcutMaxRendered, {
+    min: 1,
+    max: SHORTCUTS_MAX_RENDERED,
+    fallback: SHORTCUTS_MAX_RENDERED,
+  });
+  return shortcuts
+    .filter(shortcut => shortcut.enabled !== false)
+    .slice(0, renderLimit);
+}
+
+function resolveEffectiveGreetingConfig(cfg: RoverInit | null): RoverGreetingConfig | undefined {
+  if (!cfg) return undefined;
+  const fromBackend = sanitizeGreetingConfig(backendSiteConfig?.greeting);
+  const fromBoot = sanitizeGreetingConfig(cfg.ui?.greeting);
+  if (!fromBackend && !fromBoot) return undefined;
+  return {
+    ...(fromBackend || {}),
+    ...(fromBoot || {}),
+  };
+}
+
+function buildGreetingText(greetingCfg: RoverGreetingConfig | undefined): string {
+  const name = resolvedVisitor?.name;
+  const customText = greetingCfg?.text;
+  if (customText) {
+    return customText.replace(/\{name\}/g, name || '').trim() || (name ? `Hey ${name}! Need any help?` : 'Hey! Need any help?');
+  }
+  return name ? `Hey ${name}! Need any help?` : 'Hey! Need any help?';
+}
+
+function maybeShowGreeting(): void {
+  if (greetingDismissed) return;
+  if (!ui || !currentConfig) return;
+  if (runtimeState?.uiOpen) return;
+
+  const greetingCfg = resolveEffectiveGreetingConfig(currentConfig);
+  if (greetingCfg?.disabled === true) return;
+
+  const sessionKey = `rover:greeting-shown:${currentConfig.siteId}`;
+  try {
+    if (sessionStorage.getItem(sessionKey)) {
+      greetingShownInSession = true;
+      return;
+    }
+  } catch {
+    // no-op
+  }
+  if (greetingShownInSession) return;
+
+  clearGreetingTimers();
+  const delay = greetingCfg?.delay ?? 3000;
+  const duration = greetingCfg?.duration ?? 8000;
+  const text = buildGreetingText(greetingCfg);
+  greetingShowTimer = setTimeout(() => {
+    greetingShowTimer = null;
+    if (greetingDismissed || runtimeState?.uiOpen) return;
+    ui?.showGreeting(text);
+    greetingShownInSession = true;
+    try { sessionStorage.setItem(sessionKey, '1'); } catch { /* ignore */ }
+    greetingAutoDismissTimer = setTimeout(() => {
+      greetingAutoDismissTimer = null;
+      ui?.dismissGreeting();
+    }, duration);
+  }, delay);
+}
+
+function applyEffectiveSiteConfig(cfg: RoverInit): void {
+  const configShortcuts = sanitizeShortcutList(cfg.ui?.shortcuts || []);
+  const backendShortcuts = sanitizeShortcutList(backendSiteConfig?.shortcuts || []);
+  const merged = mergeShortcuts(configShortcuts, backendShortcuts);
+  ui?.setShortcuts(getRenderableShortcuts(merged));
+}
+
+async function fetchBackendSiteConfig(cfg: RoverInit): Promise<RoverResolvedSiteConfig | null> {
+  const authToken = String(cfg.authToken || cfg.apiKey || '').trim();
+  if (!authToken) return null;
+
+  const resp = await fetch(resolveExtensionRouterEndpoint(cfg.apiBase), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${authToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      action: 'roverGetSiteConfig',
+      data: {
+        siteId: cfg.siteId,
+        siteKeyId: cfg.siteKeyId,
+      },
+    }),
+  });
+  if (!resp.ok) return null;
+
+  const json = await resp.json();
+  if (!json?.success) return null;
+
+  const payload = (json.data?.siteConfig && typeof json.data.siteConfig === 'object')
+    ? json.data.siteConfig
+    : json.data;
+
+  return {
+    shortcuts: sanitizeShortcutList(payload?.shortcuts),
+    greeting: sanitizeGreetingConfig(payload?.greeting),
+    limits: sanitizeSiteConfigLimits(payload?.limits),
+    version: payload?.version != null ? String(payload.version) : undefined,
+  };
+}
+
+function loadAndMergeShortcuts(cfg: RoverInit): void {
+  const cached = getCachedSiteConfig(cfg.siteId);
+  if (cached) {
+    backendSiteConfig = cached;
+  }
+  applyEffectiveSiteConfig(cfg);
+  maybeShowGreeting();
+
+  void fetchBackendSiteConfig(cfg)
+    .then(siteConfig => {
+      if (!siteConfig) return;
+      backendSiteConfig = siteConfig;
+      setCachedSiteConfig(cfg.siteId, siteConfig);
+      applyEffectiveSiteConfig(cfg);
+      if (!greetingDismissed) {
+        const greetingCfg = resolveEffectiveGreetingConfig(cfg);
+        if (greetingShownInSession && !runtimeState?.uiOpen) {
+          ui?.showGreeting(buildGreetingText(greetingCfg));
+        } else {
+          maybeShowGreeting();
+        }
+      }
+    })
+    .catch(() => {
+      // no-op; cached/boot config is already applied.
+    });
+}
+
+export function identify(visitor: { name?: string; email?: string }): void {
+  if (!currentConfig) return;
+  const next: { name?: string; email?: string } = {
+    ...resolvedVisitor,
+    ...visitor,
+  };
+  if (next.name) next.name = String(next.name).trim().slice(0, 120);
+  if (next.email) next.email = String(next.email).trim().slice(0, 240);
+  resolvedVisitor = next;
+  syncVisitorToAllStores(currentConfig.siteId, resolvedVisitor);
+  ui?.setVisitorName(resolvedVisitor.name || '');
+  if (!greetingDismissed) {
+    if (greetingShownInSession && !runtimeState?.uiOpen) {
+      ui?.showGreeting(buildGreetingText(resolveEffectiveGreetingConfig(currentConfig)));
+    } else {
+      maybeShowGreeting();
+    }
   }
 }
 
@@ -2553,8 +3175,18 @@ function createRuntime(cfg: RoverInit): void {
   worker.postMessage({ type: 'init', config: cfg, port: channel.port2 }, [channel.port2]);
 
   ui = mountWidget({
-    onSend: text => {
-      dispatchUserPrompt(text);
+    shortcuts: getRenderableShortcuts(sanitizeShortcutList(cfg.ui?.shortcuts || [])),
+    greeting: resolveEffectiveGreetingConfig(cfg),
+    visitorName: resolvedVisitor?.name,
+    onShortcutClick: (shortcut) => {
+      const text = String(shortcut.prompt || '').trim();
+      if (!text) return;
+      dispatchUserPrompt(text, { routing: shortcut.routing });
+    },
+    onSend: (text, meta) => {
+      dispatchUserPrompt(text, {
+        askUserAnswers: meta?.askUserAnswers,
+      });
     },
     onRequestControl: () => {
       const claimed = sessionCoordinator?.requestControl() ?? false;
@@ -2578,6 +3210,7 @@ function createRuntime(cfg: RoverInit): void {
         setPendingRun(undefined);
         if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
         ui?.setRunning(false);
+        ui?.setQuestionPrompt(undefined);
         setUiStatus('Task cancelled.');
         appendUiMessage('system', 'Task cancelled.', true);
         appendTimelineEvent({
@@ -2620,6 +3253,8 @@ function createRuntime(cfg: RoverInit): void {
       webmUrl: cfg.ui?.mascot?.webmUrl,
     },
     onOpen: () => {
+      greetingDismissed = true;
+      clearGreetingTimers();
       if (runtimeState) {
         runtimeState.uiOpen = true;
         runtimeState.uiHidden = false;
@@ -2647,6 +3282,7 @@ function createRuntime(cfg: RoverInit): void {
   if (runtimeState?.uiStatus) {
     ui.setStatus(runtimeState.uiStatus);
   }
+  syncQuestionPromptFromWorkerState();
   if (runtimeState?.executionMode) {
     ui.setExecutionMode(runtimeState.executionMode, {
       localLogicalTabId: sessionCoordinator?.getLocalLogicalTabId(),
@@ -2707,6 +3343,8 @@ function createRuntime(cfg: RoverInit): void {
       holderRuntimeId: sessionCoordinator.getCurrentHolderRuntimeId(),
     });
   }
+
+  maybeShowGreeting();
 }
 
 export function boot(cfg: RoverInit): RoverInstance {
@@ -2718,6 +3356,11 @@ export function boot(cfg: RoverInit): RoverInstance {
   runtimeStateStore = createRuntimeStateStore<PersistedRuntimeState>();
   runtimeId = getOrCreateRuntimeId(cfg.siteId);
   resolvedVisitorId = resolveVisitorId(cfg);
+  resolvedVisitor = cfg.visitor || loadPersistedVisitor(cfg.siteId);
+  greetingDismissed = false;
+  greetingShownInSession = false;
+  clearGreetingTimers();
+  backendSiteConfig = null;
   runtimeStorageKey = getRuntimeStateKey(cfg.siteId);
   const loaded = loadPersistedState(runtimeStorageKey);
   const desiredSessionId = cfg.sessionId?.trim();
@@ -2755,6 +3398,7 @@ export function boot(cfg: RoverInit): RoverInstance {
   runtimeState.activeTask = sanitizeTask(runtimeState.activeTask, createDefaultTaskState('boot'));
   runtimeState.taskEpoch = Math.max(1, Number(runtimeState.taskEpoch) || 1);
   currentMode = runtimeState.executionMode;
+  if (resolvedVisitor) syncVisitorToAllStores(cfg.siteId, resolvedVisitor);
   persistRuntimeState();
 
   // Mark this tab as alive — sessionStorage survives refresh but is cleared on tab close
@@ -2783,6 +3427,7 @@ export function boot(cfg: RoverInit): RoverInstance {
     endTask,
     getState,
     registerTool,
+    identify,
     on,
   };
 
@@ -2851,6 +3496,15 @@ export function update(cfg: Partial<RoverInit>): void {
   setupCloudCheckpointing(currentConfig);
   setupTelemetry(currentConfig);
 
+  const shouldReloadRemoteSiteConfig =
+    cfg.apiBase !== undefined
+    || cfg.apiKey !== undefined
+    || cfg.authToken !== undefined
+    || cfg.siteId !== undefined
+    || cfg.siteKeyId !== undefined
+    || cfg.ui?.shortcuts !== undefined
+    || cfg.ui?.greeting !== undefined;
+
   if (bridge) {
     if (typeof cfg.allowActions === 'boolean') {
       bridge.setAllowActions(cfg.allowActions && currentMode === 'controller');
@@ -2865,6 +3519,17 @@ export function update(cfg: Partial<RoverInit>): void {
   }
 
   worker.postMessage({ type: 'update_config', config: cfg });
+
+  applyEffectiveSiteConfig(currentConfig);
+  if (shouldReloadRemoteSiteConfig) {
+    loadAndMergeShortcuts(currentConfig);
+  } else {
+    maybeShowGreeting();
+  }
+
+  if (cfg.visitor) {
+    identify(cfg.visitor);
+  }
 
   if (typeof cfg.openOnInit === 'boolean') {
     if (cfg.openOnInit) open();
@@ -2894,6 +3559,11 @@ export function shutdown(): void {
   autoResumeAttempted = false;
   runtimeId = '';
   resolvedVisitorId = undefined;
+  resolvedVisitor = undefined;
+  greetingDismissed = false;
+  greetingShownInSession = false;
+  clearGreetingTimers();
+  backendSiteConfig = null;
   suppressCheckpointSync = false;
   telemetryInFlight = false;
   telemetryPausedAuth = false;
@@ -2906,6 +3576,8 @@ export function shutdown(): void {
 }
 
 export function open(): void {
+  greetingDismissed = true;
+  clearGreetingTimers();
   ui?.show();
   ui?.open();
   if (runtimeState) {
@@ -2961,6 +3633,7 @@ export function newTask(options?: { reason?: string; clearUi?: boolean }): void 
   }
   if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
   ui?.setRunning(false);
+  ui?.setQuestionPrompt(undefined);
 
   autoResumeAttempted = false;
   runtimeState.taskEpoch = taskEpoch;
@@ -2989,12 +3662,6 @@ export function newTask(options?: { reason?: string; clearUi?: boolean }): void 
   persistRuntimeState();
 
   worker?.postMessage({ type: 'start_new_task', taskId: nextTask.taskId });
-  appendTimelineEvent({
-    kind: 'info',
-    title: 'Started new task',
-    detail: reason,
-    status: 'info',
-  });
   emit('task_started', {
     taskId: nextTask.taskId,
     reason,
@@ -3020,6 +3687,7 @@ export function endTask(options?: { reason?: string }): void {
   runtimeState.workerState = undefined;
   if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
   ui?.setRunning(false);
+  ui?.setQuestionPrompt(undefined);
   hideTaskSuggestion();
   setUiStatus('Task ended. Start a new task to continue.');
   sessionCoordinator?.endTask(reason);

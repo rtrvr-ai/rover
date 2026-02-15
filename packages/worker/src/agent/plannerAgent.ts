@@ -5,28 +5,43 @@ import { executeToolFromPlan } from './toolExecutor.js';
 import { resolveRuntimeTabs } from './runtimeTabs.js';
 
 const MAX_PLANNER_DEPTH = 15;
-const MAX_CHATLOG_ENTRIES = 24;
-const MAX_CHATLOG_MESSAGE_CHARS = 1000;
+const MAX_CHATLOG_ENTRIES = 12;
 
 function normalizeChatLog(
   entries: Array<{ role?: 'user' | 'model'; message?: string }> | undefined,
 ): Array<{ role: 'user' | 'model'; message: string }> {
   if (!Array.isArray(entries) || !entries.length) return [];
 
-  return entries
+  const normalized = entries
     .map(entry => ({
       role: entry?.role === 'user' ? ('user' as const) : ('model' as const),
       message: String(entry?.message || '').replace(/\s+/g, ' ').trim(),
     }))
-    .filter(entry => !!entry.message)
-    .map(entry => ({
-      role: entry.role,
-      message:
-        entry.message.length > MAX_CHATLOG_MESSAGE_CHARS
-          ? `${entry.message.slice(0, MAX_CHATLOG_MESSAGE_CHARS - 1)}…`
-          : entry.message,
-    }))
-    .slice(-MAX_CHATLOG_ENTRIES);
+    .filter(entry => !!entry.message);
+
+  const deduped: Array<{ role: 'user' | 'model'; message: string }> = [];
+  for (const entry of normalized) {
+    const previous = deduped[deduped.length - 1];
+    if (previous && previous.role === entry.role && previous.message === entry.message) continue;
+    deduped.push(entry);
+  }
+
+  const firstUser = deduped.find(entry => entry.role === 'user');
+  const tailBudget = firstUser ? Math.max(1, MAX_CHATLOG_ENTRIES - 1) : MAX_CHATLOG_ENTRIES;
+  let selected = deduped.slice(-tailBudget);
+
+  if (firstUser) {
+    const hasAnchor = selected.some(entry => entry.role === 'user' && entry.message === firstUser.message);
+    if (!hasAnchor) {
+      selected = [firstUser, ...selected];
+    }
+  }
+
+  if (selected.length > MAX_CHATLOG_ENTRIES) {
+    selected = selected.slice(-MAX_CHATLOG_ENTRIES);
+  }
+
+  return selected;
 }
 
 export async function executePlanner(options: PlannerOptions & {

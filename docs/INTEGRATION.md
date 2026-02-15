@@ -304,6 +304,7 @@ rover.boot(config);
 | `endTask` | `{ reason?: string }` | End the current task without destroying the session. |
 | `getState` | — | Returns the current runtime state object. |
 | `registerTool` | `def, handler` | Register a client-side tool callable by the agent. |
+| `identify` | `{ name?, email? }` | Update visitor profile after boot (async auth/user hydration). |
 | `on` | `event, handler` | Subscribe to an event. Returns an unsubscribe function. |
 
 ---
@@ -322,6 +323,7 @@ rover.boot(config);
 | `auth.sessionJwtEndpoint` | `string` | — | Endpoint used to refresh session JWT |
 | `auth.refreshSkewSec` | `number` | — | Early refresh skew (seconds) before JWT expiry |
 | `visitorId` | `string` | auto | Stable visitor identifier |
+| `visitor` | `{ name?: string; email?: string }` | — | Optional visitor profile for greeting personalization |
 | `sessionId` | `string` | auto | Explicit session ID |
 | `sessionScope` | `'shared_site' \| 'tab'` | `'shared_site'` | Shared cross-tab session or tab-isolated session |
 | `mode` | `'full' \| 'safe'` | `'full'` | Runtime mode |
@@ -412,6 +414,11 @@ When `tools.web.scrapeMode` is `on_demand`, ensure your Rover site key includes 
 | `ui.thoughtStyle` | `'concise_cards' \| 'minimal'` | `'concise_cards'` | Thought rendering preference |
 | `ui.panel.resizable` | `boolean` | `true` | Panel resize preference |
 | `ui.showTaskControls` | `boolean` | `true` | Show new/end task controls |
+| `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced) |
+| `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | — | Greeting bubble config; supports `{name}` placeholder |
+
+With site keys, Rover also fetches cloud site config using `roverGetSiteConfig` (shortcuts + greeting).  
+If boot config and cloud config define the same field, boot config takes precedence.
 
 ### Client Tools
 

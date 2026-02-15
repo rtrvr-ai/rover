@@ -1,5 +1,5 @@
 import { SUB_AGENTS } from '@rover/shared/lib/types/agent-types.js';
-import type { PlannerPreviousStep } from './types.js';
+import type { PlannerPreviousStep, PlannerQuestion } from './types.js';
 import { processActionResponse, formatFunctionResultsIntoPrevSteps, managePrevStepsSize, waitWhilePaused } from './utils.js';
 import type { FunctionCall, PreviousSteps, FunctionDeclaration, StatusStage } from './types.js';
 import type { AgentContext } from './context.js';
@@ -29,6 +29,8 @@ export type AgenticSeekResult = {
   error?: string;
   warnings?: string[];
   creditsUsed?: number;
+  needsUserInput?: boolean;
+  questions?: PlannerQuestion[];
 };
 
 const MAX_RETRIES = 3;
@@ -185,6 +187,18 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
           prevSteps: accumulatedPrevSteps,
           creditsUsed: totalCreditsUsed,
           warnings: allWarnings,
+        };
+      }
+
+      if (processResult.needsUserInput && Array.isArray(processResult.questions) && processResult.questions.length > 0) {
+        managePrevStepsSize(accumulatedPrevSteps);
+        onPrevStepsUpdate?.(accumulatedPrevSteps);
+        return {
+          prevSteps: accumulatedPrevSteps,
+          creditsUsed: totalCreditsUsed,
+          warnings: allWarnings,
+          needsUserInput: true,
+          questions: processResult.questions,
         };
       }
 

@@ -1,7 +1,7 @@
 import type { FrameworkElementMetadataWire, MainWorldToolRequest } from '@rover/shared/lib/system-tools/wire.js';
 import type { FrameworkElementMetadata, FrameworkName } from '@rover/shared/lib/utils/main-listener-utils.js';
 import type { PageConfig } from '@rover/shared';
-import { SystemToolNames, normalizeDescribeImageIds } from '@rover/shared/lib/system-tools/tools.js';
+import { SYSTEM_TOOLS_ELEMENT_ID_KEYS, SystemToolNames, normalizeDescribeImageIds } from '@rover/shared/lib/system-tools/tools.js';
 import { FrameworkNameToCode, ToolNameToOpcode } from '@rover/shared/lib/system-tools/wire.js';
 import { getDocumentContext, resolveInteractiveElementById } from '@rover/shared/lib/page/index.js';
 import { EventHandlerReverseMap, parseNumericListenerAttribute } from '@rover/a11y-tree';
@@ -143,7 +143,7 @@ export class Bridge {
     }
 
     if (this.shouldBlockForOutOfScopeContext(toolName)) {
-      const reason = `Current tab is outside the allowed domain scope (${formatAllowedDomainsForMessage(this.allowedDomains)}).`;
+      const reason = 'Current tab is outside the allowed navigation scope.';
       return this.domainScopeBlockedResponse(window.location.href, reason, { fromCurrentContext: true });
     }
 
@@ -183,14 +183,21 @@ export class Bridge {
       );
     }
 
-    if (toolName === SystemToolNames.click_element && (call?.args as any)?.open_in_new_tab) {
-      return this.openElementInNewTab(call?.args || {});
+    const args = call?.args || {};
+    const hasElementContext = hasAnyElementContext(args);
+    const iframeContext = getDocumentContext(document, args.iframe_id);
+    if (args.iframe_id != null && iframeContext.unresolvedPath.length > 0 && !hasElementContext) {
+      return this.iframeContextUnavailableResponse(args.iframe_id, iframeContext);
     }
 
-    if (toolName === SystemToolNames.click_element && this.shouldInterceptExternalClick(call?.args || {})) {
-      const clickedUrl = this.getExternalClickTargetUrl(call?.args || {});
+    if (toolName === SystemToolNames.click_element && (args as any)?.open_in_new_tab) {
+      return this.openElementInNewTab(args);
+    }
+
+    if (toolName === SystemToolNames.click_element && this.shouldInterceptExternalClick(args)) {
+      const clickedUrl = this.getExternalClickTargetUrl(args);
       if (clickedUrl) {
-        const reason = `Blocked same-tab navigation to out-of-scope domain (${new URL(clickedUrl).hostname}).`;
+        const reason = 'Blocked same-tab navigation to an out-of-scope destination.';
         if (this.externalNavigationPolicy === 'open_new_tab_notice') {
           return this.openUrlInNewTab(clickedUrl, { policyBlocked: true, reason });
         }
@@ -206,11 +213,9 @@ export class Bridge {
       return { success: false, error: `Unknown tool: ${String(call?.name)}`, allowFallback: false };
     }
 
-    const args = call?.args || {};
-    const { doc } = getDocumentContext(document, args.iframe_id);
+    const { doc } = iframeContext;
 
-    const elementId =
-      args.element_id ?? args.source_element_id ?? args.target_element_id ?? args.center_element_id ?? null;
+    const elementId = getPrimaryElementId(args);
     const targetEl = elementId ? resolveInteractiveElementById(doc, elementId) : null;
 
     let elementData: FrameworkElementMetadataWire | undefined;
@@ -235,6 +240,49 @@ export class Bridge {
     };
 
     return executeMainWorldTool(request);
+  }
+
+  private iframeContextUnavailableResponse(
+    iframeIdRaw: any,
+    ctx: {
+      iframePath: number[];
+      resolvedPath: number[];
+      unresolvedPath: number[];
+    },
+  ): any {
+    const unresolved = ctx.unresolvedPath.join('>');
+    const message = `iframe_id unresolved: remaining=${unresolved || '(none)'} (cross-origin, not-ready, or not found)`;
+
+    return {
+      success: false,
+      error: message,
+      allowFallback: false,
+      output: {
+        success: false,
+        error: {
+          code: 'IFRAME_CONTEXT_UNAVAILABLE',
+          message,
+          retryable: false,
+        },
+        iframe_context: {
+          requested_iframe_id: iframeIdRaw,
+          requested_path: ctx.iframePath,
+          resolved_path: ctx.resolvedPath,
+          unresolved_path: ctx.unresolvedPath,
+        },
+      },
+      errorDetails: {
+        code: 'IFRAME_CONTEXT_UNAVAILABLE',
+        message,
+        retryable: false,
+        details: {
+          requested_iframe_id: iframeIdRaw,
+          requested_path: ctx.iframePath,
+          resolved_path: ctx.resolvedPath,
+          unresolved_path: ctx.unresolvedPath,
+        },
+      },
+    };
   }
 
   highlight(elementId: number): void {
@@ -298,7 +346,7 @@ export class Bridge {
         if (!targetUrl) return { success: false, error: `goto_url: invalid url "${rawUrl}"`, allowFallback: true };
 
         if (this.shouldGuardExternalNavigation(targetUrl)) {
-          const reason = `Navigation blocked by domain policy. Allowed: ${formatAllowedDomainsForMessage(this.allowedDomains)}`;
+          const reason = 'Navigation blocked by domain policy.';
           if (this.externalNavigationPolicy === 'open_new_tab_notice') {
             return await this.openUrlInNewTab(targetUrl, {
               policyBlocked: true,
@@ -317,7 +365,7 @@ export class Bridge {
         const targetUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
 
         if (this.shouldGuardExternalNavigation(targetUrl)) {
-          const reason = `Google search opens outside the allowed domain scope (${formatAllowedDomainsForMessage(this.allowedDomains)}).`;
+          const reason = 'Google search opens outside the allowed navigation scope.';
           if (this.externalNavigationPolicy === 'open_new_tab_notice') {
             return await this.openUrlInNewTab(targetUrl, {
               policyBlocked: true,
@@ -360,7 +408,7 @@ export class Bridge {
           if (tab?.external) {
             return this.domainScopeBlockedResponse(
               tab.url || `logical_tab_id:${logicalTabId}`,
-              `Tab ${logicalTabId} is out of scope. Direct actions are blocked outside ${formatAllowedDomainsForMessage(this.allowedDomains)}.`,
+              `Tab ${logicalTabId} is out of scope. Direct actions are blocked for this tab.`,
             );
           }
         }
@@ -423,8 +471,7 @@ export class Bridge {
   }
 
   private getExternalClickTargetUrl(args: Record<string, any>): string | null {
-    const elementId =
-      args.element_id ?? args.source_element_id ?? args.target_element_id ?? args.center_element_id ?? null;
+    const elementId = getPrimaryElementId(args);
     if (!elementId) return null;
     const { doc } = getDocumentContext(document, args.iframe_id);
     const target = resolveInteractiveElementById(doc, elementId);
@@ -467,7 +514,6 @@ export class Bridge {
         },
         blocked_url: targetUrl,
         current_url: window.location.href,
-        allowed_domains: this.allowedDomains,
         policy_action: policyAction,
         from_current_context: !!options?.fromCurrentContext,
       },
@@ -478,7 +524,6 @@ export class Bridge {
         details: {
           blockedUrl: targetUrl,
           currentUrl: window.location.href,
-          allowedDomains: this.allowedDomains,
           policyAction,
         },
       },
@@ -703,8 +748,7 @@ export class Bridge {
   }
 
   private async openElementInNewTab(args: Record<string, any>): Promise<any> {
-    const elementId =
-      args.element_id ?? args.source_element_id ?? args.target_element_id ?? args.center_element_id ?? null;
+    const elementId = getPrimaryElementId(args);
     if (!elementId) {
       return {
         success: false,
@@ -931,16 +975,6 @@ function matchesDomainPattern(host: string, pattern: string): boolean {
   return host.endsWith(`.${clean}`);
 }
 
-function formatAllowedDomainsForMessage(domains: string[]): string {
-  if (!domains.length) return '*';
-  return domains
-    .map(domain => {
-      const text = String(domain || '');
-      return text.startsWith('=') ? text.slice(1) : text;
-    })
-    .join(', ');
-}
-
 function findAnchorWithHref(element: Element): HTMLAnchorElement | null {
   if (element instanceof HTMLAnchorElement && element.href) return element;
   const closest = (element as HTMLElement).closest?.('a[href]');
@@ -1050,6 +1084,42 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
     bin += String.fromCharCode(...u8.subarray(i, i + step));
   }
   return btoa(bin);
+}
+
+function normalizePositiveElementId(raw: any): number | null {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  const id = Math.trunc(n);
+  return id > 0 ? id : null;
+}
+
+function collectElementIdsFromArgs(args: Record<string, any>): number[] {
+  const ids: number[] = [];
+  for (const key of SYSTEM_TOOLS_ELEMENT_ID_KEYS) {
+    const value = (args as any)?.[key];
+    if (value == null) continue;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const id = normalizePositiveElementId(item);
+        if (id != null) ids.push(id);
+      }
+      continue;
+    }
+
+    const id = normalizePositiveElementId(value);
+    if (id != null) ids.push(id);
+  }
+
+  return Array.from(new Set(ids));
+}
+
+function hasAnyElementContext(args: Record<string, any>): boolean {
+  return collectElementIdsFromArgs(args).length > 0;
+}
+
+function getPrimaryElementId(args: Record<string, any>): number | null {
+  const ids = collectElementIdsFromArgs(args);
+  return ids.length ? ids[0] : null;
 }
 
 function findByText(doc: Document, text: string): Element | null {

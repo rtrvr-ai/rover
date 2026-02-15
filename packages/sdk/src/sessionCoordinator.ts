@@ -1,9 +1,12 @@
+import type { RoverMessageBlock } from '@rover/ui';
+
 export type SharedRole = 'controller' | 'observer';
 
 export type SharedUiMessage = {
   id: string;
   role: 'user' | 'assistant' | 'system';
   text: string;
+  blocks?: RoverMessageBlock[];
   ts: number;
   sourceRuntimeId?: string;
 };
@@ -13,6 +16,7 @@ export type SharedTimelineEvent = {
   kind: string;
   title: string;
   detail?: string;
+  detailBlocks?: RoverMessageBlock[];
   status?: 'pending' | 'success' | 'error' | 'info';
   ts: number;
   sourceRuntimeId?: string;
@@ -58,6 +62,11 @@ export type SharedWorkerContext = {
   history?: Array<{ role: string; content: string }>;
   plannerHistory?: unknown[];
   agentPrevSteps?: unknown[];
+  pendingAskUser?: {
+    questions: Array<{ key: string; query: string; id?: string; question?: string; choices?: string[] }>;
+    source: 'act' | 'planner';
+    askedAt: number;
+  };
   updatedAt: number;
 };
 
@@ -165,6 +174,35 @@ function cloneUnknown<T>(value: T): T | undefined {
   }
 }
 
+function sanitizeMessageBlocks(input: unknown): RoverMessageBlock[] | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const out: RoverMessageBlock[] = [];
+
+  for (const block of input) {
+    if (!block || typeof block !== 'object') continue;
+    const type = (block as any).type;
+
+    if (type === 'text') {
+      const text = String((block as any).text || '');
+      if (!text) continue;
+      out.push({ type: 'text', text });
+      continue;
+    }
+
+    if (type === 'tool_output' || type === 'json') {
+      const clonedData = cloneUnknown((block as any).data);
+      out.push({
+        type,
+        data: clonedData,
+        label: typeof (block as any).label === 'string' ? (block as any).label : undefined,
+        toolName: typeof (block as any).toolName === 'string' ? (block as any).toolName : undefined,
+      });
+    }
+  }
+
+  return out.length ? out : undefined;
+}
+
 function cloneUnknownArrayTail(input: unknown, max: number): unknown[] {
   if (!Array.isArray(input)) return [];
   const out: unknown[] = [];
@@ -177,6 +215,24 @@ function cloneUnknownArrayTail(input: unknown, max: number): unknown[] {
 
 function sanitizeSharedWorkerContext(raw: any): SharedWorkerContext | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
+
+  const pendingQuestions = Array.isArray(raw.pendingAskUser?.questions)
+    ? raw.pendingAskUser.questions
+        .map((question: any, index: number) => {
+          const key = String(question?.key || question?.id || '').trim() || `clarification_${index + 1}`;
+          const query = String(question?.query || question?.question || '').trim();
+          if (!query) return undefined;
+          return {
+            key,
+            query,
+            id: typeof question?.id === 'string' ? question.id : undefined,
+            question: typeof question?.question === 'string' ? question.question : undefined,
+            choices: Array.isArray(question?.choices) ? question.choices : undefined,
+          };
+        })
+        .filter((question: any) => !!question)
+        .slice(0, 6)
+    : [];
 
   const normalizeEntries = (items: any[]): Array<{ role: string; content: string }> =>
     items
@@ -196,6 +252,13 @@ function sanitizeSharedWorkerContext(raw: any): SharedWorkerContext | undefined 
     history,
     plannerHistory,
     agentPrevSteps,
+    pendingAskUser: pendingQuestions.length
+      ? {
+          questions: pendingQuestions,
+          source: raw.pendingAskUser?.source === 'planner' ? 'planner' : 'act',
+          askedAt: Number(raw.pendingAskUser?.askedAt) || now(),
+        }
+      : undefined,
     updatedAt: Number(raw.updatedAt) || now(),
   };
 }
@@ -258,10 +321,11 @@ function sanitizeSharedState(raw: any, siteId: string, sessionId: string): Share
                 ? message.role
                 : 'system',
             text: String(message?.text || ''),
+            blocks: sanitizeMessageBlocks(message?.blocks),
             ts: Number(message?.ts) || now(),
             sourceRuntimeId: typeof message?.sourceRuntimeId === 'string' ? message.sourceRuntimeId : undefined,
           }))
-          .filter((message: SharedUiMessage) => !!message.text)
+          .filter((message: SharedUiMessage) => !!message.text || !!message.blocks?.length)
       : [],
     timeline: Array.isArray(raw.timeline)
       ? raw.timeline
@@ -270,6 +334,7 @@ function sanitizeSharedState(raw: any, siteId: string, sessionId: string): Share
             kind: String(event?.kind || 'status'),
             title: String(event?.title || 'Step'),
             detail: typeof event?.detail === 'string' ? event.detail : undefined,
+            detailBlocks: sanitizeMessageBlocks(event?.detailBlocks),
             status: event?.status === 'pending' || event?.status === 'success' || event?.status === 'error' || event?.status === 'info' ? event.status : undefined,
             ts: Number(event?.ts) || now(),
             sourceRuntimeId: typeof event?.sourceRuntimeId === 'string' ? event.sourceRuntimeId : undefined,
@@ -708,11 +773,14 @@ export class SessionCoordinator {
     });
   }
 
-  appendMessage(message: Omit<SharedUiMessage, 'id' | 'ts' | 'sourceRuntimeId'> & { id?: string; ts?: number }): SharedUiMessage {
+  appendMessage(
+    message: Omit<SharedUiMessage, 'id' | 'ts' | 'sourceRuntimeId'> & { id?: string; ts?: number },
+  ): SharedUiMessage {
     const next: SharedUiMessage = {
       id: message.id || randomId('msg'),
       role: message.role,
       text: String(message.text || ''),
+      blocks: sanitizeMessageBlocks(message.blocks),
       ts: Number(message.ts) || now(),
       sourceRuntimeId: this.runtimeId,
     };
@@ -748,6 +816,7 @@ export class SessionCoordinator {
       kind: String(event.kind || 'status'),
       title: String(event.title || 'Step'),
       detail: event.detail ? String(event.detail) : undefined,
+      detailBlocks: sanitizeMessageBlocks(event.detailBlocks),
       status: event.status,
       ts: Number(event.ts) || now(),
       sourceRuntimeId: this.runtimeId,
