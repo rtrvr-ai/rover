@@ -24,6 +24,13 @@ import type {
   PersistedWorkerState,
   UiRole,
 } from './runtimeTypes.js';
+import {
+  canAutoResumePendingRun,
+  shouldAdoptSnapshotActiveRun,
+  shouldClearPendingFromSharedState,
+  shouldIgnoreRunScopedMessage,
+  shouldStartFreshTask as shouldStartFreshTaskByStatus,
+} from './taskLifecycleGuards.js';
 
 export type RoverWebToolsConfig = {
   enableExternalWebContext?: boolean;
@@ -236,6 +243,7 @@ let pendingTaskSuggestion: { text: string; reason: string; createdAt: number } |
 let lastStatusSignature = '';
 let lastUserInputText: string | undefined;
 const latestAssistantByRunId = new Map<string, string>();
+const ignoredRunIds = new Set<string>();
 const RUN_SCOPED_WORKER_MESSAGE_TYPES = new Set([
   'run_started',
   'run_completed',
@@ -813,6 +821,25 @@ function getPendingRunId(): string | undefined {
   return runtimeState?.pendingRun?.id;
 }
 
+function addIgnoredRunId(runId?: string): void {
+  if (!runId) return;
+  ignoredRunIds.add(runId);
+  while (ignoredRunIds.size > 80) {
+    const oldest = ignoredRunIds.values().next().value;
+    if (!oldest) break;
+    ignoredRunIds.delete(oldest);
+  }
+}
+
+function removeIgnoredRunId(runId?: string): void {
+  if (!runId) return;
+  ignoredRunIds.delete(runId);
+}
+
+function isTaskRunning(): boolean {
+  return runtimeState?.activeTask?.status === 'running';
+}
+
 function hasRemoteActiveRun(): boolean {
   const activeRun = sessionCoordinator?.getState()?.activeRun;
   return !!(activeRun && activeRun.runtimeId && activeRun.runtimeId !== runtimeId);
@@ -835,29 +862,14 @@ function shouldIgnoreRunScopedWorkerMessage(msg: any): boolean {
   if (!RUN_SCOPED_WORKER_MESSAGE_TYPES.has(type)) return false;
 
   const messageRunId = typeof msg?.runId === 'string' && msg.runId ? msg.runId : undefined;
-  const pendingRunId = getPendingRunId();
-
-  if (type === 'run_started') {
-    if (!messageRunId || !pendingRunId) return false;
-    return pendingRunId !== messageRunId;
-  }
-
-  if (!messageRunId) {
-    // Backward-compatible: if older workers do not send runId, don't drop message.
-    return false;
-  }
-
-  if (type === 'run_completed') {
-    if (!pendingRunId) {
-      const sharedRunId = sessionCoordinator?.getState()?.activeRun?.runId;
-      if (sharedRunId && sharedRunId === messageRunId) return false;
-      return true;
-    }
-    return pendingRunId !== messageRunId;
-  }
-
-  if (!pendingRunId) return true;
-  return pendingRunId !== messageRunId;
+  return shouldIgnoreRunScopedMessage({
+    type,
+    messageRunId,
+    pendingRunId: getPendingRunId(),
+    sharedActiveRunId: sessionCoordinator?.getState()?.activeRun?.runId,
+    taskStatus: runtimeState?.activeTask?.status,
+    ignoredRunIds,
+  });
 }
 
 function normalizeRunCompletionState(msg: any): { taskComplete: boolean; needsUserInput: boolean } {
@@ -1015,6 +1027,8 @@ function normalizePersistedState(raw: PersistedRuntimeState | null, sessionId: s
 
   const fallbackTask = createDefaultTaskState();
   const parsedTask = sanitizeTask(raw.activeTask, fallbackTask);
+  const parsedPendingRun = sanitizePendingRun(raw.pendingRun);
+  const pendingRun = parsedTask.status === 'running' ? parsedPendingRun : undefined;
 
   return {
     version: RUNTIME_STATE_VERSION,
@@ -1030,7 +1044,7 @@ function normalizePersistedState(raw: PersistedRuntimeState | null, sessionId: s
         ? (raw as any).executionMode
         : 'controller',
     workerState: sanitizeWorkerState(raw.workerState),
-    pendingRun: sanitizePendingRun(raw.pendingRun),
+    pendingRun,
     taskEpoch: Math.max(1, Number(raw.taskEpoch) || 1),
     activeTask: parsedTask,
     lastRoutingDecision:
@@ -1167,15 +1181,13 @@ function ensureActiveTask(reason = 'implicit'): PersistedTaskState | undefined {
 
 function markTaskActivity(role: UiRole, timestamp = Date.now()): void {
   if (!runtimeState) return;
+  if (role === 'system') return;
   const task = ensureActiveTask('implicit');
   if (!task) return;
+  if (task.status !== 'running') return;
 
   if (role === 'user') task.lastUserAt = timestamp;
   if (role === 'assistant') task.lastAssistantAt = timestamp;
-  if (task.status === 'ended') {
-    task.status = 'running';
-    task.endedAt = undefined;
-  }
 }
 
 function markTaskRunning(reason = 'worker_task_active', timestamp = Date.now()): void {
@@ -1240,6 +1252,7 @@ function maybeClearStalePendingRun(): void {
   const ageMs = Date.now() - Number(pending.startedAt || 0);
   if (!Number.isFinite(ageMs) || ageMs < STALE_PENDING_RUN_MS) return;
 
+  addIgnoredRunId(pending.id);
   setPendingRun(undefined);
   sessionCoordinator?.clearActiveRunRuntimeId(pending.id);
   sessionCoordinator?.releaseWorkflowLock(pending.id);
@@ -1389,15 +1402,6 @@ function setExecutionMode(
 function setPendingRun(next: PersistedPendingRun | undefined): void {
   if (!runtimeState) return;
   runtimeState.pendingRun = next;
-  const task = ensureActiveTask('implicit');
-  if (task) {
-    if (next) {
-      task.status = 'running';
-      task.endedAt = undefined;
-    } else if (task.status === 'running') {
-      task.status = 'completed';
-    }
-  }
   persistRuntimeState();
 }
 
@@ -1427,6 +1431,7 @@ function postRun(text: string, options?: { runId?: string; resume?: boolean; app
   const runId = options?.runId || crypto.randomUUID();
   const resume = !!options?.resume;
   const appendUserMessageFlag = options?.appendUserMessage !== false;
+  removeIgnoredRunId(runId);
 
   if (appendUserMessageFlag) {
     appendUiMessage('user', trimmed, true);
@@ -1441,6 +1446,7 @@ function postRun(text: string, options?: { runId?: string; resume?: boolean; app
     attempts: resume ? previousAttempts + 1 : 0,
     autoResume: options?.autoResume !== false,
   });
+  markTaskRunning(resume ? 'worker_task_resumed' : 'worker_task_active');
 
   lastUserInputText = trimmed;
   sessionCoordinator?.acquireWorkflowLock(runId);
@@ -1451,6 +1457,7 @@ function postRun(text: string, options?: { runId?: string; resume?: boolean; app
   const safetyRunId = runId;
   runSafetyTimer = setTimeout(() => {
     if (runtimeState?.pendingRun?.id === safetyRunId) {
+      addIgnoredRunId(safetyRunId);
       setPendingRun(undefined);
       sessionCoordinator?.releaseWorkflowLock(safetyRunId);
       sessionCoordinator?.setActiveRun(undefined);
@@ -1471,10 +1478,7 @@ function dispatchUserPrompt(
   maybeClearStalePendingRun();
 
   const activeTaskStatus = runtimeState?.activeTask?.status;
-  const shouldStartFreshTask =
-    !!options?.startNewTask ||
-    activeTaskStatus === 'completed' ||
-    activeTaskStatus === 'ended';
+  const shouldStartFreshTask = !!options?.startNewTask || shouldStartFreshTaskByStatus(activeTaskStatus);
 
   sessionCoordinator?.pruneTabs({
     dropRuntimeDetached: true,
@@ -1503,7 +1507,7 @@ function maybeAutoResumePendingRun(): void {
     }
   }
   if (!workerReady || !worker || autoResumeAttempted || !runtimeState?.pendingRun) return;
-  if (runtimeState.activeTask?.status === 'ended') return;
+  if (!canAutoResumePendingRun(runtimeState.activeTask?.status)) return;
 
   const pending = runtimeState.pendingRun;
   if (!pending.autoResume) return;
@@ -1519,6 +1523,7 @@ function maybeAutoResumePendingRun(): void {
     );
     if (!otherAlive && runtimeState?.pendingRun) {
       // All tabs were closed — don't auto-resume stale task
+      addIgnoredRunId(runtimeState.pendingRun.id);
       setPendingRun(undefined);
       setUiStatus('Previous task expired.');
       return;
@@ -1527,12 +1532,14 @@ function maybeAutoResumePendingRun(): void {
 
   const ageMs = Date.now() - pending.startedAt;
   if (ageMs > MAX_AUTO_RESUME_AGE_MS) {
+    addIgnoredRunId(pending.id);
     setPendingRun(undefined);
     setUiStatus('Previous task expired after navigation.');
     return;
   }
 
   if (pending.attempts >= MAX_AUTO_RESUME_ATTEMPTS) {
+    addIgnoredRunId(pending.id);
     setPendingRun(undefined);
     appendUiMessage('system', 'Auto-resume stopped after too many navigation attempts.', true);
     return;
@@ -1678,7 +1685,18 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
       setUiStatus(state.uiStatus, { publishShared: false });
     }
 
-    if (state.activeRun && state.activeRun.runtimeId !== runtimeId) {
+    const localTaskStatus = runtimeState.activeTask?.status;
+    const remoteTaskStatus = state.task?.status;
+    if (
+      state.activeRun
+      && state.activeRun.runtimeId !== runtimeId
+      && !shouldClearPendingFromSharedState({
+        localTaskStatus,
+        remoteTaskStatus,
+        mode: currentMode,
+        hasRemoteActiveRun: true,
+      })
+    ) {
       setPendingRun(
         sanitizePendingRun({
           id: state.activeRun.runId,
@@ -1688,8 +1706,19 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
           autoResume: true,
         }),
       );
-    } else if (!state.activeRun && currentMode === 'observer') {
-      setPendingRun(undefined);
+    } else {
+      const shouldClearPending = shouldClearPendingFromSharedState({
+        localTaskStatus,
+        remoteTaskStatus,
+        mode: currentMode,
+        hasRemoteActiveRun: !!state.activeRun,
+      });
+      if (shouldClearPending) {
+        if (runtimeState.pendingRun?.id) {
+          addIgnoredRunId(runtimeState.pendingRun.id);
+        }
+        setPendingRun(undefined);
+      }
     }
 
     if (currentMode === 'observer') {
@@ -2164,17 +2193,33 @@ function handleWorkerMessage(msg: any): void {
         ...(msg.state || {}),
         updatedAt: Date.now(),
       });
-      if (msg?.activeRun?.runId && msg?.activeRun?.text && !runtimeState.pendingRun) {
+      const activeRunId = typeof msg?.activeRun?.runId === 'string' && msg.activeRun.runId
+        ? msg.activeRun.runId
+        : undefined;
+      const activeRunText = typeof msg?.activeRun?.text === 'string' ? msg.activeRun.text : undefined;
+      const canAdoptActiveRun = shouldAdoptSnapshotActiveRun({
+        taskStatus: runtimeState.activeTask?.status,
+        hasPendingRun: !!runtimeState.pendingRun,
+        activeRunId,
+        activeRunText,
+        ignoredRunIds,
+      });
+      if (canAdoptActiveRun) {
         runtimeState.pendingRun = sanitizePendingRun({
-          id: msg.activeRun.runId,
-          text: msg.activeRun.text,
+          id: activeRunId,
+          text: activeRunText,
           startedAt: msg.activeRun.startedAt,
           attempts: 0,
           autoResume: true,
         });
       }
-      if (msg?.activeRun?.runId && msg?.activeRun?.text) {
-        sessionCoordinator?.setActiveRun({ runId: msg.activeRun.runId, text: msg.activeRun.text });
+      if (activeRunId && activeRunText && canAdoptActiveRun) {
+        sessionCoordinator?.setActiveRun({ runId: activeRunId, text: activeRunText });
+      } else if (activeRunId && (!isTaskRunning() || ignoredRunIds.has(activeRunId))) {
+        sessionCoordinator?.setActiveRun(undefined);
+      }
+      if (!isTaskRunning() && runtimeState.pendingRun) {
+        setPendingRun(undefined);
       }
       if (runtimeState.workerState) {
         sessionCoordinator?.setWorkerContext(toSharedWorkerContext(runtimeState.workerState));
@@ -2198,7 +2243,14 @@ function handleWorkerMessage(msg: any): void {
     if (typeof msg.runId === 'string' && msg.runId) {
       latestAssistantByRunId.delete(msg.runId);
     }
+    if (!isTaskRunning()) {
+      sessionCoordinator?.setActiveRun(undefined);
+      return;
+    }
     const existing = runtimeState?.pendingRun;
+    if (typeof msg.runId === 'string' && msg.runId) {
+      removeIgnoredRunId(msg.runId);
+    }
     setPendingRun(
       sanitizePendingRun({
         id: msg.runId,
@@ -2248,10 +2300,22 @@ function handleWorkerMessage(msg: any): void {
       persistRuntimeState();
     }
     sessionCoordinator?.setActiveRun(undefined);
+    const completedRunId = typeof msg.runId === 'string' && msg.runId ? msg.runId : undefined;
+    if (completedRunId) {
+      addIgnoredRunId(completedRunId);
+    }
     if (!msg.ok && msg.error) {
+      if (completedRunId) {
+        latestAssistantByRunId.delete(completedRunId);
+      }
+      if (!isTaskRunning()) {
+        return;
+      }
       markTaskRunning('worker_run_failed');
       setUiStatus(`Task failed: ${String(msg.error)}`);
-      latestAssistantByRunId.delete(String(msg.runId || ''));
+      if (completedRunId) {
+        latestAssistantByRunId.delete(completedRunId);
+      }
       appendTimelineEvent({
         kind: 'error',
         title: 'Run failed',
@@ -2259,6 +2323,9 @@ function handleWorkerMessage(msg: any): void {
         status: 'error',
       });
     } else if (msg.ok) {
+      if (!isTaskRunning()) {
+        return;
+      }
       const completionState = normalizeRunCompletionState(msg);
       const taskComplete = completionState.taskComplete;
       const needsUserInput = completionState.needsUserInput;
@@ -2281,9 +2348,6 @@ function handleWorkerMessage(msg: any): void {
             : 'Task is still active and will continue with your next message.',
           status: 'info',
         });
-      }
-      if (typeof msg.runId === 'string' && msg.runId) {
-        latestAssistantByRunId.delete(msg.runId);
       }
     }
     return;
@@ -2507,12 +2571,20 @@ function createRuntime(cfg: RoverInit): void {
     },
     onCancelRun: () => {
       if (runtimeState?.pendingRun) {
+        addIgnoredRunId(runtimeState.pendingRun.id);
         worker?.postMessage({ type: 'cancel_run', runId: runtimeState.pendingRun.id });
         sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
         sessionCoordinator?.setActiveRun(undefined);
         setPendingRun(undefined);
+        if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
+        ui?.setRunning(false);
         setUiStatus('Task cancelled.');
         appendUiMessage('system', 'Task cancelled.', true);
+        appendTimelineEvent({
+          kind: 'info',
+          title: 'Run cancelled',
+          status: 'info',
+        });
       }
     },
     onNewTask: () => {
@@ -2883,14 +2955,17 @@ export function newTask(options?: { reason?: string; clearUi?: boolean }): void 
 
   // Cancel any running task in the worker
   if (runtimeState.pendingRun) {
+    addIgnoredRunId(runtimeState.pendingRun.id);
     worker?.postMessage({ type: 'cancel_run', runId: runtimeState.pendingRun.id });
     sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
   }
+  if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
+  ui?.setRunning(false);
 
   autoResumeAttempted = false;
   runtimeState.taskEpoch = taskEpoch;
   runtimeState.activeTask = nextTask;
-  runtimeState.pendingRun = undefined;
+  setPendingRun(undefined);
   runtimeState.workerState = undefined;
 
   if (clearUi) {
@@ -2937,14 +3012,19 @@ export function endTask(options?: { reason?: string }): void {
   task.endedAt = Date.now();
   task.boundaryReason = reason;
   if (runtimeState.pendingRun) {
+    addIgnoredRunId(runtimeState.pendingRun.id);
     worker?.postMessage({ type: 'cancel_run', runId: runtimeState.pendingRun.id });
     sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
   }
-  runtimeState.pendingRun = undefined;
+  setPendingRun(undefined);
+  runtimeState.workerState = undefined;
+  if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
+  ui?.setRunning(false);
   hideTaskSuggestion();
   setUiStatus('Task ended. Start a new task to continue.');
   sessionCoordinator?.endTask(reason);
   sessionCoordinator?.setActiveRun(undefined);
+  sessionCoordinator?.setWorkerContext(undefined);
   persistRuntimeState();
 
   appendTimelineEvent({
