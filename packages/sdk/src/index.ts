@@ -3101,6 +3101,10 @@ function createRuntime(cfg: RoverInit): void {
     },
     executeTool: async (params: any) => {
       const runtimeCfg = currentConfig || cfg;
+      const forceLocalExecution = params?.payload?.forceLocal === true;
+      if (forceLocalExecution) {
+        return bridge!.executeTool(params.call, params.payload);
+      }
       const activeTabId = sessionCoordinator?.getActiveLogicalTabId();
       const localTabId = sessionCoordinator?.getLocalLogicalTabId();
 

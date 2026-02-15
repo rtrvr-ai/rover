@@ -976,8 +976,22 @@ function extractLatestPrevStepsFromPlanner(toolResults: any[] | undefined): Prev
   return undefined;
 }
 
-async function waitForNewTabReady(logicalTabId: number, timeoutMs = 10000): Promise<boolean> {
-  if (!bridgeRpc) return false;
+type OpenedTabMetadata = {
+  logicalTabId: number;
+  url?: string;
+  external?: boolean;
+};
+
+type NewTabReadyState = {
+  ready: boolean;
+  attached: boolean;
+  external: boolean;
+};
+
+async function waitForNewTabReady(openedTab: OpenedTabMetadata, timeoutMs = 10000): Promise<NewTabReadyState> {
+  if (!bridgeRpc) {
+    return { ready: false, attached: false, external: !!openedTab.external };
+  }
   const pollInterval = 500;
   const start = Date.now();
 
@@ -985,14 +999,14 @@ async function waitForNewTabReady(logicalTabId: number, timeoutMs = 10000): Prom
     try {
       const tabs = await bridgeRpc('listSessionTabs');
       if (Array.isArray(tabs)) {
-        const target = tabs.find((t: any) => Number(t?.logicalTabId) === logicalTabId);
+        const target = tabs.find((t: any) => Number(t?.logicalTabId) === openedTab.logicalTabId);
         if (target?.external) {
-          return true;
+          return { ready: true, attached: false, external: true };
         }
         if (target?.runtimeId) {
           // Tab has registered - wait an additional 1s for DOM to settle
           await new Promise(resolve => setTimeout(resolve, 1000));
-          return true;
+          return { ready: true, attached: true, external: false };
         }
       }
     } catch {
@@ -1001,14 +1015,18 @@ async function waitForNewTabReady(logicalTabId: number, timeoutMs = 10000): Prom
     await new Promise(resolve => setTimeout(resolve, pollInterval));
   }
 
-  return false;
+  return { ready: false, attached: false, external: !!openedTab.external };
 }
 
-function detectOpenedTabFromToolResult(result: any): number | undefined {
+function detectOpenedTabFromToolResult(result: any): OpenedTabMetadata | undefined {
   if (!result || typeof result !== 'object') return undefined;
   const output = result.output ?? result;
   if (output?.openedInNewTab && typeof output?.logicalTabId === 'number') {
-    return output.logicalTabId;
+    return {
+      logicalTabId: output.logicalTabId,
+      url: typeof output?.url === 'string' ? output.url : undefined,
+      external: output?.external === true,
+    };
   }
   return undefined;
 }
@@ -1155,12 +1173,16 @@ function clearTaskScopedContextAfterCompletion(): void {
   pendingAskUser = undefined;
 }
 
-async function maybeWaitForNewTab(result: any): Promise<void> {
-  const logicalTabId = detectOpenedTabFromToolResult(result);
-  if (logicalTabId) {
+async function maybeWaitForNewTab(
+  result: any,
+): Promise<{ openedTab?: OpenedTabMetadata; readyState?: NewTabReadyState }> {
+  const openedTab = detectOpenedTabFromToolResult(result);
+  if (openedTab) {
     postStatus('Waiting for new tab to load...', undefined, 'execute');
-    await waitForNewTabReady(logicalTabId);
+    const readyState = await waitForNewTabReady(openedTab);
+    return { openedTab, readyState };
   }
+  return {};
 }
 
 async function handleUserMessage(
@@ -1365,7 +1387,50 @@ async function handleUserMessage(
   }
 
   if (result.directToolResult) {
-    await maybeWaitForNewTab(result.directToolResult);
+    const newTabWait = await maybeWaitForNewTab(result.directToolResult);
+    if (
+      newTabWait.openedTab
+      && newTabWait.readyState
+      && !newTabWait.readyState.ready
+      && !newTabWait.readyState.external
+    ) {
+      const fallbackUrl = String(newTabWait.openedTab.url || '').trim();
+      if (fallbackUrl && bridgeRpc) {
+        postStatus('New tab did not attach; continuing in current tab', undefined, 'execute');
+        try {
+          const tabCtx = await bridgeRpc('getTabContext');
+          const localLogicalTabId = Number(tabCtx?.logicalTabId ?? tabCtx?.id);
+          if (Number.isFinite(localLogicalTabId) && localLogicalTabId > 0) {
+            await bridgeRpc('executeTool', {
+              call: {
+                name: 'switch_tab',
+                args: { tab_id: localLogicalTabId },
+              },
+              payload: {
+                forceLocal: true,
+                reason: 'opened_tab_unattached_reset_active',
+              },
+            });
+          }
+          const fallbackResult = await bridgeRpc('executeTool', {
+            call: {
+              name: 'goto_url',
+              args: {
+                tab_id: 0,
+                url: fallbackUrl,
+              },
+            },
+            payload: {
+              forceLocal: true,
+              reason: 'opened_tab_unattached_fallback',
+            },
+          });
+          maybePostNavigationGuardrailFromToolResult(fallbackResult);
+        } catch {
+          // best-effort fallback
+        }
+      }
+    }
     postStatus('Verifying result', undefined, 'verify');
     maybePostNavigationGuardrailFromToolResult(result.directToolResult);
     applyAgentPrevSteps(result.directToolResult.prevSteps, { snapshot: false });
