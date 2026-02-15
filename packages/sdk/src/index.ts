@@ -24,6 +24,12 @@ import {
   type RoverCloudCheckpointState,
 } from './cloudCheckpoint.js';
 import { createRuntimeStateStore, type RuntimeStateStore } from './runtimeStorage.js';
+import {
+  writeCrossDomainResumeCookie,
+  readCrossDomainResumeCookie,
+  clearCrossDomainResumeCookie,
+  type CrossDomainResumeData,
+} from './crossDomainResume.js';
 import type {
   PersistedPendingRun,
   PersistedRuntimeState,
@@ -1411,6 +1417,24 @@ function ensureUnloadHandler(): void {
       sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
     }
     persistRuntimeState();
+    // Write cross-domain resume cookie if there's a pending run —
+    // covers user-initiated cross-host navigation where Bridge can't intercept.
+    if (runtimeState?.pendingRun && currentConfig?.siteId) {
+      writeCrossDomainResumeCookie(currentConfig.siteId, {
+        sessionId: runtimeState.sessionId,
+        pendingRun: {
+          id: runtimeState.pendingRun.id,
+          text: runtimeState.pendingRun.text,
+          startedAt: runtimeState.pendingRun.startedAt,
+          attempts: runtimeState.pendingRun.attempts,
+        },
+        activeTask: runtimeState.activeTask
+          ? { taskId: runtimeState.activeTask.taskId, status: runtimeState.activeTask.status }
+          : undefined,
+        taskEpoch: runtimeState.taskEpoch,
+        timestamp: Date.now(),
+      });
+    }
     void flushTelemetry(true);
     stopTelemetry();
     cloudCheckpointClient?.markDirty();
@@ -1852,10 +1876,14 @@ function maybeAutoResumePendingRun(): void {
     return;
   }
 
+  // Cross-host navigation bypasses the stale-tab check — we already know the task is fresh
+  // because the cookie is short-lived (2 min) and was written right before navigation.
+  const isCrossHostResume = pending.resumeReason === 'cross_host_navigation';
+
   // sessionStorage flag distinguishes refresh (flag exists) from fresh tab (flag absent)
   const siteId = currentConfig?.siteId || '';
   const isRefresh = !!sessionStorage.getItem(`rover:tab-alive:${siteId}`);
-  if (!isRefresh) {
+  if (!isRefresh && !isCrossHostResume) {
     // New tab (not a refresh) — check if any other tabs are alive
     const tabs = sessionCoordinator?.listTabs() || [];
     const otherAlive = tabs.some(t =>
@@ -1882,6 +1910,19 @@ function maybeAutoResumePendingRun(): void {
     addIgnoredRunId(pending.id);
     setPendingRun(undefined);
     appendUiMessage('system', 'Auto-resume stopped after too many navigation attempts.', true);
+    return;
+  }
+
+  // Cross-host navigation is Rover-initiated within allowed domains — always auto-resume
+  if (isCrossHostResume) {
+    autoResumeAttempted = true;
+    setUiStatus('Resuming task after subdomain navigation...');
+    postRun(pending.text, {
+      runId: pending.id,
+      resume: true,
+      appendUserMessage: false,
+      autoResume: true,
+    });
     return;
   }
 
@@ -3144,6 +3185,38 @@ function createRuntime(cfg: RoverInit): void {
         status: 'info',
       });
     },
+    onBeforeCrossHostNavigation: (_targetUrl: string) => {
+      if (!runtimeState || !currentConfig) return;
+      // Mark the pending run for cross-host resume
+      if (runtimeState.pendingRun) {
+        runtimeState.pendingRun = sanitizePendingRun({
+          ...runtimeState.pendingRun,
+          resumeRequired: true,
+          resumeReason: 'cross_host_navigation',
+        });
+      }
+      // Write a cookie scoped to the registrable domain so the new origin can resume
+      writeCrossDomainResumeCookie(currentConfig.siteId, {
+        sessionId: runtimeState.sessionId,
+        pendingRun: runtimeState.pendingRun
+          ? {
+              id: runtimeState.pendingRun.id,
+              text: runtimeState.pendingRun.text,
+              startedAt: runtimeState.pendingRun.startedAt,
+              attempts: runtimeState.pendingRun.attempts,
+            }
+          : undefined,
+        activeTask: runtimeState.activeTask
+          ? {
+              taskId: runtimeState.activeTask.taskId,
+              status: runtimeState.activeTask.status,
+            }
+          : undefined,
+        taskEpoch: runtimeState.taskEpoch,
+        timestamp: Date.now(),
+      });
+      persistRuntimeState();
+    },
     instrumentationOptions: cfg.mode === 'safe' ? { observeInlineMutations: false } : undefined,
   } as any);
   const initialActionGateMode = currentMode === 'observer' ? 'observer' : 'controller';
@@ -3491,14 +3564,46 @@ export function boot(cfg: RoverInit): RoverInstance {
   backendSiteConfig = null;
   runtimeStorageKey = getRuntimeStateKey(cfg.siteId);
   const loaded = loadPersistedState(runtimeStorageKey);
+
+  // Check for cross-domain resume cookie (e.g. navigating from rtrvr.ai → rover.rtrvr.ai).
+  // Per-origin storage is empty on the new subdomain, but the cookie carries the session ID
+  // and pending run so Rover can pick up where it left off.
+  const crossDomainResume = !loaded ? readCrossDomainResumeCookie(cfg.siteId) : null;
+  if (crossDomainResume) {
+    clearCrossDomainResumeCookie(cfg.siteId);
+  }
+
   const desiredSessionId = cfg.sessionId?.trim();
   const visitorSessionId =
-    !desiredSessionId && !loaded?.sessionId && cfg.sessionScope !== 'tab' && resolvedVisitorId
+    !desiredSessionId && !loaded?.sessionId && !crossDomainResume?.sessionId && cfg.sessionScope !== 'tab' && resolvedVisitorId
       ? createVisitorSessionId(cfg.siteId, resolvedVisitorId)
       : undefined;
-  const fallbackSessionId = desiredSessionId || loaded?.sessionId || visitorSessionId || crypto.randomUUID();
+  const fallbackSessionId = desiredSessionId || loaded?.sessionId || crossDomainResume?.sessionId || visitorSessionId || crypto.randomUUID();
 
-  runtimeState = normalizePersistedState(loaded, fallbackSessionId, runtimeId);
+  // Seed runtime state from cross-domain cookie when no local state exists
+  let effectiveLoaded = loaded;
+  if (!loaded && crossDomainResume) {
+    const seeded = createDefaultRuntimeState(crossDomainResume.sessionId, runtimeId);
+    if (crossDomainResume.pendingRun) {
+      seeded.pendingRun = sanitizePendingRun({
+        ...crossDomainResume.pendingRun,
+        autoResume: true,
+        resumeRequired: true,
+        resumeReason: 'cross_host_navigation',
+      });
+    }
+    if (crossDomainResume.activeTask) {
+      seeded.activeTask = {
+        ...createDefaultTaskState('cross_domain_resume'),
+        taskId: crossDomainResume.activeTask.taskId,
+        status: crossDomainResume.activeTask.status as 'running' | 'completed' | 'ended',
+      };
+    }
+    seeded.taskEpoch = crossDomainResume.taskEpoch || 1;
+    effectiveLoaded = seeded;
+  }
+
+  runtimeState = normalizePersistedState(effectiveLoaded, fallbackSessionId, runtimeId);
 
   if (desiredSessionId && runtimeState.sessionId !== desiredSessionId) {
     runtimeState = createDefaultRuntimeState(desiredSessionId, runtimeId);
