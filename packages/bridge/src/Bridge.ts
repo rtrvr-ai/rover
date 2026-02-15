@@ -31,7 +31,6 @@ export type BridgeOptions = {
   allowedDomains?: string[];
   domainScopeMode?: DomainScopeMode;
   externalNavigationPolicy?: ExternalNavigationPolicy;
-  crossDomainPolicy?: 'block_new_tab' | 'allow';
   onNavigationGuardrail?: (event: NavigationGuardrailEvent) => void;
   registerOpenedTab?: (payload: {
     url: string;
@@ -75,7 +74,7 @@ export class Bridge {
     this.runtimeId = opts.runtimeId;
     this.domainScopeMode = normalizeDomainScopeMode(opts.domainScopeMode);
     this.allowedDomains = normalizeAllowedDomains(opts.allowedDomains, window.location.hostname, this.domainScopeMode);
-    this.externalNavigationPolicy = normalizeExternalNavigationPolicy(opts.externalNavigationPolicy, opts.crossDomainPolicy);
+    this.externalNavigationPolicy = normalizeExternalNavigationPolicy(opts.externalNavigationPolicy);
     this.registerOpenedTab = opts.registerOpenedTab;
     this.listKnownTabs = opts.listKnownTabs;
     this.switchToLogicalTab = opts.switchToLogicalTab;
@@ -105,7 +104,6 @@ export class Bridge {
     allowedDomains?: string[];
     domainScopeMode?: DomainScopeMode;
     externalNavigationPolicy?: ExternalNavigationPolicy;
-    crossDomainPolicy?: 'block_new_tab' | 'allow';
   }): void {
     if (options.domainScopeMode) {
       this.domainScopeMode = normalizeDomainScopeMode(options.domainScopeMode);
@@ -116,11 +114,8 @@ export class Bridge {
     if (options.allowedDomains) {
       this.allowedDomains = normalizeAllowedDomains(options.allowedDomains, window.location.hostname, this.domainScopeMode);
     }
-    if (options.externalNavigationPolicy || options.crossDomainPolicy) {
-      this.externalNavigationPolicy = normalizeExternalNavigationPolicy(
-        options.externalNavigationPolicy,
-        options.crossDomainPolicy,
-      );
+    if (options.externalNavigationPolicy) {
+      this.externalNavigationPolicy = normalizeExternalNavigationPolicy(options.externalNavigationPolicy);
     }
   }
 
@@ -503,7 +498,8 @@ export class Bridge {
     options?: { policyBlocked?: boolean; reason?: string },
   ): Promise<any> {
     const external = !isUrlAllowedByDomains(targetUrl, this.allowedDomains);
-    const popupAttempt = this.openVerifiedPopup(targetUrl);
+    const knownTabIdsBeforeOpen = this.snapshotKnownTabIds();
+    let popupAttempt = this.openVerifiedPopup(targetUrl);
 
     let logicalTabId: number | undefined;
     if (popupAttempt.opened && this.registerOpenedTab) {
@@ -517,6 +513,16 @@ export class Bridge {
         logicalTabId = registered?.logicalTabId;
       } catch {
         // no-op
+      }
+    }
+    if (popupAttempt.opened && !logicalTabId) {
+      logicalTabId = await this.reconcileOpenedTab(targetUrl, knownTabIdsBeforeOpen);
+    }
+    if (!popupAttempt.opened) {
+      const reconciledTabId = await this.reconcileOpenedTab(targetUrl, knownTabIdsBeforeOpen);
+      if (reconciledTabId) {
+        popupAttempt = { opened: true, verified: false };
+        logicalTabId = logicalTabId || reconciledTabId;
       }
     }
     const registrationFailed = popupAttempt.opened && !logicalTabId && !!this.registerOpenedTab;
@@ -648,6 +654,52 @@ export class Bridge {
     } catch {
       return { opened: false, verified: false };
     }
+  }
+
+  private snapshotKnownTabIds(): Set<number> {
+    const ids = new Set<number>();
+    if (!this.listKnownTabs) return ids;
+    try {
+      const tabs = this.listKnownTabs();
+      for (const tab of tabs) {
+        const logicalTabId = Number(tab?.logicalTabId);
+        if (!Number.isFinite(logicalTabId) || logicalTabId <= 0) continue;
+        ids.add(logicalTabId);
+      }
+    } catch {
+      return ids;
+    }
+    return ids;
+  }
+
+  private async reconcileOpenedTab(targetUrl: string, beforeIds: Set<number>): Promise<number | undefined> {
+    if (!this.listKnownTabs) return undefined;
+    const targetHost = extractHostname(targetUrl);
+    const deadline = Date.now() + 2_000;
+
+    while (Date.now() < deadline) {
+      try {
+        const knownTabs = this.listKnownTabs();
+        for (const tab of knownTabs) {
+          const logicalTabId = Number(tab?.logicalTabId);
+          if (!Number.isFinite(logicalTabId) || logicalTabId <= 0) continue;
+          if (beforeIds.has(logicalTabId)) continue;
+
+          const knownUrl = String(tab?.url || '').trim();
+          if (!knownUrl) return logicalTabId;
+
+          const knownHost = extractHostname(knownUrl);
+          if (!targetHost || !knownHost || knownHost === targetHost) {
+            return logicalTabId;
+          }
+        }
+      } catch {
+        // no-op
+      }
+      await new Promise(resolve => setTimeout(resolve, 120));
+    }
+
+    return undefined;
   }
 
   private async openElementInNewTab(args: Record<string, any>): Promise<any> {
@@ -794,20 +846,11 @@ function normalizeDomainScopeMode(mode?: DomainScopeMode): DomainScopeMode {
   return mode === 'host_only' ? 'host_only' : 'registrable_domain';
 }
 
-function mapLegacyCrossDomainPolicy(policy?: 'block_new_tab' | 'allow'): ExternalNavigationPolicy | undefined {
-  if (policy === 'allow') return 'allow';
-  if (policy === 'block_new_tab') return 'open_new_tab_notice';
-  return undefined;
-}
-
-function normalizeExternalNavigationPolicy(
-  policy?: ExternalNavigationPolicy,
-  legacy?: 'block_new_tab' | 'allow',
-): ExternalNavigationPolicy {
+function normalizeExternalNavigationPolicy(policy?: ExternalNavigationPolicy): ExternalNavigationPolicy {
   if (policy === 'allow' || policy === 'block' || policy === 'open_new_tab_notice') {
     return policy;
   }
-  return mapLegacyCrossDomainPolicy(legacy) || 'open_new_tab_notice';
+  return 'open_new_tab_notice';
 }
 
 function normalizeAllowedDomains(input: string[] | undefined, currentHost: string, scopeMode: DomainScopeMode): string[] {

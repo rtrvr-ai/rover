@@ -71,13 +71,6 @@ const DETACHED_EXTERNAL_TAB_MAX_AGE_MS = 90_000;
 const MAX_CHATLOG_ENTRIES = 24;
 const MAX_CHATLOG_MESSAGE_CHARS = 1000;
 
-function resolveEmbeddedDomain(config: RoverWorkerConfig | null): string | undefined {
-  const domains = Array.isArray(config?.allowedDomains) ? config!.allowedDomains : [];
-  const first = String(domains[0] || '').trim();
-  if (!first) return undefined;
-  return first.replace(/^\*?\./, '').replace(/^=/, '');
-}
-
 function resolveAgentName(config: RoverWorkerConfig | null): string {
   const raw = String(config?.ui?.agent?.name || '').trim();
   if (!raw) return 'Rover';
@@ -99,9 +92,18 @@ function extractWebToolsConfig(config: RoverWorkerConfig | null): ExternalWebCon
   return config.tools.web;
 }
 
+function resolveRuntimeExternalNavigationPolicy(
+  config: RoverWorkerConfig | null,
+): 'open_new_tab_notice' | 'block' | 'allow' | undefined {
+  if (!config) return undefined;
+  if (config.externalNavigationPolicy === 'open_new_tab_notice' || config.externalNavigationPolicy === 'block' || config.externalNavigationPolicy === 'allow') {
+    return config.externalNavigationPolicy;
+  }
+  return undefined;
+}
+
 function buildRoverRuntimeContext(params: {
   tabs: RoverTab[];
-  embeddedDomain?: string;
   agentName: string;
   externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
 }): RoverRuntimeContext {
@@ -125,7 +127,6 @@ function buildRoverRuntimeContext(params: {
 
   return {
     mode: 'rover_embed',
-    embeddedDomain: params.embeddedDomain,
     agentName: params.agentName,
     externalNavigationPolicy: params.externalNavigationPolicy,
     tabIdContract: 'tree_index_mapped_by_tab_order',
@@ -845,6 +846,13 @@ function deriveDirectToolRunOutcome(result: any): RunOutcome {
     return { taskComplete: false };
   }
 
+  const topLevelStatus = String(result.status || '').trim().toLowerCase();
+  if (topLevelStatus === 'failure' || topLevelStatus === 'failed' || topLevelStatus === 'error') {
+    return { taskComplete: false };
+  }
+  if (topLevelStatus === 'waiting_input' || topLevelStatus === 'needs_input' || topLevelStatus === 'pending_user_input') {
+    return { taskComplete: false, needsUserInput: true };
+  }
   if (result.error) {
     return { taskComplete: false };
   }
@@ -863,6 +871,10 @@ function deriveDirectToolRunOutcome(result: any): RunOutcome {
       return { taskComplete: false, needsUserInput: true };
     }
 
+    if ((output as any).error) {
+      return { taskComplete: false };
+    }
+
     if (typeof (output as any).taskComplete === 'boolean') {
       return { taskComplete: !!(output as any).taskComplete };
     }
@@ -878,9 +890,16 @@ function deriveDirectToolRunOutcome(result: any): RunOutcome {
       if (taskStatus === 'completed' || taskStatus === 'complete' || taskStatus === 'done' || taskStatus === 'success') {
         return { taskComplete: true };
       }
+      if (taskStatus === 'failure' || taskStatus === 'failed' || taskStatus === 'error') {
+        return { taskComplete: false };
+      }
     }
 
     if ((output as any).success === false) {
+      return { taskComplete: false };
+    }
+
+    if (String((output as any).status || '').trim().toLowerCase() === 'failure') {
       return { taskComplete: false };
     }
   }
@@ -974,13 +993,11 @@ async function handleUserMessage(
   if (!tabularStore) {
     tabularStore = new TabularStore(`rover-${trajectoryId}`);
   }
-  const embeddedDomain = resolveEmbeddedDomain(config);
   const agentName = resolveAgentName(config);
   const runtimeContext = buildRoverRuntimeContext({
     tabs: tabsForRun,
-    embeddedDomain,
     agentName,
-    externalNavigationPolicy: config.externalNavigationPolicy,
+    externalNavigationPolicy: resolveRuntimeExternalNavigationPolicy(config),
   });
   const ctx = createAgentContext(
     {

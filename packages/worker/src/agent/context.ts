@@ -178,7 +178,6 @@ function buildRoverRuntimeContext(config: RoverAgentConfig): RoverRuntimeContext
 
   return {
     mode: 'rover_embed',
-    embeddedDomain: String(runtimeContext.embeddedDomain || '').trim() || undefined,
     agentName: normalizeAgentName(runtimeContext.agentName) || 'Rover',
     externalNavigationPolicy: runtimeContext.externalNavigationPolicy || config.externalNavigationPolicy,
     tabIdContract: runtimeContext.tabIdContract || 'tree_index_mapped_by_tab_order',
@@ -190,11 +189,9 @@ function buildExternalPlaceholderPageData(params: {
   tabId?: number;
   url?: string;
   title?: string;
-  embeddedDomain?: string;
   agentName?: string;
   reason?: string;
 }): Record<string, any> {
-  const embedded = params.embeddedDomain || 'the configured domain';
   const agentName = normalizeAgentName(params.agentName) || 'Rover';
   const reason = params.reason || 'external_domain_inaccessible';
   const title = params.title || 'External Tab (Inaccessible)';
@@ -204,7 +201,7 @@ function buildExternalPlaceholderPageData(params: {
     url,
     title,
     contentType: 'text/html',
-    content: `${agentName} is embedded inside ${embedded}. This external tab is tracked, but live DOM control and accessibility-tree access are unavailable here.${reasonLine}`,
+    content: `${agentName} is running in virtual external-tab mode. Live DOM control and accessibility-tree access are unavailable here.${reasonLine}`,
     metadata: {
       inaccessible: true,
       external: true,
@@ -258,8 +255,8 @@ export function createAgentContext(
   const endpoint = base.endsWith('/extensionRouter') ? base : `${base}/extensionRouter`;
   const runtimeContext = buildRoverRuntimeContext(config);
   const externalWebConfig = normalizeExternalWebConfig(config.tools?.web);
-  const externalPageDataCache = new Map<string, any>();
-  const externalPageDataErrorCache = new Map<string, string>();
+  const externalPageDataCache = new Map<string, { data: any; ts: number }>();
+  const externalPageDataErrorCache = new Map<string, { message: string; ts: number }>();
   let externalPageDataDisabledReason: string | undefined;
   let cachedActiveTabId = 0;
   let cachedActiveTabTs = 0;
@@ -267,9 +264,10 @@ export function createAgentContext(
   const RETRY_DELAYS = [1_000, 3_000];
   const MAX_RETRIES = RETRY_DELAYS.length;
   const ACTIVE_TAB_CACHE_TTL_MS = 250;
+  const EXTERNAL_PAGE_CACHE_TTL_MS = 45_000;
 
   const callExtensionRouter = async (action: string, data: any): Promise<any> => {
-    const token = config.apiKey || config.authToken;
+    const token = config.authToken || config.apiKey;
     if (!token) {
       throw createRoverError({
         code: 'MISSING_API_KEY',
@@ -364,13 +362,19 @@ export function createAgentContext(
   ): Promise<any> => {
     const normalizedUrl = String(url || '').trim();
     if (!normalizedUrl) throw new Error('external page data requires url');
-    const cacheKey = normalizedUrl;
-    if (externalPageDataCache.has(cacheKey)) {
-      return externalPageDataCache.get(cacheKey);
+    const cacheTabId = Number(options?.tabId) || 0;
+    const cacheKey = `${cacheTabId}:${normalizedUrl}`;
+    const nowMs = Date.now();
+    const cachedData = externalPageDataCache.get(cacheKey);
+    if (cachedData && nowMs - cachedData.ts <= EXTERNAL_PAGE_CACHE_TTL_MS) {
+      return cachedData.data;
     }
-    if (externalPageDataErrorCache.has(cacheKey)) {
-      throw new Error(externalPageDataErrorCache.get(cacheKey) || 'external page data fetch failed');
+    externalPageDataCache.delete(cacheKey);
+    const cachedError = externalPageDataErrorCache.get(cacheKey);
+    if (cachedError && nowMs - cachedError.ts <= EXTERNAL_PAGE_CACHE_TTL_MS) {
+      throw new Error(cachedError.message || 'external page data fetch failed');
     }
+    externalPageDataErrorCache.delete(cacheKey);
     if (externalPageDataDisabledReason) {
       throw new Error(externalPageDataDisabledReason);
     }
@@ -388,12 +392,12 @@ export function createAgentContext(
     try {
       const response = await callExtensionRouter(SUB_AGENTS.roverExternalPageData, payload);
       const pageData = response?.data || response;
-      externalPageDataCache.set(cacheKey, pageData);
+      externalPageDataCache.set(cacheKey, { data: pageData, ts: nowMs });
       return pageData;
     } catch (error: any) {
       const envelope = toRoverErrorEnvelope(error, 'external page data fetch failed');
       const normalizedMessage = envelope?.message || 'external page data fetch failed';
-      externalPageDataErrorCache.set(cacheKey, normalizedMessage);
+      externalPageDataErrorCache.set(cacheKey, { message: normalizedMessage, ts: nowMs });
 
       if (
         envelope.code === 'PERMISSION_DENIED'
@@ -461,7 +465,6 @@ export function createAgentContext(
         tabId: numericTabId,
         url: pageUrl,
         title: localPageData?.title,
-        embeddedDomain: runtimeContext?.embeddedDomain,
         agentName: runtimeContext?.agentName,
         reason: `cloud_fetch_disabled:${externalPageDataDisabledReason}`,
       });
@@ -476,7 +479,6 @@ export function createAgentContext(
         tabId: numericTabId,
         url: pageUrl,
         title: localPageData?.title,
-        embeddedDomain: runtimeContext?.embeddedDomain,
         agentName: runtimeContext?.agentName,
         reason: `policy_blocked:${ruleCheck.reason || 'blocked'}`,
       });
@@ -513,7 +515,6 @@ export function createAgentContext(
         tabId: numericTabId,
         url: pageUrl,
         title: localPageData?.title,
-        embeddedDomain: runtimeContext?.embeddedDomain,
         agentName: runtimeContext?.agentName,
         reason: `cloud_fetch_failed:${envelope?.code || 'unknown'}`,
       });

@@ -854,6 +854,19 @@ export class SessionCoordinator {
     let logicalTabId = 0;
 
     this.mutate('local', draft => {
+      const existing = draft.tabs.find(tab =>
+        !tab.runtimeId
+        && !!tab.external
+        && tab.url === normalizedUrl,
+      );
+      if (existing) {
+        existing.title = payload.title || existing.title;
+        existing.updatedAt = now();
+        existing.openerRuntimeId = payload.openerRuntimeId || existing.openerRuntimeId;
+        logicalTabId = existing.logicalTabId;
+        return;
+      }
+
       logicalTabId = draft.nextLogicalTabId++;
       draft.tabs.push({
         logicalTabId,

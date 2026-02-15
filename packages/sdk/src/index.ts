@@ -9,7 +9,11 @@ import {
   type SharedUiMessage,
   type SharedWorkerContext,
 } from './sessionCoordinator.js';
-import { RoverCloudCheckpointClient, type RoverCloudCheckpointPayload } from './cloudCheckpoint.js';
+import {
+  RoverCloudCheckpointClient,
+  type RoverCloudCheckpointPayload,
+  type RoverCloudCheckpointState,
+} from './cloudCheckpoint.js';
 import { createRuntimeStateStore, type RuntimeStateStore } from './runtimeStorage.js';
 import type {
   PersistedPendingRun,
@@ -26,6 +30,14 @@ export type RoverWebToolsConfig = {
   allowDomains?: string[];
   denyDomains?: string[];
   scrapeMode?: 'off' | 'on_demand';
+};
+
+export type RoverTelemetryConfig = {
+  enabled?: boolean;
+  sampleRate?: number;
+  flushIntervalMs?: number;
+  maxBatchSize?: number;
+  includePayloads?: boolean;
 };
 
 export type RoverInit = {
@@ -49,7 +61,6 @@ export type RoverInit = {
   allowedDomains?: string[];
   domainScopeMode?: 'host_only' | 'registrable_domain';
   externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
-  crossDomainPolicy?: 'block_new_tab' | 'allow';
   tabPolicy?: {
     observerByDefault?: boolean;
     actionLeaseMs?: number;
@@ -72,7 +83,23 @@ export type RoverInit = {
     pullIntervalMs?: number;
     minFlushIntervalMs?: number;
     ttlHours?: number;
+    onStateChange?: (payload: {
+      state: RoverCloudCheckpointState;
+      reason?: string;
+      action?: 'roverSessionCheckpointUpsert' | 'roverSessionCheckpointGet';
+      code?: string;
+      message?: string;
+    }) => void;
+    onError?: (payload: {
+      action: 'roverSessionCheckpointUpsert' | 'roverSessionCheckpointGet';
+      state: RoverCloudCheckpointState;
+      code?: string;
+      message: string;
+      status?: number;
+      paused: boolean;
+    }) => void;
   };
+  telemetry?: RoverTelemetryConfig;
   apiMode?: boolean;
   apiToolsConfig?: {
     mode?: 'allowlist' | 'profile' | 'none';
@@ -124,6 +151,8 @@ export type RoverEventName =
   | 'task_ended'
   | 'task_suggested_reset'
   | 'context_restored'
+  | 'checkpoint_state'
+  | 'checkpoint_error'
   | 'open'
   | 'close';
 
@@ -169,6 +198,16 @@ const VISITOR_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 const CHECKPOINT_PAYLOAD_VERSION = 1;
 const ACTIVE_PENDING_RUN_GRACE_MS = 3_000;
 const STALE_PENDING_RUN_MS = 90_000;
+const TELEMETRY_DEFAULT_FLUSH_INTERVAL_MS = 12_000;
+const TELEMETRY_DEFAULT_MAX_BATCH_SIZE = 30;
+const TELEMETRY_MAX_BUFFER_SIZE = 240;
+
+type TelemetryEventRecord = {
+  name: RoverEventName;
+  ts: number;
+  seq: number;
+  payload?: unknown;
+};
 
 let instance: RoverInstance | null = null;
 let bridge: Bridge | null = null;
@@ -181,6 +220,11 @@ let runtimeStateStore: RuntimeStateStore<PersistedRuntimeState> | null = null;
 let runtimeId: string = '';
 let sessionCoordinator: SessionCoordinator | null = null;
 let cloudCheckpointClient: RoverCloudCheckpointClient | null = null;
+let telemetryFlushTimer: ReturnType<typeof setInterval> | null = null;
+let telemetryBuffer: TelemetryEventRecord[] = [];
+let telemetryInFlight = false;
+let telemetryPausedAuth = false;
+let telemetrySeq = 0;
 let resolvedVisitorId: string | undefined = undefined;
 let suppressCheckpointSync = false;
 let currentMode: RoverExecutionMode = 'controller';
@@ -208,6 +252,7 @@ const pendingToolRegistrations: ToolRegistration[] = [];
 const eventHandlers = new Map<RoverEventName, Set<RoverEventHandler>>();
 
 function emit(event: RoverEventName, payload?: any): void {
+  recordTelemetryEvent(event, payload);
   const handlers = eventHandlers.get(event);
   if (!handlers) return;
   for (const handler of handlers) {
@@ -445,25 +490,201 @@ function safeSerialize(value: any): string | undefined {
   }
 }
 
-function resolveEmbeddedDomainLabel(allowedDomains?: string[]): string {
-  const raw = String((allowedDomains || [])[0] || '').trim();
-  if (!raw) return 'the configured domain';
-  return raw.replace(/^\*?\./, '').replace(/^=/, '');
+function normalizeTelemetryConfig(cfg: RoverInit | null): {
+  enabled: boolean;
+  sampleRate: number;
+  flushIntervalMs: number;
+  maxBatchSize: number;
+  includePayloads: boolean;
+} {
+  const raw = cfg?.telemetry;
+  const sampleRateRaw = Number(raw?.sampleRate);
+  const sampleRate = Number.isFinite(sampleRateRaw) ? Math.min(1, Math.max(0, sampleRateRaw)) : 1;
+
+  const flushRaw = Number(raw?.flushIntervalMs);
+  const flushIntervalMs = Number.isFinite(flushRaw)
+    ? Math.min(60_000, Math.max(2_000, Math.floor(flushRaw)))
+    : TELEMETRY_DEFAULT_FLUSH_INTERVAL_MS;
+
+  const batchRaw = Number(raw?.maxBatchSize);
+  const maxBatchSize = Number.isFinite(batchRaw)
+    ? Math.min(80, Math.max(1, Math.floor(batchRaw)))
+    : TELEMETRY_DEFAULT_MAX_BATCH_SIZE;
+
+  return {
+    enabled: raw?.enabled !== false,
+    sampleRate,
+    flushIntervalMs,
+    maxBatchSize,
+    includePayloads: raw?.includePayloads === true,
+  };
+}
+
+function canUseTelemetry(cfg: RoverInit | null): boolean {
+  if (!cfg) return false;
+  const telemetry = normalizeTelemetryConfig(cfg);
+  if (!telemetry.enabled) return false;
+  if (!(cfg.authToken || cfg.apiKey)) return false;
+  return true;
+}
+
+function summarizeTelemetryPayload(payload: any): unknown {
+  if (payload == null) return undefined;
+  if (typeof payload === 'string') return truncateText(payload, 260);
+  if (typeof payload === 'number' || typeof payload === 'boolean') return payload;
+  if (Array.isArray(payload)) {
+    return { type: 'array', length: payload.length };
+  }
+  if (typeof payload === 'object') {
+    const keys = Object.keys(payload).slice(0, 20);
+    const summary: Record<string, unknown> = { type: 'object', keys };
+    const preferredKeys = ['code', 'message', 'stage', 'status', 'reason', 'taskId', 'runId', 'policyAction'];
+    for (const key of preferredKeys) {
+      const value = payload?.[key];
+      if (value == null) continue;
+      if (typeof value === 'string') summary[key] = truncateText(value, 180);
+      else if (typeof value === 'number' || typeof value === 'boolean') summary[key] = value;
+    }
+    return summary;
+  }
+  return undefined;
+}
+
+function buildTelemetryPayload(payload: any, includePayloads: boolean): unknown {
+  if (!includePayloads) {
+    return summarizeTelemetryPayload(payload);
+  }
+  const cloned = cloneUnknown(payload);
+  if (cloned == null) return undefined;
+  if (typeof cloned === 'string') return truncateText(cloned, 1_000);
+  if (typeof cloned === 'number' || typeof cloned === 'boolean') return cloned;
+  if (Array.isArray(cloned)) return { type: 'array', length: cloned.length };
+  if (typeof cloned === 'object') return cloned;
+  return summarizeTelemetryPayload(payload);
+}
+
+function stopTelemetry(): void {
+  if (telemetryFlushTimer) {
+    clearInterval(telemetryFlushTimer);
+    telemetryFlushTimer = null;
+  }
+}
+
+function getTelemetryEndpoint(cfg: RoverInit): string {
+  const base = (cfg.apiBase || 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net').replace(/\/$/, '');
+  return base.endsWith('/extensionRouter') ? base : `${base}/extensionRouter`;
+}
+
+async function flushTelemetry(force = false): Promise<void> {
+  if (telemetryInFlight) return;
+  if (telemetryPausedAuth) return;
+  if (!currentConfig || !canUseTelemetry(currentConfig)) {
+    telemetryBuffer = [];
+    return;
+  }
+  if (!telemetryBuffer.length) return;
+
+  const telemetry = normalizeTelemetryConfig(currentConfig);
+  const token = String(currentConfig.authToken || currentConfig.apiKey || '').trim();
+  if (!token) return;
+
+  const batch = telemetryBuffer.splice(0, telemetry.maxBatchSize);
+  if (!batch.length) return;
+
+  telemetryInFlight = true;
+  try {
+    const response = await fetch(getTelemetryEndpoint(currentConfig), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        action: 'roverTelemetryIngest',
+        data: {
+          siteId: currentConfig.siteId,
+          runtimeId,
+          sessionId: runtimeState?.sessionId,
+          visitorId: resolvedVisitorId,
+          flushReason: force ? 'manual' : 'interval',
+          sdkVersion: 'rover_sdk_v1',
+          pageUrl: window.location.href,
+          userAgent: navigator.userAgent,
+          sampleRate: telemetry.sampleRate,
+          events: batch,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        telemetryPausedAuth = true;
+      } else {
+        telemetryBuffer = [...batch, ...telemetryBuffer].slice(-TELEMETRY_MAX_BUFFER_SIZE);
+      }
+      return;
+    }
+
+    const payload = await response.json().catch(() => undefined);
+    if (payload?.success === false) {
+      const code = String(payload?.errorCode || payload?.errorDetails?.code || '').toUpperCase();
+      if (code === 'INVALID_API_KEY' || code === 'MISSING_API_KEY' || code === 'UNAUTHENTICATED' || code === 'PERMISSION_DENIED') {
+        telemetryPausedAuth = true;
+      }
+      return;
+    }
+  } catch {
+    telemetryBuffer = [...batch, ...telemetryBuffer].slice(-TELEMETRY_MAX_BUFFER_SIZE);
+  } finally {
+    telemetryInFlight = false;
+  }
+}
+
+function setupTelemetry(cfg: RoverInit): void {
+  stopTelemetry();
+  telemetryPausedAuth = false;
+  if (!canUseTelemetry(cfg)) {
+    telemetryBuffer = [];
+    return;
+  }
+  const telemetry = normalizeTelemetryConfig(cfg);
+  telemetryFlushTimer = setInterval(() => {
+    void flushTelemetry(false);
+  }, telemetry.flushIntervalMs);
+}
+
+function recordTelemetryEvent(event: RoverEventName, payload?: any): void {
+  if (!canUseTelemetry(currentConfig) || telemetryPausedAuth) return;
+  const telemetry = normalizeTelemetryConfig(currentConfig);
+  if (telemetry.sampleRate < 1 && Math.random() > telemetry.sampleRate) return;
+
+  const next: TelemetryEventRecord = {
+    name: event,
+    ts: Date.now(),
+    seq: ++telemetrySeq,
+    payload: buildTelemetryPayload(payload, telemetry.includePayloads),
+  };
+  telemetryBuffer.push(next);
+  if (telemetryBuffer.length > TELEMETRY_MAX_BUFFER_SIZE) {
+    telemetryBuffer = telemetryBuffer.slice(-TELEMETRY_MAX_BUFFER_SIZE);
+  }
+  if (telemetryBuffer.length >= telemetry.maxBatchSize) {
+    void flushTelemetry(false);
+  }
 }
 
 function buildInaccessibleTabPageData(
-  cfg: RoverInit,
+  _cfg: RoverInit,
   tab?: { logicalTabId?: number; url?: string; title?: string; external?: boolean },
   reason = 'tab_not_accessible',
 ): Record<string, any> {
   const logicalTabId = Number(tab?.logicalTabId) || undefined;
   const url = tab?.url || '';
   const title = tab?.title || (tab?.external ? 'External Tab (Inaccessible)' : 'Inactive Tab');
-  const embeddedDomain = resolveEmbeddedDomainLabel(cfg.allowedDomains);
   const normalizedReason = String(reason || '').trim();
   const reasonLine = normalizedReason ? ` Reason: ${normalizedReason}.` : '';
   const content = tab?.external
-    ? `Rover is embedded inside ${embeddedDomain}. This tab is outside direct DOM access and only virtual tab context is available.${reasonLine}`
+    ? `This external tab is tracked in virtual mode only. Live DOM control and accessibility-tree access are unavailable here.${reasonLine}`
     : `This tab is currently not attached to an active Rover runtime. Switch to a live tab or reopen it.${reasonLine}`;
 
   return {
@@ -488,9 +709,8 @@ function buildTabAccessToolError(
 ): Record<string, any> {
   const logicalTabId = Number(tab?.logicalTabId) || 0;
   const blockedUrl = tab?.url || '';
-  const embeddedDomain = resolveEmbeddedDomainLabel(cfg.allowedDomains);
   const message = tab?.external
-    ? `Tab ${logicalTabId} is outside Rover's embedded domain scope (${embeddedDomain}) and cannot be controlled directly.`
+    ? `Tab ${logicalTabId} is external to the active runtime and cannot be controlled directly.`
     : `Tab ${logicalTabId} is not attached to an active Rover runtime.`;
   const code = tab?.external ? 'DOMAIN_SCOPE_BLOCKED' : 'TAB_NOT_ACCESSIBLE';
 
@@ -892,6 +1112,8 @@ function ensureUnloadHandler(): void {
       sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
     }
     persistRuntimeState();
+    void flushTelemetry(true);
+    stopTelemetry();
     cloudCheckpointClient?.markDirty();
     cloudCheckpointClient?.syncNow();
     cloudCheckpointClient?.stop();
@@ -910,6 +1132,9 @@ function ensureUnloadHandler(): void {
       sessionCoordinator.claimLease(false);
     }
     autoResumeAttempted = false; // Allow auto-resume after bfcache restore
+    if (currentConfig) {
+      setupTelemetry(currentConfig);
+    }
   };
   window.addEventListener('pageshow', onPageShow);
 }
@@ -1630,6 +1855,17 @@ function setupCloudCheckpointing(cfg: RoverInit): void {
   if (!resolvedVisitorId) return;
 
   try {
+    const emitCheckpointState = (payload: {
+      state: RoverCloudCheckpointState;
+      reason?: string;
+      action?: 'roverSessionCheckpointUpsert' | 'roverSessionCheckpointGet';
+      code?: string;
+      message?: string;
+    }) => {
+      emit('checkpoint_state', payload);
+      cfg.checkpointing?.onStateChange?.(payload);
+    };
+
     cloudCheckpointClient = new RoverCloudCheckpointClient({
       apiBase: cfg.apiBase,
       apiKey: cfg.apiKey,
@@ -1645,8 +1881,36 @@ function setupCloudCheckpointing(cfg: RoverInit): void {
       onCheckpoint: payload => {
         applyCloudCheckpointPayload(payload);
       },
-      onError: () => {
-        // keep checkpoint sync silent for end-users
+      onStateChange: (state, context) => {
+        emitCheckpointState({
+          state,
+          reason: context.reason,
+          action: context.action,
+          code: context.code,
+          message: context.message,
+        });
+        if (state === 'paused_auth') {
+          emit('checkpoint_error', {
+            action: context.action,
+            code: context.code || 'INVALID_API_KEY',
+            message: context.message || 'Checkpoint sync paused due to auth failure.',
+            disabled: true,
+            reason: context.reason || 'auth_failed',
+          });
+        }
+      },
+      onError: (_error, context) => {
+        cfg.checkpointing?.onError?.(context);
+        if (!context.paused) {
+          emit('checkpoint_error', {
+            action: context.action,
+            code: context.code,
+            message: context.message,
+            status: context.status,
+            disabled: false,
+            reason: 'transient_failure',
+          });
+        }
       },
     });
     cloudCheckpointClient.start();
@@ -1983,6 +2247,10 @@ function handleWorkerMessage(msg: any): void {
       const needsUserInput = completionState.needsUserInput;
       if (taskComplete) {
         markTaskCompleted('worker_task_complete');
+        sessionCoordinator?.pruneTabs({
+          dropRuntimeDetached: true,
+          dropAllDetachedExternal: true,
+        });
         setUiStatus('Task completed');
         finalizeSuccessfulRunTimeline(typeof msg.runId === 'string' ? msg.runId : undefined);
       } else {
@@ -2052,6 +2320,7 @@ function createRuntime(cfg: RoverInit): void {
     }
   }
   setupCloudCheckpointing(cfg);
+  setupTelemetry(cfg);
 
   const initialAllowActions =
     (cfg.allowActions ?? true) && (sessionCoordinator ? sessionCoordinator.isController() : true);
@@ -2062,7 +2331,6 @@ function createRuntime(cfg: RoverInit): void {
     allowedDomains: cfg.allowedDomains,
     domainScopeMode: cfg.domainScopeMode,
     externalNavigationPolicy: cfg.externalNavigationPolicy,
-    crossDomainPolicy: cfg.crossDomainPolicy,
     registerOpenedTab: payload => sessionCoordinator?.registerOpenedTab(payload),
     switchToLogicalTab: logicalTabId => sessionCoordinator?.switchToLogicalTab(logicalTabId) || { ok: false, reason: 'No session coordinator' },
     listKnownTabs: () =>
@@ -2492,17 +2760,17 @@ export function update(cfg: Partial<RoverInit>): void {
   }
 
   setupCloudCheckpointing(currentConfig);
+  setupTelemetry(currentConfig);
 
   if (bridge) {
     if (typeof cfg.allowActions === 'boolean') {
       bridge.setAllowActions(cfg.allowActions && currentMode === 'controller');
     }
-    if (cfg.allowedDomains || cfg.crossDomainPolicy || cfg.domainScopeMode || cfg.externalNavigationPolicy) {
+    if (cfg.allowedDomains || cfg.domainScopeMode || cfg.externalNavigationPolicy) {
       bridge.setNavigationPolicy({
         allowedDomains: cfg.allowedDomains,
         domainScopeMode: cfg.domainScopeMode,
         externalNavigationPolicy: cfg.externalNavigationPolicy,
-        crossDomainPolicy: cfg.crossDomainPolicy,
       });
     }
   }
@@ -2518,6 +2786,8 @@ export function update(cfg: Partial<RoverInit>): void {
 export function shutdown(): void {
   hideTaskSuggestion();
   persistRuntimeState();
+  void flushTelemetry(true);
+  stopTelemetry();
   cloudCheckpointClient?.markDirty();
   cloudCheckpointClient?.syncNow();
   cloudCheckpointClient?.stop();
@@ -2536,6 +2806,10 @@ export function shutdown(): void {
   runtimeId = '';
   resolvedVisitorId = undefined;
   suppressCheckpointSync = false;
+  telemetryInFlight = false;
+  telemetryPausedAuth = false;
+  telemetryBuffer = [];
+  telemetrySeq = 0;
   currentMode = 'controller';
   pendingTaskSuggestion = null;
   runtimeStateStore = null;
