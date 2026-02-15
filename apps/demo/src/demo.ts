@@ -198,7 +198,6 @@ function initRover(config: DemoConfig): ReturnType<typeof init> {
     allowedDomains: config.allowedDomains,
     domainScopeMode: config.domainScopeMode,
     externalNavigationPolicy: config.externalNavigationPolicy,
-    crossDomainPolicy: 'block_new_tab',
     tabPolicy: { observerByDefault: true, actionLeaseMs: 12000 },
     taskRouting: {
       mode: 'auto',

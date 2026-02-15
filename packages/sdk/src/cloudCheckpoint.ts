@@ -14,6 +14,18 @@ export type RoverCloudCheckpointPayload = {
 };
 
 type CheckpointSource = 'pull' | 'push_stale';
+export type RoverCloudCheckpointState = 'active' | 'paused_auth';
+
+type CheckpointAction = 'roverSessionCheckpointUpsert' | 'roverSessionCheckpointGet';
+
+type CheckpointErrorContext = {
+  action: CheckpointAction;
+  state: RoverCloudCheckpointState;
+  code?: string;
+  message: string;
+  status?: number;
+  paused: boolean;
+};
 
 export type RoverCloudCheckpointClientOptions = {
   apiBase?: string;
@@ -28,7 +40,8 @@ export type RoverCloudCheckpointClientOptions = {
   shouldWrite?: () => boolean;
   buildCheckpoint: () => RoverCloudCheckpointPayload | null;
   onCheckpoint: (checkpoint: RoverCloudCheckpointPayload, source: CheckpointSource) => void;
-  onError?: (error: unknown) => void;
+  onStateChange?: (state: RoverCloudCheckpointState, context: { reason?: string; action?: CheckpointAction; code?: string; message?: string }) => void;
+  onError?: (error: unknown, context: CheckpointErrorContext) => void;
 };
 
 function toFiniteNumber(value: unknown, fallback: number): number {
@@ -80,6 +93,7 @@ export class RoverCloudCheckpointClient {
   private readonly shouldWrite: () => boolean;
   private readonly buildCheckpoint: RoverCloudCheckpointClientOptions['buildCheckpoint'];
   private readonly onCheckpoint: RoverCloudCheckpointClientOptions['onCheckpoint'];
+  private readonly onStateChange?: RoverCloudCheckpointClientOptions['onStateChange'];
   private readonly onError?: RoverCloudCheckpointClientOptions['onError'];
 
   private started = false;
@@ -92,9 +106,10 @@ export class RoverCloudCheckpointClient {
   private lastAppliedRemoteUpdatedAt = 0;
   private pushInFlight = false;
   private pullInFlight = false;
+  private state: RoverCloudCheckpointState = 'active';
 
   constructor(options: RoverCloudCheckpointClientOptions) {
-    const token = String(options.apiKey || options.authToken || '').trim();
+    const token = String(options.authToken || options.apiKey || '').trim();
     if (!token) {
       throw toError('Rover cloud checkpoint requires apiKey or authToken.');
     }
@@ -110,12 +125,14 @@ export class RoverCloudCheckpointClient {
     this.shouldWrite = options.shouldWrite || (() => true);
     this.buildCheckpoint = options.buildCheckpoint;
     this.onCheckpoint = options.onCheckpoint;
+    this.onStateChange = options.onStateChange;
     this.onError = options.onError;
   }
 
   start(): void {
     if (this.started) return;
     this.started = true;
+    this.setState('active');
 
     this.flushTimer = window.setInterval(() => {
       void this.flush(false);
@@ -155,6 +172,7 @@ export class RoverCloudCheckpointClient {
 
   private async flush(force: boolean): Promise<void> {
     if (this.pushInFlight) return;
+    if (this.state === 'paused_auth') return;
     if (!this.dirty && !force) return;
     if (!this.shouldWrite()) return;
     if (!force && Date.now() - this.lastFlushAt < this.minFlushIntervalMs) return;
@@ -189,8 +207,9 @@ export class RoverCloudCheckpointClient {
         this.applyRemoteCheckpoint(response.checkpoint as RoverCloudCheckpointPayload, 'push_stale');
         this.dirty = false;
       }
+      this.setState('active');
     } catch (error) {
-      this.onError?.(error);
+      this.handleCheckpointError(error, 'roverSessionCheckpointUpsert');
     } finally {
       this.pushInFlight = false;
     }
@@ -198,6 +217,7 @@ export class RoverCloudCheckpointClient {
 
   private async pull(force: boolean): Promise<void> {
     if (this.pullInFlight) return;
+    if (this.state === 'paused_auth') return;
     if (!force && Date.now() - this.lastPullAt < this.pullIntervalMs) return;
 
     this.pullInFlight = true;
@@ -210,8 +230,9 @@ export class RoverCloudCheckpointClient {
       this.lastPullAt = Date.now();
       if (!response?.found || !response?.checkpoint || typeof response.checkpoint !== 'object') return;
       this.applyRemoteCheckpoint(response.checkpoint as RoverCloudCheckpointPayload, 'pull');
+      this.setState('active');
     } catch (error) {
-      this.onError?.(error);
+      this.handleCheckpointError(error, 'roverSessionCheckpointGet');
     } finally {
       this.pullInFlight = false;
     }
@@ -242,14 +263,92 @@ export class RoverCloudCheckpointClient {
         const text = await response.text().catch(() => '');
         payload = text ? { error: truncateText(text, 2_000) } : undefined;
       }
-      throw toError(`Checkpoint HTTP ${response.status}`, payload);
+      throw toError(`Checkpoint HTTP ${response.status}`, {
+        action,
+        status: response.status,
+        payload,
+      });
     }
 
     const payload = await response.json();
     if (payload?.success === false) {
-      throw toError('Checkpoint extensionRouter returned success=false', payload);
+      throw toError('Checkpoint extensionRouter returned success=false', {
+        action,
+        status: response.status,
+        payload,
+      });
     }
 
     return payload?.data;
+  }
+
+  private setState(
+    next: RoverCloudCheckpointState,
+    context?: { reason?: string; action?: CheckpointAction; code?: string; message?: string },
+  ): void {
+    if (this.state === next) return;
+    this.state = next;
+    this.onStateChange?.(next, context || {});
+  }
+
+  private handleCheckpointError(error: unknown, action: CheckpointAction): void {
+    const details = this.normalizeCheckpointError(error);
+    const isAuthFailure = this.isAuthFailure(details);
+    if (isAuthFailure) {
+      this.setState('paused_auth', {
+        reason: 'auth_failed',
+        action,
+        code: details.code,
+        message: details.message,
+      });
+    }
+    this.onError?.(error, {
+      action,
+      state: this.state,
+      code: details.code,
+      message: details.message,
+      status: details.status,
+      paused: isAuthFailure,
+    });
+  }
+
+  private normalizeCheckpointError(error: unknown): {
+    code?: string;
+    message: string;
+    status?: number;
+  } {
+    const anyError = error as any;
+    const details = anyError?.details;
+    const payload = details?.payload || details?.response || details;
+    const candidateCode =
+      payload?.errorCode
+      || payload?.errorDetails?.code
+      || payload?.error?.code
+      || payload?.code;
+    const candidateMessage =
+      payload?.error
+      || payload?.errorDetails?.message
+      || payload?.error?.message
+      || anyError?.message
+      || 'Checkpoint request failed';
+    const status = Number(details?.status);
+    return {
+      code: typeof candidateCode === 'string' ? candidateCode : undefined,
+      message: truncateText(candidateMessage, 1_000),
+      status: Number.isFinite(status) ? status : undefined,
+    };
+  }
+
+  private isAuthFailure(details: { code?: string; status?: number }): boolean {
+    const code = String(details.code || '').toUpperCase();
+    if (
+      code === 'INVALID_API_KEY'
+      || code === 'MISSING_API_KEY'
+      || code === 'UNAUTHENTICATED'
+      || code === 'PERMISSION_DENIED'
+    ) {
+      return true;
+    }
+    return details.status === 401 || details.status === 403;
   }
 }

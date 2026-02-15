@@ -100,25 +100,46 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `siteId` | `string` | *required* | Your site identifier |
-| `apiKey` | `string` | *required* | API key from Rover Workspace |
+| `siteId` | `string` | *required* | Site identifier |
+| `apiKey` | `string` | — | API key from Rover Workspace |
+| `siteKeyId` | `string` | — | Site key ID from Workspace |
+| `authToken` | `string` | — | Optional bearer token override (takes precedence over `apiKey` when both are set) |
 | `allowedDomains` | `string[]` | `[]` | Hostnames where Rover may operate |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | Domain matching strategy |
-| `crossDomainPolicy` | `'block_new_tab' \| 'allow' \| 'block'` | `'block_new_tab'` | Policy for cross-subdomain navigation |
+| `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
+| `mode` | `'full' \| 'safe'` | `'full'` | Runtime mode |
+| `allowActions` | `boolean` | `true` | Enable or disable action tools |
 | `openOnInit` | `boolean` | `false` | Open panel immediately on boot |
-| `taskRouting` | `object` | `{ mode: 'act' }` | Task routing strategy |
-| `externalNavigationPolicy` | `string` | `'open_new_tab_notice'` | Policy for out-of-scope links |
-| `tools.web.enableExternalWebContext` | `boolean` | `false` | Best-effort cloud context for external tabs |
-| `tools.web.scrapeMode` | `'off' \| 'on_demand'` | `'off'` | In `on_demand`, only the active external tab attempts cloud page fetch |
-| `tools.web.allowDomains` | `string[]` | `[]` | Optional allowlist for external cloud context fetch |
-| `tools.web.denyDomains` | `string[]` | `[]` | Optional denylist for external cloud context fetch |
-| `taskContext.*` | `object` | — | Task boundaries are completion-driven; Rover starts a fresh task only after the current task completes (or manual `newTask()` / `endTask()`). |
-| `workerUrl` | `string` | auto | Custom worker URL for self-hosting |
-| `ui.muted` | `boolean` | `false` | Start with audio muted (user can toggle via UI) |
-| `ui.agent.name` | `string` | `'Rover'` | Custom assistant name shown in UI and runtime context |
-| `ui.mascot.disabled` | `boolean` | `false` | Disable mascot video (removes `media-src` CSP need) |
-| `visitorId` | `string` | auto | Stable visitor identifier |
 | `sessionScope` | `'shared_site' \| 'tab'` | `'shared_site'` | Session sharing across tabs |
+| `taskRouting.mode` | `'auto' \| 'act' \| 'planner'` | `'act'` | Task routing strategy |
+| `taskRouting.plannerOnActError` | `boolean` | `true` | Retry planner when ACT fails |
+| `taskRouting.actHeuristicThreshold` | `number` | `5` (auto mode) | Auto-routing threshold |
+| `checkpointing.enabled` | `boolean` | `false` | Enable cloud checkpoint sync |
+| `checkpointing.autoVisitorId` | `boolean` | `true` | Auto-generate visitor ID when needed |
+| `checkpointing.ttlHours` | `number` | `1` | Checkpoint TTL in hours |
+| `checkpointing.onStateChange` | `(payload) => void` | — | Checkpoint lifecycle updates (`active`, `paused_auth`) |
+| `checkpointing.onError` | `(payload) => void` | — | Checkpoint request error callback |
+| `telemetry.enabled` | `boolean` | `true` | Enable runtime telemetry batching |
+| `telemetry.sampleRate` | `number` | `1` | Event sampling ratio (0..1) |
+| `telemetry.flushIntervalMs` | `number` | `12000` | Telemetry flush cadence |
+| `telemetry.maxBatchSize` | `number` | `30` | Max events per telemetry request |
+| `telemetry.includePayloads` | `boolean` | `false` | Include richer event payloads |
+| `apiMode` | `boolean` | auto (`true` when `apiKey` exists) | Force API execution mode |
+| `apiToolsConfig.mode` | `'allowlist' \| 'profile' \| 'none'` | `'none'` | API additional tool exposure mode |
+| `tools.web.enableExternalWebContext` | `boolean` | `false` | External tab cloud context fallback |
+| `tools.web.scrapeMode` | `'off' \| 'on_demand'` | `'off'` | On-demand external tab scrape mode |
+| `tools.web.allowDomains` | `string[]` | `[]` | External context allowlist |
+| `tools.web.denyDomains` | `string[]` | `[]` | External context denylist |
+| `tools.client` | `ClientToolDefinition[]` | `[]` | Runtime-registered client tools |
+| `workerUrl` | `string` | auto | Custom worker URL for self-hosting |
+| `ui.agent.name` | `string` | `'Rover'` | Custom assistant name |
+| `ui.mascot.disabled` | `boolean` | `false` | Disable mascot video |
+| `ui.mascot.mp4Url` | `string` | default | Custom mascot MP4 URL |
+| `ui.mascot.webmUrl` | `string` | default | Custom mascot WebM URL |
+| `ui.muted` | `boolean` | `false` | Start with audio muted |
+| `ui.thoughtStyle` | `'concise_cards' \| 'minimal'` | `'concise_cards'` | Thought rendering style |
+| `ui.panel.resizable` | `boolean` | `true` | Panel resizable preference |
+| `ui.showTaskControls` | `boolean` | `true` | Show new/end task controls |
 
 If you enable `tools.web.scrapeMode: 'on_demand'`, use a site key capability profile that includes cloud scrape support.
 
@@ -174,6 +195,8 @@ rover.on('error', (err) => console.error(err));
 | `navigation_guardrail` | `{ url, policy }` | Out-of-scope navigation intercepted |
 | `task_started` | `{ reason }` | New task started |
 | `task_ended` | `{ reason }` | Task ended |
+| `checkpoint_state` | `{ state, reason?, action?, code?, message? }` | Checkpoint sync state updates |
+| `checkpoint_error` | `{ action, code?, message, ... }` | Checkpoint request failure details |
 
 ## Content Security Policy (CSP)
 

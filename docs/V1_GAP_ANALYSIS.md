@@ -28,5 +28,5 @@
 
 ## Risk Areas to Watch
 - Public client embedding still requires scoped-key abuse monitoring.
-- Mixed legacy configs (`crossDomainPolicy`) must remain backward compatible.
+- Keep SDK/docs/workspace aligned on canonical `externalNavigationPolicy` only.
 - Website and backend callable schema drift without shared contract tests.
