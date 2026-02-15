@@ -104,6 +104,7 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `apiKey` | `string` | — | API key from Rover Workspace |
 | `siteKeyId` | `string` | — | Site key ID from Workspace |
 | `authToken` | `string` | — | Optional bearer token override (takes precedence over `apiKey` when both are set) |
+| `apiBase` | `string` | `https://extensionrouter.rtrvr.ai` | Optional API base override. For custom domain routing you can pass the base directly (no `/extensionRouter` suffix required). |
 | `allowedDomains` | `string[]` | `[]` | Hostnames where Rover may operate |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | Domain matching strategy |
 | `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
@@ -206,7 +207,7 @@ If your site sets a CSP header, add these directives:
 |---|---|---|
 | `script-src` | `https://rover.rtrvr.ai blob:` | SDK script + Web Worker blob |
 | `worker-src` | `blob: https://rover.rtrvr.ai` | Web Worker execution |
-| `connect-src` | `https://us-central1-rtrvr-extension-functions.cloudfunctions.net` | API calls |
+| `connect-src` | `https://extensionrouter.rtrvr.ai` | API calls |
 | `style-src` | `'unsafe-inline'` | Shadow DOM styles |
 | `font-src` | `https://rover.rtrvr.ai` | Self-hosted Manrope font |
 

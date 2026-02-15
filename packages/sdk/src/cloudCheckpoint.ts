@@ -1,7 +1,7 @@
 import type { SharedSessionState } from './sessionCoordinator.js';
 import type { PersistedRuntimeState } from './runtimeTypes.js';
 
-const DEFAULT_CLOUD_FUNCTIONS_BASE = 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net';
+const DEFAULT_EXTENSION_ROUTER_BASE = 'https://extensionrouter.rtrvr.ai';
 
 export type RoverCloudCheckpointPayload = {
   version: number;
@@ -71,8 +71,19 @@ function buildRevisionKey(payload: RoverCloudCheckpointPayload): string {
 }
 
 function normalizeRouterEndpoint(apiBase?: string): string {
-  const base = (apiBase || DEFAULT_CLOUD_FUNCTIONS_BASE).replace(/\/$/, '');
-  return base.endsWith('/extensionRouter') ? base : `${base}/extensionRouter`;
+  const fallback = DEFAULT_EXTENSION_ROUTER_BASE;
+  const base = String(apiBase || fallback).trim().replace(/\/+$/, '');
+  if (!base) return fallback;
+  if (base.endsWith('/extensionRouter')) return base;
+  try {
+    const parsed = new URL(base);
+    const pathname = parsed.pathname.replace(/\/+$/, '');
+    if (pathname && pathname !== '/') return base;
+    if (parsed.hostname.toLowerCase() === 'extensionrouter.rtrvr.ai') return base;
+  } catch {
+    // no-op: fallback to legacy suffix behavior
+  }
+  return `${base}/extensionRouter`;
 }
 
 function toError(message: string, details?: any): Error {
