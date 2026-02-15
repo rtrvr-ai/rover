@@ -41,6 +41,7 @@ export type BridgeOptions = {
   externalNavigationPolicy?: ExternalNavigationPolicy;
   crossHostPolicy?: CrossHostPolicy;
   onNavigationGuardrail?: (event: NavigationGuardrailEvent) => void;
+  onBeforeCrossHostNavigation?: (targetUrl: string) => void;
   registerOpenedTab?: (payload: {
     url: string;
     title?: string;
@@ -70,6 +71,7 @@ export class Bridge {
   private listKnownTabs?: BridgeOptions['listKnownTabs'];
   private switchToLogicalTab?: BridgeOptions['switchToLogicalTab'];
   private onNavigationGuardrail?: BridgeOptions['onNavigationGuardrail'];
+  private onBeforeCrossHostNavigation?: BridgeOptions['onBeforeCrossHostNavigation'];
   private instrumentation: InstrumentationController;
   private highlightEl: HTMLDivElement | null = null;
   private clientTools = new Map<string, { handler: (args: any) => any | Promise<any>; def: any }>();
@@ -91,6 +93,7 @@ export class Bridge {
     this.listKnownTabs = opts.listKnownTabs;
     this.switchToLogicalTab = opts.switchToLogicalTab;
     this.onNavigationGuardrail = opts.onNavigationGuardrail;
+    this.onBeforeCrossHostNavigation = opts.onBeforeCrossHostNavigation;
     this.instrumentation =
       opts.instrumentation ??
       installInstrumentation({
@@ -418,6 +421,7 @@ export class Bridge {
           return this.domainScopeBlockedResponse(targetUrl, reason);
         }
 
+        this.notifyCrossHostNavigation(targetUrl);
         window.location.href = targetUrl;
         return { success: true, output: { url: targetUrl, navigation: 'same_tab' } };
       }
@@ -448,6 +452,7 @@ export class Bridge {
           return this.domainScopeBlockedResponse(targetUrl, reason);
         }
 
+        this.notifyCrossHostNavigation(targetUrl);
         window.location.href = targetUrl;
         return { success: true, output: { url: targetUrl, navigation: 'same_tab' } };
       }
@@ -469,6 +474,7 @@ export class Bridge {
         const targetUrl = normalizeUrl(rawUrl, window.location.href);
         if (!targetUrl) return { success: false, error: `open_new_tab: invalid url "${rawUrl}"`, allowFallback: true };
         if (this.shouldConvertOpenNewTabToSameTab(targetUrl)) {
+          this.notifyCrossHostNavigation(targetUrl);
           window.location.assign(targetUrl);
           return {
             success: true,
@@ -559,6 +565,19 @@ export class Bridge {
     if (this.crossHostPolicy !== 'same_tab') return false;
     if (!isUrlAllowedByDomains(window.location.href, this.allowedDomains)) return false;
     return isUrlAllowedByDomains(targetUrl, this.allowedDomains);
+  }
+
+  private isCrossHostInScopeNavigation(targetUrl: string): boolean {
+    const currentHost = extractHostname(window.location.href);
+    const targetHost = extractHostname(targetUrl);
+    if (!currentHost || !targetHost || currentHost === targetHost) return false;
+    return isUrlAllowedByDomains(targetUrl, this.allowedDomains);
+  }
+
+  private notifyCrossHostNavigation(targetUrl: string): void {
+    if (this.isCrossHostInScopeNavigation(targetUrl)) {
+      try { this.onBeforeCrossHostNavigation?.(targetUrl); } catch { /* ignore */ }
+    }
   }
 
   private shouldBlockForOutOfScopeContext(toolName: SystemToolNames): boolean {
@@ -1032,8 +1051,8 @@ function normalizeCrossHostPolicy(policy?: CrossHostPolicy): CrossHostPolicy {
   return 'same_tab';
 }
 
-function normalizeAllowedDomains(input: string[] | undefined, currentHost: string, scopeMode: DomainScopeMode): string[] {
-  const candidates = Array.isArray(input) ? input : [];
+function normalizeAllowedDomains(input: string | string[] | undefined, currentHost: string, scopeMode: DomainScopeMode): string[] {
+  const candidates = Array.isArray(input) ? input : typeof input === 'string' && input.trim() ? [input] : [];
   const out = new Set<string>();
 
   for (const raw of candidates) {
