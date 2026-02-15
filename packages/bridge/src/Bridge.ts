@@ -13,6 +13,13 @@ import { installInstrumentation, type InstrumentationController, type Instrument
 export type DomainScopeMode = 'host_only' | 'registrable_domain';
 export type ExternalNavigationPolicy = 'open_new_tab_notice' | 'block' | 'allow';
 export type CrossHostPolicy = 'open_new_tab' | 'same_tab';
+export type ActionGateContext = {
+  mode?: 'controller' | 'observer';
+  controllerRuntimeId?: string;
+  activeLogicalTabId?: number;
+  localLogicalTabId?: number;
+  reason?: string;
+};
 
 export type NavigationGuardrailEvent = {
   blockedUrl: string;
@@ -68,6 +75,7 @@ export class Bridge {
   private clientTools = new Map<string, { handler: (args: any) => any | Promise<any>; def: any }>();
   private uploadStore = new Map<string, { bytes: ArrayBuffer; createdAt: number }>();
   private uploadProviderInstalled = false;
+  private actionGateContext: ActionGateContext = {};
 
   constructor(opts: BridgeOptions = {}) {
     this.root = opts.root ?? document.body ?? document.documentElement;
@@ -102,6 +110,24 @@ export class Bridge {
 
   setAllowActions(allow: boolean): void {
     this.allowActions = !!allow;
+  }
+
+  setActionGateContext(context?: ActionGateContext): void {
+    const next: ActionGateContext = {};
+    if (context?.mode === 'controller' || context?.mode === 'observer') next.mode = context.mode;
+    if (typeof context?.controllerRuntimeId === 'string' && context.controllerRuntimeId.trim()) {
+      next.controllerRuntimeId = context.controllerRuntimeId.trim();
+    }
+    if (Number.isFinite(Number(context?.activeLogicalTabId)) && Number(context?.activeLogicalTabId) > 0) {
+      next.activeLogicalTabId = Number(context?.activeLogicalTabId);
+    }
+    if (Number.isFinite(Number(context?.localLogicalTabId)) && Number(context?.localLogicalTabId) > 0) {
+      next.localLogicalTabId = Number(context?.localLogicalTabId);
+    }
+    if (typeof context?.reason === 'string' && context.reason.trim()) {
+      next.reason = context.reason.trim().slice(0, 240);
+    }
+    this.actionGateContext = next;
   }
 
   setNavigationPolicy(options: {
@@ -156,7 +182,18 @@ export class Bridge {
     }
 
     if (!this.allowActions && !NON_ACTION_TOOLS.has(toolName)) {
-      return { success: false, error: 'Actions disabled by configuration', allowFallback: false };
+      const reason = this.actionGateContext.mode === 'observer'
+        ? 'Actions are disabled because this tab is currently in observer mode.'
+        : (this.actionGateContext.reason || 'Actions disabled by configuration');
+      return {
+        success: false,
+        error: 'Actions disabled by configuration',
+        allowFallback: false,
+        output: {
+          reason,
+          actionGate: this.actionGateContext,
+        },
+      };
     }
 
     // Navigation and control tools handled here (not in main-world executor)
@@ -431,12 +468,28 @@ export class Bridge {
         if (!rawUrl) return { success: false, error: 'open_new_tab: missing url', allowFallback: true };
         const targetUrl = normalizeUrl(rawUrl, window.location.href);
         if (!targetUrl) return { success: false, error: `open_new_tab: invalid url "${rawUrl}"`, allowFallback: true };
+        if (this.shouldConvertOpenNewTabToSameTab(targetUrl)) {
+          window.location.assign(targetUrl);
+          return {
+            success: true,
+            output: {
+              url: targetUrl,
+              navigation: 'same_tab',
+              convertedFrom: 'open_new_tab',
+            },
+          };
+        }
         return await this.openUrlInNewTab(targetUrl, { policyBlocked: false });
       }
       case SystemToolNames.switch_tab: {
         const logicalTabId = Number(args.logical_tab_id ?? args.tab_id);
         if (!Number.isFinite(logicalTabId) || logicalTabId <= 0) {
-          return { success: false, error: 'switch_tab: missing/invalid logical_tab_id', allowFallback: true };
+          const mappingError = typeof args._tab_id_mapping_error === 'string' ? String(args._tab_id_mapping_error).trim() : '';
+          return {
+            success: false,
+            error: mappingError || 'switch_tab: missing/invalid logical_tab_id',
+            allowFallback: true,
+          };
         }
 
         if (this.externalNavigationPolicy !== 'allow' && this.listKnownTabs) {
@@ -495,10 +548,17 @@ export class Bridge {
 
   private shouldPreserveHostRuntime(targetUrl: string): boolean {
     if (this.crossHostPolicy !== 'open_new_tab') return false;
+    if (isUrlAllowedByDomains(targetUrl, this.allowedDomains)) return false;
     const currentHost = extractHostname(window.location.href);
     const targetHost = extractHostname(targetUrl);
     if (!currentHost || !targetHost) return false;
     return currentHost !== targetHost;
+  }
+
+  private shouldConvertOpenNewTabToSameTab(targetUrl: string): boolean {
+    if (this.crossHostPolicy !== 'same_tab') return false;
+    if (!isUrlAllowedByDomains(window.location.href, this.allowedDomains)) return false;
+    return isUrlAllowedByDomains(targetUrl, this.allowedDomains);
   }
 
   private shouldBlockForOutOfScopeContext(toolName: SystemToolNames): boolean {
@@ -969,7 +1029,7 @@ function normalizeExternalNavigationPolicy(policy?: ExternalNavigationPolicy): E
 
 function normalizeCrossHostPolicy(policy?: CrossHostPolicy): CrossHostPolicy {
   if (policy === 'same_tab' || policy === 'open_new_tab') return policy;
-  return 'open_new_tab';
+  return 'same_tab';
 }
 
 function normalizeAllowedDomains(input: string[] | undefined, currentHost: string, scopeMode: DomainScopeMode): string[] {
