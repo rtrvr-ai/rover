@@ -392,12 +392,16 @@ function normalizePlannerQuestion(input: any, index: number): PlannerQuestion | 
   const queryCandidate = String(input.query || input.question || '').trim();
   const key = keyCandidate || `clarification_${index + 1}`;
   if (!queryCandidate) return undefined;
+  const hasRequired = typeof input.required === 'boolean';
+  const hasOptional = typeof input.optional === 'boolean';
+  const required = hasRequired ? !!input.required : (hasOptional ? !input.optional : true);
   return {
     key,
     query: queryCandidate,
     ...(typeof input.id === 'string' && input.id.trim() ? { id: input.id.trim() } : {}),
     ...(typeof input.question === 'string' && input.question.trim() ? { question: input.question.trim() } : {}),
     ...(Array.isArray(input.choices) ? { choices: input.choices } : {}),
+    required,
   };
 }
 
@@ -1388,6 +1392,29 @@ async function handleUserMessage(
 
   if (result.directToolResult) {
     const newTabWait = await maybeWaitForNewTab(result.directToolResult);
+    if (
+      newTabWait.openedTab
+      && newTabWait.readyState
+      && newTabWait.readyState.ready
+      && newTabWait.readyState.attached
+      && !newTabWait.readyState.external
+      && bridgeRpc
+    ) {
+      try {
+        await bridgeRpc('executeTool', {
+          call: {
+            name: 'switch_tab',
+            args: { tab_id: newTabWait.openedTab.logicalTabId },
+          },
+          payload: {
+            forceLocal: true,
+            reason: 'opened_tab_attached_promote_active',
+          },
+        });
+      } catch {
+        // best-effort promotion
+      }
+    }
     if (
       newTabWait.openedTab
       && newTabWait.readyState

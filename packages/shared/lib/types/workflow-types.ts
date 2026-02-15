@@ -65,6 +65,11 @@ export interface PlannerQuestion {
   // camelCase
   key: string;
   query: string;
+  id?: string;
+  question?: string;
+  choices?: string[];
+  /** True by default. Set false for non-blocking preference questions. */
+  required?: boolean;
 }
 
 // Bhavani TO_DO: In the future, see if you wanna add support: file and image outputs, generated html full code

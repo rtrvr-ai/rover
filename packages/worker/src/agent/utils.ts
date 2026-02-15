@@ -128,7 +128,11 @@ export async function processActionResponse({
           {
             name: 'ask_user',
             args: {
-              questions_to_ask: questions.map(question => ({ key: question.key, query: question.query })),
+              questions_to_ask: questions.map(question => ({
+                key: question.key,
+                query: question.query,
+                ...(question.required === false ? { required: false } : {}),
+              })),
             },
             response: {
               status: 'Success',
@@ -256,6 +260,9 @@ function normalizeAskUserQuestions(rawQuestions: unknown): PlannerQuestion[] {
     if (!rawKey || !query) continue;
     if (seenKeys.has(rawKey)) continue;
     seenKeys.add(rawKey);
+    const hasRequired = typeof (item as any).required === 'boolean';
+    const hasOptional = typeof (item as any).optional === 'boolean';
+    const required = hasRequired ? !!(item as any).required : (hasOptional ? !(item as any).optional : true);
     out.push({
       key: rawKey,
       query,
@@ -266,6 +273,7 @@ function normalizeAskUserQuestions(rawQuestions: unknown): PlannerQuestion[] {
         ? { id: String((item as any).id).trim() }
         : {}),
       ...(Array.isArray((item as any).choices) ? { choices: (item as any).choices } : {}),
+      required,
     });
   }
 

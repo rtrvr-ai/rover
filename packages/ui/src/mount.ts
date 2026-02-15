@@ -15,6 +15,7 @@ export type RoverAskUserQuestion = {
   id?: string;
   question?: string;
   choices?: string[];
+  required?: boolean;
 };
 
 export type RoverAskUserAnswerMeta = {
@@ -2943,6 +2944,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
       const key = String(item.key || item.id || '').trim() || `clarification_${i + 1}`;
       const query = String(item.query || item.question || '').trim();
       if (!query) continue;
+      const hasRequired = typeof (item as any).required === 'boolean';
+      const hasOptional = typeof (item as any).optional === 'boolean';
+      const required = hasRequired ? !!(item as any).required : (hasOptional ? !(item as any).optional : true);
       if (seen.has(key)) continue;
       seen.add(key);
       out.push({
@@ -2951,6 +2955,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
         ...(typeof item.id === 'string' && item.id.trim() ? { id: item.id.trim() } : {}),
         ...(typeof item.question === 'string' && item.question.trim() ? { question: item.question.trim() } : {}),
         ...(Array.isArray(item.choices) ? { choices: item.choices } : {}),
+        required,
       });
     }
     return out.slice(0, 6);
@@ -2962,7 +2967,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
         const choices = Array.isArray(question.choices)
           ? question.choices.map(choice => sanitizeText(String(choice || ''))).filter(Boolean).join('|')
           : '';
-        return `${question.key}::${sanitizeText(question.query)}::${choices}`;
+        const required = question.required === false ? 'optional' : 'required';
+        return `${question.key}::${sanitizeText(question.query)}::${choices}::${required}`;
       })
       .join('||');
   }
@@ -3023,7 +3029,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
         const label = document.createElement('span');
         label.className = 'questionPromptLabel';
-        label.textContent = question.query;
+        label.textContent = question.required === false ? `${question.query} (optional)` : question.query;
         item.appendChild(label);
 
         const input = document.createElement('input');
@@ -3031,7 +3037,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
         input.className = 'questionPromptInput';
         input.dataset.key = question.key;
         input.placeholder = buildQuestionPlaceholder(question);
-        input.required = true;
+        input.required = question.required !== false;
         const draftValue = String(previousDraftAnswers[question.key] || '');
         questionDraftAnswers[question.key] = draftValue;
         input.value = draftValue;
@@ -3593,9 +3599,15 @@ export function mountWidget(opts: MountOptions): RoverUi {
       const input = getQuestionInputByKey(question.key);
       if (!input) continue;
       const value = sanitizeText(input.value);
-      if (!value) {
+      const isRequired = question.required !== false;
+      if (!value && isRequired) {
         input.classList.add('invalid');
         if (!firstInvalid) firstInvalid = input;
+        continue;
+      }
+      if (!value) {
+        input.classList.remove('invalid');
+        delete questionDraftAnswers[question.key];
         continue;
       }
       input.classList.remove('invalid');
