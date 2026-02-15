@@ -104,8 +104,8 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `apiKey` | `string` | — | API key from Rover Workspace |
 | `siteKeyId` | `string` | — | Site key ID from Workspace |
 | `authToken` | `string` | — | Optional bearer token override (takes precedence over `apiKey` when both are set) |
-| `visitor` | `{ name?: string; email?: string }` | — | Optional visitor profile used for greeting personalization |
-| `apiBase` | `string` | `https://extensionrouter.rtrvr.ai` | Optional API base override. For custom domain routing you can pass the base directly (no `/extensionRouter` suffix required). |
+| `visitor` | `{ name?: string; email?: string }` | — | Optional visitor profile for greeting personalization. Recommended flow is async updates via `identify(...)` after login/user hydration. |
+| `apiBase` | `string` | `https://extensionrouter.rtrvr.ai` | Optional API base override. Workspace snippets keep the managed default; code integrations can pass a custom base directly (no `/extensionRouter` suffix required). |
 | `allowedDomains` | `string[]` | `[]` | Hostnames where Rover may operate |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | Domain matching strategy |
 | `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |

@@ -323,11 +323,11 @@ rover.boot(config);
 | `auth.sessionJwtEndpoint` | `string` | — | Endpoint used to refresh session JWT |
 | `auth.refreshSkewSec` | `number` | — | Early refresh skew (seconds) before JWT expiry |
 | `visitorId` | `string` | auto | Stable visitor identifier |
-| `visitor` | `{ name?: string; email?: string }` | — | Optional visitor profile for greeting personalization |
+| `visitor` | `{ name?: string; email?: string }` | — | Optional visitor profile for greeting personalization. Recommended flow is async updates via `identify(...)` after login/user hydration. |
 | `sessionId` | `string` | auto | Explicit session ID |
 | `sessionScope` | `'shared_site' \| 'tab'` | `'shared_site'` | Shared cross-tab session or tab-isolated session |
 | `mode` | `'full' \| 'safe'` | `'full'` | Runtime mode |
-| `apiBase` | `string` | `https://extensionrouter.rtrvr.ai` | Custom API base URL. Custom domains can be passed directly (no `/extensionRouter` suffix required). |
+| `apiBase` | `string` | `https://extensionrouter.rtrvr.ai` | Custom API base URL. Workspace snippets keep the managed default; code integrations can pass custom domains directly (no `/extensionRouter` suffix required). |
 | `workerUrl` | `string` | auto | Custom worker URL (self-hosting) |
 
 ### Domain Guardrails & Navigation
