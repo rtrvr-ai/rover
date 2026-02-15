@@ -1395,29 +1395,6 @@ async function handleUserMessage(
     if (
       newTabWait.openedTab
       && newTabWait.readyState
-      && newTabWait.readyState.ready
-      && newTabWait.readyState.attached
-      && !newTabWait.readyState.external
-      && bridgeRpc
-    ) {
-      try {
-        await bridgeRpc('executeTool', {
-          call: {
-            name: 'switch_tab',
-            args: { tab_id: newTabWait.openedTab.logicalTabId },
-          },
-          payload: {
-            forceLocal: true,
-            reason: 'opened_tab_attached_promote_active',
-          },
-        });
-      } catch {
-        // best-effort promotion
-      }
-    }
-    if (
-      newTabWait.openedTab
-      && newTabWait.readyState
       && !newTabWait.readyState.ready
       && !newTabWait.readyState.external
     ) {

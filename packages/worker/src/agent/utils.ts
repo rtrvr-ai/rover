@@ -96,6 +96,20 @@ export async function processActionResponse({
   if (Array.isArray(functionCalls) && functionCalls.length > 0) {
     const askUserCall = functionCalls.find(call => String(call?.name || '').trim().toLowerCase() === 'ask_user');
     if (askUserCall) {
+      const deferredSiblingCalls = functionCalls
+        .filter(call => call && call !== askUserCall && typeof call.name === 'string' && call.name.trim())
+        .map(call => ({
+          name: String(call.name || 'unknown'),
+          args: call.args || {},
+          response: {
+            status: 'Failure' as const,
+            error: "Skipped because ask_user was called. Wait for user answers before executing other tools.",
+            allowFallback: true,
+            output: {
+              status: 'deferred_after_ask_user',
+            },
+          },
+        }));
       const questions = normalizeAskUserQuestions((askUserCall as any)?.args?.questions_to_ask);
       if (!questions.length) {
         prevSteps.push({
@@ -113,6 +127,7 @@ export async function processActionResponse({
                 allowFallback: false,
               },
             },
+            ...deferredSiblingCalls,
           ],
         });
         limitPrevSteps(prevSteps);
@@ -143,6 +158,7 @@ export async function processActionResponse({
               },
             },
           },
+          ...deferredSiblingCalls,
         ],
       });
       limitPrevSteps(prevSteps);

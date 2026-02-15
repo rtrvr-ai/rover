@@ -601,7 +601,17 @@ function normalizeTelemetryConfig(cfg: RoverInit | null): {
 
 function normalizeCrossHostPolicy(policy?: 'open_new_tab' | 'same_tab'): 'open_new_tab' | 'same_tab' {
   if (policy === 'same_tab' || policy === 'open_new_tab') return policy;
-  return 'open_new_tab';
+  return 'same_tab';
+}
+
+function resolveActionGateReason(mode: 'controller' | 'observer', allowActions: boolean): string {
+  if (mode === 'observer') {
+    return 'This tab is in observer mode because another tab currently holds Rover action control.';
+  }
+  if (!allowActions) {
+    return 'Actions are disabled by configuration (allowActions=false).';
+  }
+  return 'Controller tab ready for actions.';
 }
 
 function normalizeTaskAutoResumePolicy(policy?: 'auto' | 'confirm' | 'never'): 'auto' | 'confirm' | 'never' {
@@ -2326,6 +2336,13 @@ function setupSessionCoordinator(cfg: RoverInit): void {
       setExecutionMode(role, info);
       const allowActions = role === 'controller' && (currentConfig?.allowActions ?? true);
       bridge?.setAllowActions(allowActions);
+      (bridge as any)?.setActionGateContext?.({
+        mode: role,
+        controllerRuntimeId: info?.holderRuntimeId ?? sessionCoordinator?.getCurrentHolderRuntimeId(),
+        activeLogicalTabId: info?.activeLogicalTabId ?? sessionCoordinator?.getActiveLogicalTabId(),
+        localLogicalTabId: info?.localLogicalTabId ?? sessionCoordinator?.getLocalLogicalTabId(),
+        reason: resolveActionGateReason(role, allowActions),
+      });
       if (role === 'controller') {
         const sharedWorkerContext = sessionCoordinator?.getWorkerContext();
         if (sharedWorkerContext) {
@@ -3129,6 +3146,14 @@ function createRuntime(cfg: RoverInit): void {
     },
     instrumentationOptions: cfg.mode === 'safe' ? { observeInlineMutations: false } : undefined,
   } as any);
+  const initialActionGateMode = currentMode === 'observer' ? 'observer' : 'controller';
+  (bridge as any)?.setActionGateContext?.({
+    mode: initialActionGateMode,
+    controllerRuntimeId: sessionCoordinator?.getCurrentHolderRuntimeId(),
+    activeLogicalTabId: sessionCoordinator?.getActiveLogicalTabId(),
+    localLogicalTabId: sessionCoordinator?.getLocalLogicalTabId(),
+    reason: resolveActionGateReason(initialActionGateMode, initialAllowActions),
+  });
 
   const channel = new MessageChannel();
   bindRpc(channel.port1, {
@@ -3628,6 +3653,15 @@ export function update(cfg: Partial<RoverInit>): void {
     if (typeof cfg.allowActions === 'boolean') {
       bridge.setAllowActions(cfg.allowActions && currentMode === 'controller');
     }
+    const allowActions = currentMode === 'controller' && (currentConfig?.allowActions ?? true);
+    const actionGateMode = currentMode === 'observer' ? 'observer' : 'controller';
+    (bridge as any)?.setActionGateContext?.({
+      mode: actionGateMode,
+      controllerRuntimeId: sessionCoordinator?.getCurrentHolderRuntimeId(),
+      activeLogicalTabId: sessionCoordinator?.getActiveLogicalTabId(),
+      localLogicalTabId: sessionCoordinator?.getLocalLogicalTabId(),
+      reason: resolveActionGateReason(actionGateMode, allowActions),
+    });
     if (cfg.allowedDomains || cfg.domainScopeMode || cfg.externalNavigationPolicy || cfg.navigation?.crossHostPolicy) {
       bridge.setNavigationPolicy({
         allowedDomains: cfg.allowedDomains,

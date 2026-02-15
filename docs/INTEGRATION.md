@@ -337,6 +337,7 @@ rover.boot(config);
 | `allowedDomains` | `string[]` | `[]` | Hostnames where Rover may operate |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | Domain matching strategy |
 | `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
+| `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | Behavior for in-scope host changes (subdomain hops) |
 | `openOnInit` | `boolean` | `false` | Open panel after boot |
 | `allowActions` | `boolean` | `true` | Enable/disable action tools |
 | `tabPolicy.observerByDefault` | `boolean` | `true` | Observer preference for shared tab sessions |
