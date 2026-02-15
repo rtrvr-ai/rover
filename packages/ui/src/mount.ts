@@ -1830,9 +1830,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
       display: none;
       border-top: 1px solid var(--rv-border);
       border-bottom: 1px solid var(--rv-border);
-      padding: 10px 14px;
-      background: rgba(255, 76, 0, 0.04);
-      gap: 10px;
+      padding: 8px 14px;
+      background: rgba(255, 76, 0, 0.035);
+      gap: 8px;
       flex-direction: column;
     }
 
@@ -1851,7 +1851,17 @@ export function mountWidget(opts: MountOptions): RoverUi {
     .questionPromptForm {
       display: flex;
       flex-direction: column;
+      gap: 6px;
+      max-height: min(32vh, 230px);
+    }
+
+    .questionPromptList {
+      display: flex;
+      flex-direction: column;
       gap: 8px;
+      overflow-y: auto;
+      max-height: min(24vh, 170px);
+      padding-right: 2px;
     }
 
     .questionPromptItem {
@@ -1894,6 +1904,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
       display: flex;
       justify-content: flex-end;
       align-items: center;
+      position: sticky;
+      bottom: 0;
+      padding-top: 2px;
+      background: linear-gradient(to bottom, rgba(255, 247, 242, 0), rgba(255, 247, 242, 0.94) 40%);
     }
 
     .questionPromptSubmit {
@@ -2416,7 +2430,15 @@ export function mountWidget(opts: MountOptions): RoverUi {
       }
 
       .questionPrompt {
-        padding: 10px 12px;
+        padding: 8px 12px;
+      }
+
+      .questionPromptForm {
+        max-height: min(34vh, 210px);
+      }
+
+      .questionPromptList {
+        max-height: min(26vh, 150px);
       }
 
       .questionPromptLabel {
@@ -2789,6 +2811,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let greetingRevealTimer: ReturnType<typeof setTimeout> | null = null;
   let waitingForFirstModelSignal = false;
   let currentQuestionPrompt: { questions: RoverAskUserQuestion[] } | null = null;
+  let questionPromptSignature: string | null = null;
+  let questionDraftAnswers: Record<string, string> = {};
 
   /* ── Overflow menu logic ── */
   function toggleOverflow(): void {
@@ -2932,42 +2956,130 @@ export function mountWidget(opts: MountOptions): RoverUi {
     return out.slice(0, 6);
   }
 
+  function buildQuestionPromptSignature(questions: RoverAskUserQuestion[]): string {
+    return questions
+      .map((question) => {
+        const choices = Array.isArray(question.choices)
+          ? question.choices.map(choice => sanitizeText(String(choice || ''))).filter(Boolean).join('|')
+          : '';
+        return `${question.key}::${sanitizeText(question.query)}::${choices}`;
+      })
+      .join('||');
+  }
+
+  function buildQuestionPlaceholder(question: RoverAskUserQuestion): string {
+    const query = sanitizeText(question.query || question.question || '');
+    if (!query) return `Answer for ${question.key}`;
+    const compact = query
+      .replace(/\s+/g, ' ')
+      .replace(/[?.!:\s]+$/, '')
+      .slice(0, 72);
+    if (!compact) return `Answer for ${question.key}`;
+    return `Answer: ${compact}`;
+  }
+
+  function getQuestionInputByKey(key: string): HTMLInputElement | null {
+    for (const node of Array.from(questionPromptForm.querySelectorAll('.questionPromptInput'))) {
+      const input = node as HTMLInputElement;
+      if (input.dataset.key === key) return input;
+    }
+    return null;
+  }
+
   function setQuestionPrompt(prompt?: { questions: RoverAskUserQuestion[] }): void {
     const questions = normalizeQuestionPrompt(prompt);
-    currentQuestionPrompt = questions.length ? { questions } : null;
-    questionPromptList.innerHTML = '';
+    const activeElement = document.activeElement as HTMLElement | null;
+    const wasFocusedInput = activeElement instanceof HTMLInputElement
+      && activeElement.classList.contains('questionPromptInput')
+      && questionPrompt.contains(activeElement)
+      ? activeElement
+      : null;
+    const focusedQuestionKey = wasFocusedInput?.dataset.key;
+    const focusedSelectionStart = wasFocusedInput?.selectionStart ?? null;
+    const focusedSelectionEnd = wasFocusedInput?.selectionEnd ?? null;
 
-    if (!currentQuestionPrompt) {
+    if (!questions.length) {
+      currentQuestionPrompt = null;
+      questionPromptSignature = null;
+      questionDraftAnswers = {};
+      questionPromptList.innerHTML = '';
       questionPrompt.classList.remove('visible');
       syncShortcutsVisibility();
       return;
     }
 
-    for (const question of currentQuestionPrompt.questions) {
-      const item = document.createElement('label');
-      item.className = 'questionPromptItem';
+    const signature = buildQuestionPromptSignature(questions);
+    const shouldRebuild = signature !== questionPromptSignature || !currentQuestionPrompt;
+    currentQuestionPrompt = { questions };
 
-      const label = document.createElement('span');
-      label.className = 'questionPromptLabel';
-      label.textContent = question.query;
-      item.appendChild(label);
+    if (shouldRebuild) {
+      const previousDraftAnswers = questionDraftAnswers;
+      questionDraftAnswers = {};
+      questionPromptList.innerHTML = '';
 
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.className = 'questionPromptInput';
-      input.dataset.key = question.key;
-      input.placeholder = `Answer for ${question.key}`;
-      input.required = true;
-      input.addEventListener('input', () => {
-        input.classList.remove('invalid');
-      });
-      item.appendChild(input);
+      for (const question of currentQuestionPrompt.questions) {
+        const item = document.createElement('label');
+        item.className = 'questionPromptItem';
 
-      questionPromptList.appendChild(item);
+        const label = document.createElement('span');
+        label.className = 'questionPromptLabel';
+        label.textContent = question.query;
+        item.appendChild(label);
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'questionPromptInput';
+        input.dataset.key = question.key;
+        input.placeholder = buildQuestionPlaceholder(question);
+        input.required = true;
+        const draftValue = String(previousDraftAnswers[question.key] || '');
+        questionDraftAnswers[question.key] = draftValue;
+        input.value = draftValue;
+        input.addEventListener('input', () => {
+          questionDraftAnswers[question.key] = input.value;
+          input.classList.remove('invalid');
+        });
+        item.appendChild(input);
+
+        questionPromptList.appendChild(item);
+      }
+      questionPromptSignature = signature;
     }
 
     questionPrompt.classList.add('visible');
+    syncComposerDisabledState();
     syncShortcutsVisibility();
+
+    if (focusedQuestionKey) {
+      const input = getQuestionInputByKey(focusedQuestionKey);
+      if (input) {
+        input.focus();
+        if (focusedSelectionStart !== null || focusedSelectionEnd !== null) {
+          const start = focusedSelectionStart ?? input.value.length;
+          const end = focusedSelectionEnd ?? start;
+          try {
+            input.setSelectionRange(start, end);
+          } catch {
+            // no-op
+          }
+        }
+        return;
+      }
+    }
+
+    if (shouldRebuild) {
+      const firstUnanswered = currentQuestionPrompt.questions.find(
+        question => !sanitizeText(questionDraftAnswers[question.key] || ''),
+      );
+      const targetKey = firstUnanswered?.key || currentQuestionPrompt.questions[0]?.key;
+      if (!targetKey) return;
+      const nextInput = getQuestionInputByKey(targetKey);
+      const shouldAutoFocusQuestion =
+        !activeElement
+        || activeElement === document.body
+        || !panel.contains(activeElement);
+      if (nextInput && shouldAutoFocusQuestion) nextInput.focus();
+    }
   }
 
   function syncProcessingIndicator(): void {
@@ -3478,8 +3590,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     let firstInvalid: HTMLInputElement | null = null;
 
     for (const question of currentQuestionPrompt.questions) {
-      const input = Array.from(questionPromptForm.querySelectorAll('.questionPromptInput'))
-        .find(node => (node as HTMLInputElement).dataset.key === question.key) as HTMLInputElement | undefined;
+      const input = getQuestionInputByKey(question.key);
       if (!input) continue;
       const value = sanitizeText(input.value);
       if (!value) {
@@ -3488,6 +3599,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
         continue;
       }
       input.classList.remove('invalid');
+      questionDraftAnswers[question.key] = value;
       answersByKey[question.key] = value;
       rawLines.push(`${question.key}: ${value}`);
     }
