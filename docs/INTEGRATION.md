@@ -377,10 +377,10 @@ rover.boot(config);
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `telemetry.enabled` | `boolean` | `true` | Enable runtime telemetry batching |
-| `telemetry.sampleRate` | `number` | `1` | Event sampling ratio (`0..1`) |
-| `telemetry.flushIntervalMs` | `number` | `12000` | Telemetry flush cadence |
-| `telemetry.maxBatchSize` | `number` | `30` | Max events per telemetry request |
-| `telemetry.includePayloads` | `boolean` | `false` | Include richer event payloads |
+| `telemetry.sampleRate` | `number` | `1` | Sampling ratio (`1` = all events, `0.1` ≈ 10%) |
+| `telemetry.flushIntervalMs` | `number` | `12000` | Flush cadence for buffered telemetry events |
+| `telemetry.maxBatchSize` | `number` | `30` | Maximum number of telemetry events sent per flush request |
+| `telemetry.includePayloads` | `boolean` | `false` | Include richer per-event payload details (debug/tool context). Increases telemetry volume and may include sensitive runtime content. |
 
 ### API Execution
 
