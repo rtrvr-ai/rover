@@ -41,6 +41,7 @@ export type BridgeOptions = {
   externalNavigationPolicy?: ExternalNavigationPolicy;
   crossHostPolicy?: CrossHostPolicy;
   onNavigationGuardrail?: (event: NavigationGuardrailEvent) => void;
+  onBeforeAgentNavigation?: (targetUrl: string) => void;
   onBeforeCrossHostNavigation?: (targetUrl: string) => void;
   registerOpenedTab?: (payload: {
     url: string;
@@ -71,6 +72,7 @@ export class Bridge {
   private listKnownTabs?: BridgeOptions['listKnownTabs'];
   private switchToLogicalTab?: BridgeOptions['switchToLogicalTab'];
   private onNavigationGuardrail?: BridgeOptions['onNavigationGuardrail'];
+  private onBeforeAgentNavigation?: BridgeOptions['onBeforeAgentNavigation'];
   private onBeforeCrossHostNavigation?: BridgeOptions['onBeforeCrossHostNavigation'];
   private instrumentation: InstrumentationController;
   private highlightEl: HTMLDivElement | null = null;
@@ -93,6 +95,7 @@ export class Bridge {
     this.listKnownTabs = opts.listKnownTabs;
     this.switchToLogicalTab = opts.switchToLogicalTab;
     this.onNavigationGuardrail = opts.onNavigationGuardrail;
+    this.onBeforeAgentNavigation = opts.onBeforeAgentNavigation;
     this.onBeforeCrossHostNavigation = opts.onBeforeCrossHostNavigation;
     this.instrumentation =
       opts.instrumentation ??
@@ -421,6 +424,7 @@ export class Bridge {
           return this.domainScopeBlockedResponse(targetUrl, reason);
         }
 
+        this.notifyAgentNavigation(targetUrl);
         this.notifyCrossHostNavigation(targetUrl);
         window.location.href = targetUrl;
         return { success: true, output: { url: targetUrl, navigation: 'same_tab' } };
@@ -452,19 +456,23 @@ export class Bridge {
           return this.domainScopeBlockedResponse(targetUrl, reason);
         }
 
+        this.notifyAgentNavigation(targetUrl);
         this.notifyCrossHostNavigation(targetUrl);
         window.location.href = targetUrl;
         return { success: true, output: { url: targetUrl, navigation: 'same_tab' } };
       }
       case SystemToolNames.go_back: {
+        this.notifyAgentNavigation(window.location.href);
         window.history.back();
         return { success: true };
       }
       case SystemToolNames.go_forward: {
+        this.notifyAgentNavigation(window.location.href);
         window.history.forward();
         return { success: true };
       }
       case SystemToolNames.refresh_page: {
+        this.notifyAgentNavigation(window.location.href);
         window.location.reload();
         return { success: true };
       }
@@ -474,6 +482,7 @@ export class Bridge {
         const targetUrl = normalizeUrl(rawUrl, window.location.href);
         if (!targetUrl) return { success: false, error: `open_new_tab: invalid url "${rawUrl}"`, allowFallback: true };
         if (this.shouldConvertOpenNewTabToSameTab(targetUrl)) {
+          this.notifyAgentNavigation(targetUrl);
           this.notifyCrossHostNavigation(targetUrl);
           window.location.assign(targetUrl);
           return {
@@ -572,6 +581,10 @@ export class Bridge {
     const targetHost = extractHostname(targetUrl);
     if (!currentHost || !targetHost || currentHost === targetHost) return false;
     return isUrlAllowedByDomains(targetUrl, this.allowedDomains);
+  }
+
+  private notifyAgentNavigation(targetUrl: string): void {
+    try { this.onBeforeAgentNavigation?.(targetUrl); } catch { /* ignore */ }
   }
 
   private notifyCrossHostNavigation(targetUrl: string): void {
