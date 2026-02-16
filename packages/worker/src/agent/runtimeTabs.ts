@@ -117,15 +117,29 @@ export async function resolveRuntimeTabs(
     }
   }
 
-  if (!tabIds.length) {
-    tabIds = [activeTabId];
-  } else if (!tabIds.includes(activeTabId)) {
-    tabIds = [activeTabId, ...tabIds];
-  }
-
   const nowMs = Date.now();
   const listedById = new Map<number, RuntimeTabSnapshot>();
   for (const tab of listedTabs) listedById.set(tab.id, tab);
+  const freshRuntimeListedIds = listedTabs
+    .filter(tab => !!tab.runtimeId && nowMs - (tab.updatedAt || 0) <= staleRuntimeTabMaxAgeMs)
+    .map(tab => tab.id);
+  if (freshRuntimeListedIds.length > 0 && !freshRuntimeListedIds.includes(activeTabId)) {
+    const freshestRuntimeTabId = [...freshRuntimeListedIds].sort(
+      (a, b) => Number(listedById.get(b)?.updatedAt || 0) - Number(listedById.get(a)?.updatedAt || 0),
+    )[0];
+    if (Number.isFinite(freshestRuntimeTabId) && freshestRuntimeTabId > 0) {
+      activeTabId = freshestRuntimeTabId;
+    }
+  }
+  if (!tabIds.length) {
+    tabIds = [activeTabId];
+  } else if (!tabIds.includes(activeTabId)) {
+    if (listedTabs.length > 0) {
+      activeTabId = tabIds[0];
+    } else {
+      tabIds = [activeTabId, ...tabIds];
+    }
+  }
 
   const prioritized = tabIds.filter(tabId => {
     if (tabId === activeTabId) return true;

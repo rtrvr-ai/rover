@@ -107,6 +107,7 @@ const terminalRuns = new Map<string, TerminalRunResult>();
 
 const RPC_TIMEOUT_MS = 30_000;
 const DETACHED_EXTERNAL_TAB_MAX_AGE_MS = 90_000;
+const PENDING_ATTACH_TAB_MAX_AGE_MS = 20_000;
 const MAX_CHATLOG_ENTRIES = 12;
 
 function resolveAgentName(config: RoverWorkerConfig | null): string {
@@ -283,6 +284,8 @@ async function getKnownTabs(): Promise<RoverTab[]> {
             id,
             runtimeId: typeof tab?.runtimeId === 'string' ? tab.runtimeId : undefined,
             updatedAt: Number(tab?.updatedAt) || 0,
+            detachedAt: Number(tab?.detachedAt) || 0,
+            detachedReason: typeof tab?.detachedReason === 'string' ? tab.detachedReason : undefined,
             url: typeof tab?.url === 'string' ? tab.url : undefined,
             title: typeof tab?.title === 'string' ? tab.title : undefined,
             external,
@@ -295,8 +298,13 @@ async function getKnownTabs(): Promise<RoverTab[]> {
         })
         .filter(tab => Number.isFinite(tab.id) && tab.id > 0)
         .filter(tab => {
-          if (!tab.external || tab.runtimeId) return true;
-          return nowMs - (tab.updatedAt || 0) <= DETACHED_EXTERNAL_TAB_MAX_AGE_MS;
+          const freshness = Math.max(Number(tab.updatedAt) || 0, Number(tab.detachedAt) || 0);
+          if (tab.runtimeId) return true;
+          if (tab.external) return nowMs - freshness <= DETACHED_EXTERNAL_TAB_MAX_AGE_MS;
+          if (tab.detachedReason === 'opened_pending_attach') {
+            return nowMs - freshness <= PENDING_ATTACH_TAB_MAX_AGE_MS;
+          }
+          return false;
         })
         .map((tab): RoverTab => ({
           id: tab.id,
@@ -812,6 +820,7 @@ function buildChatLogFromHistory(input: ChatMessage[], currentUserInput?: string
   const sanitizeChatText = (raw: string): string => {
     return String(raw || '').replace(/\s+/g, ' ').trim();
   };
+  const ASK_USER_PROMPT_PREFIX = 'i need a bit more info before continuing:';
 
   const normalizedCurrentUserInput = currentUserInput
     ? sanitizeChatText(currentUserInput)
@@ -823,7 +832,8 @@ function buildChatLogFromHistory(input: ChatMessage[], currentUserInput?: string
       role: message.role as 'user' | 'assistant',
       content: sanitizeChatText(String(message.content || '')),
     }))
-    .filter(message => !!message.content);
+    .filter(message => !!message.content)
+    .filter(message => !(message.role === 'assistant' && message.content.toLowerCase().startsWith(ASK_USER_PROMPT_PREFIX)));
 
   if (normalizedCurrentUserInput) {
     for (let i = entries.length - 1; i >= 0; i -= 1) {
@@ -841,30 +851,17 @@ function buildChatLogFromHistory(input: ChatMessage[], currentUserInput?: string
     deduped.push(entry);
   }
 
-  // Keep original user goal as anchor, plus latest conversational context.
-  const firstUser = deduped.find(message => message.role === 'user');
-  const tailBudget = firstUser ? Math.max(1, MAX_CHATLOG_ENTRIES - 1) : MAX_CHATLOG_ENTRIES;
-  let selected = deduped.slice(-tailBudget);
-
-  if (firstUser) {
-    const hasAnchor = selected.some(
-      message => message.role === 'user' && message.content === firstUser.content,
-    );
-    if (!hasAnchor) {
-      selected = [firstUser, ...selected];
-    }
+  let selected = deduped.slice(-MAX_CHATLOG_ENTRIES);
+  const seen = new Set<string>();
+  const compactedReverse: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  for (let i = selected.length - 1; i >= 0; i -= 1) {
+    const entry = selected[i];
+    const key = `${entry.role}::${entry.content.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    compactedReverse.push(entry);
   }
-
-  if (selected.length > MAX_CHATLOG_ENTRIES) {
-    selected = selected.slice(-MAX_CHATLOG_ENTRIES);
-  }
-
-  if (selected.length > 1 && selected[0]?.role !== 'user') {
-    const firstUserIndex = selected.findIndex(message => message.role === 'user');
-    if (firstUserIndex > 0) {
-      selected = selected.slice(firstUserIndex);
-    }
-  }
+  selected = compactedReverse.reverse();
 
   return selected.map(message => ({
     role: message.role === 'user' ? 'user' : 'model',
@@ -1213,15 +1210,12 @@ async function handleUserMessage(
     history[history.length - 1]?.role === 'user' &&
     history[history.length - 1]?.content === text;
 
-  if (!shouldSkipUserPush) {
-    history.push({ role: 'user', content: text });
-    postStateSnapshot();
-  }
-
   let effectiveUserInput = text;
+  let consumedAsAskUserAnswer = false;
   if (pendingAskUser?.questions?.length) {
     const normalizedAnswers = normalizeAskUserAnswerMeta(options?.askUserAnswers, pendingAskUser.questions, text);
     if (normalizedAnswers) {
+      consumedAsAskUserAnswer = true;
       const answerContext = buildAskUserAnswerContext(pendingAskUser.questions, normalizedAnswers);
       effectiveUserInput = answerContext;
 
@@ -1259,6 +1253,11 @@ async function handleUserMessage(
       pendingAskUser = undefined;
       postStateSnapshot();
     }
+  }
+
+  if (!shouldSkipUserPush && !consumedAsAskUserAnswer) {
+    history.push({ role: 'user', content: text });
+    postStateSnapshot();
   }
 
   const tabs = await getKnownTabs();
