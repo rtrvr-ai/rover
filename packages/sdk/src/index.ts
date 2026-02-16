@@ -293,6 +293,7 @@ let suppressCheckpointSync = false;
 let currentMode: RoverExecutionMode = 'controller';
 let workerReady = false;
 let autoResumeAttempted = false;
+let agentNavigationPending = false;
 let runSafetyTimer: ReturnType<typeof setTimeout> | null = null;
 let unloadHandlerInstalled = false;
 type PendingTaskSuggestion =
@@ -1403,10 +1404,13 @@ function ensureUnloadHandler(): void {
     // If there's an auto-resumable pending run, clear the runtimeId from activeRun
     // so the new runtime (after page reload) isn't blocked by stale runtimeId check
     if (runtimeState?.pendingRun?.autoResume) {
+      const effectiveReason =
+        runtimeState.pendingRun.resumeReason
+        || (agentNavigationPending ? 'agent_navigation' : 'page_reload');
       const markedPending = sanitizePendingRun({
         ...runtimeState.pendingRun,
         resumeRequired: true,
-        resumeReason: runtimeState.pendingRun.resumeReason || 'page_reload',
+        resumeReason: effectiveReason,
       });
       runtimeState.pendingRun = markedPending;
       if (markedPending) {
@@ -1775,6 +1779,7 @@ function postRun(
 
   const previousAttempts = runtimeState?.pendingRun?.id === runId ? runtimeState.pendingRun.attempts : 0;
 
+  agentNavigationPending = false;
   setPendingRun({
     id: runId,
     text: trimmed,
@@ -2096,6 +2101,7 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
           startedAt: state.activeRun.startedAt,
           attempts: runtimeState.pendingRun?.attempts || 0,
           autoResume: true,
+          resumeReason: runtimeState.pendingRun?.resumeReason,
         }),
       );
     } else {
@@ -2656,6 +2662,8 @@ function handleWorkerMessage(msg: any): void {
         startedAt: existing?.startedAt || Date.now(),
         attempts: existing?.attempts || 0,
         autoResume: existing?.autoResume !== false,
+        resumeReason: existing?.resumeReason,
+        resumeRequired: existing?.resumeRequired,
       }),
     );
     sessionCoordinator?.setActiveRun({ runId: msg.runId, text: String(msg.text || '') });
@@ -3188,6 +3196,9 @@ function createRuntime(cfg: RoverInit): void {
       });
     },
     onBeforeAgentNavigation: (_targetUrl: string) => {
+      // Always mark agent navigation intent — this flag survives pendingRun mutations
+      // and is used as fallback in pagehide if resumeReason gets overwritten.
+      agentNavigationPending = true;
       if (!runtimeState?.pendingRun) return;
       // Only mark for same-host — cross-host is handled by onBeforeCrossHostNavigation
       const currentHost = new URL(window.location.href).hostname;
@@ -3202,6 +3213,7 @@ function createRuntime(cfg: RoverInit): void {
       }
     },
     onBeforeCrossHostNavigation: (_targetUrl: string) => {
+      agentNavigationPending = true;
       if (!runtimeState || !currentConfig) return;
       // Mark the pending run for cross-host resume
       if (runtimeState.pendingRun) {
@@ -3838,6 +3850,7 @@ export function shutdown(): void {
   currentConfig = null;
   workerReady = false;
   autoResumeAttempted = false;
+  agentNavigationPending = false;
   runtimeId = '';
   resolvedVisitorId = undefined;
   resolvedVisitor = undefined;
