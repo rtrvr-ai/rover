@@ -1227,11 +1227,22 @@ async function handleUserMessage(
       applyAgentPrevSteps([
         ...agentPrevSteps,
         {
-          thought: 'User provided clarification answers.',
-          data: JSON.stringify({
-            ask_user_answers: normalizedAnswers.answersByKey,
-            raw_user_reply: normalizedAnswers.rawText,
-          }),
+          functions: [{
+            name: 'ask_user',
+            args: {
+              questions_to_ask: pendingAskUser.questions.map(q => ({
+                key: q.key,
+                query: q.query,
+              })),
+            },
+            response: {
+              status: 'Success',
+              output: {
+                ask_user_answers: normalizedAnswers.answersByKey,
+                raw_user_reply: normalizedAnswers.rawText,
+              },
+            },
+          }],
         },
       ], { snapshot: false });
 

@@ -260,6 +260,16 @@ export class Bridge {
         }
         return this.domainScopeBlockedResponse(intercepted.targetUrl, reason);
       }
+      // Notify agent navigation before executing any click.
+      // For anchors: use resolved URL. For non-anchors: use current page URL as fallback.
+      // If the click navigates, auto-resume works. If not, the notification is harmless.
+      const clickTargetUrl = this.getClickTargetUrl(args);
+      if (clickTargetUrl) {
+        this.notifyAgentNavigation(clickTargetUrl);
+        this.notifyCrossHostNavigation(clickTargetUrl);
+      } else {
+        this.notifyAgentNavigation(window.location.href);
+      }
     }
 
     if (toolName === SystemToolNames.describe_images) {

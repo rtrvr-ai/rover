@@ -3291,19 +3291,23 @@ function createRuntime(cfg: RoverInit): void {
       if (forceLocalExecution) {
         return bridge!.executeTool(params.call, params.payload);
       }
+
+      // Use tab_id from tool args if specified, otherwise fall back to active tab
+      const toolTabId = Number(params?.call?.args?.tab_id);
       const activeTabId = sessionCoordinator?.getActiveLogicalTabId();
+      const routeTabId = (Number.isFinite(toolTabId) && toolTabId > 0) ? toolTabId : activeTabId;
       const localTabId = sessionCoordinator?.getLocalLogicalTabId();
 
-      if (!activeTabId || activeTabId === localTabId || !sessionCoordinator) {
+      if (!routeTabId || routeTabId === localTabId || !sessionCoordinator) {
         return bridge!.executeTool(params.call, params.payload);
       }
 
       const tabs = sessionCoordinator.listTabs();
-      const targetTab = tabs.find(t => t.logicalTabId === activeTabId);
+      const targetTab = tabs.find(t => t.logicalTabId === routeTabId);
       if (!targetTab) {
         return buildTabAccessToolError(
           runtimeCfg,
-          { logicalTabId: activeTabId, external: true },
+          { logicalTabId: routeTabId, external: true },
           'target_tab_missing',
         );
       }
@@ -3316,7 +3320,7 @@ function createRuntime(cfg: RoverInit): void {
         return bridge!.executeTool(params.call, params.payload);
       }
 
-      if (!targetTab.runtimeId || !sessionCoordinator.isTabAlive(activeTabId)) {
+      if (!targetTab.runtimeId || !sessionCoordinator.isTabAlive(routeTabId)) {
         return buildTabAccessToolError(runtimeCfg, targetTab, 'target_tab_inactive');
       }
 

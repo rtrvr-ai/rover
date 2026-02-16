@@ -139,6 +139,14 @@ function normalizeUrl(raw: string): string {
   }
 }
 
+function extractHostname(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
 function sanitizeSharedTask(raw: any): SharedTaskState | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const taskId = typeof raw.taskId === 'string' ? raw.taskId.trim() : '';
@@ -881,9 +889,24 @@ export class SessionCoordinator {
         existing.updatedAt = now();
         nextLocalTabId = existing.logicalTabId;
       } else {
-        const adopted = draft.tabs.find(tab => !tab.runtimeId && tab.url === normalizedUrl && now() - tab.openedAt < 180000);
+        let adopted = draft.tabs.find(tab => !tab.runtimeId && tab.url === normalizedUrl && now() - tab.openedAt < 180000);
+        // If no exact URL match, try same-domain adoption for recently detached tabs
+        // (handles same-domain path navigation e.g. rtrvr.ai/ → rtrvr.ai/cloud)
+        if (!adopted) {
+          const currentHost = extractHostname(normalizedUrl);
+          const candidates = draft.tabs
+            .filter(tab =>
+              !tab.runtimeId
+              && currentHost
+              && extractHostname(tab.url) === currentHost
+              && now() - tab.updatedAt < 10_000
+            )
+            .sort((a, b) => b.updatedAt - a.updatedAt);
+          adopted = candidates[0];
+        }
         if (adopted) {
           adopted.runtimeId = this.runtimeId;
+          adopted.url = normalizedUrl || adopted.url;
           adopted.title = title || adopted.title;
           adopted.updatedAt = now();
           nextLocalTabId = adopted.logicalTabId;
@@ -1049,11 +1072,14 @@ export class SessionCoordinator {
   broadcastClosing(): void {
     this.closing = true;
     if (!this.channel) return;
-    // Remove local tab entry from shared state before broadcasting
+    // Mark local tab as detached instead of removing.
+    // For navigation: new runtime adopts the detached tab, preserving logicalTabId.
+    // For genuine tab close: pruneDetachedTabs removes it after STALE_DETACHED_TAB_MS.
     this.mutate('local', draft => {
-      draft.tabs = draft.tabs.filter(t => t.runtimeId !== this.runtimeId);
-      if (draft.activeLogicalTabId && !draft.tabs.some(t => t.logicalTabId === draft.activeLogicalTabId)) {
-        draft.activeLogicalTabId = undefined;
+      const localTab = draft.tabs.find(t => t.runtimeId === this.runtimeId);
+      if (localTab) {
+        localTab.runtimeId = undefined;
+        localTab.updatedAt = now();
       }
     });
     this.channel.postMessage({
