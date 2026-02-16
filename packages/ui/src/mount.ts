@@ -107,6 +107,7 @@ export type MountOptions = {
   onNewTask?: () => void;
   onEndTask?: () => void;
   onCancelRun?: () => void;
+  onCancelQuestionFlow?: () => void;
   onTaskSuggestionPrimary?: () => void;
   onTaskSuggestionSecondary?: () => void;
   shortcuts?: RoverShortcut[];
@@ -1905,10 +1906,27 @@ export function mountWidget(opts: MountOptions): RoverUi {
       display: flex;
       justify-content: flex-end;
       align-items: center;
+      gap: 8px;
       position: sticky;
       bottom: 0;
       padding-top: 2px;
       background: linear-gradient(to bottom, rgba(255, 247, 242, 0), rgba(255, 247, 242, 0.94) 40%);
+    }
+
+    .questionPromptCancel {
+      border: 1px solid var(--rv-border-strong);
+      background: rgba(255, 255, 255, 0.88);
+      color: var(--rv-text-secondary);
+      border-radius: var(--rv-radius-sm);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+
+    .questionPromptCancel:hover {
+      background: rgba(242, 246, 250, 0.95);
     }
 
     .questionPromptSubmit {
@@ -2743,6 +2761,12 @@ export function mountWidget(opts: MountOptions): RoverUi {
   const questionPromptActions = document.createElement('div');
   questionPromptActions.className = 'questionPromptActions';
 
+  const questionPromptCancel = document.createElement('button');
+  questionPromptCancel.type = 'button';
+  questionPromptCancel.className = 'questionPromptCancel';
+  questionPromptCancel.textContent = 'Cancel';
+  questionPromptActions.appendChild(questionPromptCancel);
+
   const questionPromptSubmit = document.createElement('button');
   questionPromptSubmit.type = 'submit';
   questionPromptSubmit.className = 'questionPromptSubmit';
@@ -3153,6 +3177,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   function syncComposerDisabledState(): void {
     const disabled = currentMode === 'observer' && !canComposeInObserver;
     inputEl.disabled = disabled;
+    questionPromptCancel.disabled = disabled;
     questionPromptSubmit.disabled = disabled;
     for (const node of Array.from(questionPromptForm.querySelectorAll('.questionPromptInput'))) {
       (node as HTMLInputElement).disabled = disabled;
@@ -3608,6 +3633,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       if (!value) {
         input.classList.remove('invalid');
         delete questionDraftAnswers[question.key];
+        rawLines.push(`${question.key}: (no answer provided)`);
         continue;
       }
       input.classList.remove('invalid');
@@ -3622,7 +3648,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
     }
 
     const keys = currentQuestionPrompt.questions.map(question => question.key);
-    const rawText = rawLines.join('\n');
+    const rawText = rawLines.length
+      ? rawLines.join('\n')
+      : keys.map(key => `${key}: (no answer provided)`).join('\n');
     opts.onSend(rawText, {
       askUserAnswers: {
         answersByKey,
@@ -3630,7 +3658,15 @@ export function mountWidget(opts: MountOptions): RoverUi {
         keys,
       },
     });
-    setQuestionPrompt(undefined);
+  });
+
+  questionPromptCancel.addEventListener('click', () => {
+    if (inputEl.disabled) return;
+    if (opts.onCancelQuestionFlow) {
+      opts.onCancelQuestionFlow();
+      return;
+    }
+    opts.onCancelRun?.();
   });
 
   /* Enter to send, Shift+Enter for newline */

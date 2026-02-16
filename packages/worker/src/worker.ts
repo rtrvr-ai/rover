@@ -40,6 +40,7 @@ type RoverWorkerConfig = RoverAgentConfig & {
 type PersistedWorkerState = {
   trajectoryId: string;
   taskBoundaryId?: string;
+  rootUserInput?: string;
   history: ChatMessage[];
   plannerHistory: unknown[];
   agentPrevSteps: PreviousSteps[];
@@ -47,11 +48,15 @@ type PersistedWorkerState = {
   pendingAskUser?: PendingAskUserPrompt;
 };
 
+type RunTerminalState = 'waiting_input' | 'in_progress' | 'completed' | 'failed';
+
 type RunOutcome = {
   route?: { mode?: 'act' | 'planner'; score?: number; reason?: string };
   taskComplete: boolean;
   needsUserInput?: boolean;
   questions?: PlannerQuestion[];
+  terminalState?: RunTerminalState;
+  contextResetRecommended?: boolean;
 };
 
 type AskUserAnswerMeta = {
@@ -60,10 +65,18 @@ type AskUserAnswerMeta = {
   keys?: string[];
 };
 
+type PendingAskUserStepRef = {
+  stepIndex: number;
+  functionIndex: number;
+  accTreeId?: string;
+};
+
 type PendingAskUserPrompt = {
   questions: PlannerQuestion[];
   source: 'act' | 'planner';
   askedAt: number;
+  boundaryId?: string;
+  stepRef?: PendingAskUserStepRef;
 };
 
 type AssistantMessageBlock =
@@ -79,12 +92,16 @@ type TerminalRunResult =
   | {
       ok: true;
       outcome: RunOutcome;
+      taskBoundaryId: string;
     }
   | {
       ok: false;
       error: string;
       taskComplete: false;
       needsUserInput: false;
+      terminalState: 'failed';
+      contextResetRecommended: boolean;
+      taskBoundaryId: string;
     };
 
 const history: ChatMessage[] = [];
@@ -94,6 +111,7 @@ let toolRegistry = new ToolRegistry();
 let plannerHistory: any[] = [];
 let agentPrevSteps: PreviousSteps[] = [];
 let pendingAskUser: PendingAskUserPrompt | undefined;
+let rootUserInput = '';
 let trajectoryId: string = crypto.randomUUID();
 let taskBoundaryId: string = crypto.randomUUID();
 let tabularStore: TabularStore | null = null;
@@ -109,6 +127,11 @@ const RPC_TIMEOUT_MS = 30_000;
 const DETACHED_EXTERNAL_TAB_MAX_AGE_MS = 90_000;
 const PENDING_ATTACH_TAB_MAX_AGE_MS = 20_000;
 const MAX_CHATLOG_ENTRIES = 12;
+const CHATLOG_STOPWORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'has', 'have', 'how', 'i', 'in', 'is', 'it',
+  'me', 'my', 'of', 'on', 'or', 'our', 'that', 'the', 'their', 'them', 'there', 'they', 'this', 'to', 'was',
+  'we', 'were', 'what', 'when', 'where', 'which', 'who', 'why', 'with', 'you', 'your',
+]);
 
 function resolveAgentName(config: RoverWorkerConfig | null): string {
   const raw = String(config?.ui?.agent?.name || '').trim();
@@ -444,6 +467,11 @@ function normalizeAskUserAnswerMeta(
 ): { answersByKey: Record<string, string>; rawText: string } | undefined {
   const validKeys = new Set(questions.map(question => question.key));
   const answersByKey: Record<string, string> = {};
+  const submittedKeys = Array.isArray(raw?.keys)
+    ? raw.keys
+      .map(key => String(key || '').trim())
+      .filter(key => !!key && validKeys.has(key))
+    : [];
 
   if (raw?.answersByKey && typeof raw.answersByKey === 'object') {
     for (const [key, value] of Object.entries(raw.answersByKey)) {
@@ -472,7 +500,13 @@ function normalizeAskUserAnswerMeta(
   }
 
   const rawText = String(raw?.rawText || fallback || '').trim();
-  if (!rawText && Object.keys(answersByKey).length === 0) return undefined;
+  if (!rawText && Object.keys(answersByKey).length === 0) {
+    if (!submittedKeys.length) return undefined;
+    return {
+      answersByKey,
+      rawText: submittedKeys.map(key => `${key}: (no answer provided)`).join('\n'),
+    };
+  }
   return { answersByKey, rawText };
 }
 
@@ -492,11 +526,238 @@ function buildAskUserAnswerContext(
   return lines.join('\n');
 }
 
+function normalizeRootUserInput(input: string | undefined): string | undefined {
+  const normalized = String(input || '').trim();
+  return normalized || undefined;
+}
+
+function getRootUserInputFallbackFromHistory(): string | undefined {
+  for (const message of history) {
+    if (message.role !== 'user') continue;
+    const content = normalizeRootUserInput(String(message.content || ''));
+    if (content) return content;
+  }
+  return undefined;
+}
+
+function buildContinuePlanningInput(
+  focus: string,
+  lastToolName?: string,
+  lastToolOutput?: string,
+): string {
+  const safeToolName = String(lastToolName || '').trim();
+  const safeFocus = String(focus || '').trim();
+  const lines = [
+    safeToolName
+      ? `The tool \`${safeToolName}\` just finished executing.`
+      : 'No tool was issued previously.',
+    `Please analyze the progress based on the complete history and determine the single next best step required to fulfill the overall request: ${safeFocus || '(none)'}.`,
+    `If the request is complete, invoke tool \`${PLANNER_FUNCTION_CALLS.TASK_COMPLETE}\` via \`tool_code\`. If not, invoke the appropriate tool.`,
+  ];
+  const output = String(lastToolOutput || '').trim();
+  if (output) {
+    lines.push('[LAST_TOOL_OUTPUT]');
+    lines.push(output);
+  }
+  return lines.join('\n');
+}
+
+function findLatestAskUserFunctionStep(
+  steps: PreviousSteps[],
+): { stepIndex: number; functionIndex: number } | undefined {
+  if (!Array.isArray(steps) || steps.length === 0) return undefined;
+  for (let stepIndex = steps.length - 1; stepIndex >= 0; stepIndex -= 1) {
+    const step = steps[stepIndex];
+    const functions = Array.isArray(step?.functions) ? step.functions : [];
+    for (let functionIndex = functions.length - 1; functionIndex >= 0; functionIndex -= 1) {
+      const fn = functions[functionIndex];
+      if (String(fn?.name || '').trim().toLowerCase() === 'ask_user') {
+        return { stepIndex, functionIndex };
+      }
+    }
+  }
+  return undefined;
+}
+
+function resolveAskUserStepRef(
+  steps: PreviousSteps[],
+  prompt?: PendingAskUserPrompt,
+): { stepIndex: number; functionIndex: number } | undefined {
+  const explicit = prompt?.stepRef;
+  if (
+    explicit
+    && prompt?.boundaryId
+    && prompt.boundaryId === taskBoundaryId
+    && Number.isFinite(explicit.stepIndex)
+    && explicit.stepIndex >= 0
+    && Number.isFinite(explicit.functionIndex)
+    && explicit.functionIndex >= 0
+    && explicit.stepIndex < steps.length
+  ) {
+    const step = steps[explicit.stepIndex];
+    const functions = Array.isArray(step?.functions) ? step.functions : [];
+    const fn = functions[explicit.functionIndex];
+    if (String(fn?.name || '').trim().toLowerCase() === 'ask_user') {
+      return {
+        stepIndex: explicit.stepIndex,
+        functionIndex: explicit.functionIndex,
+      };
+    }
+  }
+
+  const refs: Array<{ stepIndex: number; functionIndex: number }> = [];
+  for (let stepIndex = 0; stepIndex < steps.length; stepIndex += 1) {
+    const step = steps[stepIndex];
+    const functions = Array.isArray(step?.functions) ? step.functions : [];
+    for (let functionIndex = 0; functionIndex < functions.length; functionIndex += 1) {
+      const fn = functions[functionIndex];
+      if (String(fn?.name || '').trim().toLowerCase() === 'ask_user') {
+        refs.push({ stepIndex, functionIndex });
+      }
+    }
+  }
+  if (refs.length === 1) return refs[0];
+  if (refs.length > 1) return refs[refs.length - 1];
+  return undefined;
+}
+
+function captureLatestAskUserStepRef(steps: PreviousSteps[]): PendingAskUserStepRef | undefined {
+  const ref = findLatestAskUserFunctionStep(steps);
+  if (!ref) return undefined;
+  const step = steps[ref.stepIndex];
+  return {
+    stepIndex: ref.stepIndex,
+    functionIndex: ref.functionIndex,
+    ...(typeof (step as any)?.accTreeId === 'string' && String((step as any).accTreeId).trim()
+      ? { accTreeId: String((step as any).accTreeId).trim() }
+      : {}),
+  };
+}
+
+function buildPendingAskUserPrompt(
+  source: 'act' | 'planner',
+  questions: PlannerQuestion[],
+): PendingAskUserPrompt {
+  const stepRef = captureLatestAskUserStepRef(agentPrevSteps);
+  return {
+    questions,
+    source,
+    askedAt: Date.now(),
+    boundaryId: taskBoundaryId,
+    ...(stepRef ? { stepRef } : {}),
+  };
+}
+
+function mergeAskUserAnswerIntoPrevSteps(
+  inputSteps: PreviousSteps[],
+  prompt: PendingAskUserPrompt | undefined,
+  answers: { answersByKey: Record<string, string>; rawText: string },
+): PreviousSteps[] {
+  const next = sanitizeAgentPrevStepsForPersist(Array.isArray(inputSteps) ? inputSteps : []);
+  const questions = normalizePlannerQuestions(prompt?.questions);
+  if (!questions.length) return next;
+  const askUserRef = resolveAskUserStepRef(next, prompt);
+  const questionPayload = normalizePlannerQuestions(questions).map(question => ({
+    key: question.key,
+    query: question.query,
+    ...(question.required === false ? { required: false } : {}),
+  }));
+
+  const buildOutputPayload = (previousOutput: unknown) => {
+    const prev =
+      previousOutput && typeof previousOutput === 'object' && !Array.isArray(previousOutput)
+        ? previousOutput as Record<string, unknown>
+        : {};
+    const prevQuestions = normalizePlannerQuestions((prev as any).questions);
+    const resolvedQuestions = prevQuestions.length ? prevQuestions : normalizePlannerQuestions(questions);
+    return {
+      ...prev,
+      status: 'answered',
+      needsUserInput: false,
+      ...(resolvedQuestions.length ? { questions: resolvedQuestions } : {}),
+      ask_user_answers: { ...answers.answersByKey },
+      ...(answers.rawText ? { raw_user_reply: answers.rawText } : {}),
+      answeredAt: Date.now(),
+    };
+  };
+
+  if (!askUserRef) {
+    // Do not synthesize a new ask_user step when the original step is unavailable.
+    return next;
+  }
+
+  const step = next[askUserRef.stepIndex];
+  if (!Array.isArray(step.functions)) step.functions = [];
+  const existingFn = step.functions[askUserRef.functionIndex];
+  const previousOutput = existingFn?.response?.output;
+  step.functions[askUserRef.functionIndex] = {
+    name: 'ask_user',
+    args: {
+      questions_to_ask: questionPayload,
+    },
+    response: {
+      status: 'Success',
+      output: buildOutputPayload(previousOutput),
+    },
+  };
+  return next;
+}
+
+function mergeAskUserAnswersIntoPlannerHistory(
+  input: unknown[],
+  questions: PlannerQuestion[],
+  answersByKey: Record<string, string>,
+): unknown[] {
+  const next = sanitizePlannerHistoryForPersist(Array.isArray(input) ? input : []);
+  for (let i = next.length - 1; i >= 0; i -= 1) {
+    const step = next[i] as any;
+    if (!step || typeof step !== 'object') continue;
+    const asked = normalizePlannerQuestions(step.questionsAsked);
+    if (!asked.length) continue;
+    const askedKeys = new Set(asked.map(question => question.key.toLowerCase()));
+    const overlaps = questions.some(question => askedKeys.has(String(question.key || '').toLowerCase()));
+    if (!overlaps) continue;
+    const existingAnswers =
+      step.userAnswers && typeof step.userAnswers === 'object' && !Array.isArray(step.userAnswers)
+        ? step.userAnswers as Record<string, unknown>
+        : {};
+    step.userAnswers = {
+      ...existingAnswers,
+      ...answersByKey,
+    };
+    return sanitizePlannerHistoryForPersist(next);
+  }
+
+  next.push({
+    thought: 'User provided clarification answers.',
+    questionsAsked: questions,
+    userAnswers: answersByKey,
+  });
+  return sanitizePlannerHistoryForPersist(next);
+}
+
 function buildPersistedState(): PersistedWorkerState {
   const safePrevSteps = sanitizeAgentPrevStepsForPersist(Array.isArray(agentPrevSteps) ? agentPrevSteps : []);
+  const normalizedRootUserInput = normalizeRootUserInput(rootUserInput);
+  const pendingStepRef = pendingAskUser?.stepRef;
+  const safePendingStepRef =
+    pendingStepRef
+    && Number.isFinite(pendingStepRef.stepIndex)
+    && pendingStepRef.stepIndex >= 0
+    && Number.isFinite(pendingStepRef.functionIndex)
+    && pendingStepRef.functionIndex >= 0
+      ? {
+          stepIndex: pendingStepRef.stepIndex,
+          functionIndex: pendingStepRef.functionIndex,
+          ...(typeof pendingStepRef.accTreeId === 'string' && pendingStepRef.accTreeId.trim()
+            ? { accTreeId: pendingStepRef.accTreeId.trim() }
+            : {}),
+        }
+      : undefined;
   return {
     trajectoryId,
     taskBoundaryId,
+    ...(normalizedRootUserInput ? { rootUserInput: normalizedRootUserInput } : {}),
     history: sanitizeHistoryForPersist(history),
     plannerHistory: sanitizePlannerHistoryForPersist(Array.isArray(plannerHistory) ? plannerHistory : []),
     agentPrevSteps: safePrevSteps,
@@ -506,6 +767,10 @@ function buildPersistedState(): PersistedWorkerState {
           questions: normalizePlannerQuestions(pendingAskUser.questions),
           source: pendingAskUser.source,
           askedAt: Number(pendingAskUser.askedAt) || Date.now(),
+          ...(typeof pendingAskUser.boundaryId === 'string' && pendingAskUser.boundaryId.trim()
+            ? { boundaryId: pendingAskUser.boundaryId.trim() }
+            : {}),
+          ...(safePendingStepRef ? { stepRef: safePendingStepRef } : {}),
         }
       : undefined,
   };
@@ -548,11 +813,31 @@ function hydrateState(raw: any): void {
   }
 
   const hydratedQuestions = normalizePlannerQuestions((snapshot as any).pendingAskUser?.questions);
+  const hydratedStepRefRaw = (snapshot as any).pendingAskUser?.stepRef;
+  const hydratedStepRef =
+    hydratedStepRefRaw
+    && Number.isFinite(Number(hydratedStepRefRaw.stepIndex))
+    && Number(hydratedStepRefRaw.stepIndex) >= 0
+    && Number.isFinite(Number(hydratedStepRefRaw.functionIndex))
+    && Number(hydratedStepRefRaw.functionIndex) >= 0
+      ? {
+          stepIndex: Number(hydratedStepRefRaw.stepIndex),
+          functionIndex: Number(hydratedStepRefRaw.functionIndex),
+          ...(typeof hydratedStepRefRaw.accTreeId === 'string' && hydratedStepRefRaw.accTreeId.trim()
+            ? { accTreeId: hydratedStepRefRaw.accTreeId.trim() }
+            : {}),
+        }
+      : undefined;
   if (hydratedQuestions.length > 0) {
     pendingAskUser = {
       questions: hydratedQuestions,
       source: (snapshot as any).pendingAskUser?.source === 'planner' ? 'planner' : 'act',
       askedAt: Number((snapshot as any).pendingAskUser?.askedAt) || Date.now(),
+      boundaryId:
+        typeof (snapshot as any).pendingAskUser?.boundaryId === 'string'
+          ? String((snapshot as any).pendingAskUser.boundaryId).trim() || undefined
+          : undefined,
+      ...(hydratedStepRef ? { stepRef: hydratedStepRef } : {}),
     };
   } else {
     pendingAskUser = undefined;
@@ -565,6 +850,9 @@ function hydrateState(raw: any): void {
   if (typeof (snapshot as any).taskBoundaryId === 'string' && String((snapshot as any).taskBoundaryId).trim()) {
     taskBoundaryId = String((snapshot as any).taskBoundaryId).trim();
   }
+
+  const hydratedRootUserInput = normalizeRootUserInput((snapshot as any).rootUserInput);
+  rootUserInput = hydratedRootUserInput || normalizeRootUserInput(getRootUserInputFallbackFromHistory()) || '';
 
   if (!tabularStore) {
     tabularStore = new TabularStore(`rover-${trajectoryId}`);
@@ -820,11 +1108,59 @@ function buildChatLogFromHistory(input: ChatMessage[], currentUserInput?: string
   const sanitizeChatText = (raw: string): string => {
     return String(raw || '').replace(/\s+/g, ' ').trim();
   };
-  const ASK_USER_PROMPT_PREFIX = 'i need a bit more info before continuing:';
+  const isAskUserControlMessage = (role: 'user' | 'assistant', content: string): boolean => {
+    const lowered = content.toLowerCase();
+    if (role === 'assistant' && lowered.startsWith('i need a bit more info')) return true;
+    if (lowered.includes('[ask_user_answers]')) return true;
+    if (lowered.includes('[raw_user_reply]')) return true;
+    if (lowered.includes('[continue_planning]')) return true;
+    return false;
+  };
+  const extractDomains = (value: string): Set<string> => {
+    const out = new Set<string>();
+    const urlRegex = /https?:\/\/([a-z0-9.-]+\.[a-z]{2,})/ig;
+    const hostRegex = /\b([a-z0-9.-]+\.[a-z]{2,})(?:\/|\b)/ig;
+    let match: RegExpExecArray | null;
+    while ((match = urlRegex.exec(value)) !== null) {
+      const host = String(match[1] || '').toLowerCase();
+      if (host) out.add(host);
+    }
+    while ((match = hostRegex.exec(value)) !== null) {
+      const host = String(match[1] || '').toLowerCase();
+      if (host && host.includes('.')) out.add(host);
+    }
+    return out;
+  };
+  const tokenize = (value: string): Set<string> => {
+    const out = new Set<string>();
+    const tokens = value.toLowerCase().match(/[a-z0-9._-]+/g) || [];
+    for (const token of tokens) {
+      if (token.length < 3 && !token.includes('.')) continue;
+      if (CHATLOG_STOPWORDS.has(token)) continue;
+      out.add(token);
+      if (out.size >= 120) break;
+    }
+    return out;
+  };
+  const jaccard = (a: Set<string>, b: Set<string>): number => {
+    if (!a.size || !b.size) return 0;
+    let intersection = 0;
+    for (const value of a) {
+      if (b.has(value)) intersection += 1;
+    }
+    const union = a.size + b.size - intersection;
+    if (!union) return 0;
+    return intersection / union;
+  };
+  const hasReferentialCue = (value: string): boolean => {
+    return /\b(this|that|these|those|it|same|above|here|current page|this page|continue|follow up)\b/i.test(value);
+  };
+  const isQuestionLike = (value: string): boolean => /\?$/.test(value) || /\b(what|why|how|where|when|who)\b/i.test(value);
 
   const normalizedCurrentUserInput = currentUserInput
     ? sanitizeChatText(currentUserInput)
     : '';
+  if (!normalizedCurrentUserInput) return [];
 
   const entries = input
     .filter(message => message.role === 'user' || message.role === 'assistant')
@@ -833,7 +1169,7 @@ function buildChatLogFromHistory(input: ChatMessage[], currentUserInput?: string
       content: sanitizeChatText(String(message.content || '')),
     }))
     .filter(message => !!message.content)
-    .filter(message => !(message.role === 'assistant' && message.content.toLowerCase().startsWith(ASK_USER_PROMPT_PREFIX)));
+    .filter(message => !isAskUserControlMessage(message.role, message.content));
 
   if (normalizedCurrentUserInput) {
     for (let i = entries.length - 1; i >= 0; i -= 1) {
@@ -851,17 +1187,69 @@ function buildChatLogFromHistory(input: ChatMessage[], currentUserInput?: string
     deduped.push(entry);
   }
 
-  let selected = deduped.slice(-MAX_CHATLOG_ENTRIES);
-  const seen = new Set<string>();
-  const compactedReverse: Array<{ role: 'user' | 'assistant'; content: string }> = [];
-  for (let i = selected.length - 1; i >= 0; i -= 1) {
-    const entry = selected[i];
-    const key = `${entry.role}::${entry.content.toLowerCase()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    compactedReverse.push(entry);
+  type ChatTurn = { user?: string; model?: string; index: number };
+  const turns: ChatTurn[] = [];
+  for (let i = 0; i < deduped.length; i += 1) {
+    const entry = deduped[i];
+    if (entry.role === 'user') {
+      turns.push({ user: entry.content, index: i });
+      continue;
+    }
+    if (!turns.length) continue;
+    const latest = turns[turns.length - 1];
+    if (!latest.model) {
+      latest.model = entry.content;
+      latest.index = i;
+    }
   }
-  selected = compactedReverse.reverse();
+
+  if (!turns.length) return [];
+
+  const currentTokens = tokenize(normalizedCurrentUserInput);
+  const currentDomains = extractDomains(normalizedCurrentUserInput);
+  const referentialCue = hasReferentialCue(normalizedCurrentUserInput);
+  const currentIsQuestion = isQuestionLike(normalizedCurrentUserInput);
+
+  const scored = turns.map((turn, idx) => {
+    const candidateText = sanitizeChatText(`${turn.user || ''} ${turn.model || ''}`);
+    const candidateTokens = tokenize(candidateText);
+    const candidateDomains = extractDomains(candidateText);
+    const lexical = jaccard(currentTokens, candidateTokens);
+    const domain = jaccard(currentDomains, candidateDomains);
+    const candidateQuestion = isQuestionLike(String(turn.user || ''));
+    const intent = candidateQuestion === currentIsQuestion ? 0.08 : 0;
+    const referentialBonus = referentialCue ? 0.06 : 0;
+    const recency = turns.length <= 1 ? 1 : ((idx + 1) / turns.length);
+    const score = Math.min(1, lexical * 0.62 + domain * 0.24 + intent + recency * 0.12 + referentialBonus);
+    return { turn, score, idx };
+  });
+
+  const sorted = [...scored].sort((a, b) => b.score - a.score || b.idx - a.idx);
+  const selectedTurnIndexes = new Set<number>();
+  const primaryThreshold = referentialCue ? 0.12 : 0.20;
+  const secondaryThreshold = referentialCue ? 0.26 : 0.34;
+  if (sorted[0] && sorted[0].score >= primaryThreshold) {
+    selectedTurnIndexes.add(sorted[0].idx);
+  }
+  if (sorted[1] && sorted[1].score >= secondaryThreshold) {
+    selectedTurnIndexes.add(sorted[1].idx);
+  }
+  if (!selectedTurnIndexes.size && referentialCue) {
+    selectedTurnIndexes.add(turns.length - 1);
+  }
+  if (!selectedTurnIndexes.size) return [];
+
+  let selected = [...selectedTurnIndexes]
+    .sort((a, b) => a - b)
+    .flatMap(turnIndex => {
+      const turn = turns[turnIndex];
+      const out: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+      if (turn?.user) out.push({ role: 'user', content: turn.user });
+      if (turn?.model) out.push({ role: 'assistant', content: turn.model });
+      return out;
+    });
+
+  selected = selected.slice(-MAX_CHATLOG_ENTRIES);
 
   return selected.map(message => ({
     role: message.role === 'user' ? 'user' : 'model',
@@ -1073,89 +1461,113 @@ function extractPlannerQuestionsFromToolResults(toolResults: any[] | undefined):
 
 function deriveDirectToolRunOutcome(result: any): RunOutcome {
   if (!result || typeof result !== 'object') {
-    return { taskComplete: false };
+    return { taskComplete: false, terminalState: 'in_progress' };
   }
 
   const questions = extractQuestionsFromResult(result);
 
   const topLevelStatus = String(result.status || '').trim().toLowerCase();
   if (topLevelStatus === 'failure' || topLevelStatus === 'failed' || topLevelStatus === 'error') {
-    return { taskComplete: false };
+    return { taskComplete: false, terminalState: 'failed' };
   }
   if (topLevelStatus === 'waiting_input' || topLevelStatus === 'needs_input' || topLevelStatus === 'pending_user_input') {
-    return { taskComplete: false, needsUserInput: true, questions };
+    return { taskComplete: false, needsUserInput: true, questions, terminalState: 'waiting_input' };
   }
   if (result.error) {
-    return { taskComplete: false };
+    return { taskComplete: false, terminalState: 'failed' };
   }
 
   const output = result.output;
   if (output && typeof output === 'object') {
     if (Array.isArray(output)) {
-      return { taskComplete: true };
+      return { taskComplete: true, terminalState: 'completed', contextResetRecommended: true };
     }
 
     if ((output as any).needsUserInput === true || (output as any).waitingForUserInput === true) {
-      return { taskComplete: false, needsUserInput: true, questions };
+      return { taskComplete: false, needsUserInput: true, questions, terminalState: 'waiting_input' };
     }
 
     if (Array.isArray((output as any).questions) && (output as any).questions.length > 0) {
-      return { taskComplete: false, needsUserInput: true, questions };
+      return { taskComplete: false, needsUserInput: true, questions, terminalState: 'waiting_input' };
     }
 
     if ((output as any).error) {
-      return { taskComplete: false };
+      return { taskComplete: false, terminalState: 'failed' };
     }
 
     if (typeof (output as any).taskComplete === 'boolean') {
-      return { taskComplete: !!(output as any).taskComplete };
+      const completed = !!(output as any).taskComplete;
+      return {
+        taskComplete: completed,
+        terminalState: completed ? 'completed' : 'in_progress',
+        contextResetRecommended: completed,
+      };
     }
 
     const taskStatus = String((output as any).taskStatus || (output as any).status || '').toLowerCase();
     if (taskStatus) {
       if (taskStatus === 'waiting_input' || taskStatus === 'needs_input' || taskStatus === 'pending_user_input') {
-        return { taskComplete: false, needsUserInput: true };
+        return { taskComplete: false, needsUserInput: true, terminalState: 'waiting_input' };
       }
       if (taskStatus === 'running' || taskStatus === 'in_progress' || taskStatus === 'pending') {
-        return { taskComplete: false };
+        return { taskComplete: false, terminalState: 'in_progress' };
       }
       if (taskStatus === 'completed' || taskStatus === 'complete' || taskStatus === 'done' || taskStatus === 'success') {
-        return { taskComplete: true };
+        return { taskComplete: true, terminalState: 'completed', contextResetRecommended: true };
       }
       if (taskStatus === 'failure' || taskStatus === 'failed' || taskStatus === 'error') {
-        return { taskComplete: false };
+        return { taskComplete: false, terminalState: 'failed' };
       }
     }
 
     if ((output as any).success === false) {
-      return { taskComplete: false };
+      return { taskComplete: false, terminalState: 'failed' };
     }
 
     if (String((output as any).status || '').trim().toLowerCase() === 'failure') {
-      return { taskComplete: false };
+      return { taskComplete: false, terminalState: 'failed' };
     }
   }
 
   if (output != null) {
-    return { taskComplete: true };
+    return { taskComplete: true, terminalState: 'completed', contextResetRecommended: true };
   }
 
   // Direct tool invocation without explicit continuation signals is treated as complete.
-  return { taskComplete: true };
+  return { taskComplete: true, terminalState: 'completed', contextResetRecommended: true };
 }
 
 function normalizeRunOutcome(outcome?: Partial<RunOutcome> | null): RunOutcome {
   if (!outcome || typeof outcome !== 'object') {
-    return { taskComplete: false, needsUserInput: false };
+    return { taskComplete: false, needsUserInput: false, terminalState: 'in_progress', contextResetRecommended: false };
   }
-  const needsUserInput = outcome.needsUserInput === true;
-  const taskComplete = outcome.taskComplete === true && !needsUserInput;
+  const inferredNeedsUserInput = outcome.needsUserInput === true;
+  const incomingTerminalState = String((outcome as any).terminalState || '').trim().toLowerCase() as RunTerminalState | '';
+  const terminalState: RunTerminalState =
+    incomingTerminalState === 'waiting_input'
+    || incomingTerminalState === 'in_progress'
+    || incomingTerminalState === 'completed'
+    || incomingTerminalState === 'failed'
+      ? incomingTerminalState
+      : inferredNeedsUserInput
+        ? 'waiting_input'
+        : outcome.taskComplete === true
+          ? 'completed'
+          : 'in_progress';
+  const needsUserInput = terminalState === 'waiting_input' || inferredNeedsUserInput;
+  const taskComplete = terminalState === 'completed' || (outcome.taskComplete === true && !needsUserInput);
   const questions = normalizePlannerQuestions((outcome as any).questions);
+  const contextResetRecommended =
+    outcome.contextResetRecommended === true
+    || terminalState === 'completed'
+    || terminalState === 'failed';
   return {
     route: outcome.route,
     taskComplete,
     needsUserInput,
     questions: questions.length ? questions : undefined,
+    terminalState,
+    contextResetRecommended,
   };
 }
 
@@ -1182,6 +1594,7 @@ function clearTaskScopedContextAfterBoundary(_reason: 'cancel' | 'end' | 'new_ta
   plannerHistory = [];
   agentPrevSteps = [];
   pendingAskUser = undefined;
+  rootUserInput = '';
 }
 
 async function maybeWaitForNewTab(
@@ -1210,45 +1623,50 @@ async function handleUserMessage(
     history[history.length - 1]?.role === 'user' &&
     history[history.length - 1]?.content === text;
 
+  const normalizedIncomingText = String(text || '').trim();
+  const pendingAskUserSnapshot =
+    pendingAskUser
+    && pendingAskUser.boundaryId
+    && pendingAskUser.boundaryId !== taskBoundaryId
+      ? undefined
+      : pendingAskUser;
+  if (!pendingAskUserSnapshot && pendingAskUser) {
+    pendingAskUser = undefined;
+  }
+  const fallbackRootInput = normalizeRootUserInput(getRootUserInputFallbackFromHistory());
+  const existingRootInput = normalizeRootUserInput(rootUserInput) || fallbackRootInput;
+  if (existingRootInput) {
+    rootUserInput = existingRootInput;
+  }
+  if (!pendingAskUserSnapshot?.questions?.length && normalizedIncomingText && !options?.resume) {
+    rootUserInput = normalizedIncomingText;
+  }
+
   let effectiveUserInput = text;
+  let chatLogCurrentInputForDedupe = text;
   let consumedAsAskUserAnswer = false;
-  if (pendingAskUser?.questions?.length) {
-    const normalizedAnswers = normalizeAskUserAnswerMeta(options?.askUserAnswers, pendingAskUser.questions, text);
+  if (pendingAskUserSnapshot?.questions?.length) {
+    const normalizedAnswers = normalizeAskUserAnswerMeta(options?.askUserAnswers, pendingAskUserSnapshot.questions, text);
     if (normalizedAnswers) {
       consumedAsAskUserAnswer = true;
-      const answerContext = buildAskUserAnswerContext(pendingAskUser.questions, normalizedAnswers);
-      effectiveUserInput = answerContext;
+      const answerContext = buildAskUserAnswerContext(pendingAskUserSnapshot.questions, normalizedAnswers);
+      const focusInput = normalizeRootUserInput(rootUserInput) || normalizedIncomingText || fallbackRootInput || '';
+      if (focusInput) rootUserInput = focusInput;
+      effectiveUserInput = buildContinuePlanningInput(focusInput, 'ask_user', answerContext);
+      chatLogCurrentInputForDedupe = focusInput || text;
 
-      plannerHistory = sanitizePlannerHistoryForPersist([
-        ...plannerHistory,
-        {
-          thought: 'User provided clarification answers.',
-          questionsAsked: pendingAskUser.questions,
-          userAnswers: normalizedAnswers.answersByKey,
-        },
-      ]);
+      if (pendingAskUserSnapshot.source === 'planner') {
+        plannerHistory = mergeAskUserAnswersIntoPlannerHistory(
+          plannerHistory,
+          pendingAskUserSnapshot.questions,
+          normalizedAnswers.answersByKey,
+        );
+      }
 
-      applyAgentPrevSteps([
-        ...agentPrevSteps,
-        {
-          functions: [{
-            name: 'ask_user',
-            args: {
-              questions_to_ask: pendingAskUser.questions.map(q => ({
-                key: q.key,
-                query: q.query,
-              })),
-            },
-            response: {
-              status: 'Success',
-              output: {
-                ask_user_answers: normalizedAnswers.answersByKey,
-                raw_user_reply: normalizedAnswers.rawText,
-              },
-            },
-          }],
-        },
-      ], { snapshot: false });
+      applyAgentPrevSteps(
+        mergeAskUserAnswerIntoPrevSteps(agentPrevSteps, pendingAskUserSnapshot, normalizedAnswers),
+        { snapshot: false },
+      );
 
       pendingAskUser = undefined;
       postStateSnapshot();
@@ -1329,7 +1747,7 @@ async function handleUserMessage(
     removePlannerNameCollisions(toolRegistry.getFunctionDeclarations()),
   );
   const toolFunctions = toolRegistry.getToolFunctions();
-  const chatLog = buildChatLogFromHistory(history, text);
+  const chatLog = buildChatLogFromHistory(history, chatLogCurrentInputForDedupe);
   const onPrevStepsUpdate = (steps: PreviousSteps[]) => {
     applyAgentPrevSteps(steps, { snapshot: true });
   };
@@ -1380,7 +1798,7 @@ async function handleUserMessage(
     history.push({ role: 'assistant', content: errorMsg });
     postStatus('Execution failed', errorPayload.error.message, 'complete');
     postStateSnapshot();
-    return { route: result.route, taskComplete: false };
+    return { route: result.route, taskComplete: false, terminalState: 'failed' };
   }
 
   if (result.executedFunctions?.length) {
@@ -1415,7 +1833,12 @@ async function handleUserMessage(
     history.push({ role: 'assistant', content: msg });
     postStatus('Execution completed', 'Function calls finished', 'complete');
     postStateSnapshot();
-    return { route: result.route, taskComplete: true };
+    return {
+      route: result.route,
+      taskComplete: true,
+      terminalState: 'completed',
+      contextResetRecommended: true,
+    };
   }
 
   if (result.directToolResult) {
@@ -1470,9 +1893,7 @@ async function handleUserMessage(
     const questions = normalizePlannerQuestions(outcome.questions);
     if (outcome.needsUserInput && questions.length > 0) {
       pendingAskUser = {
-        questions,
-        source: 'act',
-        askedAt: Date.now(),
+        ...buildPendingAskUserPrompt('act', questions),
       };
       plannerHistory = sanitizePlannerHistoryForPersist([
         ...plannerHistory,
@@ -1491,6 +1912,7 @@ async function handleUserMessage(
         taskComplete: false,
         needsUserInput: true,
         questions,
+        terminalState: 'waiting_input',
       };
     }
 
@@ -1526,6 +1948,8 @@ async function handleUserMessage(
       taskComplete: outcome.taskComplete,
       needsUserInput: outcome.needsUserInput,
       questions: normalizePlannerQuestions(outcome.questions),
+      terminalState: outcome.terminalState,
+      contextResetRecommended: outcome.contextResetRecommended,
     };
   }
 
@@ -1549,11 +1973,7 @@ async function handleUserMessage(
     if (plannerQuestions.length) {
       const questions = plannerQuestions;
       pendingAskUser = questions.length
-        ? {
-            questions,
-            source: 'planner',
-            askedAt: Date.now(),
-          }
+        ? buildPendingAskUserPrompt('planner', questions)
         : undefined;
       const qText = questions.map(question => `- ${question.key}: ${questionToDisplayText(question)}`).join('\n');
       const msg = `I need a bit more info:\n${qText}`;
@@ -1566,6 +1986,7 @@ async function handleUserMessage(
         taskComplete: false,
         needsUserInput: true,
         questions,
+        terminalState: 'waiting_input',
       };
     }
 
@@ -1605,6 +2026,10 @@ async function handleUserMessage(
       route: result.route,
       taskComplete: !!response.taskComplete && !responseError,
       needsUserInput: false,
+      terminalState: responseError
+        ? 'failed'
+        : (!!response.taskComplete ? 'completed' : 'in_progress'),
+      contextResetRecommended: !responseError && !!response.taskComplete,
     };
   }
 
@@ -1612,7 +2037,12 @@ async function handleUserMessage(
   history.push({ role: 'assistant', content: doneMsg });
   postStatus('Completed', undefined, 'complete');
   postStateSnapshot();
-  return { route: result.route, taskComplete: true };
+  return {
+    route: result.route,
+    taskComplete: true,
+    terminalState: 'completed',
+    contextResetRecommended: true,
+  };
 }
 
 async function runUserMessage(
@@ -1627,20 +2057,26 @@ async function runUserMessage(
       (self as any).postMessage({
         type: 'run_completed',
         runId,
+        taskBoundaryId: terminal.taskBoundaryId,
         ok: true,
         route: cachedOutcome.route,
         taskComplete: cachedOutcome.taskComplete,
         needsUserInput: cachedOutcome.needsUserInput,
         questions: cachedOutcome.questions,
+        terminalState: cachedOutcome.terminalState,
+        contextResetRecommended: cachedOutcome.contextResetRecommended,
       });
     } else {
       (self as any).postMessage({
         type: 'run_completed',
         runId,
+        taskBoundaryId: terminal.taskBoundaryId,
         ok: false,
         error: terminal.error,
         taskComplete: false,
         needsUserInput: false,
+        terminalState: 'failed',
+        contextResetRecommended: terminal.contextResetRecommended,
       });
     }
     return;
@@ -1649,12 +2085,13 @@ async function runUserMessage(
     return;
   }
   const resume = !!meta?.resume;
+  const runTaskBoundaryId = taskBoundaryId;
   lastStatusKey = '';
   seenStatusKeys = new Set<string>();
   cancelledRunIds.delete(runId);
   activeAbortController = new AbortController();
   activeRun = { runId, text, startedAt: Date.now(), resume };
-  (self as any).postMessage({ type: 'run_started', runId, text, resume });
+  (self as any).postMessage({ type: 'run_started', runId, text, resume, taskBoundaryId: runTaskBoundaryId });
   postStateSnapshot();
 
   try {
@@ -1663,17 +2100,20 @@ async function runUserMessage(
       routing: meta?.routing,
       askUserAnswers: meta?.askUserAnswers,
     }));
-    rememberTerminalRun(runId, { ok: true, outcome });
+    rememberTerminalRun(runId, { ok: true, outcome, taskBoundaryId: runTaskBoundaryId });
     (self as any).postMessage({
       type: 'run_completed',
       runId,
+      taskBoundaryId: runTaskBoundaryId,
       ok: true,
       route: outcome.route,
       taskComplete: outcome.taskComplete,
       needsUserInput: outcome.needsUserInput,
       questions: outcome.questions,
+      terminalState: outcome.terminalState,
+      contextResetRecommended: outcome.contextResetRecommended,
     });
-    if (outcome.taskComplete && !outcome.needsUserInput) {
+    if (outcome.contextResetRecommended) {
       clearTaskScopedContextAfterBoundary('complete');
       postStateSnapshot();
     }
@@ -1684,14 +2124,20 @@ async function runUserMessage(
         error: 'Run cancelled',
         taskComplete: false,
         needsUserInput: false,
+        terminalState: 'failed',
+        contextResetRecommended: false,
+        taskBoundaryId: runTaskBoundaryId,
       });
       (self as any).postMessage({
         type: 'run_completed',
         runId,
+        taskBoundaryId: runTaskBoundaryId,
         ok: false,
         error: 'Run cancelled',
         taskComplete: false,
         needsUserInput: false,
+        terminalState: 'failed',
+        contextResetRecommended: false,
       });
     } else {
       rememberTerminalRun(runId, {
@@ -1699,15 +2145,23 @@ async function runUserMessage(
         error: error?.message || String(error),
         taskComplete: false,
         needsUserInput: false,
+        terminalState: 'failed',
+        contextResetRecommended: true,
+        taskBoundaryId: runTaskBoundaryId,
       });
       (self as any).postMessage({
         type: 'run_completed',
         runId,
+        taskBoundaryId: runTaskBoundaryId,
         ok: false,
         error: error?.message || String(error),
         taskComplete: false,
         needsUserInput: false,
+        terminalState: 'failed',
+        contextResetRecommended: true,
       });
+      clearTaskScopedContextAfterBoundary('complete');
+      postStateSnapshot();
       throw error;
     }
   } finally {

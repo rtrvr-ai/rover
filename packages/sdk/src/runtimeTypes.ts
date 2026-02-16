@@ -39,11 +39,18 @@ export type PersistedPendingAskUser = {
   questions: PersistedPlannerQuestion[];
   source: 'act' | 'planner';
   askedAt: number;
+  boundaryId?: string;
+  stepRef?: {
+    stepIndex: number;
+    functionIndex: number;
+    accTreeId?: string;
+  };
 };
 
 export type PersistedWorkerState = {
   trajectoryId?: string;
   taskBoundaryId?: string;
+  rootUserInput?: string;
   history?: PersistedWorkerHistoryMessage[];
   plannerHistory?: unknown[];
   agentPrevSteps?: unknown[];

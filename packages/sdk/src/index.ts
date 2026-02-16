@@ -47,6 +47,11 @@ import {
   shouldIgnoreRunScopedMessage,
   shouldStartFreshTask as shouldStartFreshTaskByStatus,
 } from './taskLifecycleGuards.js';
+import {
+  normalizeTaskBoundaryId,
+  shouldAcceptWorkerSnapshot,
+  type WorkerBoundarySource,
+} from './taskBoundaryGuards.js';
 
 export type RoverWebToolsConfig = {
   enableExternalWebContext?: boolean;
@@ -399,12 +404,46 @@ function toPersistedNavigationHandoff(intent: NavigationIntentEvent): PersistedN
   };
 }
 
+function resolveExistingTaskBoundaryIdFromState(state: PersistedRuntimeState | null | undefined): string | undefined {
+  const pendingCandidate =
+    typeof state?.pendingRun?.taskBoundaryId === 'string' ? state.pendingRun.taskBoundaryId : undefined;
+  if (pendingCandidate) return normalizeTaskBoundaryId(pendingCandidate);
+  const workerCandidate =
+    typeof state?.workerState?.taskBoundaryId === 'string' ? state.workerState.taskBoundaryId : undefined;
+  if (workerCandidate) return normalizeTaskBoundaryId(workerCandidate);
+  return undefined;
+}
+
 function resolveTaskBoundaryIdFromState(state: PersistedRuntimeState | null): string {
-  const pendingCandidate = sanitizePendingRun(state?.pendingRun)?.taskBoundaryId;
-  if (pendingCandidate) return pendingCandidate;
-  const workerCandidate = sanitizeWorkerState(state?.workerState)?.taskBoundaryId;
-  if (workerCandidate) return workerCandidate;
+  const existing = resolveExistingTaskBoundaryIdFromState(state);
+  if (existing) return existing;
   return createTaskBoundaryId();
+}
+
+function resolveCurrentTaskBoundaryCandidate(): string | undefined {
+  return normalizeTaskBoundaryId(currentTaskBoundaryId) || resolveExistingTaskBoundaryIdFromState(runtimeState);
+}
+
+function shouldAcceptIncomingWorkerBoundary(params: {
+  source: WorkerBoundarySource;
+  incomingBoundaryId?: string;
+  taskEpochAdvanced?: boolean;
+  allowBootstrapAdoption?: boolean;
+}): boolean {
+  const decision = shouldAcceptWorkerSnapshot({
+    source: params.source,
+    incomingBoundaryId: params.incomingBoundaryId,
+    currentBoundaryId: resolveCurrentTaskBoundaryCandidate(),
+    taskEpochAdvanced: params.taskEpochAdvanced,
+    hasPendingRun: !!runtimeState?.pendingRun,
+    taskStatus: runtimeState?.activeTask?.status,
+    allowBootstrapAdoption: params.allowBootstrapAdoption,
+  });
+  if (!decision.accept) return false;
+  if (decision.adoptedBoundaryId) {
+    currentTaskBoundaryId = decision.adoptedBoundaryId;
+  }
+  return true;
 }
 
 function getUnconsumedNavigationHandoff(maxAgeMs = 120_000): PersistedNavigationHandoff | undefined {
@@ -1037,9 +1076,15 @@ function shouldIgnoreRunScopedWorkerMessage(msg: any): boolean {
   if (!RUN_SCOPED_WORKER_MESSAGE_TYPES.has(type)) return false;
 
   const messageRunId = typeof msg?.runId === 'string' && msg.runId ? msg.runId : undefined;
+  const messageTaskBoundaryId =
+    typeof msg?.taskBoundaryId === 'string' && msg.taskBoundaryId
+      ? msg.taskBoundaryId
+      : undefined;
   return shouldIgnoreRunScopedMessage({
     type,
     messageRunId,
+    messageTaskBoundaryId,
+    currentTaskBoundaryId: resolveCurrentTaskBoundaryCandidate(),
     pendingRunId: getPendingRunId(),
     sharedActiveRunId: sessionCoordinator?.getState()?.activeRun?.runId,
     taskStatus: runtimeState?.activeTask?.status,
@@ -1078,14 +1123,90 @@ function normalizeAskUserQuestions(input: any): RoverAskUserQuestion[] {
   return out.slice(0, 6);
 }
 
-function normalizeRunCompletionState(msg: any): { taskComplete: boolean; needsUserInput: boolean; questions?: RoverAskUserQuestion[] } {
-  if (!msg || typeof msg !== 'object') {
-    return { taskComplete: false, needsUserInput: false };
+function buildAskUserDispatchText(
+  text: string,
+  askUserAnswers?: RoverAskUserAnswerMeta,
+): string {
+  const trimmed = String(text || '').trim();
+  if (trimmed) return trimmed;
+  if (!askUserAnswers || typeof askUserAnswers !== 'object') return '';
+
+  const answersByKey =
+    askUserAnswers.answersByKey && typeof askUserAnswers.answersByKey === 'object'
+      ? askUserAnswers.answersByKey
+      : {};
+
+  const pendingQuestions = normalizeAskUserQuestions(runtimeState?.workerState?.pendingAskUser?.questions);
+  const rawKeys = Array.isArray(askUserAnswers.keys) ? askUserAnswers.keys : [];
+  const resolvedKeys = rawKeys
+    .map(key => String(key || '').trim())
+    .filter(Boolean);
+  if (resolvedKeys.length === 0) {
+    for (const question of pendingQuestions) {
+      const key = String(question.key || '').trim();
+      if (key) resolvedKeys.push(key);
+    }
   }
+  if (resolvedKeys.length === 0) {
+    for (const key of Object.keys(answersByKey)) {
+      const normalizedKey = String(key || '').trim();
+      if (normalizedKey) resolvedKeys.push(normalizedKey);
+    }
+  }
+
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  for (const key of resolvedKeys) {
+    const normalizedKey = String(key || '').trim();
+    if (!normalizedKey || seen.has(normalizedKey)) continue;
+    seen.add(normalizedKey);
+    const value = String((answersByKey as Record<string, unknown>)[normalizedKey] || '').trim();
+    lines.push(`${normalizedKey}: ${value || '(no answer provided)'}`);
+  }
+
+  if (lines.length > 0) {
+    return lines.join('\n');
+  }
+
+  return String(askUserAnswers.rawText || '').trim();
+}
+
+function normalizeRunCompletionState(msg: any): {
+  taskComplete: boolean;
+  needsUserInput: boolean;
+  terminalState: 'waiting_input' | 'in_progress' | 'completed' | 'failed';
+  contextResetRecommended: boolean;
+  questions?: RoverAskUserQuestion[];
+} {
+  if (!msg || typeof msg !== 'object') {
+    return {
+      taskComplete: false,
+      needsUserInput: false,
+      terminalState: 'in_progress',
+      contextResetRecommended: false,
+    };
+  }
+  const incomingTerminal = String(msg.terminalState || '').trim().toLowerCase();
   const needsUserInput = msg.needsUserInput === true;
-  const taskComplete = msg.taskComplete === true && !needsUserInput;
+  const inferredTerminalState: 'waiting_input' | 'in_progress' | 'completed' | 'failed' =
+    incomingTerminal === 'waiting_input' || incomingTerminal === 'in_progress' || incomingTerminal === 'completed' || incomingTerminal === 'failed'
+      ? incomingTerminal
+      : needsUserInput
+        ? 'waiting_input'
+        : msg.taskComplete === true
+          ? 'completed'
+          : msg.ok === false
+            ? 'failed'
+            : 'in_progress';
+  const taskComplete = inferredTerminalState === 'completed' || (msg.taskComplete === true && inferredTerminalState !== 'waiting_input');
   const questions = normalizeAskUserQuestions(msg.questions);
-  return { taskComplete, needsUserInput, ...(questions.length ? { questions } : {}) };
+  return {
+    taskComplete,
+    needsUserInput: inferredTerminalState === 'waiting_input' || needsUserInput,
+    terminalState: inferredTerminalState,
+    contextResetRecommended: msg.contextResetRecommended === true || inferredTerminalState === 'completed',
+    ...(questions.length ? { questions } : {}),
+  };
 }
 
 function getLatestAssistantText(runId?: string): string | undefined {
@@ -1332,17 +1453,39 @@ function sanitizeWorkerState(input: any): PersistedWorkerState | undefined {
   const plannerHistory = cloneUnknownArrayTail(plannerRaw, MAX_WORKER_STEPS);
   const agentPrevSteps = cloneUnknownArrayTail(agentPrevStepsRaw, MAX_WORKER_STEPS * 2);
   const pendingQuestions = normalizeAskUserQuestions(input?.pendingAskUser?.questions);
+  const pendingStepRefRaw = input?.pendingAskUser?.stepRef;
+  const pendingStepRef =
+    pendingStepRefRaw
+    && Number.isFinite(Number(pendingStepRefRaw.stepIndex))
+    && Number(pendingStepRefRaw.stepIndex) >= 0
+    && Number.isFinite(Number(pendingStepRefRaw.functionIndex))
+    && Number(pendingStepRefRaw.functionIndex) >= 0
+      ? {
+          stepIndex: Number(pendingStepRefRaw.stepIndex),
+          functionIndex: Number(pendingStepRefRaw.functionIndex),
+          ...(typeof pendingStepRefRaw.accTreeId === 'string' && pendingStepRefRaw.accTreeId.trim()
+            ? { accTreeId: pendingStepRefRaw.accTreeId.trim() }
+            : {}),
+        }
+      : undefined;
   const pendingAskUser: PersistedWorkerState['pendingAskUser'] = pendingQuestions.length
     ? {
         questions: pendingQuestions,
         source: (input?.pendingAskUser?.source === 'planner' ? 'planner' : 'act') as 'act' | 'planner',
         askedAt: Number(input?.pendingAskUser?.askedAt) || Date.now(),
+        boundaryId:
+          typeof input?.pendingAskUser?.boundaryId === 'string' && input.pendingAskUser.boundaryId.trim()
+            ? input.pendingAskUser.boundaryId.trim()
+            : undefined,
+        ...(pendingStepRef ? { stepRef: pendingStepRef } : {}),
       }
     : undefined;
+  const rootUserInput = typeof input.rootUserInput === 'string' ? input.rootUserInput.trim() : '';
 
   return {
     trajectoryId: typeof input.trajectoryId === 'string' ? input.trajectoryId : undefined,
     taskBoundaryId: taskBoundaryIdCandidate || undefined,
+    rootUserInput: rootUserInput || undefined,
     history,
     plannerHistory,
     agentPrevSteps,
@@ -1422,6 +1565,7 @@ function toSharedWorkerContext(state: PersistedWorkerState | undefined): SharedW
   return {
     trajectoryId: state.trajectoryId,
     taskBoundaryId: typeof state.taskBoundaryId === 'string' ? state.taskBoundaryId : undefined,
+    rootUserInput: typeof state.rootUserInput === 'string' ? state.rootUserInput : undefined,
     history: Array.isArray(state.history)
       ? state.history
           .slice(-MAX_WORKER_HISTORY)
@@ -1435,6 +1579,26 @@ function toSharedWorkerContext(state: PersistedWorkerState | undefined): SharedW
           questions: pendingQuestions,
           source: state.pendingAskUser?.source === 'planner' ? 'planner' : 'act',
           askedAt: Number(state.pendingAskUser?.askedAt) || Date.now(),
+          boundaryId:
+            typeof state.pendingAskUser?.boundaryId === 'string' && state.pendingAskUser.boundaryId.trim()
+              ? state.pendingAskUser.boundaryId.trim()
+              : undefined,
+          ...(state.pendingAskUser?.stepRef
+            && Number.isFinite(Number(state.pendingAskUser.stepRef.stepIndex))
+            && Number(state.pendingAskUser.stepRef.stepIndex) >= 0
+            && Number.isFinite(Number(state.pendingAskUser.stepRef.functionIndex))
+            && Number(state.pendingAskUser.stepRef.functionIndex) >= 0
+              ? {
+                  stepRef: {
+                    stepIndex: Number(state.pendingAskUser.stepRef.stepIndex),
+                    functionIndex: Number(state.pendingAskUser.stepRef.functionIndex),
+                    ...(typeof state.pendingAskUser.stepRef.accTreeId === 'string'
+                      && state.pendingAskUser.stepRef.accTreeId.trim()
+                      ? { accTreeId: state.pendingAskUser.stepRef.accTreeId.trim() }
+                      : {}),
+                  },
+                }
+              : {}),
         }
       : undefined,
     updatedAt: Number(state.updatedAt) || Date.now(),
@@ -1944,7 +2108,7 @@ function dispatchUserPrompt(
     askUserAnswers?: RoverAskUserAnswerMeta;
   },
 ): void {
-  const trimmed = String(text || '').trim();
+  const trimmed = buildAskUserDispatchText(text, options?.askUserAnswers);
   if (!trimmed) return;
   maybeClearStalePendingRun();
 
@@ -2088,6 +2252,19 @@ async function applyAsyncRuntimeStateHydration(key: string): Promise<void> {
   );
   const incomingUpdatedAt = Number(normalized.updatedAt) || 0;
   if (incomingUpdatedAt <= localUpdatedAt + 200) return;
+  const localTaskEpoch = Math.max(1, Number(runtimeState.taskEpoch) || 1);
+  const incomingTaskEpoch = Math.max(1, Number(normalized.taskEpoch) || 1);
+  const incomingBoundaryId = resolveExistingTaskBoundaryIdFromState(normalized);
+  if (
+    !shouldAcceptIncomingWorkerBoundary({
+      source: 'indexeddb_checkpoint',
+      incomingBoundaryId,
+      taskEpochAdvanced: incomingTaskEpoch > localTaskEpoch,
+      allowBootstrapAdoption: true,
+    })
+  ) {
+    return;
+  }
 
   runtimeState = normalizePersistedState(
     {
@@ -2261,7 +2438,16 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
       const incomingWorker = sanitizeWorkerState(state.workerContext);
       const localUpdatedAt = Number(runtimeState.workerState?.updatedAt) || 0;
       const incomingUpdatedAt = Number(incomingWorker?.updatedAt) || 0;
-      if (incomingWorker && incomingUpdatedAt > localUpdatedAt + 100) {
+      if (
+        incomingWorker
+        && incomingUpdatedAt > localUpdatedAt + 100
+        && shouldAcceptIncomingWorkerBoundary({
+          source: 'shared_worker_context',
+          incomingBoundaryId: incomingWorker.taskBoundaryId,
+          taskEpochAdvanced,
+          allowBootstrapAdoption: true,
+        })
+      ) {
         runtimeState.workerState = incomingWorker;
         syncCurrentTaskBoundaryId();
         if (workerReady && worker && currentMode === 'controller') {
@@ -2391,6 +2577,19 @@ function applyCloudCheckpointPayload(payload: RoverCloudCheckpointPayload): void
       const localUpdatedAt = Number(runtimeState.updatedAt) || 0;
       const incomingUpdatedAt = Number(incomingState.updatedAt) || 0;
       if (incomingUpdatedAt > localUpdatedAt + 200) {
+        const localTaskEpoch = Math.max(1, Number(runtimeState.taskEpoch) || 1);
+        const incomingTaskEpoch = Math.max(1, Number(incomingState.taskEpoch) || 1);
+        const incomingBoundaryId = resolveExistingTaskBoundaryIdFromState(incomingState);
+        if (
+          !shouldAcceptIncomingWorkerBoundary({
+            source: 'cloud_checkpoint',
+            incomingBoundaryId,
+            taskEpochAdvanced: incomingTaskEpoch > localTaskEpoch,
+            allowBootstrapAdoption: true,
+          })
+        ) {
+          return;
+        }
         runtimeState = normalizePersistedState(
           {
             ...runtimeState,
@@ -2539,7 +2738,15 @@ function setupSessionCoordinator(cfg: RoverInit): void {
           const incomingWorker = sanitizeWorkerState(sharedWorkerContext);
           const localUpdatedAt = Number(runtimeState?.workerState?.updatedAt) || 0;
           const incomingUpdatedAt = Number(incomingWorker?.updatedAt) || 0;
-          if (incomingWorker && incomingUpdatedAt > localUpdatedAt + 100) {
+          if (
+            incomingWorker
+            && incomingUpdatedAt > localUpdatedAt + 100
+            && shouldAcceptIncomingWorkerBoundary({
+              source: 'controller_handoff',
+              incomingBoundaryId: incomingWorker.taskBoundaryId,
+              allowBootstrapAdoption: true,
+            })
+          ) {
             if (runtimeState) {
               runtimeState.workerState = incomingWorker;
               syncCurrentTaskBoundaryId();
@@ -2743,10 +2950,21 @@ function handleWorkerMessage(msg: any): void {
 
   if (msg.type === 'state_snapshot') {
     if (runtimeState) {
-      runtimeState.workerState = sanitizeWorkerState({
+      const incomingWorkerState = sanitizeWorkerState({
         ...(msg.state || {}),
         updatedAt: Date.now(),
       });
+      if (
+        !incomingWorkerState
+        || !shouldAcceptIncomingWorkerBoundary({
+          source: 'worker_snapshot',
+          incomingBoundaryId: incomingWorkerState.taskBoundaryId,
+          allowBootstrapAdoption: true,
+        })
+      ) {
+        return;
+      }
+      runtimeState.workerState = incomingWorkerState;
       const activeRunId = typeof msg?.activeRun?.runId === 'string' && msg.activeRun.runId
         ? msg.activeRun.runId
         : undefined;
@@ -2803,6 +3021,8 @@ function handleWorkerMessage(msg: any): void {
       return;
     }
     const existing = runtimeState?.pendingRun;
+    const messageTaskBoundaryId =
+      typeof msg?.taskBoundaryId === 'string' ? normalizeTaskBoundaryId(msg.taskBoundaryId) : undefined;
     if (typeof msg.runId === 'string' && msg.runId) {
       removeIgnoredRunId(msg.runId);
     }
@@ -2813,6 +3033,7 @@ function handleWorkerMessage(msg: any): void {
         startedAt: existing?.startedAt || Date.now(),
         attempts: existing?.attempts || 0,
         autoResume: existing?.autoResume !== false,
+        taskBoundaryId: messageTaskBoundaryId || existing?.taskBoundaryId || currentTaskBoundaryId,
         resumeReason: existing?.resumeReason,
         resumeRequired: existing?.resumeRequired,
       }),
@@ -2869,9 +3090,16 @@ function handleWorkerMessage(msg: any): void {
       if (!isTaskRunning()) {
         return;
       }
+      const completionState = normalizeRunCompletionState(msg);
       ui?.setQuestionPrompt(undefined);
-      markTaskRunning('worker_run_failed');
-      setUiStatus(`Task failed: ${String(msg.error)}`);
+      if (completionState.contextResetRecommended) {
+        markTaskCompleted('worker_run_failed_terminal');
+        sessionCoordinator?.resetTabsToCurrent(window.location.href, document.title || undefined);
+        setUiStatus(`Task failed: ${String(msg.error)}. Start a new task to continue.`);
+      } else {
+        markTaskRunning('worker_run_failed');
+        setUiStatus(`Task failed: ${String(msg.error)}`);
+      }
       if (completedRunId) {
         latestAssistantByRunId.delete(completedRunId);
       }
@@ -2888,21 +3116,46 @@ function handleWorkerMessage(msg: any): void {
       const completionState = normalizeRunCompletionState(msg);
       const taskComplete = completionState.taskComplete;
       const needsUserInput = completionState.needsUserInput;
-      const questions = completionState.questions || normalizeAskUserQuestions(msg.questions);
-      if (taskComplete) {
+      const terminalState = completionState.terminalState;
+      const completionQuestions = completionState.questions || normalizeAskUserQuestions(msg.questions);
+      const pendingStateQuestions = normalizeAskUserQuestions(runtimeState?.workerState?.pendingAskUser?.questions);
+      const questions = completionQuestions.length
+        ? completionQuestions
+        : (needsUserInput ? pendingStateQuestions : []);
+      if (terminalState === 'failed') {
+        ui?.setQuestionPrompt(undefined);
+        if (completionState.contextResetRecommended) {
+          markTaskCompleted('worker_run_failed_terminal');
+          sessionCoordinator?.resetTabsToCurrent(window.location.href, document.title || undefined);
+          setUiStatus('Task failed. Start a new task to continue.');
+        } else {
+          markTaskRunning('worker_run_failed');
+          setUiStatus('Task failed.');
+        }
+        appendTimelineEvent({
+          kind: 'error',
+          title: 'Run failed',
+          detail: typeof msg.error === 'string' ? msg.error : 'Run reported failure state.',
+          status: 'error',
+        });
+      } else if (taskComplete || terminalState === 'completed') {
         ui?.setQuestionPrompt(undefined);
         markTaskCompleted('worker_task_complete');
-        sessionCoordinator?.pruneTabs({
-          dropRuntimeDetached: true,
-          keepOnlyActiveLiveTab: true,
-          keepRecentExternalPlaceholders: true,
-        });
+        sessionCoordinator?.resetTabsToCurrent(window.location.href, document.title || undefined);
         setUiStatus('Task completed');
         finalizeSuccessfulRunTimeline(typeof msg.runId === 'string' ? msg.runId : undefined);
       } else {
-        markTaskRunning(needsUserInput ? 'worker_waiting_for_input' : 'worker_continuation');
+        const nextReason =
+          needsUserInput
+            ? 'worker_waiting_for_input'
+            : terminalState === 'in_progress'
+              ? 'worker_continuation'
+              : 'worker_task_active';
+        markTaskRunning(nextReason);
         if (needsUserInput && questions.length > 0) {
           ui?.setQuestionPrompt({ questions });
+        } else if (needsUserInput) {
+          syncQuestionPromptFromWorkerState();
         } else {
           ui?.setQuestionPrompt(undefined);
         }
@@ -2933,17 +3186,41 @@ function handleWorkerMessage(msg: any): void {
     }
 
     const sharedWorkerContext = sessionCoordinator?.getWorkerContext();
-    const sharedWorkerState = sanitizeWorkerState(sharedWorkerContext);
-    const localUpdatedAt = Number(runtimeState?.workerState?.updatedAt) || 0;
+    const sharedWorkerStateCandidate = sanitizeWorkerState(sharedWorkerContext);
+    const sharedWorkerState =
+      sharedWorkerStateCandidate
+      && shouldAcceptIncomingWorkerBoundary({
+        source: 'ready_hydrate',
+        incomingBoundaryId: sharedWorkerStateCandidate.taskBoundaryId,
+        allowBootstrapAdoption: true,
+      })
+        ? sharedWorkerStateCandidate
+        : undefined;
+    const localWorkerStateCandidate = sanitizeWorkerState(runtimeState?.workerState);
+    const localWorkerState =
+      localWorkerStateCandidate
+      && shouldAcceptIncomingWorkerBoundary({
+        source: 'ready_hydrate',
+        incomingBoundaryId: localWorkerStateCandidate.taskBoundaryId,
+        allowBootstrapAdoption: true,
+      })
+        ? localWorkerStateCandidate
+        : undefined;
+    const localUpdatedAt = Number(localWorkerState?.updatedAt) || 0;
     const sharedUpdatedAt = Number(sharedWorkerState?.updatedAt) || 0;
     const stateToHydrate =
       sharedWorkerState && sharedUpdatedAt > localUpdatedAt + 100
         ? sharedWorkerState
-        : runtimeState?.workerState;
+        : localWorkerState;
 
-    if (runtimeState && stateToHydrate && stateToHydrate !== runtimeState.workerState) {
-      runtimeState.workerState = stateToHydrate;
-      persistRuntimeState();
+    if (runtimeState) {
+      if (stateToHydrate && stateToHydrate !== runtimeState.workerState) {
+        runtimeState.workerState = stateToHydrate;
+        persistRuntimeState();
+      } else if (!stateToHydrate && runtimeState.workerState) {
+        runtimeState.workerState = undefined;
+        persistRuntimeState();
+      }
     }
 
     if (stateToHydrate) {
@@ -3558,6 +3835,66 @@ function createRuntime(cfg: RoverInit): void {
     [channel.port2],
   );
 
+  const cancelCurrentFlow = (reason: 'manual_cancel_task' | 'question_prompt_cancel' = 'manual_cancel_task') => {
+    if (!runtimeState) return;
+    const pendingRun = runtimeState.pendingRun;
+    if (pendingRun) {
+      addIgnoredRunId(pendingRun.id);
+      worker?.postMessage({ type: 'cancel_run', runId: pendingRun.id });
+      sessionCoordinator?.releaseWorkflowLock(pendingRun.id);
+      sessionCoordinator?.setActiveRun(undefined);
+      setPendingRun(undefined);
+      runtimeState.workerState = undefined;
+      sessionCoordinator?.setWorkerContext(undefined);
+      currentTaskBoundaryId = createTaskBoundaryId();
+      worker?.postMessage({ type: 'update_config', config: { taskBoundaryId: currentTaskBoundaryId } });
+      if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
+      ui?.setRunning(false);
+      ui?.setQuestionPrompt(undefined);
+      setUiStatus('Task cancelled.');
+      appendUiMessage('system', 'Task cancelled.', true);
+      appendTimelineEvent({
+        kind: 'info',
+        title: 'Run cancelled',
+        status: 'info',
+      });
+      persistRuntimeState();
+      return;
+    }
+
+    const hasPendingQuestions = normalizeAskUserQuestions(runtimeState.workerState?.pendingAskUser?.questions).length > 0;
+    const activeStatus = runtimeState.activeTask?.status;
+    if (!hasPendingQuestions && activeStatus !== 'running') {
+      return;
+    }
+
+    currentTaskBoundaryId = createTaskBoundaryId();
+    runtimeState.workerState = undefined;
+    worker?.postMessage({ type: 'update_config', config: { taskBoundaryId: currentTaskBoundaryId } });
+    if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
+    ui?.setRunning(false);
+    ui?.setQuestionPrompt(undefined);
+    hideTaskSuggestion();
+    setPendingRun(undefined);
+
+    const task = ensureActiveTask(reason);
+    if (task) {
+      task.status = 'ended';
+      task.endedAt = Date.now();
+      task.boundaryReason = reason;
+    }
+    sessionCoordinator?.endTask(reason);
+    sessionCoordinator?.setActiveRun(undefined);
+    sessionCoordinator?.setWorkerContext(undefined);
+    setUiStatus(reason === 'question_prompt_cancel' ? 'Input request cancelled.' : 'Task cancelled.');
+    appendTimelineEvent({
+      kind: 'info',
+      title: reason === 'question_prompt_cancel' ? 'Input request cancelled' : 'Task cancelled',
+      status: 'info',
+    });
+    persistRuntimeState();
+  };
+
   ui = mountWidget({
     shortcuts: getRenderableShortcuts(sanitizeShortcutList(cfg.ui?.shortcuts || [])),
     greeting: resolveEffectiveGreetingConfig(cfg),
@@ -3586,27 +3923,10 @@ function createRuntime(cfg: RoverInit): void {
       }
     },
     onCancelRun: () => {
-      if (runtimeState?.pendingRun) {
-        addIgnoredRunId(runtimeState.pendingRun.id);
-        worker?.postMessage({ type: 'cancel_run', runId: runtimeState.pendingRun.id });
-        sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
-        sessionCoordinator?.setActiveRun(undefined);
-        setPendingRun(undefined);
-        runtimeState.workerState = undefined;
-        sessionCoordinator?.setWorkerContext(undefined);
-        currentTaskBoundaryId = createTaskBoundaryId();
-        worker?.postMessage({ type: 'update_config', config: { taskBoundaryId: currentTaskBoundaryId } });
-        if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
-        ui?.setRunning(false);
-        ui?.setQuestionPrompt(undefined);
-        setUiStatus('Task cancelled.');
-        appendUiMessage('system', 'Task cancelled.', true);
-        appendTimelineEvent({
-          kind: 'info',
-          title: 'Run cancelled',
-          status: 'info',
-        });
-      }
+      cancelCurrentFlow('manual_cancel_task');
+    },
+    onCancelQuestionFlow: () => {
+      cancelCurrentFlow('question_prompt_cancel');
     },
     onNewTask: () => {
       newTask({ reason: 'manual_new_task', clearUi: true });

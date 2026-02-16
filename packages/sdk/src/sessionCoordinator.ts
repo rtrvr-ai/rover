@@ -76,6 +76,7 @@ export type SharedTaskState = {
 export type SharedWorkerContext = {
   trajectoryId?: string;
   taskBoundaryId?: string;
+  rootUserInput?: string;
   history?: Array<{ role: string; content: string }>;
   plannerHistory?: unknown[];
   agentPrevSteps?: unknown[];
@@ -83,6 +84,12 @@ export type SharedWorkerContext = {
     questions: Array<{ key: string; query: string; id?: string; question?: string; choices?: string[] }>;
     source: 'act' | 'planner';
     askedAt: number;
+    boundaryId?: string;
+    stepRef?: {
+      stepIndex: number;
+      functionIndex: number;
+      accTreeId?: string;
+    };
   };
   updatedAt: number;
 };
@@ -261,6 +268,21 @@ function sanitizeSharedWorkerContext(raw: any): SharedWorkerContext | undefined 
         .filter((question: any) => !!question)
         .slice(0, 6)
     : [];
+  const pendingStepRefRaw = raw.pendingAskUser?.stepRef;
+  const pendingStepRef =
+    pendingStepRefRaw
+    && Number.isFinite(Number(pendingStepRefRaw.stepIndex))
+    && Number(pendingStepRefRaw.stepIndex) >= 0
+    && Number.isFinite(Number(pendingStepRefRaw.functionIndex))
+    && Number(pendingStepRefRaw.functionIndex) >= 0
+      ? {
+          stepIndex: Number(pendingStepRefRaw.stepIndex),
+          functionIndex: Number(pendingStepRefRaw.functionIndex),
+          ...(typeof pendingStepRefRaw.accTreeId === 'string' && pendingStepRefRaw.accTreeId.trim()
+            ? { accTreeId: pendingStepRefRaw.accTreeId.trim() }
+            : {}),
+        }
+      : undefined;
 
   const normalizeEntries = (items: any[]): Array<{ role: string; content: string }> =>
     items
@@ -274,12 +296,14 @@ function sanitizeSharedWorkerContext(raw: any): SharedWorkerContext | undefined 
   const history = Array.isArray(raw.history) ? normalizeEntries(raw.history) : [];
   const plannerHistory = cloneUnknownArrayTail(raw.plannerHistory, 40);
   const agentPrevSteps = cloneUnknownArrayTail(raw.agentPrevSteps, 80);
+  const rootUserInput = typeof raw.rootUserInput === 'string' ? raw.rootUserInput.trim() : '';
 
   return {
     trajectoryId: typeof raw.trajectoryId === 'string' ? raw.trajectoryId : undefined,
     taskBoundaryId: typeof raw.taskBoundaryId === 'string' && raw.taskBoundaryId.trim()
       ? raw.taskBoundaryId.trim()
       : undefined,
+    rootUserInput: rootUserInput || undefined,
     history,
     plannerHistory,
     agentPrevSteps,
@@ -288,6 +312,11 @@ function sanitizeSharedWorkerContext(raw: any): SharedWorkerContext | undefined 
           questions: pendingQuestions,
           source: raw.pendingAskUser?.source === 'planner' ? 'planner' : 'act',
           askedAt: Number(raw.pendingAskUser?.askedAt) || now(),
+          boundaryId:
+            typeof raw.pendingAskUser?.boundaryId === 'string' && raw.pendingAskUser.boundaryId.trim()
+              ? raw.pendingAskUser.boundaryId.trim()
+              : undefined,
+          ...(pendingStepRef ? { stepRef: pendingStepRef } : {}),
         }
       : undefined,
     updatedAt: Number(raw.updatedAt) || now(),
@@ -645,6 +674,38 @@ export class SessionCoordinator {
     this.normalizeDraftTabs(draft);
   }
 
+  private resetDraftToSingleCurrentTab(
+    draft: SharedSessionState,
+    url: string,
+    title?: string,
+  ): void {
+    const nowTs = now();
+    const normalizedUrl = normalizeUrl(url);
+    const existingLocal = draft.tabs.find(tab => tab.runtimeId === this.runtimeId);
+    const openedAt = Number(existingLocal?.openedAt) || nowTs;
+
+    draft.tabs = [
+      {
+        logicalTabId: 1,
+        runtimeId: this.runtimeId,
+        url: normalizedUrl || existingLocal?.url || '',
+        title: title || existingLocal?.title,
+        openedAt,
+        updatedAt: nowTs,
+        external: false,
+        detachedAt: undefined,
+        detachedReason: undefined,
+      },
+    ];
+    draft.activeLogicalTabId = 1;
+    draft.nextLogicalTabId = 2;
+    draft.lease = {
+      holderRuntimeId: this.runtimeId,
+      expiresAt: nowTs + this.leaseMs,
+      updatedAt: nowTs,
+    };
+  }
+
   constructor(options: SessionCoordinatorOptions) {
     this.siteId = options.siteId;
     this.sessionId = options.sessionId;
@@ -869,6 +930,14 @@ export class SessionCoordinator {
     });
   }
 
+  resetTabsToCurrent(url: string, title?: string): number {
+    this.mutate('local', draft => {
+      this.resetDraftToSingleCurrentTab(draft, url, title);
+    });
+    this.notifyRoleChange();
+    return this.localLogicalTabId || 1;
+  }
+
   startNewTask(task: Omit<SharedTaskState, 'status'> & { status?: SharedTaskState['status'] }): SharedTaskState {
     const startedAt = Number(task.startedAt) || now();
     const nextTask: SharedTaskState = {
@@ -889,11 +958,7 @@ export class SessionCoordinator {
       draft.uiStatus = undefined;
       draft.activeRun = undefined;
       draft.workerContext = undefined;
-      this.pruneDetachedTabs(draft, {
-        dropRuntimeDetached: true,
-        keepOnlyActiveLiveTab: true,
-        keepRecentExternalPlaceholders: true,
-      });
+      this.resetDraftToSingleCurrentTab(draft, window.location.href, document.title || undefined);
     });
 
     return nextTask;
