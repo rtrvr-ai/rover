@@ -30,6 +30,16 @@ export type NavigationGuardrailEvent = {
   openedInNewTab: boolean;
 };
 
+export type NavigationIntentEvent = {
+  handoffId: string;
+  targetUrl: string;
+  sourceRuntimeId?: string;
+  sourceLogicalTabId?: number;
+  runId?: string;
+  isCrossHost: boolean;
+  ts: number;
+};
+
 export type BridgeOptions = {
   root?: Element;
   includeFrames?: boolean;
@@ -41,8 +51,8 @@ export type BridgeOptions = {
   externalNavigationPolicy?: ExternalNavigationPolicy;
   crossHostPolicy?: CrossHostPolicy;
   onNavigationGuardrail?: (event: NavigationGuardrailEvent) => void;
-  onBeforeAgentNavigation?: (targetUrl: string) => void;
-  onBeforeCrossHostNavigation?: (targetUrl: string) => void;
+  onBeforeAgentNavigation?: (event: NavigationIntentEvent) => void;
+  onBeforeCrossHostNavigation?: (event: NavigationIntentEvent) => void;
   registerOpenedTab?: (payload: {
     url: string;
     title?: string;
@@ -265,10 +275,9 @@ export class Bridge {
       // If the click navigates, auto-resume works. If not, the notification is harmless.
       const clickTargetUrl = this.getClickTargetUrl(args);
       if (clickTargetUrl) {
-        this.notifyAgentNavigation(clickTargetUrl);
-        this.notifyCrossHostNavigation(clickTargetUrl);
-      } else {
-        this.notifyAgentNavigation(window.location.href);
+        const intent = this.buildNavigationIntent(clickTargetUrl);
+        this.notifyAgentNavigation(intent);
+        this.notifyCrossHostNavigation(intent);
       }
     }
 
@@ -434,8 +443,9 @@ export class Bridge {
           return this.domainScopeBlockedResponse(targetUrl, reason);
         }
 
-        this.notifyAgentNavigation(targetUrl);
-        this.notifyCrossHostNavigation(targetUrl);
+        const intent = this.buildNavigationIntent(targetUrl);
+        this.notifyAgentNavigation(intent);
+        this.notifyCrossHostNavigation(intent);
         window.location.href = targetUrl;
         return { success: true, output: { url: targetUrl, navigation: 'same_tab' } };
       }
@@ -466,23 +476,24 @@ export class Bridge {
           return this.domainScopeBlockedResponse(targetUrl, reason);
         }
 
-        this.notifyAgentNavigation(targetUrl);
-        this.notifyCrossHostNavigation(targetUrl);
+        const intent = this.buildNavigationIntent(targetUrl);
+        this.notifyAgentNavigation(intent);
+        this.notifyCrossHostNavigation(intent);
         window.location.href = targetUrl;
         return { success: true, output: { url: targetUrl, navigation: 'same_tab' } };
       }
       case SystemToolNames.go_back: {
-        this.notifyAgentNavigation(window.location.href);
+        this.notifyAgentNavigation(this.buildNavigationIntent(window.location.href, { isCrossHost: false }));
         window.history.back();
         return { success: true };
       }
       case SystemToolNames.go_forward: {
-        this.notifyAgentNavigation(window.location.href);
+        this.notifyAgentNavigation(this.buildNavigationIntent(window.location.href, { isCrossHost: false }));
         window.history.forward();
         return { success: true };
       }
       case SystemToolNames.refresh_page: {
-        this.notifyAgentNavigation(window.location.href);
+        this.notifyAgentNavigation(this.buildNavigationIntent(window.location.href, { isCrossHost: false }));
         window.location.reload();
         return { success: true };
       }
@@ -492,8 +503,9 @@ export class Bridge {
         const targetUrl = normalizeUrl(rawUrl, window.location.href);
         if (!targetUrl) return { success: false, error: `open_new_tab: invalid url "${rawUrl}"`, allowFallback: true };
         if (this.shouldConvertOpenNewTabToSameTab(targetUrl)) {
-          this.notifyAgentNavigation(targetUrl);
-          this.notifyCrossHostNavigation(targetUrl);
+          const intent = this.buildNavigationIntent(targetUrl);
+          this.notifyAgentNavigation(intent);
+          this.notifyCrossHostNavigation(intent);
           window.location.assign(targetUrl);
           return {
             success: true,
@@ -593,13 +605,31 @@ export class Bridge {
     return isUrlAllowedByDomains(targetUrl, this.allowedDomains);
   }
 
-  private notifyAgentNavigation(targetUrl: string): void {
-    try { this.onBeforeAgentNavigation?.(targetUrl); } catch { /* ignore */ }
+  private buildNavigationIntent(targetUrl: string, options?: { isCrossHost?: boolean; runId?: string }): NavigationIntentEvent {
+    let handoffId = '';
+    try {
+      handoffId = crypto.randomUUID();
+    } catch {
+      handoffId = `handoff_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+    }
+    return {
+      handoffId,
+      targetUrl,
+      sourceRuntimeId: this.runtimeId,
+      sourceLogicalTabId: this.actionGateContext.localLogicalTabId,
+      runId: options?.runId,
+      isCrossHost: options?.isCrossHost ?? this.isCrossHostInScopeNavigation(targetUrl),
+      ts: Date.now(),
+    };
   }
 
-  private notifyCrossHostNavigation(targetUrl: string): void {
-    if (this.isCrossHostInScopeNavigation(targetUrl)) {
-      try { this.onBeforeCrossHostNavigation?.(targetUrl); } catch { /* ignore */ }
+  private notifyAgentNavigation(event: NavigationIntentEvent): void {
+    try { this.onBeforeAgentNavigation?.(event); } catch { /* ignore */ }
+  }
+
+  private notifyCrossHostNavigation(event: NavigationIntentEvent): void {
+    if (event.isCrossHost) {
+      try { this.onBeforeCrossHostNavigation?.(event); } catch { /* ignore */ }
     }
   }
 

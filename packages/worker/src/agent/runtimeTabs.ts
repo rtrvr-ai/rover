@@ -130,15 +130,35 @@ export async function resolveRuntimeTabs(
   const prioritized = tabIds.filter(tabId => {
     if (tabId === activeTabId) return true;
     const listed = listedById.get(tabId);
-    if (!listed) return true;
+    if (!listed) return false;
     if (listed.runtimeId) {
       return nowMs - (listed.updatedAt || 0) <= staleRuntimeTabMaxAgeMs;
     }
-    if (!listed.external) return true;
-    return nowMs - (listed.updatedAt || 0) <= detachedExternalTabMaxAgeMs;
+    if (listed.external) {
+      return nowMs - (listed.updatedAt || 0) <= detachedExternalTabMaxAgeMs;
+    }
+    return nowMs - (listed.updatedAt || 0) <= staleRuntimeTabMaxAgeMs;
   });
 
-  let tabOrder = (prioritized.length ? prioritized : tabIds).slice(0, maxContextTabs);
+  const scoreTab = (tabId: number): number => {
+    const listed = listedById.get(tabId);
+    if (!listed) return tabId === activeTabId ? 1 : 0;
+    if (listed.runtimeId && tabId === activeTabId) return 6;
+    if (listed.runtimeId) return 5;
+    if (tabId === activeTabId) return 4;
+    if (listed.external) return 2;
+    return 1;
+  };
+
+  const prioritizedSorted = [...new Set(prioritized)].sort((a, b) => {
+    const scoreDelta = scoreTab(b) - scoreTab(a);
+    if (scoreDelta !== 0) return scoreDelta;
+    const aUpdated = Number(listedById.get(a)?.updatedAt || 0);
+    const bUpdated = Number(listedById.get(b)?.updatedAt || 0);
+    return bUpdated - aUpdated;
+  });
+
+  let tabOrder = (prioritizedSorted.length ? prioritizedSorted : tabIds).slice(0, maxContextTabs);
   if (!tabOrder.includes(activeTabId)) {
     tabOrder = [activeTabId, ...tabOrder].slice(0, maxContextTabs);
   }
