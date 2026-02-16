@@ -43,6 +43,7 @@ export type PersistedPendingAskUser = {
 
 export type PersistedWorkerState = {
   trajectoryId?: string;
+  taskBoundaryId?: string;
   history?: PersistedWorkerHistoryMessage[];
   plannerHistory?: unknown[];
   agentPrevSteps?: unknown[];
@@ -67,8 +68,18 @@ export type PersistedPendingRun = {
   startedAt: number;
   attempts: number;
   autoResume: boolean;
+  taskBoundaryId?: string;
   resumeRequired?: boolean;
   resumeReason?: 'cross_host_navigation' | 'page_reload' | 'handoff' | 'agent_navigation';
+};
+
+export type PersistedNavigationHandoff = {
+  handoffId: string;
+  sourceLogicalTabId?: number;
+  runId?: string;
+  targetUrl: string;
+  createdAt: number;
+  consumed?: boolean;
 };
 
 export type PersistedRuntimeState = {
@@ -83,6 +94,7 @@ export type PersistedRuntimeState = {
   executionMode?: RoverExecutionMode;
   workerState?: PersistedWorkerState;
   pendingRun?: PersistedPendingRun;
+  lastNavigationHandoff?: PersistedNavigationHandoff;
   taskEpoch?: number;
   activeTask?: PersistedTaskState;
   lastRoutingDecision?: {

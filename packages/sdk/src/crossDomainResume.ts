@@ -18,10 +18,18 @@ export interface CrossDomainResumeData {
     text: string;
     startedAt: number;
     attempts: number;
+    taskBoundaryId?: string;
   };
   activeTask?: {
     taskId: string;
     status: string;
+  };
+  handoff?: {
+    handoffId: string;
+    sourceLogicalTabId?: number;
+    runId?: string;
+    targetUrl: string;
+    createdAt: number;
   };
   taskEpoch?: number;
   timestamp: number;

@@ -33,11 +33,13 @@ type RoverWorkerConfig = RoverAgentConfig & {
     };
   };
   sessionId?: string;
+  taskBoundaryId?: string;
   taskRouting?: TaskRoutingConfig;
 };
 
 type PersistedWorkerState = {
   trajectoryId: string;
+  taskBoundaryId?: string;
   history: ChatMessage[];
   plannerHistory: unknown[];
   agentPrevSteps: PreviousSteps[];
@@ -93,6 +95,7 @@ let plannerHistory: any[] = [];
 let agentPrevSteps: PreviousSteps[] = [];
 let pendingAskUser: PendingAskUserPrompt | undefined;
 let trajectoryId: string = crypto.randomUUID();
+let taskBoundaryId: string = crypto.randomUUID();
 let tabularStore: TabularStore | null = null;
 const PLANNER_TOOL_NAME_SET = new Set<string>(Object.values(PLANNER_FUNCTION_CALLS));
 let activeRun: { runId: string; text: string; startedAt: number; resume: boolean } | null = null;
@@ -141,6 +144,7 @@ function buildRoverRuntimeContext(params: {
   tabs: RoverTab[];
   agentName: string;
   externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
+  taskBoundaryId?: string;
 }): RoverRuntimeContext {
   const externalTabs = params.tabs
     .map((tab, index): RoverRuntimeContextExternalTab | undefined => {
@@ -165,6 +169,7 @@ function buildRoverRuntimeContext(params: {
     agentName: params.agentName,
     externalNavigationPolicy: params.externalNavigationPolicy,
     tabIdContract: 'tree_index_mapped_by_tab_order',
+    taskBoundaryId: params.taskBoundaryId,
     ...(externalTabs.length ? { externalTabs } : {}),
   };
 }
@@ -483,6 +488,7 @@ function buildPersistedState(): PersistedWorkerState {
   const safePrevSteps = sanitizeAgentPrevStepsForPersist(Array.isArray(agentPrevSteps) ? agentPrevSteps : []);
   return {
     trajectoryId,
+    taskBoundaryId,
     history: sanitizeHistoryForPersist(history),
     plannerHistory: sanitizePlannerHistoryForPersist(Array.isArray(plannerHistory) ? plannerHistory : []),
     agentPrevSteps: safePrevSteps,
@@ -546,6 +552,10 @@ function hydrateState(raw: any): void {
 
   if (typeof snapshot.trajectoryId === 'string' && snapshot.trajectoryId.trim()) {
     trajectoryId = snapshot.trajectoryId.trim();
+  }
+
+  if (typeof (snapshot as any).taskBoundaryId === 'string' && String((snapshot as any).taskBoundaryId).trim()) {
+    taskBoundaryId = String((snapshot as any).taskBoundaryId).trim();
   }
 
   if (!tabularStore) {
@@ -1170,7 +1180,7 @@ function rememberCancelledRun(runId: string): void {
   }
 }
 
-function clearTaskScopedContextAfterCompletion(): void {
+function clearTaskScopedContextAfterBoundary(_reason: 'cancel' | 'end' | 'new_task' | 'complete'): void {
   history.length = 0;
   plannerHistory = [];
   agentPrevSteps = [];
@@ -1283,6 +1293,13 @@ async function handleUserMessage(
     })
     .filter(tab => Number.isFinite(tab.id) && tab.id > 0);
   const tabsForRun = orderedTabs.length > 0 ? orderedTabs : fallbackTabs;
+  if (orderedTabs.length === 0) {
+    postStatus(
+      'Using fallback tab mapping',
+      `active=${resolvedTabs.activeTabId}; order=${resolvedTabs.tabOrder.join(',') || 'none'}`,
+      'analyze',
+    );
+  }
 
   if (!tabularStore) {
     tabularStore = new TabularStore(`rover-${trajectoryId}`);
@@ -1292,6 +1309,7 @@ async function handleUserMessage(
     tabs: tabsForRun,
     agentName,
     externalNavigationPolicy: resolveRuntimeExternalNavigationPolicy(config),
+    taskBoundaryId,
   });
   const ctx = createAgentContext(
     {
@@ -1657,7 +1675,7 @@ async function runUserMessage(
       questions: outcome.questions,
     });
     if (outcome.taskComplete && !outcome.needsUserInput) {
-      clearTaskScopedContextAfterCompletion();
+      clearTaskScopedContextAfterBoundary('complete');
       postStateSnapshot();
     }
   } catch (error: any) {
@@ -1706,6 +1724,10 @@ async function runUserMessage(
     if (data.type === 'init') {
       config = data.config as RoverWorkerConfig;
       trajectoryId = config.sessionId || crypto.randomUUID();
+      taskBoundaryId =
+        typeof config.taskBoundaryId === 'string' && config.taskBoundaryId.trim()
+          ? config.taskBoundaryId.trim()
+          : taskBoundaryId;
       if (!tabularStore) {
         tabularStore = new TabularStore(`rover-${trajectoryId}`);
       }
@@ -1743,12 +1765,14 @@ async function runUserMessage(
       };
       if (typeof partial.sessionId === 'string' && partial.sessionId.trim() && partial.sessionId.trim() !== trajectoryId) {
         trajectoryId = partial.sessionId.trim();
-        plannerHistory = [];
-        agentPrevSteps = [];
-        pendingAskUser = undefined;
+        clearTaskScopedContextAfterBoundary('new_task');
         terminalRuns.clear();
         cancelledRunIds.clear();
         tabularStore = new TabularStore(`rover-${trajectoryId}`);
+        taskBoundaryId = crypto.randomUUID();
+      }
+      if (typeof partial.taskBoundaryId === 'string' && partial.taskBoundaryId.trim()) {
+        taskBoundaryId = partial.taskBoundaryId.trim();
       }
       const tools = partial.tools;
       if (Array.isArray(tools)) {
@@ -1769,14 +1793,16 @@ async function runUserMessage(
     if (data.type === 'start_new_task') {
       if (!config) throw new Error('Worker not initialized');
       const nextTaskId = typeof data.taskId === 'string' && data.taskId.trim() ? data.taskId.trim() : crypto.randomUUID();
+      const nextTaskBoundaryId =
+        typeof data.taskBoundaryId === 'string' && data.taskBoundaryId.trim()
+          ? data.taskBoundaryId.trim()
+          : crypto.randomUUID();
       activeAbortController?.abort();
-      history.length = 0;
-      plannerHistory = [];
-      agentPrevSteps = [];
-      pendingAskUser = undefined;
+      clearTaskScopedContextAfterBoundary('new_task');
       terminalRuns.clear();
       cancelledRunIds.clear();
       trajectoryId = nextTaskId;
+      taskBoundaryId = nextTaskBoundaryId;
       tabularStore = new TabularStore(`rover-${trajectoryId}`);
       activeRun = null;
       activeAbortController = null;
@@ -1790,7 +1816,7 @@ async function runUserMessage(
         rememberCancelledRun(data.runId);
         activeAbortController?.abort();
       }
-      pendingAskUser = undefined;
+      clearTaskScopedContextAfterBoundary('cancel');
       postStateSnapshot();
       return;
     }

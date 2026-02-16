@@ -1,5 +1,4 @@
-import { Bridge } from '@rover/bridge';
-import { bindRpc } from '@rover/bridge';
+import { Bridge, bindRpc, type NavigationIntentEvent } from '@rover/bridge';
 import {
   mountWidget,
   type RoverAskUserAnswerMeta,
@@ -17,6 +16,7 @@ import {
   type SharedTimelineEvent,
   type SharedUiMessage,
   type SharedWorkerContext,
+  type SharedNavigationHandoff,
 } from './sessionCoordinator.js';
 import {
   RoverCloudCheckpointClient,
@@ -32,6 +32,7 @@ import {
 } from './crossDomainResume.js';
 import type {
   PersistedPendingRun,
+  PersistedNavigationHandoff,
   PersistedRuntimeState,
   PersistedTaskState,
   PersistedTimelineEvent,
@@ -294,6 +295,7 @@ let currentMode: RoverExecutionMode = 'controller';
 let workerReady = false;
 let autoResumeAttempted = false;
 let agentNavigationPending = false;
+let currentTaskBoundaryId = '';
 let runSafetyTimer: ReturnType<typeof setTimeout> | null = null;
 let unloadHandlerInstalled = false;
 type PendingTaskSuggestion =
@@ -352,6 +354,80 @@ function createId(prefix: string): string {
     return `${prefix}-${crypto.randomUUID()}`;
   } catch {
     return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+  }
+}
+
+function createTaskBoundaryId(): string {
+  return createId('task-boundary');
+}
+
+function sanitizeNavigationHandoff(input: any): PersistedNavigationHandoff | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const handoffId = typeof input.handoffId === 'string' ? input.handoffId.trim() : '';
+  const targetUrl = typeof input.targetUrl === 'string' ? input.targetUrl.trim() : '';
+  if (!handoffId || !targetUrl) return undefined;
+  const sourceLogicalTabId = Number(input.sourceLogicalTabId);
+  return {
+    handoffId,
+    targetUrl,
+    sourceLogicalTabId: Number.isFinite(sourceLogicalTabId) && sourceLogicalTabId > 0 ? sourceLogicalTabId : undefined,
+    runId: typeof input.runId === 'string' && input.runId.trim() ? input.runId.trim() : undefined,
+    createdAt: Number(input.createdAt) || Date.now(),
+    consumed: input.consumed === true,
+  };
+}
+
+function toSharedNavigationHandoff(input: PersistedNavigationHandoff | undefined): SharedNavigationHandoff | undefined {
+  if (!input) return undefined;
+  return {
+    handoffId: input.handoffId,
+    targetUrl: input.targetUrl,
+    sourceLogicalTabId: input.sourceLogicalTabId,
+    runId: input.runId,
+    ts: input.createdAt,
+  };
+}
+
+function toPersistedNavigationHandoff(intent: NavigationIntentEvent): PersistedNavigationHandoff {
+  return {
+    handoffId: intent.handoffId,
+    targetUrl: intent.targetUrl,
+    sourceLogicalTabId: intent.sourceLogicalTabId,
+    runId: intent.runId,
+    createdAt: Number(intent.ts) || Date.now(),
+    consumed: false,
+  };
+}
+
+function resolveTaskBoundaryIdFromState(state: PersistedRuntimeState | null): string {
+  const pendingCandidate = sanitizePendingRun(state?.pendingRun)?.taskBoundaryId;
+  if (pendingCandidate) return pendingCandidate;
+  const workerCandidate = sanitizeWorkerState(state?.workerState)?.taskBoundaryId;
+  if (workerCandidate) return workerCandidate;
+  return createTaskBoundaryId();
+}
+
+function getUnconsumedNavigationHandoff(maxAgeMs = 120_000): PersistedNavigationHandoff | undefined {
+  const handoff = sanitizeNavigationHandoff(runtimeState?.lastNavigationHandoff);
+  if (!handoff || handoff.consumed === true) return undefined;
+  const ageMs = Date.now() - Number(handoff.createdAt || 0);
+  if (!Number.isFinite(ageMs) || ageMs < -5_000 || ageMs > maxAgeMs) return undefined;
+  return handoff;
+}
+
+function syncCurrentTaskBoundaryId(options?: { rotateIfMissing?: boolean }): void {
+  const pendingBoundary = sanitizePendingRun(runtimeState?.pendingRun)?.taskBoundaryId;
+  if (pendingBoundary) {
+    currentTaskBoundaryId = pendingBoundary;
+    return;
+  }
+  const workerBoundary = sanitizeWorkerState(runtimeState?.workerState)?.taskBoundaryId;
+  if (workerBoundary) {
+    currentTaskBoundaryId = workerBoundary;
+    return;
+  }
+  if (!currentTaskBoundaryId || options?.rotateIfMissing) {
+    currentTaskBoundaryId = createTaskBoundaryId();
   }
 }
 
@@ -550,6 +626,7 @@ function createDefaultRuntimeState(sessionId: string, rid: string): PersistedRun
     executionMode: 'controller',
     workerState: undefined,
     pendingRun: undefined,
+    lastNavigationHandoff: undefined,
     taskEpoch: 1,
     activeTask: createDefaultTaskState(),
     lastRoutingDecision: undefined,
@@ -1234,6 +1311,8 @@ function sanitizeTimelineEvents(input: any): PersistedTimelineEvent[] {
 function sanitizeWorkerState(input: any): PersistedWorkerState | undefined {
   if (!input || typeof input !== 'object') return undefined;
 
+  const taskBoundaryIdCandidate = String(input.taskBoundaryId || '').trim();
+
   const historyRaw: unknown[] = Array.isArray((input as PersistedWorkerState).history)
     ? ((input as PersistedWorkerState).history as unknown[])
     : [];
@@ -1263,6 +1342,7 @@ function sanitizeWorkerState(input: any): PersistedWorkerState | undefined {
 
   return {
     trajectoryId: typeof input.trajectoryId === 'string' ? input.trajectoryId : undefined,
+    taskBoundaryId: taskBoundaryIdCandidate || undefined,
     history,
     plannerHistory,
     agentPrevSteps,
@@ -1297,6 +1377,7 @@ function normalizePersistedState(raw: PersistedRuntimeState | null, sessionId: s
         : 'controller',
     workerState: sanitizeWorkerState(raw.workerState),
     pendingRun,
+    lastNavigationHandoff: sanitizeNavigationHandoff((raw as any).lastNavigationHandoff),
     taskEpoch: Math.max(1, Number(raw.taskEpoch) || 1),
     activeTask: parsedTask,
     lastRoutingDecision:
@@ -1340,6 +1421,7 @@ function toSharedWorkerContext(state: PersistedWorkerState | undefined): SharedW
   const pendingQuestions = normalizeAskUserQuestions(state.pendingAskUser?.questions);
   return {
     trajectoryId: state.trajectoryId,
+    taskBoundaryId: typeof state.taskBoundaryId === 'string' ? state.taskBoundaryId : undefined,
     history: Array.isArray(state.history)
       ? state.history
           .slice(-MAX_WORKER_HISTORY)
@@ -1364,6 +1446,9 @@ function sanitizePendingRun(input: any): PersistedPendingRun | undefined {
 
   const id = typeof input.id === 'string' && input.id.trim() ? input.id.trim() : undefined;
   const text = typeof input.text === 'string' ? input.text.trim() : '';
+  const taskBoundaryId = typeof input.taskBoundaryId === 'string' && input.taskBoundaryId.trim()
+    ? input.taskBoundaryId.trim()
+    : undefined;
   if (!id || !text) return undefined;
 
   return {
@@ -1372,6 +1457,7 @@ function sanitizePendingRun(input: any): PersistedPendingRun | undefined {
     startedAt: Number(input.startedAt) || Date.now(),
     attempts: Math.max(0, Number(input.attempts) || 0),
     autoResume: input.autoResume !== false,
+    taskBoundaryId,
     resumeRequired: input.resumeRequired === true,
     resumeReason:
       input.resumeReason === 'cross_host_navigation'
@@ -1417,7 +1503,8 @@ function ensureUnloadHandler(): void {
         sessionCoordinator?.clearActiveRunRuntimeId(markedPending.id);
       }
     }
-    sessionCoordinator?.broadcastClosing();
+    const pendingHandoff = getUnconsumedNavigationHandoff();
+    sessionCoordinator?.broadcastClosing(toSharedNavigationHandoff(pendingHandoff));
     if (runtimeState?.pendingRun) {
       sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
     }
@@ -1432,7 +1519,17 @@ function ensureUnloadHandler(): void {
           text: runtimeState.pendingRun.text,
           startedAt: runtimeState.pendingRun.startedAt,
           attempts: runtimeState.pendingRun.attempts,
+          taskBoundaryId: runtimeState.pendingRun.taskBoundaryId || currentTaskBoundaryId,
         },
+        handoff: pendingHandoff
+          ? {
+              handoffId: pendingHandoff.handoffId,
+              sourceLogicalTabId: pendingHandoff.sourceLogicalTabId,
+              runId: pendingHandoff.runId,
+              targetUrl: pendingHandoff.targetUrl,
+              createdAt: pendingHandoff.createdAt,
+            }
+          : undefined,
         activeTask: runtimeState.activeTask
           ? { taskId: runtimeState.activeTask.taskId, status: runtimeState.activeTask.status }
           : undefined,
@@ -1731,7 +1828,20 @@ function setExecutionMode(
 
 function setPendingRun(next: PersistedPendingRun | undefined): void {
   if (!runtimeState) return;
-  runtimeState.pendingRun = next;
+  if (next) {
+    runtimeState.pendingRun = sanitizePendingRun({
+      ...next,
+      taskBoundaryId: next.taskBoundaryId || currentTaskBoundaryId,
+    });
+  } else {
+    runtimeState.pendingRun = undefined;
+  }
+  persistRuntimeState();
+}
+
+function setLatestNavigationHandoff(next: PersistedNavigationHandoff | undefined): void {
+  if (!runtimeState) return;
+  runtimeState.lastNavigationHandoff = sanitizeNavigationHandoff(next);
   persistRuntimeState();
 }
 
@@ -1778,6 +1888,10 @@ function postRun(
   }
 
   const previousAttempts = runtimeState?.pendingRun?.id === runId ? runtimeState.pendingRun.attempts : 0;
+  const boundaryForRun =
+    runtimeState?.pendingRun?.id === runId
+      ? (runtimeState.pendingRun.taskBoundaryId || currentTaskBoundaryId)
+      : currentTaskBoundaryId;
 
   agentNavigationPending = false;
   setPendingRun({
@@ -1786,6 +1900,7 @@ function postRun(
     startedAt: Date.now(),
     attempts: resume ? previousAttempts + 1 : 0,
     autoResume: options?.autoResume !== false,
+    taskBoundaryId: boundaryForRun,
     resumeRequired: false,
     resumeReason: undefined,
   });
@@ -1977,6 +2092,7 @@ async function applyAsyncRuntimeStateHydration(key: string): Promise<void> {
     runtimeState.sessionId,
     runtimeId,
   );
+  syncCurrentTaskBoundaryId({ rotateIfMissing: !currentTaskBoundaryId });
   persistRuntimeState();
 
   if (ui) {
@@ -1994,6 +2110,10 @@ async function applyAsyncRuntimeStateHydration(key: string): Promise<void> {
       if (runtimeState.uiOpen) ui.open();
       else ui.close();
     }
+  }
+
+  if (workerReady && worker) {
+    worker.postMessage({ type: 'update_config', config: { taskBoundaryId: currentTaskBoundaryId } });
   }
 
   if (workerReady && worker && runtimeState.workerState && currentMode === 'controller') {
@@ -2019,6 +2139,9 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
       runtimeState.timeline = [];
       clearTaskUiState();
       setPendingRun(undefined);
+      runtimeState.workerState = undefined;
+      currentTaskBoundaryId = createTaskBoundaryId();
+      worker?.postMessage({ type: 'update_config', config: { taskBoundaryId: currentTaskBoundaryId } });
       hideTaskSuggestion();
     }
 
@@ -2133,7 +2256,9 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
       const incomingUpdatedAt = Number(incomingWorker?.updatedAt) || 0;
       if (incomingWorker && incomingUpdatedAt > localUpdatedAt + 100) {
         runtimeState.workerState = incomingWorker;
+        syncCurrentTaskBoundaryId();
         if (workerReady && worker && currentMode === 'controller') {
+          worker.postMessage({ type: 'update_config', config: { taskBoundaryId: currentTaskBoundaryId } });
           worker.postMessage({ type: 'hydrate_state', state: incomingWorker });
           emit('context_restored', { source: 'shared_session', ts: Date.now() });
         }
@@ -2144,6 +2269,7 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
   runtimeState.uiMessages = sanitizeUiMessages(runtimeState.uiMessages);
   runtimeState.timeline = sanitizeTimelineEvents(runtimeState.timeline);
   runtimeState.workerState = sanitizeWorkerState(runtimeState.workerState);
+  syncCurrentTaskBoundaryId();
   syncQuestionPromptFromWorkerState();
   runtimeState.activeTask = sanitizeTask(runtimeState.activeTask, createDefaultTaskState('implicit'));
   persistRuntimeState();
@@ -2166,6 +2292,7 @@ function cloneRuntimeStateForCheckpoint(state: PersistedRuntimeState): Persisted
         : 'controller',
     workerState: sanitizeWorkerState(state.workerState),
     pendingRun: sanitizePendingRun(state.pendingRun),
+    lastNavigationHandoff: sanitizeNavigationHandoff(state.lastNavigationHandoff),
     taskEpoch: Math.max(1, Number(state.taskEpoch) || 1),
     activeTask: sanitizeTask(state.activeTask, fallbackTask),
     lastRoutingDecision:
@@ -2226,7 +2353,10 @@ function applyCloudCheckpointPayload(payload: RoverCloudCheckpointPayload): void
       runtimeState.sessionId = remoteSessionId;
       currentConfig = { ...currentConfig, sessionId: remoteSessionId };
       setupSessionCoordinator(currentConfig);
-      worker?.postMessage({ type: 'update_config', config: { sessionId: remoteSessionId } });
+      worker?.postMessage({
+        type: 'update_config',
+        config: { sessionId: remoteSessionId, taskBoundaryId: currentTaskBoundaryId },
+      });
     }
 
     if (payload.sharedState && sessionCoordinator) {
@@ -2264,6 +2394,7 @@ function applyCloudCheckpointPayload(payload: RoverCloudCheckpointPayload): void
           remoteSessionId,
           runtimeId,
         );
+        syncCurrentTaskBoundaryId();
         persistRuntimeState();
 
         if (runtimeState.uiStatus) {
@@ -2278,6 +2409,9 @@ function applyCloudCheckpointPayload(payload: RoverCloudCheckpointPayload): void
           else ui?.close();
         }
 
+        if (workerReady) {
+          worker?.postMessage({ type: 'update_config', config: { taskBoundaryId: currentTaskBoundaryId } });
+        }
         if (workerReady && runtimeState.workerState) {
           worker?.postMessage({ type: 'hydrate_state', state: runtimeState.workerState });
           emit('context_restored', { source: 'cloud_checkpoint', ts: Date.now() });
@@ -2401,9 +2535,11 @@ function setupSessionCoordinator(cfg: RoverInit): void {
           if (incomingWorker && incomingUpdatedAt > localUpdatedAt + 100) {
             if (runtimeState) {
               runtimeState.workerState = incomingWorker;
+              syncCurrentTaskBoundaryId();
               persistRuntimeState();
             }
             if (workerReady && worker) {
+              worker.postMessage({ type: 'update_config', config: { taskBoundaryId: currentTaskBoundaryId } });
               worker.postMessage({ type: 'hydrate_state', state: incomingWorker });
               emit('context_restored', { source: 'controller_handoff', ts: Date.now() });
             }
@@ -2427,7 +2563,15 @@ function setupSessionCoordinator(cfg: RoverInit): void {
     },
   });
 
-  sessionCoordinator.start();
+  const startupHandoff = getUnconsumedNavigationHandoff();
+  sessionCoordinator.start(toSharedNavigationHandoff(startupHandoff));
+  if (runtimeState?.lastNavigationHandoff && startupHandoff) {
+    runtimeState.lastNavigationHandoff = sanitizeNavigationHandoff({
+      ...runtimeState.lastNavigationHandoff,
+      consumed: true,
+    });
+    persistRuntimeState();
+  }
 
   // Register local RPC handler for cross-tab requests
   sessionCoordinator.setRpcRequestHandler(async (request) => {
@@ -3195,30 +3339,34 @@ function createRuntime(cfg: RoverInit): void {
         status: 'info',
       });
     },
-    onBeforeAgentNavigation: (_targetUrl: string) => {
+    onBeforeAgentNavigation: (intent: NavigationIntentEvent) => {
       // Always mark agent navigation intent — this flag survives pendingRun mutations
       // and is used as fallback in pagehide if resumeReason gets overwritten.
       agentNavigationPending = true;
-      if (!runtimeState?.pendingRun) return;
+      if (!runtimeState) return;
+      setLatestNavigationHandoff(toPersistedNavigationHandoff(intent));
+      if (!runtimeState.pendingRun) return;
       // Only mark for same-host — cross-host is handled by onBeforeCrossHostNavigation
-      const currentHost = new URL(window.location.href).hostname;
-      const targetHost = new URL(_targetUrl, window.location.href).hostname;
-      if (currentHost === targetHost) {
+      if (!intent.isCrossHost) {
         runtimeState.pendingRun = sanitizePendingRun({
           ...runtimeState.pendingRun,
+          taskBoundaryId: runtimeState.pendingRun.taskBoundaryId || currentTaskBoundaryId,
           resumeRequired: true,
           resumeReason: 'agent_navigation',
         });
         persistRuntimeState();
       }
     },
-    onBeforeCrossHostNavigation: (_targetUrl: string) => {
+    onBeforeCrossHostNavigation: (intent: NavigationIntentEvent) => {
       agentNavigationPending = true;
       if (!runtimeState || !currentConfig) return;
+      setLatestNavigationHandoff(toPersistedNavigationHandoff(intent));
+      const handoffForCookie = getUnconsumedNavigationHandoff();
       // Mark the pending run for cross-host resume
       if (runtimeState.pendingRun) {
         runtimeState.pendingRun = sanitizePendingRun({
           ...runtimeState.pendingRun,
+          taskBoundaryId: runtimeState.pendingRun.taskBoundaryId || currentTaskBoundaryId,
           resumeRequired: true,
           resumeReason: 'cross_host_navigation',
         });
@@ -3232,6 +3380,16 @@ function createRuntime(cfg: RoverInit): void {
               text: runtimeState.pendingRun.text,
               startedAt: runtimeState.pendingRun.startedAt,
               attempts: runtimeState.pendingRun.attempts,
+              taskBoundaryId: runtimeState.pendingRun.taskBoundaryId || currentTaskBoundaryId,
+            }
+          : undefined,
+        handoff: handoffForCookie
+          ? {
+              handoffId: handoffForCookie.handoffId,
+              sourceLogicalTabId: handoffForCookie.sourceLogicalTabId,
+              runId: handoffForCookie.runId,
+              targetUrl: handoffForCookie.targetUrl,
+              createdAt: handoffForCookie.createdAt,
             }
           : undefined,
         activeTask: runtimeState.activeTask
@@ -3380,7 +3538,17 @@ function createRuntime(cfg: RoverInit): void {
     }
   } catch (_e) { /* fall through to direct URL */ }
   worker = new Worker(effectiveWorkerUrl, { type: 'module' });
-  worker.postMessage({ type: 'init', config: cfg, port: channel.port2 }, [channel.port2]);
+  worker.postMessage(
+    {
+      type: 'init',
+      config: {
+        ...cfg,
+        taskBoundaryId: currentTaskBoundaryId,
+      },
+      port: channel.port2,
+    },
+    [channel.port2],
+  );
 
   ui = mountWidget({
     shortcuts: getRenderableShortcuts(sanitizeShortcutList(cfg.ui?.shortcuts || [])),
@@ -3416,6 +3584,10 @@ function createRuntime(cfg: RoverInit): void {
         sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
         sessionCoordinator?.setActiveRun(undefined);
         setPendingRun(undefined);
+        runtimeState.workerState = undefined;
+        sessionCoordinator?.setWorkerContext(undefined);
+        currentTaskBoundaryId = createTaskBoundaryId();
+        worker?.postMessage({ type: 'update_config', config: { taskBoundaryId: currentTaskBoundaryId } });
         if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
         ui?.setRunning(false);
         ui?.setQuestionPrompt(undefined);
@@ -3620,8 +3792,15 @@ export function boot(cfg: RoverInit): RoverInstance {
       seeded.pendingRun = sanitizePendingRun({
         ...crossDomainResume.pendingRun,
         autoResume: true,
+        taskBoundaryId: crossDomainResume.pendingRun.taskBoundaryId,
         resumeRequired: true,
         resumeReason: 'cross_host_navigation',
+      });
+    }
+    if (crossDomainResume.handoff) {
+      seeded.lastNavigationHandoff = sanitizeNavigationHandoff({
+        ...crossDomainResume.handoff,
+        createdAt: crossDomainResume.handoff.createdAt,
       });
     }
     if (crossDomainResume.activeTask) {
@@ -3641,6 +3820,20 @@ export function boot(cfg: RoverInit): RoverInstance {
 
   if (desiredSessionId && runtimeState.sessionId !== desiredSessionId) {
     runtimeState = createDefaultRuntimeState(desiredSessionId, runtimeId);
+  }
+
+  currentTaskBoundaryId = resolveTaskBoundaryIdFromState(runtimeState);
+  if (runtimeState.pendingRun && !runtimeState.pendingRun.taskBoundaryId) {
+    runtimeState.pendingRun = sanitizePendingRun({
+      ...runtimeState.pendingRun,
+      taskBoundaryId: currentTaskBoundaryId,
+    });
+  }
+  if (runtimeState.workerState && !runtimeState.workerState.taskBoundaryId) {
+    runtimeState.workerState = sanitizeWorkerState({
+      ...runtimeState.workerState,
+      taskBoundaryId: currentTaskBoundaryId,
+    });
   }
 
   currentConfig = {
@@ -3811,7 +4004,13 @@ export function update(cfg: Partial<RoverInit>): void {
     }
   }
 
-  worker.postMessage({ type: 'update_config', config: cfg });
+  worker.postMessage({
+    type: 'update_config',
+    config: {
+      ...cfg,
+      taskBoundaryId: currentTaskBoundaryId,
+    },
+  });
 
   applyEffectiveSiteConfig(currentConfig);
   if (shouldReloadRemoteSiteConfig) {
@@ -3851,6 +4050,7 @@ export function shutdown(): void {
   workerReady = false;
   autoResumeAttempted = false;
   agentNavigationPending = false;
+  currentTaskBoundaryId = '';
   runtimeId = '';
   resolvedVisitorId = undefined;
   resolvedVisitor = undefined;
@@ -3930,6 +4130,7 @@ export function newTask(options?: { reason?: string; clearUi?: boolean }): void 
   ui?.setQuestionPrompt(undefined);
 
   autoResumeAttempted = false;
+  currentTaskBoundaryId = createTaskBoundaryId();
   runtimeState.taskEpoch = taskEpoch;
   runtimeState.activeTask = nextTask;
   setPendingRun(undefined);
@@ -3955,7 +4156,7 @@ export function newTask(options?: { reason?: string; clearUi?: boolean }): void 
   setUiStatus('New task started.');
   persistRuntimeState();
 
-  worker?.postMessage({ type: 'start_new_task', taskId: nextTask.taskId });
+  worker?.postMessage({ type: 'start_new_task', taskId: nextTask.taskId, taskBoundaryId: currentTaskBoundaryId });
   emit('task_started', {
     taskId: nextTask.taskId,
     reason,
@@ -3978,7 +4179,9 @@ export function endTask(options?: { reason?: string }): void {
     sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
   }
   setPendingRun(undefined);
+  currentTaskBoundaryId = createTaskBoundaryId();
   runtimeState.workerState = undefined;
+  worker?.postMessage({ type: 'update_config', config: { taskBoundaryId: currentTaskBoundaryId } });
   if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
   ui?.setRunning(false);
   ui?.setQuestionPrompt(undefined);

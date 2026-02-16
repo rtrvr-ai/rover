@@ -30,6 +30,7 @@ export type RoverRuntimeContext = {
   agentName?: string;
   externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
   tabIdContract?: 'tree_index_mapped_by_tab_order';
+  taskBoundaryId?: string;
   externalTabs?: RoverRuntimeContextExternalTab[];
 };
 

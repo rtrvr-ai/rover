@@ -39,6 +39,20 @@ export type SharedTabEntry = {
   updatedAt: number;
   external?: boolean;
   openerRuntimeId?: string;
+  handoffId?: string;
+  handoffRunId?: string;
+  handoffTargetUrl?: string;
+  handoffCreatedAt?: number;
+};
+
+export type SharedNavigationHandoff = {
+  handoffId: string;
+  targetUrl: string;
+  sourceRuntimeId?: string;
+  sourceLogicalTabId?: number;
+  runId?: string;
+  isCrossHost?: boolean;
+  ts?: number;
 };
 
 export type SharedLease = {
@@ -59,6 +73,7 @@ export type SharedTaskState = {
 
 export type SharedWorkerContext = {
   trajectoryId?: string;
+  taskBoundaryId?: string;
   history?: Array<{ role: string; content: string }>;
   plannerHistory?: unknown[];
   agentPrevSteps?: unknown[];
@@ -136,14 +151,6 @@ function normalizeUrl(raw: string): string {
     return new URL(text, window.location.href).toString();
   } catch {
     return text;
-  }
-}
-
-function extractHostname(url: string): string {
-  try {
-    return new URL(url).hostname.toLowerCase();
-  } catch {
-    return '';
   }
 }
 
@@ -257,6 +264,9 @@ function sanitizeSharedWorkerContext(raw: any): SharedWorkerContext | undefined 
 
   return {
     trajectoryId: typeof raw.trajectoryId === 'string' ? raw.trajectoryId : undefined,
+    taskBoundaryId: typeof raw.taskBoundaryId === 'string' && raw.taskBoundaryId.trim()
+      ? raw.taskBoundaryId.trim()
+      : undefined,
     history,
     plannerHistory,
     agentPrevSteps,
@@ -315,6 +325,10 @@ function sanitizeSharedState(raw: any, siteId: string, sessionId: string): Share
             updatedAt: Number(entry?.updatedAt) || now(),
             external: !!entry?.external,
             openerRuntimeId: typeof entry?.openerRuntimeId === 'string' ? entry.openerRuntimeId : undefined,
+            handoffId: typeof entry?.handoffId === 'string' ? entry.handoffId : undefined,
+            handoffRunId: typeof entry?.handoffRunId === 'string' ? entry.handoffRunId : undefined,
+            handoffTargetUrl: typeof entry?.handoffTargetUrl === 'string' ? entry.handoffTargetUrl : undefined,
+            handoffCreatedAt: Number(entry?.handoffCreatedAt) || undefined,
           }))
           .filter((entry: SharedTabEntry) => !!entry.logicalTabId)
       : [],
@@ -490,7 +504,7 @@ export class SessionCoordinator {
     this.state = this.loadState();
   }
 
-  start(): void {
+  start(initialHandoff?: SharedNavigationHandoff): void {
     if (this.started) return;
     this.started = true;
 
@@ -499,7 +513,7 @@ export class SessionCoordinator {
       this.pruneDetachedTabs(draft, { dropRuntimeDetached: true, dropAllDetachedExternal: true });
     });
 
-    this.registerCurrentTab(window.location.href, document.title || undefined);
+    this.registerCurrentTab(window.location.href, document.title || undefined, initialHandoff);
     this.claimLease(false);
     if (!this.state.task) {
       this.mutate('local', draft => {
@@ -877,8 +891,10 @@ export class SessionCoordinator {
     return this.claimLease(true);
   }
 
-  registerCurrentTab(url: string, title?: string): number {
+  registerCurrentTab(url: string, title?: string, handoff?: SharedNavigationHandoff): number {
     const normalizedUrl = normalizeUrl(url);
+    const handoffId = typeof handoff?.handoffId === 'string' ? handoff.handoffId.trim() : '';
+    const handoffTabId = Number(handoff?.sourceLogicalTabId);
 
     let nextLocalTabId: number | undefined;
     this.mutate('local', draft => {
@@ -887,28 +903,36 @@ export class SessionCoordinator {
         existing.url = normalizedUrl || existing.url;
         existing.title = title || existing.title;
         existing.updatedAt = now();
+        existing.handoffId = undefined;
+        existing.handoffRunId = undefined;
+        existing.handoffTargetUrl = undefined;
+        existing.handoffCreatedAt = undefined;
         nextLocalTabId = existing.logicalTabId;
       } else {
         let adopted = draft.tabs.find(tab => !tab.runtimeId && tab.url === normalizedUrl && now() - tab.openedAt < 180000);
-        // If no exact URL match, try same-domain adoption for recently detached tabs
-        // (handles same-domain path navigation e.g. rtrvr.ai/ → rtrvr.ai/cloud)
-        if (!adopted) {
-          const currentHost = extractHostname(normalizedUrl);
-          const candidates = draft.tabs
-            .filter(tab =>
-              !tab.runtimeId
-              && currentHost
-              && extractHostname(tab.url) === currentHost
-              && now() - tab.updatedAt < 10_000
-            )
-            .sort((a, b) => b.updatedAt - a.updatedAt);
-          adopted = candidates[0];
+        if (
+          !adopted
+          && handoffId
+          && Number.isFinite(handoffTabId)
+          && handoffTabId > 0
+        ) {
+          adopted = draft.tabs.find(tab => {
+            if (tab.runtimeId) return false;
+            if (tab.logicalTabId !== handoffTabId) return false;
+            if (String(tab.handoffId || '').trim() !== handoffId) return false;
+            const ageMs = now() - Number(tab.handoffCreatedAt || tab.updatedAt || tab.openedAt || 0);
+            return ageMs >= 0 && ageMs <= 30_000;
+          });
         }
         if (adopted) {
           adopted.runtimeId = this.runtimeId;
           adopted.url = normalizedUrl || adopted.url;
           adopted.title = title || adopted.title;
           adopted.updatedAt = now();
+          adopted.handoffId = undefined;
+          adopted.handoffRunId = undefined;
+          adopted.handoffTargetUrl = undefined;
+          adopted.handoffCreatedAt = undefined;
           nextLocalTabId = adopted.logicalTabId;
         } else {
           const logicalTabId = draft.nextLogicalTabId++;
@@ -1069,9 +1093,8 @@ export class SessionCoordinator {
     });
   }
 
-  broadcastClosing(): void {
+  broadcastClosing(handoff?: SharedNavigationHandoff): void {
     this.closing = true;
-    if (!this.channel) return;
     // Mark local tab as detached instead of removing.
     // For navigation: new runtime adopts the detached tab, preserving logicalTabId.
     // For genuine tab close: pruneDetachedTabs removes it after STALE_DETACHED_TAB_MS.
@@ -1080,12 +1103,21 @@ export class SessionCoordinator {
       if (localTab) {
         localTab.runtimeId = undefined;
         localTab.updatedAt = now();
+        localTab.handoffId = typeof handoff?.handoffId === 'string' ? handoff.handoffId : undefined;
+        localTab.handoffRunId = typeof handoff?.runId === 'string' ? handoff.runId : undefined;
+        localTab.handoffTargetUrl = typeof handoff?.targetUrl === 'string' ? handoff.targetUrl : undefined;
+        localTab.handoffCreatedAt = Number(handoff?.ts) || now();
+      }
+      if (draft.lease?.holderRuntimeId === this.runtimeId) {
+        draft.lease = undefined;
       }
     });
+    if (!this.channel) return;
     this.channel.postMessage({
       type: 'tab_closing',
       runtimeId: this.runtimeId,
       logicalTabId: this.localLogicalTabId,
+      handoff,
     });
   }
 
@@ -1224,8 +1256,28 @@ export class SessionCoordinator {
 
   private handleRemoteTabClosing(payload: any): void {
     const { runtimeId: closingRuntimeId } = payload;
+    const handoff = payload?.handoff;
+    const handoffId = typeof handoff?.handoffId === 'string' && handoff.handoffId.trim()
+      ? handoff.handoffId.trim()
+      : undefined;
+    const handoffRunId = typeof handoff?.runId === 'string' && handoff.runId.trim()
+      ? handoff.runId.trim()
+      : undefined;
+    const handoffTargetUrl = typeof handoff?.targetUrl === 'string' && handoff.targetUrl.trim()
+      ? handoff.targetUrl.trim()
+      : undefined;
+    const handoffCreatedAt = Number(handoff?.ts) || now();
+
     this.mutate('local', draft => {
-      draft.tabs = draft.tabs.filter(t => t.runtimeId !== closingRuntimeId);
+      const tab = draft.tabs.find(t => t.runtimeId === closingRuntimeId);
+      if (tab) {
+        tab.runtimeId = undefined;
+        tab.updatedAt = now();
+        tab.handoffId = handoffId;
+        tab.handoffRunId = handoffRunId;
+        tab.handoffTargetUrl = handoffTargetUrl;
+        tab.handoffCreatedAt = handoffCreatedAt;
+      }
       if (draft.lease?.holderRuntimeId === closingRuntimeId) {
         draft.lease = undefined;
       }
@@ -1236,7 +1288,7 @@ export class SessionCoordinator {
         draft.activeRun = undefined;
       }
       if (draft.activeLogicalTabId && !draft.tabs.some(t => t.logicalTabId === draft.activeLogicalTabId)) {
-        draft.activeLogicalTabId = undefined;
+        draft.activeLogicalTabId = this.localLogicalTabId || draft.tabs[0]?.logicalTabId;
       }
     });
     this.notifyRoleChange();
@@ -1269,7 +1321,28 @@ export class SessionCoordinator {
 
       const lease = draft.lease;
       const leaseExpired = !lease || lease.expiresAt <= now();
-      if (leaseExpired || lease?.holderRuntimeId === this.runtimeId) {
+      const remoteHolderRuntimeId =
+        lease && lease.holderRuntimeId !== this.runtimeId && lease.expiresAt > now()
+          ? lease.holderRuntimeId
+          : undefined;
+      const remoteHolderTab = remoteHolderRuntimeId
+        ? draft.tabs.find(tab => tab.runtimeId === remoteHolderRuntimeId)
+        : undefined;
+      const remoteHolderAlive = !!(remoteHolderTab && remoteHolderTab.updatedAt > now() - 2 * this.heartbeatMs);
+      const hasRemoteActiveRun = !!(draft.activeRun?.runtimeId && draft.activeRun.runtimeId !== this.runtimeId);
+      const hasRemoteWorkflowLock = !!(
+        draft.workflowLock
+        && draft.workflowLock.runtimeId !== this.runtimeId
+        && draft.workflowLock.expiresAt > now()
+      );
+      const shouldReclaimFromObserver = !!(
+        remoteHolderRuntimeId
+        && !remoteHolderAlive
+        && !hasRemoteActiveRun
+        && !hasRemoteWorkflowLock
+      );
+
+      if (leaseExpired || lease?.holderRuntimeId === this.runtimeId || shouldReclaimFromObserver) {
         draft.lease = {
           holderRuntimeId: this.runtimeId,
           expiresAt: now() + this.leaseMs,
