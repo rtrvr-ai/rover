@@ -58,3 +58,36 @@ test('end task -> no stale run adoption across tabs', () => {
   assert.equal(clearPendingForEndedTask, true);
 });
 
+test('run lifecycle messages are gated by task boundary id', () => {
+  const ignoreBoundaryMismatch = shouldIgnoreRunScopedMessage({
+    type: 'run_started',
+    messageRunId: 'run-1',
+    messageTaskBoundaryId: 'boundary-old',
+    currentTaskBoundaryId: 'boundary-new',
+    pendingRunId: 'run-1',
+    taskStatus: 'running',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(ignoreBoundaryMismatch, true);
+
+  const ignoreMissingBoundary = shouldIgnoreRunScopedMessage({
+    type: 'run_completed',
+    messageRunId: 'run-1',
+    currentTaskBoundaryId: 'boundary-new',
+    pendingRunId: 'run-1',
+    taskStatus: 'running',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(ignoreMissingBoundary, true);
+
+  const acceptMatchingBoundary = shouldIgnoreRunScopedMessage({
+    type: 'run_completed',
+    messageRunId: 'run-1',
+    messageTaskBoundaryId: 'boundary-new',
+    currentTaskBoundaryId: 'boundary-new',
+    pendingRunId: 'run-1',
+    taskStatus: 'running',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(acceptMatchingBoundary, false);
+});

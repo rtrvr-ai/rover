@@ -1,3 +1,5 @@
+import { normalizeTaskBoundaryId } from './taskBoundaryGuards.js';
+
 export type TaskStatus = 'running' | 'completed' | 'ended';
 
 export function shouldStartFreshTask(taskStatus?: TaskStatus): boolean {
@@ -37,12 +39,28 @@ export function shouldClearPendingFromSharedState(params: {
 export function shouldIgnoreRunScopedMessage(params: {
   type: string;
   messageRunId?: string;
+  messageTaskBoundaryId?: string;
+  currentTaskBoundaryId?: string;
   pendingRunId?: string;
   sharedActiveRunId?: string;
   taskStatus?: TaskStatus;
   ignoredRunIds?: Set<string>;
 }): boolean {
-  const { type, messageRunId, pendingRunId, sharedActiveRunId, taskStatus, ignoredRunIds } = params;
+  const {
+    type,
+    messageRunId,
+    messageTaskBoundaryId,
+    currentTaskBoundaryId,
+    pendingRunId,
+    sharedActiveRunId,
+    taskStatus,
+    ignoredRunIds,
+  } = params;
+  const currentBoundary = normalizeTaskBoundaryId(currentTaskBoundaryId);
+  const messageBoundary = normalizeTaskBoundaryId(messageTaskBoundaryId);
+  if ((type === 'run_started' || type === 'run_completed') && currentBoundary) {
+    if (!messageBoundary || messageBoundary !== currentBoundary) return true;
+  }
   if (!messageRunId && type !== 'run_started') return false;
   if (messageRunId && ignoredRunIds?.has(messageRunId)) return true;
 
@@ -66,4 +84,3 @@ export function shouldIgnoreRunScopedMessage(params: {
   if (!pendingRunId) return true;
   return pendingRunId !== messageRunId;
 }
-

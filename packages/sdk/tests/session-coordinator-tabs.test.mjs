@@ -159,3 +159,47 @@ test('boundary pruning keeps active live tab and external placeholders only', ()
   }
 });
 
+test('task boundary hard-resets logical tabs to the current runtime tab', () => {
+  const env = installBrowserEnv();
+  try {
+    const runtime = new SessionCoordinator({
+      siteId: 'site-d',
+      sessionId: 'session-d',
+      runtimeId: 'runtime-a',
+    });
+
+    runtime.registerCurrentTab('https://example.com/start', 'Start');
+    runtime.registerOpenedTab({
+      url: 'https://example.com/background',
+      external: false,
+      openerRuntimeId: 'runtime-a',
+    });
+    runtime.registerOpenedTab({
+      url: 'https://external.example.net/',
+      external: true,
+      openerRuntimeId: 'runtime-a',
+    });
+
+    runtime.startNewTask({
+      taskId: 'task-next',
+      startedAt: Date.now(),
+      boundaryReason: 'test_reset',
+      status: 'running',
+    });
+
+    const tabs = runtime.listTabs({ scope: 'all' });
+    assert.equal(tabs.length, 1);
+    assert.equal(tabs[0].logicalTabId, 1);
+    assert.equal(tabs[0].runtimeId, 'runtime-a');
+    assert.equal(runtime.getActiveLogicalTabId(), 1);
+
+    const opened = runtime.registerOpenedTab({
+      url: 'https://example.com/new',
+      external: false,
+      openerRuntimeId: 'runtime-a',
+    });
+    assert.equal(opened.logicalTabId, 2);
+  } finally {
+    env.restore();
+  }
+});
