@@ -1876,14 +1876,15 @@ function maybeAutoResumePendingRun(): void {
     return;
   }
 
-  // Cross-host navigation bypasses the stale-tab check — we already know the task is fresh
-  // because the cookie is short-lived (2 min) and was written right before navigation.
-  const isCrossHostResume = pending.resumeReason === 'cross_host_navigation';
+  // Agent-initiated navigation (same-host or cross-host) bypasses stale-tab check and
+  // auto-resumes without confirmation — the agent navigated, not the user.
+  const isAgentInitiatedResume =
+    pending.resumeReason === 'cross_host_navigation' || pending.resumeReason === 'agent_navigation';
 
   // sessionStorage flag distinguishes refresh (flag exists) from fresh tab (flag absent)
   const siteId = currentConfig?.siteId || '';
   const isRefresh = !!sessionStorage.getItem(`rover:tab-alive:${siteId}`);
-  if (!isRefresh && !isCrossHostResume) {
+  if (!isRefresh && !isAgentInitiatedResume) {
     // New tab (not a refresh) — check if any other tabs are alive
     const tabs = sessionCoordinator?.listTabs() || [];
     const otherAlive = tabs.some(t =>
@@ -1913,10 +1914,10 @@ function maybeAutoResumePendingRun(): void {
     return;
   }
 
-  // Cross-host navigation is Rover-initiated within allowed domains — always auto-resume
-  if (isCrossHostResume) {
+  // Agent-initiated navigation (same-host or cross-host) — always auto-resume
+  if (isAgentInitiatedResume) {
     autoResumeAttempted = true;
-    setUiStatus('Resuming task after subdomain navigation...');
+    setUiStatus('Resuming task after navigation...');
     postRun(pending.text, {
       runId: pending.id,
       resume: true,
@@ -3184,6 +3185,19 @@ function createRuntime(cfg: RoverInit): void {
         detail: safeSerialize(event),
         status: 'info',
       });
+    },
+    onBeforeAgentNavigation: (_targetUrl: string) => {
+      if (!runtimeState?.pendingRun) return;
+      // Only mark for same-host — cross-host is handled by onBeforeCrossHostNavigation
+      const currentHost = new URL(window.location.href).hostname;
+      const targetHost = new URL(_targetUrl, window.location.href).hostname;
+      if (currentHost === targetHost) {
+        runtimeState.pendingRun = sanitizePendingRun({
+          ...runtimeState.pendingRun,
+          resumeRequired: true,
+          resumeReason: 'agent_navigation',
+        });
+      }
     },
     onBeforeCrossHostNavigation: (_targetUrl: string) => {
       if (!runtimeState || !currentConfig) return;
