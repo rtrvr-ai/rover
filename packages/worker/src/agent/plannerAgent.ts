@@ -26,16 +26,17 @@ function normalizeChatLog(
     deduped.push(entry);
   }
 
-  const firstUser = deduped.find(entry => entry.role === 'user');
-  const tailBudget = firstUser ? Math.max(1, MAX_CHATLOG_ENTRIES - 1) : MAX_CHATLOG_ENTRIES;
-  let selected = deduped.slice(-tailBudget);
-
-  if (firstUser) {
-    const hasAnchor = selected.some(entry => entry.role === 'user' && entry.message === firstUser.message);
-    if (!hasAnchor) {
-      selected = [firstUser, ...selected];
-    }
+  let selected = deduped.slice(-MAX_CHATLOG_ENTRIES);
+  const seen = new Set<string>();
+  const compactedReverse: Array<{ role: 'user' | 'model'; message: string }> = [];
+  for (let i = selected.length - 1; i >= 0; i -= 1) {
+    const entry = selected[i];
+    const key = `${entry.role}::${entry.message.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    compactedReverse.push(entry);
   }
+  selected = compactedReverse.reverse();
 
   if (selected.length > MAX_CHATLOG_ENTRIES) {
     selected = selected.slice(-MAX_CHATLOG_ENTRIES);

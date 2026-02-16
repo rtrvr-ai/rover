@@ -39,6 +39,8 @@ export type SharedTabEntry = {
   updatedAt: number;
   external?: boolean;
   openerRuntimeId?: string;
+  detachedAt?: number;
+  detachedReason?: 'navigation_handoff' | 'tab_close' | 'opened_pending_attach' | 'unknown';
   handoffId?: string;
   handoffRunId?: string;
   handoffTargetUrl?: string;
@@ -129,8 +131,19 @@ const SHARED_VERSION = 2;
 const SHARED_KEY_PREFIX = 'rover:shared:';
 const SHARED_CHANNEL_PREFIX = 'rover:channel:';
 const STALE_DETACHED_EXTERNAL_TAB_MS = 2 * 60_000;
-const STALE_DETACHED_TAB_MS = 10 * 60_000;
+const STALE_DETACHED_TAB_MS = 90_000;
+const STALE_NAVIGATION_HANDOFF_TAB_MS = 45_000;
+const STALE_PENDING_ATTACH_TAB_MS = 20_000;
 const STALE_RUNTIME_TAB_MS = 45_000;
+
+type TabListScope = 'context' | 'all';
+
+type TabPruneOptions = {
+  dropRuntimeDetached?: boolean;
+  dropAllDetachedExternal?: boolean;
+  keepOnlyActiveLiveTab?: boolean;
+  keepRecentExternalPlaceholders?: boolean;
+};
 
 function now(): number {
   return Date.now();
@@ -325,6 +338,14 @@ function sanitizeSharedState(raw: any, siteId: string, sessionId: string): Share
             updatedAt: Number(entry?.updatedAt) || now(),
             external: !!entry?.external,
             openerRuntimeId: typeof entry?.openerRuntimeId === 'string' ? entry.openerRuntimeId : undefined,
+            detachedAt: Number(entry?.detachedAt) || undefined,
+            detachedReason:
+              entry?.detachedReason === 'navigation_handoff'
+              || entry?.detachedReason === 'tab_close'
+              || entry?.detachedReason === 'opened_pending_attach'
+              || entry?.detachedReason === 'unknown'
+                ? entry.detachedReason
+                : undefined,
             handoffId: typeof entry?.handoffId === 'string' ? entry.handoffId : undefined,
             handoffRunId: typeof entry?.handoffRunId === 'string' ? entry.handoffRunId : undefined,
             handoffTargetUrl: typeof entry?.handoffTargetUrl === 'string' ? entry.handoffTargetUrl : undefined,
@@ -449,41 +470,179 @@ export class SessionCoordinator {
   private roleChangeTimer: number | null = null;
   private static readonly ROLE_CHANGE_DEBOUNCE_MS = 200;
 
+  private tabFreshnessTs(tab: SharedTabEntry): number {
+    return Math.max(
+      Number(tab.updatedAt) || 0,
+      Number(tab.openedAt) || 0,
+      Number(tab.detachedAt) || 0,
+    );
+  }
+
+  private isBetterTabCandidate(next: SharedTabEntry, current: SharedTabEntry | undefined): boolean {
+    if (!current) return true;
+    const nextFreshness = this.tabFreshnessTs(next);
+    const currentFreshness = this.tabFreshnessTs(current);
+    if (nextFreshness !== currentFreshness) return nextFreshness > currentFreshness;
+    if (!!next.runtimeId !== !!current.runtimeId) return !!next.runtimeId;
+    return next.logicalTabId < current.logicalTabId;
+  }
+
+  private isRuntimeTabFresh(tab: SharedTabEntry, nowMs: number): boolean {
+    if (!tab.runtimeId) return false;
+    if (tab.runtimeId === this.runtimeId) return true;
+    return nowMs - this.tabFreshnessTs(tab) <= STALE_RUNTIME_TAB_MS;
+  }
+
+  private isTabVisibleInScope(tab: SharedTabEntry, nowMs: number, scope: TabListScope): boolean {
+    if (tab.runtimeId) {
+      return this.isRuntimeTabFresh(tab, nowMs);
+    }
+
+    if (tab.external) {
+      return nowMs - this.tabFreshnessTs(tab) <= STALE_DETACHED_EXTERNAL_TAB_MS;
+    }
+
+    if (tab.detachedReason === 'opened_pending_attach') {
+      return nowMs - this.tabFreshnessTs(tab) <= STALE_PENDING_ATTACH_TAB_MS;
+    }
+
+    if (scope === 'context') {
+      return false;
+    }
+
+    if (tab.detachedReason === 'navigation_handoff') {
+      return nowMs - this.tabFreshnessTs(tab) <= STALE_NAVIGATION_HANDOFF_TAB_MS;
+    }
+
+    return nowMs - this.tabFreshnessTs(tab) <= STALE_DETACHED_TAB_MS;
+  }
+
+  private normalizeDraftTabs(draft: SharedSessionState): void {
+    const byLogicalTabId = new Map<number, SharedTabEntry>();
+    for (const tab of draft.tabs) {
+      if (!Number.isFinite(Number(tab.logicalTabId)) || Number(tab.logicalTabId) <= 0) continue;
+      const existing = byLogicalTabId.get(tab.logicalTabId);
+      if (this.isBetterTabCandidate(tab, existing)) {
+        byLogicalTabId.set(tab.logicalTabId, tab);
+      }
+    }
+
+    const dedupedByLogical: SharedTabEntry[] = [];
+    const emittedLogical = new Set<number>();
+    for (const tab of draft.tabs) {
+      if (emittedLogical.has(tab.logicalTabId)) continue;
+      const chosen = byLogicalTabId.get(tab.logicalTabId);
+      if (!chosen) continue;
+      if (chosen === tab) {
+        dedupedByLogical.push(chosen);
+        emittedLogical.add(chosen.logicalTabId);
+      }
+    }
+    for (const [logicalTabId, tab] of byLogicalTabId.entries()) {
+      if (emittedLogical.has(logicalTabId)) continue;
+      dedupedByLogical.push(tab);
+      emittedLogical.add(logicalTabId);
+    }
+
+    const byRuntimeId = new Map<string, SharedTabEntry>();
+    for (const tab of dedupedByLogical) {
+      if (!tab.runtimeId) continue;
+      const existing = byRuntimeId.get(tab.runtimeId);
+      if (this.isBetterTabCandidate(tab, existing)) {
+        byRuntimeId.set(tab.runtimeId, tab);
+      }
+    }
+
+    draft.tabs = dedupedByLogical
+      .filter(tab => !tab.runtimeId || byRuntimeId.get(tab.runtimeId) === tab)
+      .sort((a, b) => a.logicalTabId - b.logicalTabId);
+
+    if (!draft.tabs.length) {
+      draft.activeLogicalTabId = undefined;
+      draft.nextLogicalTabId = 1;
+      return;
+    }
+
+    const nowMs = now();
+    const currentActive = draft.activeLogicalTabId
+      ? draft.tabs.find(tab => tab.logicalTabId === draft.activeLogicalTabId)
+      : undefined;
+    const localAttached = draft.tabs.find(tab => tab.runtimeId === this.runtimeId);
+    const liveTabs = draft.tabs.filter(tab => this.isRuntimeTabFresh(tab, nowMs));
+    const freshestLiveTab = [...liveTabs].sort((a, b) => this.tabFreshnessTs(b) - this.tabFreshnessTs(a))[0];
+
+    let nextActiveLogicalTabId = currentActive?.logicalTabId;
+    if (!currentActive) {
+      nextActiveLogicalTabId = localAttached?.logicalTabId || freshestLiveTab?.logicalTabId || draft.tabs[0]?.logicalTabId;
+    } else if (!currentActive.runtimeId || !this.isRuntimeTabFresh(currentActive, nowMs)) {
+      nextActiveLogicalTabId = localAttached?.logicalTabId || freshestLiveTab?.logicalTabId || currentActive.logicalTabId;
+    }
+
+    draft.activeLogicalTabId = nextActiveLogicalTabId;
+    const maxLogicalTabId = draft.tabs.reduce((max, tab) => Math.max(max, tab.logicalTabId), 0);
+    draft.nextLogicalTabId = Math.max(Number(draft.nextLogicalTabId) || 1, maxLogicalTabId + 1);
+  }
+
   private pruneDetachedTabs(
     draft: SharedSessionState,
-    options?: { dropRuntimeDetached?: boolean; dropAllDetachedExternal?: boolean },
+    options?: TabPruneOptions,
   ): void {
     const dropRuntimeDetached = !!options?.dropRuntimeDetached;
     const dropAllDetachedExternal = !!options?.dropAllDetachedExternal;
+    const keepOnlyActiveLiveTab = !!options?.keepOnlyActiveLiveTab;
+    const keepRecentExternalPlaceholders = !!options?.keepRecentExternalPlaceholders;
     const nowMs = now();
-    const before = draft.tabs.length;
 
     draft.tabs = draft.tabs.filter(tab => {
       if (tab.runtimeId) {
-        if (tab.runtimeId === this.runtimeId) return true;
-        return nowMs - Math.max(tab.updatedAt || 0, tab.openedAt || 0) <= STALE_RUNTIME_TAB_MS;
+        return this.isRuntimeTabFresh(tab, nowMs);
       }
 
-      if (dropRuntimeDetached && tab.openerRuntimeId === this.runtimeId) {
+      if (dropRuntimeDetached && !tab.external && tab.openerRuntimeId === this.runtimeId) {
         return false;
       }
 
       if (tab.external) {
         if (dropAllDetachedExternal) return false;
-        return nowMs - Math.max(tab.updatedAt || 0, tab.openedAt || 0) <= STALE_DETACHED_EXTERNAL_TAB_MS;
+        return nowMs - this.tabFreshnessTs(tab) <= STALE_DETACHED_EXTERNAL_TAB_MS;
       }
 
-      return nowMs - Math.max(tab.updatedAt || 0, tab.openedAt || 0) <= STALE_DETACHED_TAB_MS;
+      const ageMs = nowMs - this.tabFreshnessTs(tab);
+      if (tab.detachedReason === 'navigation_handoff') {
+        return ageMs <= STALE_NAVIGATION_HANDOFF_TAB_MS;
+      }
+      if (tab.detachedReason === 'opened_pending_attach') {
+        return ageMs <= STALE_PENDING_ATTACH_TAB_MS;
+      }
+
+      return ageMs <= STALE_DETACHED_TAB_MS;
     });
 
-    if (before !== draft.tabs.length) {
-      if (draft.activeLogicalTabId && !draft.tabs.some(tab => tab.logicalTabId === draft.activeLogicalTabId)) {
-        draft.activeLogicalTabId = this.localLogicalTabId || draft.tabs[0]?.logicalTabId;
-      }
-      if (draft.nextLogicalTabId <= (draft.tabs.at(-1)?.logicalTabId ?? 0)) {
-        draft.nextLogicalTabId = draft.tabs.reduce((max, tab) => Math.max(max, tab.logicalTabId), 0) + 1;
-      }
+    if (keepOnlyActiveLiveTab) {
+      this.normalizeDraftTabs(draft);
+      const liveTabs = draft.tabs.filter(tab => this.isRuntimeTabFresh(tab, nowMs));
+      const activeLiveTab = liveTabs.find(tab => tab.logicalTabId === draft.activeLogicalTabId);
+      const localLiveTab = liveTabs.find(tab => tab.runtimeId === this.runtimeId);
+      const fallbackLiveTab = [...liveTabs].sort((a, b) => this.tabFreshnessTs(b) - this.tabFreshnessTs(a))[0];
+      const keepLiveTabId = activeLiveTab?.logicalTabId || localLiveTab?.logicalTabId || fallbackLiveTab?.logicalTabId;
+
+      draft.tabs = draft.tabs.filter(tab => {
+        if (tab.runtimeId) {
+          return !!keepLiveTabId && tab.logicalTabId === keepLiveTabId;
+        }
+        if (tab.external) {
+          return keepRecentExternalPlaceholders && nowMs - this.tabFreshnessTs(tab) <= STALE_DETACHED_EXTERNAL_TAB_MS;
+        }
+        return false;
+      });
+
+      draft.activeLogicalTabId =
+        keepLiveTabId
+        || draft.tabs.find(tab => tab.runtimeId)?.logicalTabId
+        || draft.tabs[0]?.logicalTabId;
     }
+
+    this.normalizeDraftTabs(draft);
   }
 
   constructor(options: SessionCoordinatorOptions) {
@@ -502,6 +661,7 @@ export class SessionCoordinator {
     this.channelName = `${SHARED_CHANNEL_PREFIX}${this.siteId}:${this.sessionId}`;
 
     this.state = this.loadState();
+    this.normalizeDraftTabs(this.state);
   }
 
   start(initialHandoff?: SharedNavigationHandoff): void {
@@ -697,21 +857,13 @@ export class SessionCoordinator {
     return true;
   }
 
-  listTabs(): SharedTabEntry[] {
+  listTabs(options?: { scope?: TabListScope }): SharedTabEntry[] {
+    const scope: TabListScope = options?.scope === 'all' ? 'all' : 'context';
     const nowMs = now();
-    return this.state.tabs.filter(tab => {
-      if (tab.runtimeId) {
-        if (tab.runtimeId === this.runtimeId) return true;
-        return nowMs - Math.max(tab.updatedAt || 0, tab.openedAt || 0) <= STALE_RUNTIME_TAB_MS;
-      }
-      if (tab.external) {
-        return nowMs - Math.max(tab.updatedAt || 0, tab.openedAt || 0) <= STALE_DETACHED_EXTERNAL_TAB_MS;
-      }
-      return nowMs - Math.max(tab.updatedAt || 0, tab.openedAt || 0) <= STALE_DETACHED_TAB_MS;
-    });
+    return this.state.tabs.filter(tab => this.isTabVisibleInScope(tab, nowMs, scope));
   }
 
-  pruneTabs(options?: { dropRuntimeDetached?: boolean; dropAllDetachedExternal?: boolean }): void {
+  pruneTabs(options?: TabPruneOptions): void {
     this.mutate('local', draft => {
       this.pruneDetachedTabs(draft, options);
     });
@@ -737,7 +889,11 @@ export class SessionCoordinator {
       draft.uiStatus = undefined;
       draft.activeRun = undefined;
       draft.workerContext = undefined;
-      this.pruneDetachedTabs(draft, { dropAllDetachedExternal: true });
+      this.pruneDetachedTabs(draft, {
+        dropRuntimeDetached: true,
+        keepOnlyActiveLiveTab: true,
+        keepRecentExternalPlaceholders: true,
+      });
     });
 
     return nextTask;
@@ -898,37 +1054,46 @@ export class SessionCoordinator {
 
     let nextLocalTabId: number | undefined;
     this.mutate('local', draft => {
+      const nowTs = now();
+      const leaseValid = !!(draft.lease && draft.lease.expiresAt > nowTs);
+      const controllerRuntimeId = leaseValid ? draft.lease?.holderRuntimeId : undefined;
+      const shouldPreferLocalAsActive = !controllerRuntimeId || controllerRuntimeId === this.runtimeId;
+
       const existing = draft.tabs.find(tab => tab.runtimeId === this.runtimeId);
       if (existing) {
         existing.url = normalizedUrl || existing.url;
         existing.title = title || existing.title;
-        existing.updatedAt = now();
+        existing.updatedAt = nowTs;
+        existing.detachedAt = undefined;
+        existing.detachedReason = undefined;
         existing.handoffId = undefined;
         existing.handoffRunId = undefined;
         existing.handoffTargetUrl = undefined;
         existing.handoffCreatedAt = undefined;
         nextLocalTabId = existing.logicalTabId;
       } else {
-        let adopted = draft.tabs.find(tab => !tab.runtimeId && tab.url === normalizedUrl && now() - tab.openedAt < 180000);
-        if (
-          !adopted
-          && handoffId
-          && Number.isFinite(handoffTabId)
-          && handoffTabId > 0
-        ) {
+        let adopted: SharedTabEntry | undefined;
+        if (handoffId) {
           adopted = draft.tabs.find(tab => {
             if (tab.runtimeId) return false;
-            if (tab.logicalTabId !== handoffTabId) return false;
             if (String(tab.handoffId || '').trim() !== handoffId) return false;
-            const ageMs = now() - Number(tab.handoffCreatedAt || tab.updatedAt || tab.openedAt || 0);
+            if (Number.isFinite(handoffTabId) && handoffTabId > 0 && tab.logicalTabId !== handoffTabId) return false;
+            const ageMs = nowTs - Number(tab.handoffCreatedAt || tab.updatedAt || tab.openedAt || 0);
             return ageMs >= 0 && ageMs <= 30_000;
           });
+        }
+        if (!adopted) {
+          adopted = draft.tabs.find(
+            tab => !tab.runtimeId && !tab.external && tab.url === normalizedUrl && nowTs - tab.openedAt < 180000,
+          );
         }
         if (adopted) {
           adopted.runtimeId = this.runtimeId;
           adopted.url = normalizedUrl || adopted.url;
           adopted.title = title || adopted.title;
-          adopted.updatedAt = now();
+          adopted.updatedAt = nowTs;
+          adopted.detachedAt = undefined;
+          adopted.detachedReason = undefined;
           adopted.handoffId = undefined;
           adopted.handoffRunId = undefined;
           adopted.handoffTargetUrl = undefined;
@@ -941,15 +1106,25 @@ export class SessionCoordinator {
             runtimeId: this.runtimeId,
             url: normalizedUrl,
             title,
-            openedAt: now(),
-            updatedAt: now(),
+            openedAt: nowTs,
+            updatedAt: nowTs,
             external: false,
+            detachedAt: undefined,
+            detachedReason: undefined,
           });
           nextLocalTabId = logicalTabId;
         }
       }
 
-      if (!draft.activeLogicalTabId) {
+      const activeEntry = draft.activeLogicalTabId
+        ? draft.tabs.find(tab => tab.logicalTabId === draft.activeLogicalTabId)
+        : undefined;
+      if (
+        !activeEntry
+        || !activeEntry.runtimeId
+        || activeEntry.logicalTabId === nextLocalTabId
+        || shouldPreferLocalAsActive
+      ) {
         draft.activeLogicalTabId = nextLocalTabId;
       }
     });
@@ -969,6 +1144,7 @@ export class SessionCoordinator {
     let logicalTabId = 0;
 
     this.mutate('local', draft => {
+      const nowTs = now();
       const existing = draft.tabs.find(tab =>
         !tab.runtimeId
         && !!tab.external === !!payload.external
@@ -976,8 +1152,10 @@ export class SessionCoordinator {
       );
       if (existing) {
         existing.title = payload.title || existing.title;
-        existing.updatedAt = now();
+        existing.updatedAt = nowTs;
         existing.openerRuntimeId = payload.openerRuntimeId || existing.openerRuntimeId;
+        existing.detachedAt = existing.detachedAt || nowTs;
+        existing.detachedReason = 'opened_pending_attach';
         logicalTabId = existing.logicalTabId;
         return;
       }
@@ -988,10 +1166,12 @@ export class SessionCoordinator {
         runtimeId: undefined,
         url: normalizedUrl,
         title: payload.title,
-        openedAt: now(),
-        updatedAt: now(),
+        openedAt: nowTs,
+        updatedAt: nowTs,
         external: !!payload.external,
         openerRuntimeId: payload.openerRuntimeId,
+        detachedAt: nowTs,
+        detachedReason: 'opened_pending_attach',
       });
     });
 
@@ -1099,14 +1279,17 @@ export class SessionCoordinator {
     // For navigation: new runtime adopts the detached tab, preserving logicalTabId.
     // For genuine tab close: pruneDetachedTabs removes it after STALE_DETACHED_TAB_MS.
     this.mutate('local', draft => {
+      const nowTs = now();
       const localTab = draft.tabs.find(t => t.runtimeId === this.runtimeId);
       if (localTab) {
         localTab.runtimeId = undefined;
-        localTab.updatedAt = now();
+        localTab.updatedAt = nowTs;
+        localTab.detachedAt = nowTs;
+        localTab.detachedReason = handoff ? 'navigation_handoff' : 'tab_close';
         localTab.handoffId = typeof handoff?.handoffId === 'string' ? handoff.handoffId : undefined;
         localTab.handoffRunId = typeof handoff?.runId === 'string' ? handoff.runId : undefined;
         localTab.handoffTargetUrl = typeof handoff?.targetUrl === 'string' ? handoff.targetUrl : undefined;
-        localTab.handoffCreatedAt = Number(handoff?.ts) || now();
+        localTab.handoffCreatedAt = Number(handoff?.ts) || nowTs;
       }
       if (draft.lease?.holderRuntimeId === this.runtimeId) {
         draft.lease = undefined;
@@ -1269,10 +1452,13 @@ export class SessionCoordinator {
     const handoffCreatedAt = Number(handoff?.ts) || now();
 
     this.mutate('local', draft => {
+      const nowTs = now();
       const tab = draft.tabs.find(t => t.runtimeId === closingRuntimeId);
       if (tab) {
         tab.runtimeId = undefined;
-        tab.updatedAt = now();
+        tab.updatedAt = nowTs;
+        tab.detachedAt = nowTs;
+        tab.detachedReason = handoffId ? 'navigation_handoff' : 'tab_close';
         tab.handoffId = handoffId;
         tab.handoffRunId = handoffRunId;
         tab.handoffTargetUrl = handoffTargetUrl;
@@ -1306,16 +1492,21 @@ export class SessionCoordinator {
         currentTab.url = currentUrl || currentTab.url;
         currentTab.title = currentTitle || currentTab.title;
         currentTab.updatedAt = now();
+        currentTab.detachedAt = undefined;
+        currentTab.detachedReason = undefined;
       } else {
+        const nowTs = now();
         const logicalTabId = draft.nextLogicalTabId++;
         draft.tabs.push({
           logicalTabId,
           runtimeId: this.runtimeId,
           url: currentUrl,
           title: currentTitle,
-          openedAt: now(),
-          updatedAt: now(),
+          openedAt: nowTs,
+          updatedAt: nowTs,
           external: false,
+          detachedAt: undefined,
+          detachedReason: undefined,
         });
       }
 
@@ -1366,6 +1557,7 @@ export class SessionCoordinator {
 
   reloadFromStorage(): SharedSessionState {
     const fresh = this.loadState();
+    this.normalizeDraftTabs(fresh);
     if (fresh.seq > this.state.seq ||
         (fresh.seq === this.state.seq && fresh.updatedAt > this.state.updatedAt)) {
       this.state = fresh;
@@ -1444,6 +1636,7 @@ export class SessionCoordinator {
 
     const draft = sanitizeSharedState(this.state, this.siteId, this.sessionId);
     updater(draft);
+    this.normalizeDraftTabs(draft);
     draft.seq = Math.max(1, Number(draft.seq) || 1) + (source === 'local' ? 1 : 0);
     draft.updatedAt = now();
 
@@ -1465,6 +1658,7 @@ export class SessionCoordinator {
     if (incoming.seq < this.state.seq) return;
     if (incoming.seq === this.state.seq && incoming.updatedAt <= this.state.updatedAt) return;
     this.pruneDetachedTabs(incoming);
+    this.normalizeDraftTabs(incoming);
     this.state = incoming;
 
     this.syncLocalLogicalTabId();

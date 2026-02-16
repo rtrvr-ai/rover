@@ -1951,10 +1951,17 @@ function dispatchUserPrompt(
   const activeTaskStatus = runtimeState?.activeTask?.status;
   const shouldStartFreshTask = !!options?.startNewTask || shouldStartFreshTaskByStatus(activeTaskStatus);
 
-  sessionCoordinator?.pruneTabs({
-    dropRuntimeDetached: true,
-    dropAllDetachedExternal: shouldStartFreshTask,
-  });
+  sessionCoordinator?.pruneTabs(
+    shouldStartFreshTask
+      ? {
+          dropRuntimeDetached: true,
+          keepOnlyActiveLiveTab: true,
+          keepRecentExternalPlaceholders: true,
+        }
+      : {
+          dropRuntimeDetached: true,
+        },
+  );
 
   if (shouldStartFreshTask) {
     const autoReason =
@@ -2887,7 +2894,8 @@ function handleWorkerMessage(msg: any): void {
         markTaskCompleted('worker_task_complete');
         sessionCoordinator?.pruneTabs({
           dropRuntimeDetached: true,
-          dropAllDetachedExternal: true,
+          keepOnlyActiveLiveTab: true,
+          keepRecentExternalPlaceholders: true,
         });
         setUiStatus('Task completed');
         finalizeSuccessfulRunTimeline(typeof msg.runId === 'string' ? msg.runId : undefined);
@@ -3517,7 +3525,7 @@ function createRuntime(cfg: RoverInit): void {
         title: document.title,
       };
     },
-    listSessionTabs: () => sessionCoordinator?.listTabs() || [],
+    listSessionTabs: () => sessionCoordinator?.listTabs({ scope: 'context' }) || [],
   });
   channel.port1.start?.();
 
