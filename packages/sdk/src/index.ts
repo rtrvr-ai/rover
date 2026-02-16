@@ -1374,6 +1374,7 @@ function sanitizePendingRun(input: any): PersistedPendingRun | undefined {
     resumeRequired: input.resumeRequired === true,
     resumeReason:
       input.resumeReason === 'cross_host_navigation'
+      || input.resumeReason === 'agent_navigation'
       || input.resumeReason === 'handoff'
       || input.resumeReason === 'page_reload'
         ? input.resumeReason
@@ -3197,6 +3198,7 @@ function createRuntime(cfg: RoverInit): void {
           resumeRequired: true,
           resumeReason: 'agent_navigation',
         });
+        persistRuntimeState();
       }
     },
     onBeforeCrossHostNavigation: (_targetUrl: string) => {
