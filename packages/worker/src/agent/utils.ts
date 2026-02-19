@@ -3,8 +3,15 @@ import {
   MAX_PREV_STEPS,
 } from '@rover/shared/lib/utils/constants.js';
 import { systemToolNamesSet } from '@rover/shared/lib/system-tools/tools.js';
-import type { FunctionCall, FunctionDeclaration, PlannerQuestion, PreviousSteps, StatusStage } from './types.js';
-import type { LLMFunction } from './systemTools.js';
+import type {
+  FunctionCall,
+  FunctionDeclaration,
+  PlannerQuestion,
+  PreviousSteps,
+  RoverStopSignal,
+  StatusStage,
+} from './types.js';
+import type { LLMFunction, SystemNavigationOutcome } from './systemTools.js';
 import { executeSystemToolCallsSequentially } from './systemTools.js';
 
 const SYSTEM_TOOL_ALIASES: Record<string, string> = {
@@ -22,6 +29,19 @@ export async function waitWhilePaused(executionRef?: { current: { state: string 
   while (executionRef.current.state === 'paused') {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
+}
+
+export function buildWorkerStopSignal(params: {
+  isCancelled?: boolean;
+  reason?: string;
+}): RoverStopSignal {
+  if (params.isCancelled) {
+    return {
+      state: 'cancel_requested',
+      reason: params.reason || 'worker_cancelled',
+    };
+  }
+  return { state: 'continue' };
 }
 
 export async function fetchTabDataOptimized({
@@ -61,6 +81,7 @@ export async function processActionResponse({
   prevSteps,
   thought,
   bridgeRpc,
+  isCancelled,
   userFunctionDeclarations,
   onStatusUpdate,
   onPrevStepsUpdate,
@@ -71,6 +92,7 @@ export async function processActionResponse({
   prevSteps: PreviousSteps[];
   thought?: string;
   bridgeRpc: (method: string, params?: any) => Promise<any>;
+  isCancelled?: () => boolean;
   userFunctionDeclarations?: FunctionDeclaration[];
   onStatusUpdate?: (message: string, thought?: string, stage?: StatusStage) => void;
   onPrevStepsUpdate?: (steps: PreviousSteps[]) => void;
@@ -79,9 +101,19 @@ export async function processActionResponse({
   data?: Record<string, unknown>[];
   functionCalls?: FunctionCall[];
   disableAutoScroll?: boolean;
+  navigationOccurred?: boolean;
+  navigationTool?: string;
+  navigationOutcome?: SystemNavigationOutcome;
+  logicalTabId?: number;
   needsUserInput?: boolean;
   questions?: PlannerQuestion[];
 }> {
+  const throwIfCancelled = () => {
+    if (!isCancelled?.()) return;
+    throw new DOMException('Run cancelled', 'AbortError');
+  };
+
+  throwIfCancelled();
   const { functionCalls, modelParts, data, accTreeId } = response || {};
   let disableAutoScroll = false;
 
@@ -193,6 +225,7 @@ export async function processActionResponse({
     }
 
     if (externalCalls.length > 0) {
+      throwIfCancelled();
       // Validate external calls if declarations provided
       if (userFunctionDeclarations?.length) {
         for (const funcCall of externalCalls) {
@@ -223,6 +256,7 @@ export async function processActionResponse({
     }
 
     if (systemCalls.length > 0) {
+      throwIfCancelled();
       onStatusUpdate?.(`Executing browser actions: ${systemCalls.map(c => c.name).join(', ')}`, thought, 'execute');
       prevSteps.push({
         accTreeId,
@@ -238,11 +272,20 @@ export async function processActionResponse({
       onPrevStepsUpdate?.(prevSteps);
 
       const stepIndex = prevSteps.length - 1;
-      const { results, disableAutoScroll: isScroll } = await executeSystemToolCallsSequentially({
+      const {
+        results,
+        disableAutoScroll: isScroll,
+        navigationOccurred,
+        navigationTool,
+        navigationOutcome,
+        logicalTabId,
+      } = await executeSystemToolCallsSequentially({
         calls: systemCalls,
         bridgeRpc,
+        isCancelled,
       });
       disableAutoScroll = isScroll;
+      throwIfCancelled();
 
       if (stepIndex >= 0 && stepIndex < prevSteps.length) {
         prevSteps[stepIndex].functions = results as unknown as LLMFunction[];
@@ -254,7 +297,14 @@ export async function processActionResponse({
 
       limitPrevSteps(prevSteps);
       onPrevStepsUpdate?.(prevSteps);
-      return { needsRetry: false, disableAutoScroll };
+      return {
+        needsRetry: false,
+        disableAutoScroll,
+        navigationOccurred,
+        navigationTool,
+        navigationOutcome,
+        logicalTabId,
+      };
     }
   }
 

@@ -1,6 +1,13 @@
 import { SUB_AGENTS } from '@rover/shared/lib/types/agent-types.js';
 import type { PlannerPreviousStep, PlannerQuestion } from './types.js';
-import { processActionResponse, formatFunctionResultsIntoPrevSteps, managePrevStepsSize, waitWhilePaused } from './utils.js';
+import {
+  processActionResponse,
+  formatFunctionResultsIntoPrevSteps,
+  managePrevStepsSize,
+  waitWhilePaused,
+  buildWorkerStopSignal,
+} from './utils.js';
+import type { SystemNavigationOutcome } from './systemTools.js';
 import type { FunctionCall, PreviousSteps, FunctionDeclaration, StatusStage } from './types.js';
 import type { AgentContext } from './context.js';
 import { resolveRuntimeTabs } from './runtimeTabs.js';
@@ -31,10 +38,13 @@ export type AgenticSeekResult = {
   creditsUsed?: number;
   needsUserInput?: boolean;
   questions?: PlannerQuestion[];
+  navigationPending?: boolean;
+  navigationTool?: string;
+  navigationOutcome?: SystemNavigationOutcome;
+  logicalTabId?: number;
 };
 
 const MAX_RETRIES = 3;
-const MAX_ITERATIONS = 25;
 
 export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<AgenticSeekResult> {
   const {
@@ -63,24 +73,25 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
   const accumulatedPrevSteps: PreviousSteps[] = Array.isArray(previousSteps) ? previousSteps : [];
   const fallbackTabs = tabOrder.map(id => ({ id }));
   let retry = 0;
-  let iterations = 0;
   let pageDataOptions: { disableAutoScroll?: boolean } | undefined;
 
   while (retry < MAX_RETRIES) {
-    if (iterations++ >= MAX_ITERATIONS) {
-      return { error: 'Max action iterations reached', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
-    }
-
     if (ctx.isCancelled?.()) {
       return { error: 'Run cancelled', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
     }
 
     try {
       await waitWhilePaused(undefined);
+      if (ctx.isCancelled?.()) {
+        return { error: 'Run cancelled', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
+      }
 
       onStatusUpdate?.('Analyzing page content...', 'Calling seek workflow', 'analyze');
 
       const { tabOrder: runtimeTabOrder, activeTabId } = await resolveRuntimeTabs(bridgeRpc, fallbackTabs);
+      if (ctx.isCancelled?.()) {
+        return { error: 'Run cancelled', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
+      }
       const scopedTabOrder = runtimeTabOrder.length ? runtimeTabOrder : tabOrder;
       const webPageMap: Record<number, any> = {};
 
@@ -105,6 +116,9 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
           }
         }),
       );
+      if (ctx.isCancelled?.()) {
+        return { error: 'Run cancelled', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
+      }
 
       for (const result of backgroundResults) {
         if (result.pageData) {
@@ -139,9 +153,15 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
         timestamp: ctx.userTimestamp,
         trajectoryId,
         userProfile: ctx.userProfile,
+        stop: buildWorkerStopSignal({
+          isCancelled: !!ctx.isCancelled?.(),
+        }),
       };
 
       const response = await ctx.callExtensionRouter(SUB_AGENTS.processTabWorkflows, request);
+      if (ctx.isCancelled?.()) {
+        return { error: 'Run cancelled', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
+      }
       if (!response?.success) {
         return { error: response?.error || 'Failed to process tab workflows', creditsUsed: totalCreditsUsed };
       }
@@ -156,6 +176,12 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
       }
 
       if (tabResponse?.warnings?.length) allWarnings.push(...tabResponse.warnings);
+      if (tabResponse?.stopState && tabResponse.stopState !== 'continue') {
+        const stopReason =
+          String(tabResponse.stopReason || tabResponse.error || '').trim()
+          || `Execution stopped (${tabResponse.stopState})`;
+        return { error: stopReason, prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed, warnings: allWarnings };
+      }
       if (tabResponse?.error) {
         retry++;
         continue;
@@ -168,15 +194,61 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
         prevSteps: accumulatedPrevSteps,
         thought: tabResponse.thought,
         bridgeRpc,
+        isCancelled: ctx.isCancelled,
         userFunctionDeclarations: functionDeclarations,
         onStatusUpdate,
         onPrevStepsUpdate,
       });
+      if (ctx.isCancelled?.()) {
+        return { error: 'Run cancelled', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
+      }
 
       if (processResult.needsRetry) {
         pageDataOptions = processResult.disableAutoScroll ? { disableAutoScroll: true } : undefined;
         retry++;
         continue;
+      }
+
+      if (processResult.navigationOccurred) {
+        const navigationOutcome = processResult.navigationOutcome;
+        const logicalTabId = Number(processResult.logicalTabId);
+        if (
+          navigationOutcome === 'new_tab_opened'
+          || navigationOutcome === 'switch_tab'
+        ) {
+          if (Number.isFinite(logicalTabId) && logicalTabId > 0) {
+            try {
+              await bridgeRpc('executeTool', {
+                call: {
+                  name: 'switch_tab',
+                  args: {
+                    logical_tab_id: logicalTabId,
+                    tab_id: logicalTabId,
+                  },
+                },
+                payload: {
+                  reason: 'act_loop_navigation_continue',
+                },
+              });
+            } catch {
+              // Best-effort. Runtime tab resolver will re-evaluate active tab on next loop.
+            }
+          }
+          pageDataOptions = processResult.disableAutoScroll ? { disableAutoScroll: true } : undefined;
+          continue;
+        }
+
+        managePrevStepsSize(accumulatedPrevSteps);
+        onPrevStepsUpdate?.(accumulatedPrevSteps);
+        return {
+          prevSteps: accumulatedPrevSteps,
+          creditsUsed: totalCreditsUsed,
+          warnings: allWarnings,
+          navigationPending: true,
+          navigationTool: processResult.navigationTool,
+          navigationOutcome: processResult.navigationOutcome,
+          logicalTabId: processResult.logicalTabId,
+        };
       }
 
       if (processResult.data) {
@@ -210,10 +282,19 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
 
         const functionResults: Record<string, any> = {};
         for (const fc of functionCallsWithIds) {
+          if (ctx.isCancelled?.()) {
+            return { error: 'Run cancelled', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
+          }
           try {
             const result = await bridgeRpc('executeClientTool', { name: fc.name, args: fc.args });
+            if (ctx.isCancelled?.()) {
+              return { error: 'Run cancelled', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
+            }
             functionResults[fc.callId!] = { success: true, result };
           } catch (error: any) {
+            if (ctx.isCancelled?.()) {
+              return { error: 'Run cancelled', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
+            }
             functionResults[fc.callId!] = { success: false, error: { message: error?.message || String(error) } };
           }
         }

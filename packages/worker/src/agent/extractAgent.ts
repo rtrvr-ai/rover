@@ -1,6 +1,6 @@
 import { SUB_AGENTS } from '@rover/shared/lib/types/agent-types.js';
 import type { PlannerPreviousStep, PreviousSteps, StatusStage } from './types.js';
-import { processActionResponse, waitWhilePaused } from './utils.js';
+import { processActionResponse, waitWhilePaused, buildWorkerStopSignal } from './utils.js';
 import type { AgentContext } from './context.js';
 import { resolveRuntimeTabs } from './runtimeTabs.js';
 
@@ -64,7 +64,13 @@ export async function executeExtract(options: ExtractOptions): Promise<ExtractRe
 
   for (let retry = 0; retry < MAX_RETRIES; retry++) {
     await waitWhilePaused(undefined);
+    if (ctx.isCancelled?.()) {
+      return { error: 'Run cancelled', prevSteps, creditsUsed: totalCreditsUsed, warnings };
+    }
     const { activeTabId } = await resolveRuntimeTabs(bridgeRpc, fallbackTabs);
+    if (ctx.isCancelled?.()) {
+      return { error: 'Run cancelled', prevSteps, creditsUsed: totalCreditsUsed, warnings };
+    }
     const tabId = activeTabId;
 
     let pageData: any;
@@ -94,11 +100,17 @@ export async function executeExtract(options: ExtractOptions): Promise<ExtractRe
       recordingContext,
       files,
       returnDataOnly,
+      stop: buildWorkerStopSignal({
+        isCancelled: !!ctx.isCancelled?.(),
+      }),
     };
 
     onStatusUpdate?.('Extracting data...', 'Calling extract sub-agent', 'execute');
 
     const response = await ctx.callExtensionRouter(SUB_AGENTS.extract, request);
+    if (ctx.isCancelled?.()) {
+      return { error: 'Run cancelled', prevSteps, creditsUsed: totalCreditsUsed, warnings };
+    }
     if (!response?.success) {
       return { error: response?.error || 'Extract request failed', creditsUsed: totalCreditsUsed };
     }
@@ -120,6 +132,12 @@ export async function executeExtract(options: ExtractOptions): Promise<ExtractRe
     // Handle action-required responses
     const tabResponse = data?.tabResponses?.[activeTabId];
     if (tabResponse) {
+      if (tabResponse?.stopState && tabResponse.stopState !== 'continue') {
+        const stopReason =
+          String(tabResponse.stopReason || tabResponse.error || '').trim()
+          || `Execution stopped (${tabResponse.stopState})`;
+        return { error: stopReason, prevSteps, creditsUsed: totalCreditsUsed, warnings };
+      }
       const processResult = await processActionResponse({
         request,
         response: tabResponse,
@@ -127,8 +145,12 @@ export async function executeExtract(options: ExtractOptions): Promise<ExtractRe
         prevSteps,
         thought: tabResponse.thought,
         bridgeRpc,
+        isCancelled: ctx.isCancelled,
         onPrevStepsUpdate,
       });
+      if (ctx.isCancelled?.()) {
+        return { error: 'Run cancelled', prevSteps, creditsUsed: totalCreditsUsed, warnings };
+      }
 
       if (processResult.needsRetry) {
         pageDataOptions = processResult.disableAutoScroll ? { disableAutoScroll: true } : undefined;
@@ -147,9 +169,18 @@ export async function executeExtract(options: ExtractOptions): Promise<ExtractRe
 
       if (processResult.functionCalls?.length) {
         for (const fc of processResult.functionCalls) {
+          if (ctx.isCancelled?.()) {
+            return { error: 'Run cancelled', prevSteps, creditsUsed: totalCreditsUsed, warnings };
+          }
           try {
             await bridgeRpc('executeClientTool', { name: fc.name, args: fc.args });
+            if (ctx.isCancelled?.()) {
+              return { error: 'Run cancelled', prevSteps, creditsUsed: totalCreditsUsed, warnings };
+            }
           } catch {
+            if (ctx.isCancelled?.()) {
+              return { error: 'Run cancelled', prevSteps, creditsUsed: totalCreditsUsed, warnings };
+            }
             // ignore and continue; planner will replan if needed
           }
         }

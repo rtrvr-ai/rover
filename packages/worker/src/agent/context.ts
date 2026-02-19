@@ -1,5 +1,4 @@
 import { DEFAULT_GEMINI_MODEL } from '@rover/shared/lib/utils/constants.js';
-import { SUB_AGENTS } from '@rover/shared/lib/types/agent-types.js';
 import type { LLMIntegration, UserProfile } from '@rover/shared/lib/types/index.js';
 import type {
   ApiAdditionalToolName,
@@ -16,7 +15,11 @@ export type BridgeRpc = (method: string, params?: any) => Promise<any>;
 
 export type RoverAgentConfig = {
   apiBase?: string;
-  apiKey?: string;
+  sessionToken?: string;
+  sessionId?: string;
+  activeRunId?: string;
+  sessionEpoch?: number;
+  sessionSeq?: number;
   authToken?: string;
   siteId?: string;
   allowedDomains?: string[];
@@ -187,6 +190,24 @@ function resolveExtensionRouterEndpoint(apiBase?: string): string {
   return `${base}/extensionRouter`;
 }
 
+function resolveRoverV1Endpoint(apiBase?: string): string {
+  const fallback = DEFAULT_EXTENSION_ROUTER_BASE;
+  const base = String(apiBase || fallback).trim().replace(/\/+$/, '');
+  if (!base) return `${fallback}/v1/rover`;
+  if (base.endsWith('/extensionRouter')) {
+    return `${base.slice(0, -('/extensionRouter'.length))}/v1/rover`;
+  }
+  if (base.endsWith('/v1/rover')) return base;
+  return `${base}/v1/rover`;
+}
+
+function createRequestNonce(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function buildRoverRuntimeContext(config: RoverAgentConfig): RoverRuntimeContext | undefined {
   const runtimeContext = config.runtimeContext;
   if (!runtimeContext || runtimeContext.mode !== 'rover_embed') return undefined;
@@ -248,7 +269,9 @@ export function createAgentContext(
   tabularStore?: TabularStore,
 ): AgentContext {
   const userTimestamp = getUserFriendlyTimestamp();
-  const apiMode = typeof config.apiMode === 'boolean' ? config.apiMode : !!config.apiKey;
+  const apiMode = typeof config.apiMode === 'boolean'
+    ? config.apiMode
+    : !!String(config.sessionToken || config.authToken || '').trim();
 
   const llmIntegration: LLMIntegration = {
     model: (config.llmIntegration?.model as any) || (config.model as any) || DEFAULT_GEMINI_MODEL,
@@ -268,6 +291,7 @@ export function createAgentContext(
   }
 
   const endpoint = resolveExtensionRouterEndpoint(config.apiBase);
+  const roverV1Endpoint = resolveRoverV1Endpoint(config.apiBase);
   const runtimeContext = buildRoverRuntimeContext(config);
   const externalWebConfig = normalizeExternalWebConfig(config.tools?.web);
   const externalPageDataCache = new Map<string, { data: any; ts: number }>();
@@ -282,13 +306,13 @@ export function createAgentContext(
   const EXTERNAL_PAGE_CACHE_TTL_MS = 45_000;
 
   const callExtensionRouter = async (action: string, data: any): Promise<any> => {
-    const token = config.authToken || config.apiKey;
-    if (!token) {
+    const sessionToken = String(config.sessionToken || config.authToken || '').trim();
+    if (!sessionToken || !sessionToken.startsWith('rvrsess_')) {
       throw createRoverError({
-        code: 'MISSING_API_KEY',
-        message: 'Rover API key is required to call extensionRouter.',
-        requires_api_key: true,
-        next_action: 'Provide apiKey in rover.boot(...) or an Authorization Bearer token.',
+        code: 'MISSING_AUTH_TOKEN',
+        message: 'Rover session token is required to call backend action routes.',
+        requires_api_key: false,
+        next_action: 'Initialize Rover session via /v1/rover/session/start and pass sessionToken to rover.boot(...).',
         retryable: false,
       });
     }
@@ -302,7 +326,6 @@ export function createAgentContext(
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
-          Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -311,9 +334,19 @@ export function createAgentContext(
             data && typeof data === 'object'
               ? {
                   ...data,
+                  sessionToken,
+                  sessionId: String(config.sessionId || '').trim() || undefined,
+                  runId: String(config.activeRunId || '').trim() || undefined,
+                  requestNonce: createRequestNonce(),
                   ...(!(data as any).runtimeContext && runtimeContext ? { runtimeContext } : {}),
                 }
-              : data,
+              : {
+                  payload: data,
+                  sessionToken,
+                  sessionId: String(config.sessionId || '').trim() || undefined,
+                  runId: String(config.activeRunId || '').trim() || undefined,
+                  requestNonce: createRequestNonce(),
+                },
         }),
         signal: config.signal,
       });
@@ -373,7 +406,13 @@ export function createAgentContext(
 
   const getExternalPageData = async (
     url: string,
-    options?: { tabId?: number; source?: 'google_search' | 'direct_url' },
+    options?: {
+      tabId?: number;
+      source?: 'google_search' | 'direct_url';
+      intent?: 'read_context' | 'act';
+      message?: string;
+      runId?: string;
+    },
   ): Promise<any> => {
     const normalizedUrl = String(url || '').trim();
     if (!normalizedUrl) throw new Error('external page data requires url');
@@ -395,18 +434,50 @@ export function createAgentContext(
     }
 
     const source = options?.source || 'direct_url';
-    const payload = {
-      url: normalizedUrl,
-      source,
-      siteId: config.siteId,
-      roverPolicy: {
-        allowDomains: externalWebConfig.allowDomains,
-        denyDomains: externalWebConfig.denyDomains,
-      },
-    };
+    const intent = options?.intent === 'act' ? 'act' : 'read_context';
+    const sessionToken = String(config.sessionToken || '').trim();
+    if (!sessionToken.startsWith('rvrsess_')) {
+      throw createRoverError({
+        code: 'MISSING_AUTH_TOKEN',
+        message: 'External context requires a Rover session token.',
+        next_action: 'Initialize Rover v1 session/start before requesting external context.',
+        retryable: false,
+      });
+    }
     try {
-      const response = await callExtensionRouter(SUB_AGENTS.roverExternalPageData, payload);
-      const pageData = response?.data || response;
+      const v1Resp = await fetch(`${roverV1Endpoint}/context/external`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          requestNonce: createRequestNonce(),
+          sessionToken,
+          sessionId: String(config.sessionId || '').trim() || undefined,
+          runId: String(options?.runId || config.activeRunId || '').trim() || undefined,
+          expectedEpoch: Number.isFinite(Number(config.sessionEpoch)) ? Number(config.sessionEpoch) : undefined,
+          expectedSeq: Number.isFinite(Number(config.sessionSeq)) ? Number(config.sessionSeq) : undefined,
+          logicalTabId: Number(options?.tabId) > 0 ? String(Math.trunc(Number(options?.tabId))) : undefined,
+          intent,
+          url: normalizedUrl,
+          source,
+          message: options?.message,
+        }),
+        signal: config.signal,
+      });
+      const payload = await v1Resp.json().catch(() => undefined);
+      if (!v1Resp.ok || payload?.success === false) {
+        const envelope = toRoverErrorEnvelope(payload, payload?.error || `external context request failed (${v1Resp.status})`);
+        throw createRoverError({
+          ...envelope,
+          details: {
+            endpoint: `${roverV1Endpoint}/context/external`,
+            status: v1Resp.status,
+            response: payload,
+          },
+        });
+      }
+      const pageData = payload?.data?.pageData || payload?.data;
       externalPageDataCache.set(cacheKey, { data: pageData, ts: nowMs });
       return pageData;
     } catch (error: any) {
@@ -449,10 +520,18 @@ export function createAgentContext(
     const numericTabId = Number(tabId);
     const rawOptions = options && typeof options === 'object' ? options : undefined;
     const allowExternalFetch = rawOptions?.__roverAllowExternalFetch === true;
+    const externalIntent = rawOptions?.__roverExternalIntent === 'act' ? 'act' : 'read_context';
+    const externalMessage = typeof rawOptions?.__roverExternalMessage === 'string'
+      ? String(rawOptions.__roverExternalMessage)
+      : undefined;
     const pageConfig =
       rawOptions && typeof rawOptions === 'object'
         ? Object.fromEntries(
-            Object.entries(rawOptions).filter(([key]) => key !== '__roverAllowExternalFetch'),
+            Object.entries(rawOptions).filter(([key]) =>
+              key !== '__roverAllowExternalFetch'
+              && key !== '__roverExternalIntent'
+              && key !== '__roverExternalMessage',
+            ),
           )
         : undefined;
     const hasPageConfig = !!pageConfig && Object.keys(pageConfig).length > 0;
@@ -511,6 +590,8 @@ export function createAgentContext(
       const cloudData = await getExternalPageData(pageUrl, {
         tabId: numericTabId,
         source: pageUrl.includes('google.com/search') ? 'google_search' : 'direct_url',
+        intent: externalIntent,
+        message: externalMessage,
       });
       if (cloudData && typeof cloudData === 'object') {
         return {

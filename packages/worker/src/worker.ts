@@ -49,6 +49,7 @@ type PersistedWorkerState = {
 };
 
 type RunTerminalState = 'waiting_input' | 'in_progress' | 'completed' | 'failed';
+type RunContinuationReason = 'loop_continue' | 'same_tab_navigation_handoff' | 'awaiting_user';
 
 type RunOutcome = {
   route?: { mode?: 'act' | 'planner'; score?: number; reason?: string };
@@ -56,6 +57,8 @@ type RunOutcome = {
   needsUserInput?: boolean;
   questions?: PlannerQuestion[];
   terminalState?: RunTerminalState;
+  navigationPending?: boolean;
+  continuationReason?: RunContinuationReason;
   contextResetRecommended?: boolean;
 };
 
@@ -368,6 +371,7 @@ function postStatus(message: string, thought?: string, stage?: StatusStage) {
   const resolvedStage = inferStatusStage(message, thought, stage);
   const compact = compactThought(message, thought);
   const runId = activeRun?.runId || 'no-run';
+  if (runId !== 'no-run' && cancelledRunIds.has(runId)) return;
   const key = `${runId}|${resolvedStage}|${String(message || '').trim().toLowerCase()}|${compact.toLowerCase()}`;
   if (key === lastStatusKey || seenStatusKeys.has(key)) return;
   lastStatusKey = key;
@@ -989,7 +993,11 @@ function postAssistantMessage(payload: string | AssistantMessagePayload): string
     || firstTextBlock?.text
     || summarizeOutputText(firstStructuredBlock?.data)
     || 'Done.';
-  (self as any).postMessage({ type: 'assistant', text: resolvedText, blocks, runId: activeRun?.runId });
+  const runId = activeRun?.runId;
+  if (runId && cancelledRunIds.has(runId)) {
+    return resolvedText;
+  }
+  (self as any).postMessage({ type: 'assistant', text: resolvedText, blocks, runId });
   return resolvedText;
 }
 
@@ -1009,11 +1017,13 @@ function removePlannerNameCollisions(declarations: FunctionDeclaration[]): Funct
 }
 
 function postAuthRequired(err: any): void {
+  const runId = activeRun?.runId;
+  if (runId && cancelledRunIds.has(runId)) return;
   const envelope =
     err && typeof err === 'object' && err.code && err.message
       ? toRoverErrorEnvelope({ errorDetails: err }, 'Rover API key is required.')
       : toRoverErrorEnvelope(err, 'Rover API key is required.');
-  (self as any).postMessage({ type: 'auth_required', error: envelope, runId: activeRun?.runId });
+  (self as any).postMessage({ type: 'auth_required', error: envelope, runId });
 }
 
 type StructuredErrorPayload = {
@@ -1030,6 +1040,15 @@ type StructuredErrorPayload = {
   next_action?: string;
   retryable?: boolean;
 };
+
+const NAVIGATION_TOOL_NAME_SET = new Set([
+  'goto_url',
+  'google_search',
+  'go_back',
+  'go_forward',
+  'refresh_page',
+  'open_new_tab',
+]);
 
 function toStructuredErrorPayload(err: any, fallbackMessage = 'Operation failed'): StructuredErrorPayload {
   const envelope = toRoverErrorEnvelope(err, fallbackMessage);
@@ -1079,6 +1098,50 @@ function extractStructuredErrorFromToolResult(result: any): StructuredErrorPaylo
   }
 
   return undefined;
+}
+
+function sawRecentSuccessfulNavigationStep(steps: PreviousSteps[] | undefined): boolean {
+  if (!Array.isArray(steps) || steps.length === 0) return false;
+  let inspectedStepCount = 0;
+  for (let stepIndex = steps.length - 1; stepIndex >= 0; stepIndex -= 1) {
+    const step = steps[stepIndex] as any;
+    const functions = Array.isArray(step?.functions) ? step.functions : [];
+    if (!functions.length) continue;
+    inspectedStepCount += 1;
+    for (let fnIndex = functions.length - 1; fnIndex >= 0; fnIndex -= 1) {
+      const fn = functions[fnIndex] as any;
+      const toolName = String(fn?.name || fn?.toolName || fn?.functionName || '').trim();
+      if (!toolName || !NAVIGATION_TOOL_NAME_SET.has(toolName)) continue;
+      const status = String(fn?.response?.status || fn?.status || '').trim().toLowerCase();
+      if (status === 'success') {
+        return true;
+      }
+    }
+    if (inspectedStepCount >= 2) break;
+  }
+  return false;
+}
+
+function normalizeLifecycleHandoffError(
+  payload: StructuredErrorPayload,
+  steps: PreviousSteps[] | undefined,
+): StructuredErrorPayload {
+  const code = String(payload?.error?.code || '').trim().toUpperCase();
+  if (code && code !== 'UNKNOWN_ERROR') return payload;
+  if (!sawRecentSuccessfulNavigationStep(steps)) return payload;
+
+  return {
+    ...payload,
+    error: {
+      ...payload.error,
+      code: 'NAVIGATION_HANDOFF_PENDING',
+      message: payload.error?.message || 'Navigation handoff is in progress.',
+      retryable: true,
+      next_action: payload.error?.next_action || 'Wait for post-navigation resume and continue the task.',
+    },
+    retryable: true,
+    next_action: payload.next_action || 'Wait for post-navigation resume and continue the task.',
+  };
 }
 
 function maybePostNavigationGuardrailFromToolResult(toolResult: any): void {
@@ -1461,7 +1524,23 @@ function extractPlannerQuestionsFromToolResults(toolResults: any[] | undefined):
 
 function deriveDirectToolRunOutcome(result: any): RunOutcome {
   if (!result || typeof result !== 'object') {
-    return { taskComplete: false, terminalState: 'in_progress' };
+    return {
+      taskComplete: false,
+      terminalState: 'in_progress',
+      continuationReason: 'loop_continue',
+    };
+  }
+
+  const topLevelNavigationOutcome = String((result as any).navigationOutcome || '').trim().toLowerCase();
+
+  if (result.navigationPending === true) {
+    const isSameTabHandoff = topLevelNavigationOutcome === 'same_tab_scheduled';
+    return {
+      taskComplete: false,
+      terminalState: 'in_progress',
+      navigationPending: isSameTabHandoff,
+      continuationReason: isSameTabHandoff ? 'same_tab_navigation_handoff' : 'loop_continue',
+    };
   }
 
   const questions = extractQuestionsFromResult(result);
@@ -1471,7 +1550,13 @@ function deriveDirectToolRunOutcome(result: any): RunOutcome {
     return { taskComplete: false, terminalState: 'failed' };
   }
   if (topLevelStatus === 'waiting_input' || topLevelStatus === 'needs_input' || topLevelStatus === 'pending_user_input') {
-    return { taskComplete: false, needsUserInput: true, questions, terminalState: 'waiting_input' };
+    return {
+      taskComplete: false,
+      needsUserInput: true,
+      questions,
+      terminalState: 'waiting_input',
+      continuationReason: 'awaiting_user',
+    };
   }
   if (result.error) {
     return { taskComplete: false, terminalState: 'failed' };
@@ -1479,16 +1564,46 @@ function deriveDirectToolRunOutcome(result: any): RunOutcome {
 
   const output = result.output;
   if (output && typeof output === 'object') {
+    const navigationOutcome = String((output as any).navigationOutcome || '').trim().toLowerCase();
+    const navigationMode = String((output as any).navigation || '').trim().toLowerCase();
+    if (
+      (output as any).navigationPending === true
+      || navigationOutcome === 'same_tab_scheduled'
+      || navigationOutcome === 'new_tab_opened'
+      || navigationMode === 'same_tab'
+    ) {
+      const sameTabHandoff =
+        navigationOutcome === 'same_tab_scheduled'
+        || navigationMode === 'same_tab';
+      return {
+        taskComplete: false,
+        terminalState: 'in_progress',
+        navigationPending: sameTabHandoff,
+        continuationReason: sameTabHandoff ? 'same_tab_navigation_handoff' : 'loop_continue',
+      };
+    }
     if (Array.isArray(output)) {
       return { taskComplete: true, terminalState: 'completed', contextResetRecommended: true };
     }
 
     if ((output as any).needsUserInput === true || (output as any).waitingForUserInput === true) {
-      return { taskComplete: false, needsUserInput: true, questions, terminalState: 'waiting_input' };
+      return {
+        taskComplete: false,
+        needsUserInput: true,
+        questions,
+        terminalState: 'waiting_input',
+        continuationReason: 'awaiting_user',
+      };
     }
 
     if (Array.isArray((output as any).questions) && (output as any).questions.length > 0) {
-      return { taskComplete: false, needsUserInput: true, questions, terminalState: 'waiting_input' };
+      return {
+        taskComplete: false,
+        needsUserInput: true,
+        questions,
+        terminalState: 'waiting_input',
+        continuationReason: 'awaiting_user',
+      };
     }
 
     if ((output as any).error) {
@@ -1500,6 +1615,7 @@ function deriveDirectToolRunOutcome(result: any): RunOutcome {
       return {
         taskComplete: completed,
         terminalState: completed ? 'completed' : 'in_progress',
+        continuationReason: completed ? undefined : 'loop_continue',
         contextResetRecommended: completed,
       };
     }
@@ -1507,10 +1623,19 @@ function deriveDirectToolRunOutcome(result: any): RunOutcome {
     const taskStatus = String((output as any).taskStatus || (output as any).status || '').toLowerCase();
     if (taskStatus) {
       if (taskStatus === 'waiting_input' || taskStatus === 'needs_input' || taskStatus === 'pending_user_input') {
-        return { taskComplete: false, needsUserInput: true, terminalState: 'waiting_input' };
+        return {
+          taskComplete: false,
+          needsUserInput: true,
+          terminalState: 'waiting_input',
+          continuationReason: 'awaiting_user',
+        };
       }
       if (taskStatus === 'running' || taskStatus === 'in_progress' || taskStatus === 'pending') {
-        return { taskComplete: false, terminalState: 'in_progress' };
+        return {
+          taskComplete: false,
+          terminalState: 'in_progress',
+          continuationReason: 'loop_continue',
+        };
       }
       if (taskStatus === 'completed' || taskStatus === 'complete' || taskStatus === 'done' || taskStatus === 'success') {
         return { taskComplete: true, terminalState: 'completed', contextResetRecommended: true };
@@ -1539,7 +1664,13 @@ function deriveDirectToolRunOutcome(result: any): RunOutcome {
 
 function normalizeRunOutcome(outcome?: Partial<RunOutcome> | null): RunOutcome {
   if (!outcome || typeof outcome !== 'object') {
-    return { taskComplete: false, needsUserInput: false, terminalState: 'in_progress', contextResetRecommended: false };
+    return {
+      taskComplete: false,
+      needsUserInput: false,
+      terminalState: 'in_progress',
+      continuationReason: 'loop_continue',
+      contextResetRecommended: false,
+    };
   }
   const inferredNeedsUserInput = outcome.needsUserInput === true;
   const incomingTerminalState = String((outcome as any).terminalState || '').trim().toLowerCase() as RunTerminalState | '';
@@ -1557,6 +1688,17 @@ function normalizeRunOutcome(outcome?: Partial<RunOutcome> | null): RunOutcome {
   const needsUserInput = terminalState === 'waiting_input' || inferredNeedsUserInput;
   const taskComplete = terminalState === 'completed' || (outcome.taskComplete === true && !needsUserInput);
   const questions = normalizePlannerQuestions((outcome as any).questions);
+  const continuationCandidate = String((outcome as any).continuationReason || '').trim().toLowerCase();
+  const continuationReason: RunContinuationReason | undefined =
+    continuationCandidate === 'loop_continue'
+    || continuationCandidate === 'same_tab_navigation_handoff'
+    || continuationCandidate === 'awaiting_user'
+      ? continuationCandidate as RunContinuationReason
+      : needsUserInput
+        ? 'awaiting_user'
+        : (outcome.navigationPending === true
+          ? 'same_tab_navigation_handoff'
+          : (terminalState === 'in_progress' && !taskComplete ? 'loop_continue' : undefined));
   const contextResetRecommended =
     outcome.contextResetRecommended === true
     || terminalState === 'completed'
@@ -1567,6 +1709,7 @@ function normalizeRunOutcome(outcome?: Partial<RunOutcome> | null): RunOutcome {
     needsUserInput,
     questions: questions.length ? questions : undefined,
     terminalState,
+    continuationReason,
     contextResetRecommended,
   };
 }
@@ -1586,6 +1729,13 @@ function rememberCancelledRun(runId: string): void {
     const oldest = cancelledRunIds.values().next().value;
     if (!oldest) break;
     cancelledRunIds.delete(oldest);
+  }
+}
+
+function throwIfCancelledRun(runId?: string): void {
+  if (!runId) return;
+  if (cancelledRunIds.has(runId)) {
+    throw new DOMException('Run cancelled', 'AbortError');
   }
 }
 
@@ -1615,6 +1765,8 @@ async function handleUserMessage(
 ): Promise<RunOutcome> {
   if (!config) throw new Error('Worker not initialized');
   if (!bridgeRpc) throw new Error('Bridge RPC not initialized');
+  const activeRunId = activeRun?.runId;
+  throwIfCancelledRun(activeRunId);
   postStatus('Analyzing request', text, 'analyze');
 
   const shouldSkipUserPush =
@@ -1678,7 +1830,9 @@ async function handleUserMessage(
     postStateSnapshot();
   }
 
+  throwIfCancelledRun(activeRunId);
   const tabs = await getKnownTabs();
+  throwIfCancelledRun(activeRunId);
   const fallbackTabs: RoverTab[] =
     tabs.length > 0
       ? tabs
@@ -1690,6 +1844,7 @@ async function handleUserMessage(
           },
         ];
   const resolvedTabs = await resolveRuntimeTabs(bridgeRpc, fallbackTabs);
+  throwIfCancelledRun(activeRunId);
   const tabsById = new Map<number, RoverTab>(tabs.map(tab => [tab.id, tab]));
   const orderedTabs = resolvedTabs.tabOrder
     .map(tabId => {
@@ -1732,6 +1887,8 @@ async function handleUserMessage(
     {
       ...config,
       signal: activeAbortController?.signal,
+      sessionId: trajectoryId,
+      activeRunId,
       runtimeContext,
       tools: {
         web: extractWebToolsConfig(config),
@@ -1740,8 +1897,7 @@ async function handleUserMessage(
     bridgeRpc,
     tabularStore,
   );
-  const currentRunId = activeRun?.runId;
-  ctx.isCancelled = () => !!(currentRunId && cancelledRunIds.has(currentRunId));
+  ctx.isCancelled = () => !!(activeRunId && cancelledRunIds.has(activeRunId));
   // Only pass user/client-declared tools. Planner built-ins come from backend.
   const functionDeclarations = dedupeFunctionDeclarations(
     removePlannerNameCollisions(toolRegistry.getFunctionDeclarations()),
@@ -1756,6 +1912,7 @@ async function handleUserMessage(
     postStateSnapshot();
   };
 
+  throwIfCancelledRun(activeRunId);
   const result = await handleSendMessageWithFunctions(effectiveUserInput, {
     tabs: tabsForRun,
     previousMessages: history,
@@ -1779,9 +1936,34 @@ async function handleUserMessage(
     onPrevStepsUpdate,
     onPlannerHistoryUpdate,
   });
+  throwIfCancelledRun(activeRunId);
 
   if (!result.success) {
-    const errorPayload = toStructuredErrorPayload(result.error, 'Something went wrong.');
+    const rawErrorPayload = toStructuredErrorPayload(result.error, 'Something went wrong.');
+    const errorPayload = normalizeLifecycleHandoffError(rawErrorPayload, agentPrevSteps);
+    const errorCode = String(errorPayload.error.code || '').trim().toUpperCase();
+    const isRetryableLifecycleError =
+      !!errorPayload.error.retryable
+      || errorCode === 'STALE_SEQ'
+      || errorCode === 'STALE_EPOCH'
+      || errorCode === 'SESSION_TOKEN_EXPIRED'
+      || errorCode === 'NAVIGATION_HANDOFF_PENDING';
+
+    if (isRetryableLifecycleError) {
+      const retryMessage = `${errorPayload.error.code}: ${errorPayload.error.message}`;
+      postAssistantMessage(retryMessage);
+      history.push({ role: 'assistant', content: retryMessage });
+      postStatus('Waiting for navigation/session sync', errorPayload.error.message, 'verify');
+      postStateSnapshot();
+      return {
+        route: result.route,
+        taskComplete: false,
+        terminalState: 'in_progress',
+        continuationReason: 'loop_continue',
+        contextResetRecommended: false,
+      };
+    }
+
     if (errorPayload.error.requires_api_key) {
       postAuthRequired(errorPayload.error);
     }
@@ -1842,6 +2024,7 @@ async function handleUserMessage(
   }
 
   if (result.directToolResult) {
+    throwIfCancelledRun(activeRunId);
     const newTabWait = await maybeWaitForNewTab(result.directToolResult);
     if (
       newTabWait.openedTab
@@ -1913,6 +2096,7 @@ async function handleUserMessage(
         needsUserInput: true,
         questions,
         terminalState: 'waiting_input',
+        continuationReason: 'awaiting_user',
       };
     }
 
@@ -1949,6 +2133,7 @@ async function handleUserMessage(
       needsUserInput: outcome.needsUserInput,
       questions: normalizePlannerQuestions(outcome.questions),
       terminalState: outcome.terminalState,
+      continuationReason: outcome.continuationReason,
       contextResetRecommended: outcome.contextResetRecommended,
     };
   }
@@ -1987,6 +2172,7 @@ async function handleUserMessage(
         needsUserInput: true,
         questions,
         terminalState: 'waiting_input',
+        continuationReason: 'awaiting_user',
       };
     }
 
@@ -2029,6 +2215,10 @@ async function handleUserMessage(
       terminalState: responseError
         ? 'failed'
         : (!!response.taskComplete ? 'completed' : 'in_progress'),
+      continuationReason:
+        responseError || response.taskComplete
+          ? undefined
+          : 'loop_continue',
       contextResetRecommended: !responseError && !!response.taskComplete,
     };
   }
@@ -2054,18 +2244,19 @@ async function runUserMessage(
   if (terminal) {
     if (terminal.ok) {
       const cachedOutcome = normalizeRunOutcome(terminal.outcome);
-      (self as any).postMessage({
-        type: 'run_completed',
-        runId,
-        taskBoundaryId: terminal.taskBoundaryId,
-        ok: true,
-        route: cachedOutcome.route,
-        taskComplete: cachedOutcome.taskComplete,
-        needsUserInput: cachedOutcome.needsUserInput,
-        questions: cachedOutcome.questions,
-        terminalState: cachedOutcome.terminalState,
-        contextResetRecommended: cachedOutcome.contextResetRecommended,
-      });
+        (self as any).postMessage({
+          type: 'run_completed',
+          runId,
+          taskBoundaryId: terminal.taskBoundaryId,
+          ok: true,
+          route: cachedOutcome.route,
+          taskComplete: cachedOutcome.taskComplete,
+          needsUserInput: cachedOutcome.needsUserInput,
+          questions: cachedOutcome.questions,
+          terminalState: cachedOutcome.terminalState,
+          continuationReason: cachedOutcome.continuationReason,
+          contextResetRecommended: cachedOutcome.contextResetRecommended,
+        });
     } else {
       (self as any).postMessage({
         type: 'run_completed',
@@ -2100,22 +2291,43 @@ async function runUserMessage(
       routing: meta?.routing,
       askUserAnswers: meta?.askUserAnswers,
     }));
-    rememberTerminalRun(runId, { ok: true, outcome, taskBoundaryId: runTaskBoundaryId });
-    (self as any).postMessage({
-      type: 'run_completed',
-      runId,
-      taskBoundaryId: runTaskBoundaryId,
-      ok: true,
-      route: outcome.route,
-      taskComplete: outcome.taskComplete,
-      needsUserInput: outcome.needsUserInput,
-      questions: outcome.questions,
-      terminalState: outcome.terminalState,
-      contextResetRecommended: outcome.contextResetRecommended,
-    });
-    if (outcome.contextResetRecommended) {
-      clearTaskScopedContextAfterBoundary('complete');
-      postStateSnapshot();
+    const isTerminalOutcome =
+      outcome.terminalState === 'completed'
+      || outcome.terminalState === 'failed';
+    if (isTerminalOutcome) {
+      rememberTerminalRun(runId, { ok: true, outcome, taskBoundaryId: runTaskBoundaryId });
+      (self as any).postMessage({
+        type: 'run_completed',
+        runId,
+        taskBoundaryId: runTaskBoundaryId,
+        ok: true,
+        route: outcome.route,
+        taskComplete: outcome.taskComplete,
+        needsUserInput: outcome.needsUserInput,
+        questions: outcome.questions,
+        terminalState: outcome.terminalState,
+        continuationReason: outcome.continuationReason,
+        contextResetRecommended: outcome.contextResetRecommended,
+      });
+      if (outcome.contextResetRecommended) {
+        clearTaskScopedContextAfterBoundary('complete');
+        postStateSnapshot();
+      }
+    } else {
+      terminalRuns.delete(runId);
+      (self as any).postMessage({
+        type: 'run_state_transition',
+        runId,
+        taskBoundaryId: runTaskBoundaryId,
+        ok: true,
+        route: outcome.route,
+        taskComplete: outcome.taskComplete,
+        needsUserInput: outcome.needsUserInput,
+        questions: outcome.questions,
+        terminalState: outcome.terminalState,
+        continuationReason: outcome.continuationReason,
+        contextResetRecommended: outcome.contextResetRecommended,
+      });
     }
   } catch (error: any) {
     if (error?.name === 'AbortError') {

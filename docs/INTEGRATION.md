@@ -31,14 +31,14 @@ Add this snippet before `</body>` on your website:
 
   rover('boot', {
     siteId: 'YOUR_SITE_ID',
-    apiKey: 'YOUR_API_KEY',
+    publicKey: 'pk_site_YOUR_PUBLIC_KEY',
     allowedDomains: ['yourdomain.com'],
   });
 </script>
 <script src="https://rover.rtrvr.ai/embed.js" async></script>
 ```
 
-Get your `siteId` and `apiKey` from the [Rover Workspace](https://rover.rtrvr.ai/workspace).
+Get your `siteId` and `publicKey` (`pk_site_*`) from the [Rover Workspace](https://rover.rtrvr.ai/workspace).
 
 ### Single Script Tag (Data Attributes)
 
@@ -47,12 +47,12 @@ For the simplest integration, use data attributes — no inline JavaScript neede
 ```html
 <script src="https://rover.rtrvr.ai/embed.js"
   data-site-id="YOUR_SITE_ID"
-  data-api-key="YOUR_API_KEY"
+  data-public-key="pk_site_YOUR_PUBLIC_KEY"
   data-allowed-domains="yourdomain.com,app.yourdomain.com">
 </script>
 ```
 
-Supported data attributes: `data-site-id`, `data-api-key`, `data-allowed-domains` (comma-separated), `data-site-key-id`, `data-worker-url`.
+Supported data attributes: `data-site-id`, `data-public-key`, `data-allowed-domains` (comma-separated), `data-site-key-id`, `data-worker-url`.
 
 For advanced configuration (task routing, checkpointing, UI options), use the JS boot call.
 
@@ -80,7 +80,7 @@ import { boot, shutdown } from '@rtrvr-ai/rover';
 
 boot({
   siteId: 'YOUR_SITE_ID',
-  apiKey: 'YOUR_API_KEY',
+  publicKey: 'pk_site_YOUR_PUBLIC_KEY',
   allowedDomains: ['yourdomain.com'],
 });
 ```
@@ -105,7 +105,7 @@ export function RoverWidget() {
   useEffect(() => {
     boot({
       siteId: 'YOUR_SITE_ID',
-      apiKey: 'YOUR_API_KEY',
+      publicKey: 'pk_site_YOUR_PUBLIC_KEY',
       allowedDomains: ['yourdomain.com'],
     });
 
@@ -146,7 +146,7 @@ onMounted(async () => {
   const { boot } = await import('@rtrvr-ai/rover');
   boot({
     siteId: 'YOUR_SITE_ID',
-    apiKey: 'YOUR_API_KEY',
+    publicKey: 'pk_site_YOUR_PUBLIC_KEY',
     allowedDomains: ['yourdomain.com'],
   });
 });
@@ -167,7 +167,7 @@ import { boot } from '@rtrvr-ai/rover';
 export default defineNuxtPlugin(() => {
   boot({
     siteId: 'YOUR_SITE_ID',
-    apiKey: 'YOUR_API_KEY',
+    publicKey: 'pk_site_YOUR_PUBLIC_KEY',
     allowedDomains: ['yourdomain.com'],
   });
 });
@@ -191,7 +191,7 @@ add_action('wp_footer', function() {
     })();
     rover('boot', {
       siteId: 'YOUR_SITE_ID',
-      apiKey: 'YOUR_API_KEY',
+      publicKey: 'pk_site_YOUR_PUBLIC_KEY',
       allowedDomains: ['<?php echo esc_js($_SERVER["HTTP_HOST"]); ?>'],
     });
   </script>
@@ -259,7 +259,7 @@ If your CSP policy cannot allow any external script domains, self-host the Rover
 
   rover('boot', {
     siteId: 'YOUR_SITE_ID',
-    apiKey: 'YOUR_API_KEY',
+    publicKey: 'pk_site_YOUR_PUBLIC_KEY',
     allowedDomains: ['yourdomain.com'],
     workerUrl: '/assets/rover/rover-worker.js',
   });
@@ -311,23 +311,20 @@ rover.boot(config);
 
 ## Configuration Reference
 
-### Core Auth & Identity
+### Core Identity & Auth
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `siteId` | `string` | *required* | Site identifier from Workspace |
-| `apiKey` | `string` | — | Rover key from Workspace |
+| `publicKey` | `string` | — | Public Rover bootstrap key (`pk_site_*`) from Workspace |
+| `sessionToken` | `string` | — | Optional pre-minted short-lived session token (`rvrsess_*`) |
 | `siteKeyId` | `string` | — | Site key ID from Workspace |
-| `authToken` | `string` | — | Optional bearer token override for runtime API calls (takes precedence over `apiKey` when both are set) |
-| `auth.enableSessionJwt` | `boolean` | `false` | Enable session JWT auth flow |
-| `auth.sessionJwtEndpoint` | `string` | — | Endpoint used to refresh session JWT |
-| `auth.refreshSkewSec` | `number` | — | Early refresh skew (seconds) before JWT expiry |
 | `visitorId` | `string` | auto | Stable visitor identifier |
 | `visitor` | `{ name?: string; email?: string }` | — | Optional visitor profile for greeting personalization. Recommended flow is async updates via `identify(...)` after login/user hydration. |
 | `sessionId` | `string` | auto | Explicit session ID |
 | `sessionScope` | `'shared_site' \| 'tab'` | `'shared_site'` | Shared cross-tab session or tab-isolated session |
 | `mode` | `'full' \| 'safe'` | `'full'` | Runtime mode |
-| `apiBase` | `string` | `https://extensionrouter.rtrvr.ai` | Custom API base URL. Workspace snippets keep the managed default; code integrations can pass custom domains directly (no `/extensionRouter` suffix required). |
+| `apiBase` | `string` | `https://extensionrouter.rtrvr.ai` | Custom API base URL. Rover runtime uses `/v1/rover/*` under this base. |
 | `workerUrl` | `string` | auto | Custom worker URL (self-hosting) |
 
 ### Domain Guardrails & Navigation
@@ -337,7 +334,7 @@ rover.boot(config);
 | `allowedDomains` | `string[]` | `[]` | Hostnames where Rover may operate |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | Domain matching strategy |
 | `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
-| `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | Behavior for in-scope host changes (subdomain hops) |
+| `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | Behavior for in-scope host changes (subdomain hops). `same_tab` follows target behavior. |
 | `openOnInit` | `boolean` | `false` | Open panel after boot |
 | `allowActions` | `boolean` | `true` | Enable/disable action tools |
 | `tabPolicy.observerByDefault` | `boolean` | `true` | Observer preference for shared tab sessions |
@@ -349,7 +346,7 @@ rover.boot(config);
 |---|---|---|---|
 | `taskRouting.mode` | `'auto' \| 'act' \| 'planner'` | `'act'` | Task routing mode |
 | `taskRouting.actHeuristicThreshold` | `number` | `5` (auto mode) | Complexity threshold for auto-routing |
-| `taskRouting.plannerOnActError` | `boolean` | `true` | Retry with planner when ACT fails |
+| `taskRouting.plannerOnActError` | `boolean` | `true` | In `auto` mode, retry with planner only when ACT does not produce a usable outcome |
 
 ### Task Context
 
@@ -387,7 +384,7 @@ rover.boot(config);
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `apiMode` | `boolean` | auto (`true` when `apiKey` is set) | Force API execution mode |
+| `apiMode` | `boolean` | auto (`true` when `publicKey` or `sessionToken` is set) | Force API execution mode |
 | `apiToolsConfig.mode` | `'allowlist' \| 'profile' \| 'none'` | `'none'` | Additional tool exposure mode |
 | `apiToolsConfig.enableAdditionalTools` | `string[]` | `[]` | Additional first-party tools to enable |
 | `apiToolsConfig.userDefined` | `string[]` | `[]` | User-defined tools to expose |
@@ -418,8 +415,34 @@ When `tools.web.scrapeMode` is `on_demand`, ensure your Rover site key includes 
 | `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced) |
 | `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | — | Greeting bubble config; supports `{name}` placeholder |
 
-With site keys, Rover also fetches cloud site config using `roverGetSiteConfig` (shortcuts + greeting).  
+With site keys (or a valid `rvrsess_*` token), Rover fetches cloud site config via `POST /v1/rover/session/start` (shortcuts + greeting).  
 If boot config and cloud config define the same field, boot config takes precedence.
+
+### Rover V1 Runtime APIs
+
+Runtime base is `https://extensionrouter.rtrvr.ai/v1/rover/*`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/session/start` | Bootstrap/refresh runtime session and initial projection |
+| `POST` | `/session/refresh` | Refresh short-lived `rvrsess_*` token |
+| `POST` | `/run/input` | Create/continue authoritative run |
+| `POST` | `/run/control` | Cancel/end/new/continue run lifecycle control |
+| `POST` | `/tab/event` | Navigation policy decision and tab graph updates |
+| `GET` | `/events` | SSE projection stream |
+| `GET` | `/session/projection` | Projection polling fallback |
+| `POST` | `/session/snapshot` | Compacted snapshot/checkpoint upsert |
+| `POST` | `/context/external` | External context/action bridge |
+| `POST` | `/telemetry/ingest` | Runtime telemetry ingestion |
+
+Runtime semantics:
+
+- Server authority key is `sessionId + runId + epoch + seq`.
+- `taskRouting.mode` maps to `requestedMode` for `/run/input`.
+- `taskRouting.plannerOnActError` applies only in `auto` mode, and planner fallback is not triggered after usable ACT success.
+- Typed conflicts: `409 stale_seq`, `409 stale_epoch`, `409 active_run_exists`.
+- `POST /tab/event` stale/missing run is non-fatal via `200 decision='stale_run'`.
+- Browser runtime path is legacy-free: no checkpoint calls to `roverSessionCheckpointGet/Upsert`.
 
 ### Client Tools
 
@@ -458,6 +481,9 @@ off(); // unsubscribe
 | `context_restored` | — | Session restored from checkpoint |
 | `checkpoint_state` | `{ state, reason?, action?, code?, message? }` | Checkpoint sync state updates |
 | `checkpoint_error` | `{ action, code?, message, ... }` | Checkpoint request failure details |
+| `tab_event_conflict_retry` | `{ runId, conflict?, ... }` | A stale seq/epoch tab-event conflict was recovered by one silent retry |
+| `tab_event_conflict_exhausted` | `{ runId, conflict?, ... }` | Tab-event stale conflict retry was exhausted (non-fatal; projection sync path) |
+| `legacy_checkpoint_blocked` | `{ action, status }` | Legacy Rover checkpoint browser path was blocked (V1 only) |
 | `open` | — | Panel opened |
 | `close` | — | Panel closed |
 
@@ -490,11 +516,11 @@ When authentication is missing or invalid, Rover emits an `auth_required` event:
 ```json
 {
   "success": false,
-  "code": "MISSING_API_KEY",
+  "code": "MISSING_BOOTSTRAP_TOKEN",
   "message": "...",
   "requires_api_key": true,
-  "missing": ["apiKey"],
-  "next_action": "Provide apiKey in rover.boot(...) or an Authorization Bearer token."
+  "missing": ["publicKey"],
+  "next_action": "Provide publicKey in rover.boot(...) or a valid rvrsess_* sessionToken."
 }
 ```
 
@@ -505,7 +531,7 @@ When authentication is missing or invalid, Rover emits an `auth_required` event:
 ### Widget doesn't appear
 - **CSP errors in console?** Add the required CSP directives from the [CSP section](#content-security-policy-csp).
 - **Domain not allowed?** Check that the current hostname is in `allowedDomains`. With `domainScopeMode: 'registrable_domain'`, `app.example.com` matches an `example.com` entry.
-- **No API key?** Rover requires a valid `apiKey`. Generate one in the [Workspace](https://rover.rtrvr.ai/workspace).
+- **No site key?** Rover requires a valid `publicKey` (`pk_site_*`). Generate one in the [Workspace](https://rover.rtrvr.ai/workspace).
 
 ### Worker fails to start
 - Check for `worker-src` or `script-src` CSP errors in the browser console.
@@ -519,7 +545,7 @@ When authentication is missing or invalid, Rover emits an `auth_required` event:
 - Add `connect-src https://extensionrouter.rtrvr.ai` to your CSP.
 
 ### Auth errors
-- Ensure `apiKey` is present and valid in the boot config.
+- Ensure `publicKey` is present and valid in the boot config.
 - Check that the key is active in the [Workspace](https://rover.rtrvr.ai/workspace).
 - If using `siteKeyId`, ensure it matches the key ID from Workspace.
 

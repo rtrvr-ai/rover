@@ -40,6 +40,12 @@ export type NavigationIntentEvent = {
   ts: number;
 };
 
+export type NavigationPreflightDecision = {
+  decision?: 'allow_same_tab' | 'open_new_tab' | 'block' | 'stale_run';
+  reason?: string;
+  decisionReason?: string;
+};
+
 export type BridgeOptions = {
   root?: Element;
   includeFrames?: boolean;
@@ -51,7 +57,9 @@ export type BridgeOptions = {
   externalNavigationPolicy?: ExternalNavigationPolicy;
   crossHostPolicy?: CrossHostPolicy;
   onNavigationGuardrail?: (event: NavigationGuardrailEvent) => void;
-  onBeforeAgentNavigation?: (event: NavigationIntentEvent) => void;
+  onBeforeAgentNavigation?: (
+    event: NavigationIntentEvent,
+  ) => NavigationPreflightDecision | Promise<NavigationPreflightDecision | void> | void;
   onBeforeCrossHostNavigation?: (event: NavigationIntentEvent) => void;
   registerOpenedTab?: (payload: {
     url: string;
@@ -90,6 +98,7 @@ export class Bridge {
   private uploadStore = new Map<string, { bytes: ArrayBuffer; createdAt: number }>();
   private uploadProviderInstalled = false;
   private actionGateContext: ActionGateContext = {};
+  private static readonly NAV_PREFLIGHT_TIMEOUT_MS = 500;
 
   constructor(opts: BridgeOptions = {}) {
     this.root = opts.root ?? document.body ?? document.documentElement;
@@ -262,13 +271,20 @@ export class Bridge {
           return this.openUrlInNewTab(intercepted.targetUrl, {
             policyBlocked: true,
             reason: intercepted.reason,
+            decisionReason: 'open_new_tab',
           });
         }
         const reason = intercepted.reason;
         if (this.externalNavigationPolicy === 'open_new_tab_notice') {
-          return this.openUrlInNewTab(intercepted.targetUrl, { policyBlocked: true, reason });
+          return this.openUrlInNewTab(intercepted.targetUrl, {
+            policyBlocked: true,
+            reason,
+            decisionReason: 'open_new_tab',
+          });
         }
-        return this.domainScopeBlockedResponse(intercepted.targetUrl, reason);
+        return this.domainScopeBlockedResponse(intercepted.targetUrl, reason, {
+          decisionReason: 'policy_blocked',
+        });
       }
       // Notify agent navigation before executing any click.
       // For anchors: use resolved URL. For non-anchors: use current page URL as fallback.
@@ -276,8 +292,29 @@ export class Bridge {
       const clickTargetUrl = this.getClickTargetUrl(args);
       if (clickTargetUrl) {
         const intent = this.buildNavigationIntent(clickTargetUrl);
-        this.notifyAgentNavigation(intent);
-        this.notifyCrossHostNavigation(intent);
+        if (intent.isCrossHost) {
+          const preflight = await this.resolveAgentNavigationDecision(
+            intent,
+            this.getCrossHostFallbackDecision(clickTargetUrl),
+          );
+          if (preflight.decision === 'block') {
+            return this.domainScopeBlockedResponse(
+              clickTargetUrl,
+              preflight.reason || 'Navigation blocked by policy.',
+              { decisionReason: preflight.decisionReason || 'policy_blocked' },
+            );
+          }
+          if (preflight.decision === 'open_new_tab') {
+            return this.openUrlInNewTab(clickTargetUrl, {
+              policyBlocked: true,
+              reason: preflight.reason || 'Cross-host policy requires opening a new tab.',
+              decisionReason: preflight.decisionReason || 'open_new_tab',
+            });
+          }
+          this.notifyCrossHostNavigation(intent);
+        } else {
+          this.notifyAgentNavigation(intent);
+        }
       }
     }
 
@@ -422,13 +459,32 @@ export class Bridge {
         if (!targetUrl) return { success: false, error: `goto_url: invalid url "${rawUrl}"`, allowFallback: true };
 
         if (this.shouldPreserveHostRuntime(targetUrl)) {
+          const intent = this.buildNavigationIntent(targetUrl);
           const inAllowedDomain = isUrlAllowedByDomains(targetUrl, this.allowedDomains);
           if (!inAllowedDomain && this.externalNavigationPolicy === 'block') {
             return this.domainScopeBlockedResponse(targetUrl, 'Navigation blocked by domain policy.');
           }
+          const preflight = await this.resolveAgentNavigationDecision(
+            intent,
+            this.getCrossHostFallbackDecision(targetUrl),
+          );
+          if (preflight.decision === 'block') {
+            return this.domainScopeBlockedResponse(
+              targetUrl,
+              preflight.reason || 'Navigation blocked by policy.',
+              { decisionReason: preflight.decisionReason },
+            );
+          }
+          if (preflight.decision === 'allow_same_tab') {
+            return this.scheduleSameTabNavigation(targetUrl, intent, {
+              decisionReason: preflight.decisionReason || 'allow_same_tab',
+              reason: preflight.reason || 'Navigation allowed.',
+            });
+          }
           return await this.openUrlInNewTab(targetUrl, {
             policyBlocked: true,
-            reason: 'Opened in a new tab to preserve Rover runtime continuity across hostnames.',
+            reason: preflight.reason || 'Opened in a new tab to preserve Rover runtime continuity across hostnames.',
+            decisionReason: preflight.decisionReason || 'open_new_tab',
           });
         }
 
@@ -444,10 +500,32 @@ export class Bridge {
         }
 
         const intent = this.buildNavigationIntent(targetUrl);
+        if (intent.isCrossHost) {
+          const preflight = await this.resolveAgentNavigationDecision(intent, this.getCrossHostFallbackDecision(targetUrl));
+          if (preflight.decision === 'block') {
+            return this.domainScopeBlockedResponse(
+              targetUrl,
+              preflight.reason || 'Navigation blocked by policy.',
+              { decisionReason: preflight.decisionReason },
+            );
+          }
+          if (preflight.decision === 'open_new_tab') {
+            return await this.openUrlInNewTab(targetUrl, {
+              policyBlocked: true,
+              reason: preflight.reason || 'Cross-host policy requires opening a new tab.',
+              decisionReason: preflight.decisionReason || 'open_new_tab',
+            });
+          }
+          return this.scheduleSameTabNavigation(targetUrl, intent, {
+            decisionReason: preflight.decisionReason || 'allow_same_tab',
+            reason: preflight.reason || 'Navigation allowed.',
+          });
+        }
         this.notifyAgentNavigation(intent);
-        this.notifyCrossHostNavigation(intent);
-        window.location.href = targetUrl;
-        return { success: true, output: { url: targetUrl, navigation: 'same_tab' } };
+        return this.scheduleSameTabNavigation(targetUrl, intent, {
+          decisionReason: 'allow_same_tab',
+          reason: 'Navigation allowed.',
+        });
       }
       case SystemToolNames.google_search: {
         const query = String(args.query || '').trim();
@@ -455,13 +533,32 @@ export class Bridge {
         const targetUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
 
         if (this.shouldPreserveHostRuntime(targetUrl)) {
+          const intent = this.buildNavigationIntent(targetUrl);
           const inAllowedDomain = isUrlAllowedByDomains(targetUrl, this.allowedDomains);
           if (!inAllowedDomain && this.externalNavigationPolicy === 'block') {
             return this.domainScopeBlockedResponse(targetUrl, 'Google search blocked by domain policy.');
           }
+          const preflight = await this.resolveAgentNavigationDecision(
+            intent,
+            this.getCrossHostFallbackDecision(targetUrl),
+          );
+          if (preflight.decision === 'block') {
+            return this.domainScopeBlockedResponse(
+              targetUrl,
+              preflight.reason || 'Navigation blocked by policy.',
+              { decisionReason: preflight.decisionReason },
+            );
+          }
+          if (preflight.decision === 'allow_same_tab') {
+            return this.scheduleSameTabNavigation(targetUrl, intent, {
+              decisionReason: preflight.decisionReason || 'allow_same_tab',
+              reason: preflight.reason || 'Navigation allowed.',
+            });
+          }
           return await this.openUrlInNewTab(targetUrl, {
             policyBlocked: true,
-            reason: 'Opened in a new tab to preserve Rover runtime continuity across hostnames.',
+            reason: preflight.reason || 'Opened in a new tab to preserve Rover runtime continuity across hostnames.',
+            decisionReason: preflight.decisionReason || 'open_new_tab',
           });
         }
 
@@ -477,25 +574,74 @@ export class Bridge {
         }
 
         const intent = this.buildNavigationIntent(targetUrl);
+        if (intent.isCrossHost) {
+          const preflight = await this.resolveAgentNavigationDecision(intent, this.getCrossHostFallbackDecision(targetUrl));
+          if (preflight.decision === 'block') {
+            return this.domainScopeBlockedResponse(
+              targetUrl,
+              preflight.reason || 'Navigation blocked by policy.',
+              { decisionReason: preflight.decisionReason },
+            );
+          }
+          if (preflight.decision === 'open_new_tab') {
+            return await this.openUrlInNewTab(targetUrl, {
+              policyBlocked: true,
+              reason: preflight.reason || 'Cross-host policy requires opening a new tab.',
+              decisionReason: preflight.decisionReason || 'open_new_tab',
+            });
+          }
+          return this.scheduleSameTabNavigation(targetUrl, intent, {
+            decisionReason: preflight.decisionReason || 'allow_same_tab',
+            reason: preflight.reason || 'Navigation allowed.',
+          });
+        }
         this.notifyAgentNavigation(intent);
-        this.notifyCrossHostNavigation(intent);
-        window.location.href = targetUrl;
-        return { success: true, output: { url: targetUrl, navigation: 'same_tab' } };
+        return this.scheduleSameTabNavigation(targetUrl, intent, {
+          decisionReason: 'allow_same_tab',
+          reason: 'Navigation allowed.',
+        });
       }
       case SystemToolNames.go_back: {
-        this.notifyAgentNavigation(this.buildNavigationIntent(window.location.href, { isCrossHost: false }));
-        window.history.back();
-        return { success: true };
+        const intent = this.buildNavigationIntent(window.location.href, { isCrossHost: false });
+        this.notifyAgentNavigation(intent);
+        this.scheduleHistoryNavigation('back');
+        return {
+          success: true,
+          output: {
+            navigation: 'same_tab',
+            navigationOutcome: 'same_tab_scheduled',
+            navigationPending: true,
+            decisionReason: 'allow_same_tab',
+          },
+        };
       }
       case SystemToolNames.go_forward: {
-        this.notifyAgentNavigation(this.buildNavigationIntent(window.location.href, { isCrossHost: false }));
-        window.history.forward();
-        return { success: true };
+        const intent = this.buildNavigationIntent(window.location.href, { isCrossHost: false });
+        this.notifyAgentNavigation(intent);
+        this.scheduleHistoryNavigation('forward');
+        return {
+          success: true,
+          output: {
+            navigation: 'same_tab',
+            navigationOutcome: 'same_tab_scheduled',
+            navigationPending: true,
+            decisionReason: 'allow_same_tab',
+          },
+        };
       }
       case SystemToolNames.refresh_page: {
-        this.notifyAgentNavigation(this.buildNavigationIntent(window.location.href, { isCrossHost: false }));
-        window.location.reload();
-        return { success: true };
+        const intent = this.buildNavigationIntent(window.location.href, { isCrossHost: false });
+        this.notifyAgentNavigation(intent);
+        this.scheduleHistoryNavigation('reload');
+        return {
+          success: true,
+          output: {
+            navigation: 'same_tab',
+            navigationOutcome: 'same_tab_scheduled',
+            navigationPending: true,
+            decisionReason: 'allow_same_tab',
+          },
+        };
       }
       case SystemToolNames.open_new_tab: {
         const rawUrl = String(args.url || '').trim();
@@ -505,18 +651,26 @@ export class Bridge {
         if (this.shouldConvertOpenNewTabToSameTab(targetUrl)) {
           const intent = this.buildNavigationIntent(targetUrl);
           this.notifyAgentNavigation(intent);
-          this.notifyCrossHostNavigation(intent);
-          window.location.assign(targetUrl);
-          return {
-            success: true,
-            output: {
-              url: targetUrl,
-              navigation: 'same_tab',
-              convertedFrom: 'open_new_tab',
-            },
-          };
+          return this.scheduleSameTabNavigation(targetUrl, intent, {
+            convertedFrom: 'open_new_tab',
+            decisionReason: 'allow_same_tab',
+            reason: 'Converted open_new_tab to same-tab navigation by policy.',
+          });
         }
-        return await this.openUrlInNewTab(targetUrl, { policyBlocked: false });
+        const intent = this.buildNavigationIntent(targetUrl);
+        const preflight = await this.resolveAgentNavigationDecision(intent, 'open_new_tab');
+        if (preflight.decision === 'block') {
+          return this.domainScopeBlockedResponse(
+            targetUrl,
+            preflight.reason || 'Navigation blocked by policy.',
+            { decisionReason: preflight.decisionReason },
+          );
+        }
+        return await this.openUrlInNewTab(targetUrl, {
+          policyBlocked: false,
+          reason: preflight.reason,
+          decisionReason: preflight.decisionReason || 'open_new_tab',
+        });
       }
       case SystemToolNames.switch_tab: {
         const logicalTabId = Number(args.logical_tab_id ?? args.tab_id);
@@ -584,8 +738,8 @@ export class Bridge {
   }
 
   private shouldPreserveHostRuntime(targetUrl: string): boolean {
+    if (isCrossRegistrableDomainUrl(window.location.href, targetUrl)) return true;
     if (this.crossHostPolicy !== 'open_new_tab') return false;
-    if (isUrlAllowedByDomains(targetUrl, this.allowedDomains)) return false;
     const currentHost = extractHostname(window.location.href);
     const targetHost = extractHostname(targetUrl);
     if (!currentHost || !targetHost) return false;
@@ -594,15 +748,23 @@ export class Bridge {
 
   private shouldConvertOpenNewTabToSameTab(targetUrl: string): boolean {
     if (this.crossHostPolicy !== 'same_tab') return false;
+    if (isCrossRegistrableDomainUrl(window.location.href, targetUrl)) return false;
     if (!isUrlAllowedByDomains(window.location.href, this.allowedDomains)) return false;
     return isUrlAllowedByDomains(targetUrl, this.allowedDomains);
   }
 
-  private isCrossHostInScopeNavigation(targetUrl: string): boolean {
+  private getCrossHostFallbackDecision(targetUrl?: string): 'allow_same_tab' | 'open_new_tab' {
+    if (targetUrl && isCrossRegistrableDomainUrl(window.location.href, targetUrl)) {
+      return 'open_new_tab';
+    }
+    return this.crossHostPolicy === 'open_new_tab' ? 'open_new_tab' : 'allow_same_tab';
+  }
+
+  private isCrossHostNavigation(targetUrl: string): boolean {
     const currentHost = extractHostname(window.location.href);
     const targetHost = extractHostname(targetUrl);
-    if (!currentHost || !targetHost || currentHost === targetHost) return false;
-    return isUrlAllowedByDomains(targetUrl, this.allowedDomains);
+    if (!currentHost || !targetHost) return false;
+    return currentHost !== targetHost;
   }
 
   private buildNavigationIntent(targetUrl: string, options?: { isCrossHost?: boolean; runId?: string }): NavigationIntentEvent {
@@ -618,13 +780,113 @@ export class Bridge {
       sourceRuntimeId: this.runtimeId,
       sourceLogicalTabId: this.actionGateContext.localLogicalTabId,
       runId: options?.runId,
-      isCrossHost: options?.isCrossHost ?? this.isCrossHostInScopeNavigation(targetUrl),
+      isCrossHost: options?.isCrossHost ?? this.isCrossHostNavigation(targetUrl),
       ts: Date.now(),
     };
   }
 
   private notifyAgentNavigation(event: NavigationIntentEvent): void {
-    try { this.onBeforeAgentNavigation?.(event); } catch { /* ignore */ }
+    try {
+      const maybePromise = this.onBeforeAgentNavigation?.(event);
+      if (maybePromise && typeof (maybePromise as any)?.then === 'function') {
+        void (maybePromise as Promise<unknown>).catch(() => undefined);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  private async resolveAgentNavigationDecision(
+    event: NavigationIntentEvent,
+    fallbackDecision: 'allow_same_tab' | 'open_new_tab' | 'block',
+  ): Promise<Required<Pick<NavigationPreflightDecision, 'decision'>> & Omit<NavigationPreflightDecision, 'decision'>> {
+    const resolvedFallback: Required<Pick<NavigationPreflightDecision, 'decision'>> & Omit<NavigationPreflightDecision, 'decision'> = {
+      decision: fallbackDecision,
+      decisionReason:
+        fallbackDecision === 'block'
+          ? 'policy_blocked'
+          : fallbackDecision === 'open_new_tab'
+            ? 'open_new_tab'
+            : 'allow_same_tab',
+    };
+    if (!this.onBeforeAgentNavigation) return resolvedFallback;
+
+    try {
+      const maybeDecision = this.onBeforeAgentNavigation(event);
+      const rawDecision = await this.awaitWithTimeout(
+        maybeDecision,
+        Bridge.NAV_PREFLIGHT_TIMEOUT_MS,
+      );
+      if (!rawDecision || typeof rawDecision !== 'object') return resolvedFallback;
+      const decisionRaw = String((rawDecision as NavigationPreflightDecision).decision || '').trim();
+      const normalizedDecision =
+        decisionRaw === 'allow_same_tab'
+        || decisionRaw === 'open_new_tab'
+        || decisionRaw === 'block'
+          ? decisionRaw
+          : (decisionRaw === 'stale_run' ? fallbackDecision : resolvedFallback.decision);
+      return {
+        decision: normalizedDecision,
+        reason: String((rawDecision as NavigationPreflightDecision).reason || '').trim() || undefined,
+        decisionReason:
+          String((rawDecision as NavigationPreflightDecision).decisionReason || '').trim()
+          || resolvedFallback.decisionReason,
+      };
+    } catch {
+      return resolvedFallback;
+    }
+  }
+
+  private async awaitWithTimeout<T>(value: T | Promise<T>, timeoutMs: number): Promise<T | undefined> {
+    const maybePromise = value as any;
+    if (!maybePromise || typeof maybePromise.then !== 'function') {
+      return value as T;
+    }
+    return await Promise.race([
+      maybePromise as Promise<T>,
+      new Promise<undefined>(resolve => {
+        window.setTimeout(() => resolve(undefined), Math.max(0, timeoutMs));
+      }),
+    ]);
+  }
+
+  private scheduleHistoryNavigation(mode: 'back' | 'forward' | 'reload'): void {
+    window.setTimeout(() => {
+      if (mode === 'back') {
+        window.history.back();
+      } else if (mode === 'forward') {
+        window.history.forward();
+      } else {
+        window.location.reload();
+      }
+    }, 0);
+  }
+
+  private scheduleSameTabNavigation(
+    targetUrl: string,
+    intent: NavigationIntentEvent,
+    options?: { convertedFrom?: string; decisionReason?: string; reason?: string },
+  ): any {
+    this.notifyCrossHostNavigation(intent);
+    window.setTimeout(() => {
+      try {
+        window.location.href = targetUrl;
+      } catch {
+        window.location.assign(targetUrl);
+      }
+    }, 0);
+    return {
+      success: true,
+      output: {
+        url: targetUrl,
+        navigation: 'same_tab',
+        navigationOutcome: 'same_tab_scheduled',
+        navigationPending: true,
+        decisionReason: options?.decisionReason || 'allow_same_tab',
+        reason: options?.reason,
+        ...(options?.convertedFrom ? { convertedFrom: options.convertedFrom } : {}),
+      },
+    };
   }
 
   private notifyCrossHostNavigation(event: NavigationIntentEvent): void {
@@ -686,7 +948,7 @@ export class Bridge {
   private domainScopeBlockedResponse(
     targetUrl: string,
     reason: string,
-    options?: { fromCurrentContext?: boolean },
+    options?: { fromCurrentContext?: boolean; decisionReason?: string },
   ): any {
     const policyAction = this.externalNavigationPolicy === 'block' ? 'block' : 'open_new_tab_notice';
     this.emitNavigationGuardrail({
@@ -717,6 +979,8 @@ export class Bridge {
         blocked_url: targetUrl,
         current_url: window.location.href,
         policy_action: policyAction,
+        navigationOutcome: 'blocked',
+        decisionReason: options?.decisionReason || 'policy_blocked',
         from_current_context: !!options?.fromCurrentContext,
       },
       errorDetails: {
@@ -742,7 +1006,7 @@ export class Bridge {
 
   private async openUrlInNewTab(
     targetUrl: string,
-    options?: { policyBlocked?: boolean; reason?: string },
+    options?: { policyBlocked?: boolean; reason?: string; decisionReason?: string },
   ): Promise<any> {
     const external = !isUrlAllowedByDomains(targetUrl, this.allowedDomains);
     const knownTabIdsBeforeOpen = this.snapshotKnownTabIds();
@@ -790,7 +1054,13 @@ export class Bridge {
         success: false,
         error: 'open_new_tab blocked by browser popup settings',
         allowFallback: true,
-        output: { url: targetUrl, external, logicalTabId },
+        output: {
+          url: targetUrl,
+          external,
+          logicalTabId,
+          navigationOutcome: 'blocked',
+          decisionReason: options?.decisionReason || 'policy_blocked',
+        },
         errorDetails: {
           code: 'POPUP_BLOCKED',
           message: reason,
@@ -830,6 +1100,9 @@ export class Bridge {
         external,
         logicalTabId,
         openedInNewTab: true,
+        navigationOutcome: 'new_tab_opened',
+        navigationPending: true,
+        decisionReason: options?.decisionReason || 'open_new_tab',
         openVerification: popupAttempt.verified ? 'verified' : 'unverified',
         policyBlocked: !!options?.policyBlocked,
         message,
@@ -1131,7 +1404,11 @@ function inferDefaultAllowedDomain(host: string, scopeMode: DomainScopeMode): st
   if (scopeMode === 'host_only') return `=${clean}`;
   const parts = clean.split('.').filter(Boolean);
   if (parts.length < 2) return clean;
-  return `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+  const tail2 = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+  if (parts.length >= 3 && MULTI_LABEL_TLDS.has(tail2)) {
+    return `${parts[parts.length - 3]}.${tail2}`;
+  }
+  return tail2;
 }
 
 function normalizeUrl(raw: string, base: string): string | null {
@@ -1165,6 +1442,26 @@ function extractHostname(url: string): string | null {
   }
 }
 
+function deriveRegistrableDomain(host: string): string {
+  const clean = String(host || '').trim().toLowerCase();
+  if (!clean) return '';
+  if (clean === 'localhost' || /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(clean)) return clean;
+  const parts = clean.split('.').filter(Boolean);
+  if (parts.length < 2) return clean;
+  const tail2 = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+  if (parts.length >= 3 && MULTI_LABEL_TLDS.has(tail2)) {
+    return `${parts[parts.length - 3]}.${tail2}`;
+  }
+  return tail2;
+}
+
+function isCrossRegistrableDomainUrl(currentUrl: string, targetUrl: string): boolean {
+  const currentHost = extractHostname(currentUrl);
+  const targetHost = extractHostname(targetUrl);
+  if (!currentHost || !targetHost) return false;
+  return deriveRegistrableDomain(currentHost) !== deriveRegistrableDomain(targetHost);
+}
+
 function matchesDomainPattern(host: string, pattern: string): boolean {
   const clean = String(pattern || '').trim().toLowerCase().replace(/^\./, '');
   if (!clean) return false;
@@ -1181,6 +1478,21 @@ function matchesDomainPattern(host: string, pattern: string): boolean {
   if (host === clean) return true;
   return host.endsWith(`.${clean}`);
 }
+
+const MULTI_LABEL_TLDS = new Set([
+  'co.uk',
+  'org.uk',
+  'gov.uk',
+  'ac.uk',
+  'com.au',
+  'net.au',
+  'org.au',
+  'co.jp',
+  'com.br',
+  'com.mx',
+  'com.sg',
+  'co.in',
+]);
 
 function findAnchorWithHref(element: Element): HTMLAnchorElement | null {
   if (element instanceof HTMLAnchorElement && element.href) return element;

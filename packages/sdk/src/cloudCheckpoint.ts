@@ -2,6 +2,7 @@ import type { SharedSessionState } from './sessionCoordinator.js';
 import type { PersistedRuntimeState } from './runtimeTypes.js';
 
 const DEFAULT_EXTENSION_ROUTER_BASE = 'https://extensionrouter.rtrvr.ai';
+const SESSION_TOKEN_PREFIX = 'rvrsess_';
 
 export type RoverCloudCheckpointPayload = {
   version: number;
@@ -16,7 +17,7 @@ export type RoverCloudCheckpointPayload = {
 type CheckpointSource = 'pull' | 'push_stale';
 export type RoverCloudCheckpointState = 'active' | 'paused_auth';
 
-type CheckpointAction = 'roverSessionCheckpointUpsert' | 'roverSessionCheckpointGet';
+type CheckpointAction = 'session_snapshot_upsert' | 'session_projection_get';
 
 type CheckpointErrorContext = {
   action: CheckpointAction;
@@ -29,8 +30,8 @@ type CheckpointErrorContext = {
 
 export type RoverCloudCheckpointClientOptions = {
   apiBase?: string;
-  apiKey?: string;
   authToken?: string;
+  getSessionToken?: () => string | undefined;
   siteId: string;
   visitorId: string;
   ttlHours?: number;
@@ -70,20 +71,35 @@ function buildRevisionKey(payload: RoverCloudCheckpointPayload): string {
   ].join(':');
 }
 
-function normalizeRouterEndpoint(apiBase?: string): string {
+function normalizeBaseOrigin(apiBase?: string): string {
   const fallback = DEFAULT_EXTENSION_ROUTER_BASE;
   const base = String(apiBase || fallback).trim().replace(/\/+$/, '');
   if (!base) return fallback;
-  if (base.endsWith('/extensionRouter')) return base;
-  try {
-    const parsed = new URL(base);
-    const pathname = parsed.pathname.replace(/\/+$/, '');
-    if (pathname && pathname !== '/') return base;
-    if (parsed.hostname.toLowerCase() === 'extensionrouter.rtrvr.ai') return base;
-  } catch {
-    // no-op: fallback to legacy suffix behavior
+  if (base.endsWith('/extensionRouter/v1/rover')) return base.slice(0, -('/extensionRouter/v1/rover'.length));
+  if (base.endsWith('/v1/rover')) return base.slice(0, -('/v1/rover'.length));
+  if (base.endsWith('/extensionRouter')) return base.slice(0, -('/extensionRouter'.length));
+  return base;
+}
+
+function unique(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of values) {
+    const value = String(raw || '').trim().replace(/\/+$/, '');
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
   }
-  return `${base}/extensionRouter`;
+  return out;
+}
+
+function normalizeRoverV1Bases(apiBase?: string): string[] {
+  const base = normalizeBaseOrigin(apiBase);
+  const rawApiBase = String(apiBase || '').trim().replace(/\/+$/, '');
+  if (rawApiBase.endsWith('/v1/rover') || rawApiBase.endsWith('/extensionRouter/v1/rover')) {
+    return unique([rawApiBase.replace('/extensionRouter/v1/rover', '/v1/rover'), `${base}/v1/rover`]);
+  }
+  return unique([`${base}/v1/rover`]);
 }
 
 function toError(message: string, details?: any): Error {
@@ -92,9 +108,18 @@ function toError(message: string, details?: any): Error {
   return error;
 }
 
+function createRequestNonce(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 export class RoverCloudCheckpointClient {
-  private readonly endpoint: string;
-  private readonly token: string;
+  private endpoint: string;
+  private endpointCandidates: string[];
+  private endpointIndex = 0;
+  private readonly getToken: () => string;
   private readonly siteId: string;
   private readonly visitorId: string;
   private readonly ttlHours: number;
@@ -120,13 +145,22 @@ export class RoverCloudCheckpointClient {
   private state: RoverCloudCheckpointState = 'active';
 
   constructor(options: RoverCloudCheckpointClientOptions) {
-    const token = String(options.authToken || options.apiKey || '').trim();
-    if (!token) {
-      throw toError('Rover cloud checkpoint requires apiKey or authToken.');
+    const staticToken = String(options.authToken || '').trim();
+    const provider = options.getSessionToken;
+    const token = provider ? String(provider() || '').trim() : staticToken;
+    if (!token || !token.startsWith(SESSION_TOKEN_PREFIX)) {
+      throw toError('Rover cloud checkpoint requires a session token (rvrsess_...).');
     }
 
-    this.endpoint = normalizeRouterEndpoint(options.apiBase);
-    this.token = token;
+    this.endpointCandidates = normalizeRoverV1Bases(options.apiBase);
+    this.endpoint = this.endpointCandidates[0] || `${DEFAULT_EXTENSION_ROUTER_BASE}/v1/rover`;
+    this.getToken = () => {
+      const next = provider ? String(provider() || '').trim() : staticToken;
+      if (!next || !next.startsWith(SESSION_TOKEN_PREFIX)) {
+        throw toError('Rover cloud checkpoint requires an active session token.');
+      }
+      return next;
+    };
     this.siteId = options.siteId;
     this.visitorId = options.visitorId;
     this.ttlHours = Math.max(1, Math.min(24 * 7, Math.floor(toFiniteNumber(options.ttlHours, 1))));
@@ -181,6 +215,44 @@ export class RoverCloudCheckpointClient {
     void this.pull(true);
   }
 
+  private getActiveEndpoint(): string {
+    if (!this.endpointCandidates.length) return this.endpoint;
+    return this.endpointCandidates[this.endpointIndex] || this.endpoint;
+  }
+
+  private rotateEndpoint(): void {
+    if (this.endpointCandidates.length <= 1) return;
+    this.endpointIndex = (this.endpointIndex + 1) % this.endpointCandidates.length;
+    this.endpoint = this.endpointCandidates[this.endpointIndex] || this.endpoint;
+  }
+
+  private async requestJson(path: string, init: RequestInit): Promise<{ response: Response; payload: any }> {
+    const attempts = Math.max(1, this.endpointCandidates.length || 1);
+    let lastError: unknown;
+    for (let offset = 0; offset < attempts; offset += 1) {
+      const index = (this.endpointIndex + offset) % attempts;
+      const endpoint = this.endpointCandidates[index] || this.endpoint;
+      try {
+        const response = await fetch(`${endpoint}${path}`, init);
+        const payload = await response.json().catch(() => undefined);
+        if (response.status === 404 || response.status === 405) {
+          lastError = toError(`Checkpoint endpoint unavailable at ${endpoint}${path}`, {
+            status: response.status,
+            payload,
+          });
+          continue;
+        }
+        this.endpointIndex = index;
+        this.endpoint = endpoint;
+        return { response, payload };
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (lastError instanceof Error) throw lastError;
+    throw toError(`Checkpoint request failed for ${path}`);
+  }
+
   private async flush(force: boolean): Promise<void> {
     if (this.pushInFlight) return;
     if (this.state === 'paused_auth') return;
@@ -199,7 +271,7 @@ export class RoverCloudCheckpointClient {
 
     this.pushInFlight = true;
     try {
-      const response = await this.callExtensionRouter('roverSessionCheckpointUpsert', {
+      const response = await this.callCheckpointApi('session_snapshot_upsert', {
         siteId: this.siteId,
         visitorId: this.visitorId,
         sessionId: payload.sessionId,
@@ -220,7 +292,7 @@ export class RoverCloudCheckpointClient {
       }
       this.setState('active');
     } catch (error) {
-      this.handleCheckpointError(error, 'roverSessionCheckpointUpsert');
+      this.handleCheckpointError(error, 'session_snapshot_upsert');
     } finally {
       this.pushInFlight = false;
     }
@@ -233,9 +305,10 @@ export class RoverCloudCheckpointClient {
 
     this.pullInFlight = true;
     try {
-      const response = await this.callExtensionRouter('roverSessionCheckpointGet', {
+      const response = await this.callCheckpointApi('session_projection_get', {
         siteId: this.siteId,
         visitorId: this.visitorId,
+        sessionId: this.buildCheckpoint()?.sessionId,
       });
 
       this.lastPullAt = Date.now();
@@ -243,7 +316,7 @@ export class RoverCloudCheckpointClient {
       this.applyRemoteCheckpoint(response.checkpoint as RoverCloudCheckpointPayload, 'pull');
       this.setState('active');
     } catch (error) {
-      this.handleCheckpointError(error, 'roverSessionCheckpointGet');
+      this.handleCheckpointError(error, 'session_projection_get');
     } finally {
       this.pullInFlight = false;
     }
@@ -256,41 +329,61 @@ export class RoverCloudCheckpointClient {
     this.onCheckpoint(checkpoint, source);
   }
 
-  private async callExtensionRouter(action: string, data: any): Promise<any> {
-    const response = await fetch(this.endpoint, {
-      method: 'POST',
+  private async callCheckpointApi(checkpointAction: CheckpointAction, data: any): Promise<any> {
+    return this.callRoverV1(checkpointAction, data);
+  }
+
+  private async callRoverV1(action: CheckpointAction, data: any): Promise<any> {
+    const sessionToken = this.getToken();
+    if (action === 'session_snapshot_upsert') {
+      const { response, payload } = await this.requestJson('/session/snapshot', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          requestNonce: createRequestNonce(),
+          sessionToken,
+          sessionId: data?.sessionId,
+          visitorId: data?.visitorId,
+          ttlHours: data?.ttlHours,
+          updatedAt: data?.updatedAt,
+          version: data?.checkpoint?.version || data?.version || 1,
+          checkpoint: data?.checkpoint,
+        }),
+      });
+      if (!response.ok || !payload?.success) {
+        throw toError(`Checkpoint HTTP ${response.status}`, {
+          action,
+          status: response.status,
+          payload,
+        });
+      }
+      return { saved: !!payload?.data?.saved };
+    }
+
+    const params = new URLSearchParams({
+      sessionId: String(data?.sessionId || ''),
+      sessionToken,
+    });
+    const { response, payload } = await this.requestJson(`/session/projection?${params.toString()}`, {
+      method: 'GET',
       headers: {
-        Authorization: `Bearer ${this.token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ action, data }),
     });
-
-    if (!response.ok) {
-      let payload: any = undefined;
-      try {
-        payload = await response.json();
-      } catch {
-        const text = await response.text().catch(() => '');
-        payload = text ? { error: truncateText(text, 2_000) } : undefined;
-      }
+    if (!response.ok || !payload?.success) {
       throw toError(`Checkpoint HTTP ${response.status}`, {
         action,
         status: response.status,
         payload,
       });
     }
-
-    const payload = await response.json();
-    if (payload?.success === false) {
-      throw toError('Checkpoint extensionRouter returned success=false', {
-        action,
-        status: response.status,
-        payload,
-      });
-    }
-
-    return payload?.data;
+    const checkpoint = payload?.data?.snapshot;
+    return {
+      found: !!checkpoint,
+      checkpoint,
+    };
   }
 
   private setState(

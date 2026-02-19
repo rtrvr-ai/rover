@@ -7,7 +7,7 @@ Rover is an embeddable autonomous web agent with a 7-layer architecture:
 ```
 User Input → UI Widget (Shadow DOM) → SDK (init/send/registerTool)
     → MessageChannel RPC → Web Worker (agent loop)
-    → Backend extensionRouter (plan/act/extract/crawl)
+    → Backend `/v1/rover/*` runtime (`session/start`, `run/input`, `run/control`, `tab/event`)
     → Gemini LLM → Tool execution via Bridge → DOM actions
 ```
 
@@ -35,21 +35,21 @@ pnpm build
 
 This compiles all packages. The SDK output lives at `packages/sdk/dist/`.
 
-### 2. Get an API Key
+### 2. Get a Rover Site Key
 
-Rover calls the backend `extensionRouter` for AI planning. You need either:
+Rover bootstraps runtime auth with a **site public key** (`pk_site_...`).
+The browser then exchanges that bootstrap key for a short-lived `rvrsess_*` session token via `POST /v1/rover/session/start`.
 
-- **rtrvr API key** (`rtrvr_...`) — generated via the rtrvr dashboard or API
-- **Firebase auth token** — from a logged-in rtrvr user session
-
-Without auth, Rover emits `auth_required` with code `MISSING_API_KEY`.
+Without bootstrap auth, Rover emits `auth_required` with code `MISSING_API_KEY` / `INVALID_API_KEY`.
 
 ### 3. Backend URL
 
 | Environment | URL |
 |-------------|-----|
-| **Production** | `https://extensionrouter.rtrvr.ai` |
-| **Firebase Emulator** | `http://127.0.0.1:5002/rtrvr-extension-functions/us-central1` |
+| **Production base** | `https://extensionrouter.rtrvr.ai` |
+| **Production Rover API** | `https://extensionrouter.rtrvr.ai/v1/rover/*` |
+| **Firebase Emulator base** | `http://127.0.0.1:5002/rtrvr-extension-functions/us-central1` |
+| **Firebase Emulator Rover API** | `http://127.0.0.1:5002/rtrvr-extension-functions/us-central1/v1/rover/*` |
 
 ---
 
@@ -74,7 +74,7 @@ import { init } from '@rover/sdk';
 init({
   siteId: 'demo',
   apiBase: 'https://extensionrouter.rtrvr.ai',
-  apiKey: 'rtrvr_YOUR_API_KEY_HERE',         // REQUIRED for backend calls
+  publicKey: 'pk_site_YOUR_PUBLIC_KEY_HERE', // Bootstrap key; Rover exchanges to rvrsess_* automatically
   workerUrl: new URL('./worker.ts', import.meta.url).toString(),
   openOnInit: true,
 });
@@ -152,7 +152,7 @@ export default function RoverTestPage() {
           __html: `
             rover('init', {
               siteId: 'rtrvr-website-test',
-              apiKey: 'rtrvr_YOUR_KEY',
+              publicKey: 'pk_site_YOUR_PUBLIC_KEY',
               openOnInit: true,
             });
           `,
@@ -190,13 +190,13 @@ Update `apps/demo/src/main.ts` to point to local emulator:
 init({
   siteId: 'demo',
   apiBase: 'http://127.0.0.1:5002/rtrvr-extension-functions/us-central1',
-  apiKey: 'rtrvr_YOUR_KEY',
+  publicKey: 'pk_site_YOUR_SITE_PUBLIC_KEY',
   workerUrl: new URL('./worker.ts', import.meta.url).toString(),
   openOnInit: true,
 });
 ```
 
-> **Note:** The emulator still needs valid API keys in Firestore to authenticate. You may need to seed test data or use a Firebase auth token from a test user.
+> **Note:** The emulator still needs valid Rover site keys in Firestore to authenticate. You may need to seed test data or use a Firebase auth token from a test user.
 
 ---
 
@@ -240,11 +240,14 @@ init({
 - Tool execution: Set breakpoint in `Bridge.executeTool()` at `packages/bridge/src/Bridge.ts:73`
 
 **Network tab:**
-- Watch for Rover backend POST calls:
-  - `https://extensionrouter.rtrvr.ai` (custom-domain production base), or
-  - `*/extensionRouter` when using cloudfunctions/emulator-style bases
-- Check request payload has: `action`, `data.userInput`, `data.webPageMap`
-- Check response has: `success: true`, `data.plan` or `data.questions`
+- Watch for Rover backend calls:
+  - `POST /v1/rover/session/start`
+  - `POST /v1/rover/run/input`
+  - `POST /v1/rover/run/control`
+  - `POST /v1/rover/tab/event`
+  - `GET /v1/rover/events` (SSE)
+- Check request payload includes `sessionToken` for runtime calls.
+- Check responses include `success: true` and run/session identifiers (`sessionId`, `runId`, `epoch`).
 
 **Elements tab:**
 - Look for `#rover-widget-root` on `<html>` element
@@ -255,8 +258,8 @@ init({
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| "Rover requires an auth token or apiKey" | No `apiKey` or `authToken` in init config | Add `apiKey: 'rtrvr_...'` to init |
-| "HTTP 401" / "Invalid or expired authentication token" | Bad API key | Generate a new key or check expiry |
+| "Rover requires a bootstrap key/session token" | Missing bootstrap key/session token in init config | Add `publicKey: 'pk_site_...'` or `sessionToken: 'rvrsess_...'` |
+| "HTTP 401" / "Invalid or expired Rover session token" | Session token expired or bootstrap key invalid | Refresh via `session/start` (automatic) or rotate site key |
 | "HTTP 402" | Insufficient credits | Add credits to your rtrvr account |
 | Worker fails silently | `workerUrl` is wrong or CORS blocked | Check URL is accessible, serve with CORS |
 | "No handler for X" | RPC method mismatch | Rebuild all packages (`pnpm build`) |
@@ -272,13 +275,13 @@ init({
   // Required
   siteId: string,              // Site identifier for tracking
 
-  // Authentication (one required for backend calls)
-  apiKey?: string,             // rtrvr API key (rtrvr_...)
-  authToken?: string,          // Firebase auth token
+  // Authentication
+  publicKey?: string,          // Bootstrap site key (`pk_site_*`)
+  sessionToken?: string,       // Optional pre-minted rvrsess_* token
 
   // Backend
-  apiBase?: string,            // Override backend URL
-                               // Default: https://extensionrouter.rtrvr.ai
+  apiBase?: string,            // Override backend base URL
+                               // Rover runtime uses `${apiBase}/v1/rover/*`
 
   // Worker
   workerUrl?: string,          // Override worker script URL
@@ -326,11 +329,11 @@ init({
 **Fixed to:** `apiBase: 'https://extensionrouter.rtrvr.ai'`
 **Impact:** Every backend call would fail with connection refused.
 
-### CRITICAL: Missing API key in demo config
+### CRITICAL: Missing bootstrap key in demo config
 **File:** `apps/demo/src/main.ts`
-**Was:** No `apiKey` field at all
-**Fixed:** Added `apiKey` field with comment explaining it's required
-**Impact:** Worker throws `"Rover requires an auth token or apiKey to call extensionRouter"` on every message. The widget renders, but no AI functionality works.
+**Was:** No `publicKey` field at all
+**Fixed:** Added `publicKey` field with comment explaining it's required
+**Impact:** Runtime cannot mint a Rover session token, so message execution fails.
 
 ### CRITICAL: SDK and Worker not bundled for standalone use
 **Files:** `packages/sdk/dist/index.js`, `packages/sdk/dist/worker/worker.js`
@@ -386,4 +389,4 @@ npx serve . --cors -l 3333
 # Open http://localhost:3333/apps/demo/test.html
 ```
 
-Make sure `apps/demo/src/main.ts` has your `apiKey` set before running `pnpm dev`.
+Make sure `apps/demo/src/main.ts` has your `publicKey` set before running `pnpm dev`.

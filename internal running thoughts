@@ -687,3 +687,6 @@ Need more input to continue
 
 
 this is bad how an embedded web agent shift focus to diff window id? can we do that ? here rover.rtrvr.ai/workspace opened in new tab may be when we open new tabs we need to make them active if same domain? this is subdomain but i allow so based on config and second where is the tabs passing logical tab resolving failing check thoroughly rover, cloud backend everything end to end esp llm utils for resolving taborder. and here when open tab is clicked we can make it active and just pass ts tree and tabid or we need taborder and all trees and let llm switch focus figure whats the best here that will work robustly
+
+
+on navigation i think prev steps are clearing up so take care of that

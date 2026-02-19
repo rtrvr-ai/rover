@@ -12,11 +12,19 @@ export type LLMFunction = {
   };
 };
 
+export type SystemNavigationOutcome =
+  | 'same_tab_scheduled'
+  | 'new_tab_opened'
+  | 'blocked'
+  | 'switch_tab';
+
 export type SystemToolBatchResult = {
   results: LLMFunction[];
   disableAutoScroll: boolean;
   navigationOccurred: boolean;
   navigationTool?: SystemToolNames;
+  navigationOutcome?: SystemNavigationOutcome;
+  logicalTabId?: number;
 };
 
 const NAVIGATION_TOOLS = new Set<SystemToolNames>([
@@ -25,6 +33,7 @@ const NAVIGATION_TOOLS = new Set<SystemToolNames>([
   SystemToolNames.go_back,
   SystemToolNames.go_forward,
   SystemToolNames.refresh_page,
+  SystemToolNames.open_new_tab,
   SystemToolNames.switch_tab,
   SystemToolNames.close_tab,
 ]);
@@ -42,19 +51,30 @@ const VIEWPORT_SENSITIVE_TOOLS = new Set<SystemToolNames>([
 
 const ACTION_DELAY_MS = 600;
 
+function throwIfCancelled(isCancelled?: () => boolean): void {
+  if (!isCancelled?.()) return;
+  throw new DOMException('Run cancelled', 'AbortError');
+}
+
 export async function executeSystemToolCallsSequentially({
   calls,
   bridgeRpc,
+  isCancelled,
 }: {
   calls: FunctionCall[];
   bridgeRpc: (method: string, params?: any) => Promise<any>;
+  isCancelled?: () => boolean;
 }): Promise<SystemToolBatchResult> {
   const results: LLMFunction[] = [];
   let sawViewportSensitiveToolSuccess = false;
   let navigationOccurred = false;
   let navigationTool: SystemToolNames | undefined;
+  let navigationOutcome: SystemNavigationOutcome | undefined;
+  let logicalTabId: number | undefined;
 
   for (const call of calls) {
+    throwIfCancelled(isCancelled);
+
     const name = call.name as SystemToolNames;
     const args = (call.args || {}) as Record<string, any>;
 
@@ -75,8 +95,10 @@ export async function executeSystemToolCallsSequentially({
 
     let response: any;
     try {
+      throwIfCancelled(isCancelled);
       response = await bridgeRpc('executeTool', { call });
     } catch (err: any) {
+      throwIfCancelled(isCancelled);
       response = { success: false, error: err?.message || String(err), allowFallback: true };
     }
 
@@ -95,6 +117,33 @@ export async function executeSystemToolCallsSequentially({
         navigationOccurred = true;
         navigationTool = name;
         sawViewportSensitiveToolSuccess = false;
+        const output = response?.output && typeof response.output === 'object'
+          ? response.output as Record<string, unknown>
+          : undefined;
+        const outputNavigationOutcome = String(output?.navigationOutcome || '').trim().toLowerCase();
+        if (
+          outputNavigationOutcome === 'same_tab_scheduled'
+          || outputNavigationOutcome === 'new_tab_opened'
+          || outputNavigationOutcome === 'blocked'
+        ) {
+          navigationOutcome = outputNavigationOutcome as SystemNavigationOutcome;
+        } else if (name === SystemToolNames.switch_tab) {
+          navigationOutcome = 'switch_tab';
+        } else if (name === SystemToolNames.open_new_tab) {
+          navigationOutcome = 'new_tab_opened';
+        } else {
+          navigationOutcome = 'same_tab_scheduled';
+        }
+
+        const outputLogicalTabId = Number(
+          output?.logicalTabId
+          ?? output?.tabId
+          ?? args?.logical_tab_id
+          ?? args?.tab_id,
+        );
+        if (Number.isFinite(outputLogicalTabId) && outputLogicalTabId > 0) {
+          logicalTabId = outputLogicalTabId;
+        }
       } else if (VIEWPORT_SENSITIVE_TOOLS.has(name)) {
         sawViewportSensitiveToolSuccess = true;
       }
@@ -102,9 +151,17 @@ export async function executeSystemToolCallsSequentially({
 
     if (ACTION_DELAY_MS > 0) {
       await new Promise(resolve => setTimeout(resolve, ACTION_DELAY_MS));
+      throwIfCancelled(isCancelled);
     }
   }
 
   const disableAutoScroll = sawViewportSensitiveToolSuccess && !navigationOccurred;
-  return { results, disableAutoScroll, navigationOccurred, navigationTool };
+  return {
+    results,
+    disableAutoScroll,
+    navigationOccurred,
+    navigationTool,
+    navigationOutcome,
+    logicalTabId,
+  };
 }
