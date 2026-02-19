@@ -98,6 +98,13 @@ export type PlannerQuestion = {
   required?: boolean;
 };
 
+export type RoverStopState = 'continue' | 'cancel_requested' | 'cancelled' | 'terminal';
+
+export type RoverStopSignal = {
+  state?: RoverStopState;
+  reason?: string;
+};
+
 export type LLMLogEntry = {
   role: 'user' | 'model';
   message?: string;

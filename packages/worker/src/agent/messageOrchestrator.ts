@@ -38,56 +38,114 @@ export type HandleSendMessageResult = {
 };
 
 const COMPLEX_TASK_HINTS = [
-  'plan',
-  'research',
+  'extract',
   'compare',
-  'summarize',
-  'table',
+  'list',
+  'across',
+  'multiple',
+  'many',
+  'report',
+  'document',
   'spreadsheet',
   'sheet',
-  'extract',
-  'crawl',
-  'workflow',
-  'across',
-  'multi',
-  'multiple',
-  'then',
-  'after',
-  'finally',
-  'slides',
-  'document',
-  'website',
-  'webpage',
+  'table',
+  'csv',
+  'json',
   'pdf',
+  'slides',
 ];
+
+const MULTI_LABEL_TLDS = new Set([
+  'co.uk',
+  'org.uk',
+  'gov.uk',
+  'ac.uk',
+  'com.au',
+  'net.au',
+  'org.au',
+  'co.jp',
+  'com.br',
+  'com.mx',
+  'com.sg',
+  'co.in',
+]);
+
+function extractHostFromUrl(input: string): string {
+  const raw = String(input || '').trim();
+  if (!raw) return '';
+  try {
+    return new URL(raw).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function registrableDomain(host: string): string {
+  const clean = String(host || '').trim().toLowerCase().replace(/^\.+/, '');
+  if (!clean) return '';
+  if (clean === 'localhost' || /^\d+\.\d+\.\d+\.\d+$/.test(clean)) return clean;
+  const parts = clean.split('.').filter(Boolean);
+  if (parts.length < 2) return clean;
+  const tail2 = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+  if (parts.length >= 3 && MULTI_LABEL_TLDS.has(tail2)) {
+    return `${parts[parts.length - 3]}.${tail2}`;
+  }
+  return tail2;
+}
+
+function hasCrossDomainPlanDependency(
+  userInput: string,
+  tabs: Array<{ url?: string }> | undefined,
+): boolean {
+  const currentUrl = String(
+    tabs?.find(tab => typeof tab?.url === 'string' && String(tab.url || '').trim())?.url || '',
+  );
+  const currentDomain = registrableDomain(extractHostFromUrl(currentUrl));
+  if (!currentDomain) return false;
+  const urls = String(userInput || '').match(/https?:\/\/[^\s)]+/g) || [];
+  if (!urls.length) return false;
+  return urls.some(url => {
+    const targetDomain = registrableDomain(extractHostFromUrl(url));
+    return !!targetDomain && targetDomain !== currentDomain;
+  });
+}
 
 function computeComplexityScore(text: string): number {
   const input = String(text || '').toLowerCase().trim();
   if (!input) return 0;
 
   let score = 0;
-  const words = input.split(/\s+/).filter(Boolean);
-  if (words.length >= 14) score += 1;
-  if (words.length >= 26) score += 1;
-  if ((input.match(/\b(and then|then|after that|next|finally)\b/g) || []).length >= 1) score += 1;
-  if ((input.match(/[;,]/g) || []).length >= 2) score += 1;
-  if (/https?:\/\/|www\./.test(input)) score += 1;
-  if (/\b(json|csv|table|schema|columns?)\b/.test(input)) score += 1;
+  const actionVerbs = new Set(
+    (input.match(/\b(click|open|go|navigate|fill|type|submit|extract|find|search|compare|summarize|collect|download|upload|create|generate|report)\b/g) || [])
+      .map(v => v.toLowerCase()),
+  );
+
+  if (input.length > 120) score += 1;
+  if (actionVerbs.size >= 2) score += 1;
+  if ((input.match(/\b(and then|then|after|next|finally|first|second|third)\b/g) || []).length >= 1) score += 2;
+  if ((input.match(/\b(extract|compare|list|all|each|every|across|multiple|many)\b/g) || []).length >= 2) score += 2;
+  if (/https?:\/\/|www\./.test(input)) score += 2;
+  if ((input.match(/\b(report|document|doc|spreadsheet|sheet|table|csv|json|pdf|slides|summary)\b/g) || []).length >= 1) score += 2;
 
   for (const hint of COMPLEX_TASK_HINTS) {
     if (input.includes(hint)) {
-      score += 1;
+      score += 0.25;
     }
   }
 
+  // Keep direct single-step UI commands on the fast ACT path.
+  const words = input.split(/\s+/).filter(Boolean);
   if (/^(click|type|fill|open|go to|scroll|press|select)\b/.test(input) && words.length <= 10) {
     score = Math.max(0, score - 2);
   }
 
-  return score;
+  return Math.max(0, Math.min(10, Math.round(score)));
 }
 
-function decideRouting(message: string, options: Pick<MessageOrchestratorOptions, 'taskRouting'>): RoutingDecision {
+function decideRouting(
+  message: string,
+  options: Pick<MessageOrchestratorOptions, 'taskRouting' | 'previousSteps'>,
+): RoutingDecision {
   const mode = options.taskRouting?.mode || 'act';
   if (mode === 'planner') {
     return { mode: 'planner', reason: 'Configured planner mode' };
@@ -96,20 +154,67 @@ function decideRouting(message: string, options: Pick<MessageOrchestratorOptions
     return { mode: 'act', reason: 'Configured act mode' };
   }
 
-  const threshold = Math.max(1, Number(options.taskRouting?.actHeuristicThreshold) || 5);
-  const score = computeComplexityScore(message);
-  if (score >= threshold) {
+  const hasAwaitingUserChain = Array.isArray(options.previousSteps)
+    && options.previousSteps.some(step =>
+      Array.isArray((step as any)?.questionsAsked)
+      && (step as any).questionsAsked.length > 0
+      && !((step as any)?.userAnswers && Object.keys((step as any).userAnswers).length > 0),
+    );
+  if (hasAwaitingUserChain) {
+    const score = computeComplexityScore(message);
     return {
       mode: 'planner',
       score,
-      reason: `Complexity score ${score} >= threshold ${threshold}`,
+      reason: 'Forced planner due to awaiting_user continuation chain.',
+    };
+  }
+
+  const score = computeComplexityScore(message);
+  if (score >= 7) {
+    return {
+      mode: 'planner',
+      score,
+      reason: `Complexity score ${score} >= 7`,
     };
   }
   return {
     mode: 'act',
     score,
-    reason: `Complexity score ${score} < threshold ${threshold}`,
+    reason: `Complexity score ${score} < 7`,
   };
+}
+
+function hasUsableActOutcome(actResult: any): boolean {
+  if (!actResult || typeof actResult !== 'object') return false;
+  if (actResult.error) return false;
+  const hasNonEmptyValue = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.length > 0;
+    if (value && typeof value === 'object') return Object.keys(value as Record<string, unknown>).length > 0;
+    if (typeof value === 'string') return value.trim().length > 0;
+    return value !== undefined && value !== null;
+  };
+
+  if (hasNonEmptyValue(actResult.data)) return true;
+  if (actResult.navigationPending === true) return true;
+  if (actResult.needsUserInput === true) return true;
+
+  const output = (actResult as any).output;
+  if (!output) return false;
+  if (typeof output === 'string') return output.trim().length > 0;
+  if (typeof output !== 'object') return hasNonEmptyValue(output);
+  if ((output as any).success === false || (output as any).error) return false;
+
+  const navigationOutcome = String((output as any).navigationOutcome || '').trim().toLowerCase();
+  if (navigationOutcome === 'same_tab_scheduled' || navigationOutcome === 'new_tab_opened') return true;
+  if ((output as any).navigationPending === true) return true;
+  if ((output as any).needsUserInput === true || (output as any).waitingForUserInput === true) return true;
+  if (Array.isArray((output as any).questions) && (output as any).questions.length > 0) return true;
+  if (String((output as any).taskStatus || '').trim().toLowerCase() === 'in_progress') return true;
+  if ((output as any).taskComplete === true) return true;
+  if (hasNonEmptyValue((output as any).data)) return true;
+  if (typeof (output as any).response === 'string' && String((output as any).response || '').trim()) return true;
+  if (hasNonEmptyValue(output)) return true;
+  return false;
 }
 
 export async function processMessageWithFunctions(
@@ -223,6 +328,7 @@ export async function handleSendMessageWithFunctions(
     let routedAgentPrevSteps = context.agentLog?.prevSteps;
     if (routing.mode === 'act') {
       context.onStatusUpdate?.('Executing action plan', 'Using ACT tool loop', 'execute');
+      const actStartedAt = Date.now();
       const actResult = await executeToolFromPlan({
         ...context,
         toolName: PLANNER_FUNCTION_CALLS.ACT,
@@ -242,10 +348,34 @@ export async function handleSendMessageWithFunctions(
         context.onPrevStepsUpdate?.(routedAgentPrevSteps);
       }
 
+      const actElapsedMs = Date.now() - actStartedAt;
+      const actFunctionCount = Array.isArray(actResult.prevSteps?.[actResult.prevSteps.length - 1]?.functions)
+        ? actResult.prevSteps![actResult.prevSteps!.length - 1].functions!.length
+        : 0;
+      const recoverableFailures = Array.isArray(actResult.prevSteps)
+        ? actResult.prevSteps.reduce((count, step) => {
+            const failures = Array.isArray(step.functions)
+              ? step.functions.filter(fn => fn?.response?.status === 'Failure').length
+              : 0;
+            return count + failures;
+          }, 0)
+        : 0;
+      const crossDomainPlanDependency = hasCrossDomainPlanDependency(userInput, context.tabs || []);
+      const actProducedUsableOutcome = hasUsableActOutcome(actResult);
+
       const shouldEscalateToPlanner =
-        !!actResult.error &&
-        (context.taskRouting?.plannerOnActError ?? true) &&
-        context.taskRouting?.mode !== 'act';
+        !actProducedUsableOutcome
+        && (
+          (
+            !!actResult.error &&
+            (context.taskRouting?.plannerOnActError ?? true) &&
+            context.taskRouting?.mode !== 'act'
+          )
+          || actElapsedMs > 8_000
+          || actFunctionCount > 3
+          || recoverableFailures >= 2
+          || crossDomainPlanDependency
+        );
 
       if (!shouldEscalateToPlanner) {
         return {

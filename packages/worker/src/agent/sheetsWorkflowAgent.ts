@@ -23,8 +23,13 @@ export type SheetsWorkflowOptions = {
 export async function executeSheetsWorkflow(options: SheetsWorkflowOptions): Promise<ToolExecutionResult> {
   const { workflow, userInput, trajectoryId, plannerPrevSteps, agentLog, files, onStatusUpdate, ctx, bridgeRpc, driveAuthToken } =
     options;
+  const throwIfCancelled = () => {
+    if (!ctx.isCancelled?.()) return;
+    throw new DOMException('Run cancelled', 'AbortError');
+  };
 
   try {
+    throwIfCancelled();
     const sourceSheetInfo = workflow.sourceSheetFromHistory
       ? resolveHistorySheetInfo(workflow.sourceSheetFromHistory, plannerPrevSteps)
       : undefined;
@@ -73,6 +78,7 @@ export async function executeSheetsWorkflow(options: SheetsWorkflowOptions): Pro
         return { error: 'Could not resolve sheet tab title for workflow.' };
       }
 
+      throwIfCancelled();
       onStatusUpdate?.('Loading sheet rows...', sheetTabTitle, 'analyze');
       grid = (await fetchWorkflowSheetTabDataSmart(sheetId, sheetTabTitle, getAuthToken)) || [];
     }
@@ -100,6 +106,7 @@ export async function executeSheetsWorkflow(options: SheetsWorkflowOptions): Pro
     const newTabOutputs: Record<string, any[][]> = {};
 
     for (let rowIdx = startRow; rowIdx < endRow; rowIdx++) {
+      throwIfCancelled();
       const row = dataRows[rowIdx] || [];
       const rowData = buildRowData(header, row);
       const context = buildContextData(header, row, contextIndices);
@@ -114,12 +121,14 @@ export async function executeSheetsWorkflow(options: SheetsWorkflowOptions): Pro
       const rowOutputValues: string[] = [];
 
       for (const step of workflow.workflowSteps) {
+        throwIfCancelled();
         const stepName = step.stepName || step.tool;
         const resolvedUserInput = resolveTemplate(step.userInputTemplate || userInput, rowContext, stepOutputs);
 
         if (step.tabManagement?.urlTemplate) {
           const targetUrl = resolveTemplate(step.tabManagement.urlTemplate, rowContext, stepOutputs);
           if (targetUrl) {
+            throwIfCancelled();
             await bridgeRpc('executeTool', { call: { name: 'goto_url', args: { tab_id: 0, url: targetUrl } } });
           }
         }
@@ -141,6 +150,7 @@ export async function executeSheetsWorkflow(options: SheetsWorkflowOptions): Pro
         });
 
         stepOutputs[stepName] = stepResult;
+        throwIfCancelled();
 
         if (step.outputMapping === SheetOutputFormat.CONTEXT) {
           continue;
@@ -164,6 +174,7 @@ export async function executeSheetsWorkflow(options: SheetsWorkflowOptions): Pro
     }
 
     if (useMemory) {
+      throwIfCancelled();
       const store = ctx.tabularStore;
       const baseTab = sheetTabId !== undefined ? store.getTab(sheetId, sheetTabId) : store.getTabByTitle(sheetId, sheetTabTitle!) || store.getTab(sheetId, 0);
 
@@ -207,6 +218,7 @@ export async function executeSheetsWorkflow(options: SheetsWorkflowOptions): Pro
     }
 
     if (outputColumnHeaders.length) {
+      throwIfCancelled();
       await appendColumnsToSheet({
         sheetId,
         sheetTabTitle: sheetTabTitle!,
@@ -219,6 +231,7 @@ export async function executeSheetsWorkflow(options: SheetsWorkflowOptions): Pro
     }
 
     for (const [stepName, rows] of Object.entries(newTabOutputs)) {
+      throwIfCancelled();
       const title = truncateTabTitle(stepName);
       const newTitle = await createSheetTab(sheetId, title, getAuthToken);
       const headerRowValues = buildNewTabHeader(rows);
@@ -276,6 +289,9 @@ async function executeWorkflowStep({
   driveAuthToken?: string;
   toolArgs?: Record<string, any>;
 }): Promise<any> {
+  if (ctx.isCancelled?.()) {
+    throw new DOMException('Run cancelled', 'AbortError');
+  }
   const toolName = step.tool;
 
   if (toolName === PLANNER_FUNCTION_CALLS.PROCESS_TEXT) {
@@ -335,7 +351,13 @@ async function executeWorkflowStep({
 
   // User-defined tool
   if (toolArgs || step.toolArgs || typeof toolName === 'string') {
+    if (ctx.isCancelled?.()) {
+      throw new DOMException('Run cancelled', 'AbortError');
+    }
     const result = await bridgeRpc('executeClientTool', { name: toolName, args: toolArgs || step.toolArgs || {} });
+    if (ctx.isCancelled?.()) {
+      throw new DOMException('Run cancelled', 'AbortError');
+    }
     return result;
   }
 

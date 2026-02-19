@@ -52,6 +52,14 @@ import {
   shouldAcceptWorkerSnapshot,
   type WorkerBoundarySource,
 } from './taskBoundaryGuards.js';
+import {
+  RoverServerRuntimeClient,
+  resolveRoverV1Bases,
+  resolveRoverV1Base,
+  type TabEventDecisionResponse,
+  type RoverServerProjection,
+  type RoverServerPolicy,
+} from './serverRuntime.js';
 
 export type RoverWebToolsConfig = {
   enableExternalWebContext?: boolean;
@@ -71,14 +79,10 @@ export type RoverTelemetryConfig = {
 export type RoverInit = {
   siteId: string;
   apiBase?: string;
-  apiKey?: string;
+  publicKey?: string;
   siteKeyId?: string;
   authToken?: string;
-  auth?: {
-    enableSessionJwt?: boolean;
-    sessionJwtEndpoint?: string;
-    refreshSkewSec?: number;
-  };
+  sessionToken?: string;
   visitorId?: string;
   sessionId?: string;
   sessionScope?: 'shared_site' | 'tab';
@@ -120,12 +124,12 @@ export type RoverInit = {
     onStateChange?: (payload: {
       state: RoverCloudCheckpointState;
       reason?: string;
-      action?: 'roverSessionCheckpointUpsert' | 'roverSessionCheckpointGet';
+      action?: 'session_snapshot_upsert' | 'session_projection_get';
       code?: string;
       message?: string;
     }) => void;
     onError?: (payload: {
-      action: 'roverSessionCheckpointUpsert' | 'roverSessionCheckpointGet';
+      action: 'session_snapshot_upsert' | 'session_projection_get';
       state: RoverCloudCheckpointState;
       code?: string;
       message: string;
@@ -198,6 +202,9 @@ export type RoverEventName =
   | 'context_restored'
   | 'checkpoint_state'
   | 'checkpoint_error'
+  | 'tab_event_conflict_retry'
+  | 'tab_event_conflict_exhausted'
+  | 'legacy_checkpoint_blocked'
   | 'open'
   | 'close';
 
@@ -303,16 +310,37 @@ let agentNavigationPending = false;
 let currentTaskBoundaryId = '';
 let runSafetyTimer: ReturnType<typeof setTimeout> | null = null;
 let unloadHandlerInstalled = false;
+const MULTI_LABEL_TLDS = new Set([
+  'co.uk',
+  'org.uk',
+  'gov.uk',
+  'ac.uk',
+  'com.au',
+  'net.au',
+  'org.au',
+  'co.jp',
+  'com.br',
+  'com.mx',
+  'com.sg',
+  'co.in',
+]);
 type PendingTaskSuggestion =
   | { kind: 'task_reset'; text: string; reason: string; createdAt: number }
-  | { kind: 'resume_run'; runId: string; text: string; createdAt: number };
+  | { kind: 'resume_run'; runId: string; text: string; createdAt: number }
+  | { kind: 'continue_run'; runId: string; text: string; createdAt: number };
 let pendingTaskSuggestion: PendingTaskSuggestion | null = null;
 let lastStatusSignature = '';
 let lastUserInputText: string | undefined;
 const latestAssistantByRunId = new Map<string, string>();
 const ignoredRunIds = new Set<string>();
+let roverServerRuntime: RoverServerRuntimeClient | null = null;
+let runtimeSessionToken: string | undefined;
+let runtimeSessionTokenExpiresAt = 0;
+let runtimeServerEpoch = 1;
+let serverAcceptedRunId: string | undefined;
 const RUN_SCOPED_WORKER_MESSAGE_TYPES = new Set([
   'run_started',
+  'run_state_transition',
   'run_completed',
   'assistant',
   'status',
@@ -727,6 +755,19 @@ function normalizeCrossHostPolicy(policy?: 'open_new_tab' | 'same_tab'): 'open_n
   return 'same_tab';
 }
 
+function deriveRegistrableDomain(host: string): string {
+  const clean = String(host || '').trim().toLowerCase();
+  if (!clean) return '';
+  if (clean === 'localhost' || /^\d+\.\d+\.\d+\.\d+$/.test(clean)) return clean;
+  const parts = clean.split('.').filter(Boolean);
+  if (parts.length < 2) return clean;
+  const tail2 = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+  if (parts.length >= 3 && MULTI_LABEL_TLDS.has(tail2)) {
+    return `${parts[parts.length - 3]}.${tail2}`;
+  }
+  return tail2;
+}
+
 function resolveActionGateReason(mode: 'controller' | 'observer', allowActions: boolean): string {
   if (mode === 'observer') {
     return 'This tab is in observer mode because another tab currently holds Rover action control.';
@@ -746,7 +787,7 @@ function canUseTelemetry(cfg: RoverInit | null): boolean {
   if (!cfg) return false;
   const telemetry = normalizeTelemetryConfig(cfg);
   if (!telemetry.enabled) return false;
-  if (!(cfg.authToken || cfg.apiKey)) return false;
+  if (!getRuntimeSessionToken(cfg)) return false;
   return true;
 }
 
@@ -792,26 +833,215 @@ function stopTelemetry(): void {
   }
 }
 
-const DEFAULT_EXTENSION_ROUTER_BASE = 'https://extensionrouter.rtrvr.ai';
-
-function resolveExtensionRouterEndpoint(apiBase?: string): string {
-  const fallback = DEFAULT_EXTENSION_ROUTER_BASE;
-  const base = String(apiBase || fallback).trim().replace(/\/+$/, '');
-  if (!base) return fallback;
-  if (base.endsWith('/extensionRouter')) return base;
-  try {
-    const parsed = new URL(base);
-    const pathname = parsed.pathname.replace(/\/+$/, '');
-    if (pathname && pathname !== '/') return base;
-    if (parsed.hostname.toLowerCase() === 'extensionrouter.rtrvr.ai') return base;
-  } catch {
-    // no-op: fallback to legacy suffix behavior
-  }
-  return `${base}/extensionRouter`;
+function getTelemetryEndpoint(cfg: RoverInit): string {
+  return `${resolveRoverV1Base(cfg.apiBase)}/telemetry/ingest`;
 }
 
-function getTelemetryEndpoint(cfg: RoverInit): string {
-  return resolveExtensionRouterEndpoint(cfg.apiBase);
+function getBootstrapRuntimeAuthToken(cfg?: RoverInit | null): string {
+  const source = cfg || currentConfig;
+  const publicKey = String(source?.publicKey || '').trim();
+  if (publicKey.startsWith('pk_site_')) return publicKey;
+  const authToken = String(source?.authToken || '').trim();
+  if (authToken.startsWith('pk_site_')) return authToken;
+  return '';
+}
+
+function getRuntimeSessionToken(cfg?: RoverInit | null): string {
+  if (runtimeSessionToken && runtimeSessionTokenExpiresAt > Date.now() + 10_000) {
+    return runtimeSessionToken;
+  }
+  const source = cfg || currentConfig;
+  const fallbackToken = String(source?.sessionToken || source?.authToken || '').trim();
+  return fallbackToken.startsWith('rvrsess_') ? fallbackToken : '';
+}
+
+function updateRuntimeSessionToken(token?: string, expiresAt?: number): void {
+  const normalized = String(token || '').trim();
+  runtimeSessionToken = normalized || undefined;
+  runtimeSessionTokenExpiresAt = Number(expiresAt) > 0 ? Number(expiresAt) : 0;
+}
+
+function applyServerPolicy(policy?: RoverServerPolicy): void {
+  if (!policy || !currentConfig) return;
+  currentConfig.externalNavigationPolicy = policy.externalNavigationPolicy || currentConfig.externalNavigationPolicy;
+  if (policy.domainScopeMode) {
+    currentConfig.domainScopeMode = policy.domainScopeMode;
+  }
+  if (policy.crossHostPolicy === 'open_new_tab' || policy.crossHostPolicy === 'same_tab') {
+    currentConfig.navigation = {
+      ...(currentConfig.navigation || {}),
+      crossHostPolicy: policy.crossHostPolicy,
+    };
+  }
+  if (!currentConfig.tools) currentConfig.tools = {};
+  if (!currentConfig.tools.web) currentConfig.tools.web = {};
+  currentConfig.tools.web.enableExternalWebContext = policy.enableExternalWebContext ?? currentConfig.tools.web.enableExternalWebContext;
+  currentConfig.tools.web.scrapeMode = policy.externalScrapeMode ?? currentConfig.tools.web.scrapeMode;
+  if (Array.isArray(policy.externalAllowDomains)) {
+    currentConfig.tools.web.allowDomains = policy.externalAllowDomains;
+  }
+  if (Array.isArray(policy.externalDenyDomains)) {
+    currentConfig.tools.web.denyDomains = policy.externalDenyDomains;
+  }
+}
+
+function applyServerProjection(projection: RoverServerProjection): void {
+  if (!runtimeState || !projection) return;
+  runtimeServerEpoch = Math.max(1, Number(projection.epoch || runtimeServerEpoch));
+
+  const serverRunId = typeof projection.activeRunId === 'string' ? projection.activeRunId : '';
+  setServerAcceptedRunId(serverRunId || undefined);
+  const localPending = runtimeState.pendingRun;
+  const localRunId = localPending?.id || '';
+
+  if (!serverRunId && localRunId) {
+    const runStatus = String(projection.runStatus || '').trim().toLowerCase();
+    const isProjectionTerminal =
+      runStatus === 'completed'
+      || runStatus === 'cancelled'
+      || runStatus === 'failed';
+    if (isProjectionTerminal || runtimeState.activeTask?.status !== 'running') {
+      addIgnoredRunId(localRunId);
+      setPendingRun(undefined);
+      sessionCoordinator?.setActiveRun(undefined);
+    }
+  } else if (serverRunId && (!localPending || localRunId !== serverRunId)) {
+    setPendingRun({
+      id: serverRunId,
+      text: localPending?.text || '',
+      startedAt: localPending?.startedAt || Date.now(),
+      attempts: localPending?.attempts || 0,
+      autoResume: true,
+      taskBoundaryId: localPending?.taskBoundaryId || currentTaskBoundaryId,
+    });
+  }
+
+  if (projection.snapshot && typeof projection.snapshot === 'object') {
+    const maybeRuntime = (projection.snapshot as any)?.runtimeState;
+    const maybeShared = (projection.snapshot as any)?.sharedState;
+    if (maybeRuntime && typeof maybeRuntime === 'object') {
+      suppressCheckpointSync = true;
+      try {
+        applyCloudCheckpointPayload({
+          version: CHECKPOINT_PAYLOAD_VERSION,
+          siteId: currentConfig?.siteId || runtimeState.sessionId,
+          visitorId: resolvedVisitorId || 'server_projection',
+          sessionId: runtimeState.sessionId,
+          updatedAt: Number((projection.snapshot as any)?.updatedAt) || Date.now(),
+          runtimeState: maybeRuntime as PersistedRuntimeState,
+          sharedState: maybeShared as SharedSessionState,
+        });
+      } finally {
+        suppressCheckpointSync = false;
+      }
+    }
+  }
+}
+
+async function ensureRoverServerRuntime(cfg: RoverInit): Promise<void> {
+  if (!runtimeState) return;
+  if (!cfg.apiBase && !cfg.publicKey && !cfg.authToken && !cfg.sessionToken) return;
+
+  const bootstrapToken = getBootstrapRuntimeAuthToken(cfg);
+  if (!bootstrapToken && !runtimeSessionToken) return;
+
+  if (!roverServerRuntime) {
+    roverServerRuntime = new RoverServerRuntimeClient({
+      apiBase: cfg.apiBase,
+      siteId: cfg.siteId,
+      getSessionId: () => runtimeState?.sessionId,
+      getBootstrapToken: () => getBootstrapRuntimeAuthToken(currentConfig),
+      getHost: () => window.location.hostname,
+      getPageUrl: () => window.location.href,
+      getTaskBoundaryId: () => currentTaskBoundaryId,
+      onSession: session => {
+        updateRuntimeSessionToken(session.sessionToken, session.sessionTokenExpiresAt);
+        runtimeServerEpoch = Math.max(1, Number(session.epoch || runtimeServerEpoch));
+        if (runtimeState && session.sessionId && runtimeState.sessionId !== session.sessionId) {
+          runtimeState.sessionId = session.sessionId;
+          persistRuntimeState();
+        }
+        applyServerPolicy(session.policy);
+        if (session.siteConfig && typeof session.siteConfig === 'object' && currentConfig) {
+          const resolvedSiteConfig: RoverResolvedSiteConfig = {
+            shortcuts: sanitizeShortcutList((session.siteConfig as any)?.shortcuts),
+            greeting: sanitizeGreetingConfig((session.siteConfig as any)?.greeting),
+            limits: sanitizeSiteConfigLimits((session.siteConfig as any)?.limits),
+            version: (session.siteConfig as any)?.version != null ? String((session.siteConfig as any).version) : undefined,
+          };
+          backendSiteConfig = resolvedSiteConfig;
+          setCachedSiteConfig(currentConfig.siteId, resolvedSiteConfig);
+          applyEffectiveSiteConfig(currentConfig);
+        }
+        if (session.projection) {
+          applyServerProjection(session.projection);
+        }
+        if (worker) {
+          worker.postMessage({
+            type: 'update_config',
+            config: {
+              publicKey: undefined,
+              sessionToken: runtimeSessionToken,
+              authToken: getRuntimeSessionToken(currentConfig),
+              sessionId: runtimeState?.sessionId,
+              activeRunId: runtimeState?.pendingRun?.id,
+              sessionEpoch: roverServerRuntime?.getEpoch?.() ?? runtimeServerEpoch,
+              sessionSeq: roverServerRuntime?.getLastSeq?.() ?? 0,
+              taskBoundaryId: currentTaskBoundaryId,
+            },
+          });
+        }
+        if (bridge) {
+          bridge.setNavigationPolicy({
+            allowedDomains: currentConfig?.allowedDomains,
+            domainScopeMode: currentConfig?.domainScopeMode,
+            externalNavigationPolicy: currentConfig?.externalNavigationPolicy,
+            crossHostPolicy: currentConfig?.navigation?.crossHostPolicy,
+          } as any);
+        }
+        if (currentConfig) {
+          setupCloudCheckpointing(currentConfig);
+          setupTelemetry(currentConfig);
+        }
+      },
+      onProjection: projection => {
+        applyServerProjection(projection);
+        if (worker) {
+          worker.postMessage({
+            type: 'update_config',
+            config: {
+              sessionToken: runtimeSessionToken,
+              authToken: getRuntimeSessionToken(currentConfig),
+              sessionId: runtimeState?.sessionId,
+              activeRunId: runtimeState?.pendingRun?.id,
+              sessionEpoch: roverServerRuntime?.getEpoch?.() ?? runtimeServerEpoch,
+              sessionSeq: roverServerRuntime?.getLastSeq?.() ?? 0,
+              taskBoundaryId: currentTaskBoundaryId,
+            },
+          });
+        }
+      },
+      onError: error => {
+        recordTelemetryEvent('error', {
+          message: (error as Error)?.message || 'server runtime sync failed',
+          scope: 'server_runtime',
+        });
+      },
+    });
+  } else {
+    roverServerRuntime.setApiBase(cfg.apiBase);
+  }
+
+  try {
+    await roverServerRuntime.start();
+  } catch (error) {
+    if (currentConfig?.apiMode !== false) {
+      emit('error', {
+        message: (error as Error)?.message || 'server runtime sync failed',
+        scope: 'server_runtime_start',
+      });
+    }
+  }
 }
 
 async function flushTelemetry(force = false): Promise<void> {
@@ -824,7 +1054,7 @@ async function flushTelemetry(force = false): Promise<void> {
   if (!telemetryBuffer.length) return;
 
   const telemetry = normalizeTelemetryConfig(currentConfig);
-  const token = String(currentConfig.authToken || currentConfig.apiKey || '').trim();
+  const token = getRuntimeSessionToken(currentConfig);
   if (!token) return;
 
   const batch = telemetryBuffer.splice(0, telemetry.maxBatchSize);
@@ -835,23 +1065,21 @@ async function flushTelemetry(force = false): Promise<void> {
     const response = await fetch(getTelemetryEndpoint(currentConfig), {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        action: 'roverTelemetryIngest',
-        data: {
-          siteId: currentConfig.siteId,
-          runtimeId,
-          sessionId: runtimeState?.sessionId,
-          visitorId: resolvedVisitorId,
-          flushReason: force ? 'manual' : 'interval',
-          sdkVersion: 'rover_sdk_v1',
-          pageUrl: window.location.href,
-          userAgent: navigator.userAgent,
-          sampleRate: telemetry.sampleRate,
-          events: batch,
-        },
+        sessionToken: token,
+        sessionId: runtimeState?.sessionId,
+        runId: runtimeState?.pendingRun?.id,
+        siteId: currentConfig.siteId,
+        runtimeId,
+        visitorId: resolvedVisitorId,
+        flushReason: force ? 'manual' : 'interval',
+        sdkVersion: 'rover_sdk_v1',
+        pageUrl: window.location.href,
+        userAgent: navigator.userAgent,
+        sampleRate: telemetry.sampleRate,
+        events: batch,
       }),
     });
 
@@ -1035,6 +1263,21 @@ function getPendingRunId(): string | undefined {
   return runtimeState?.pendingRun?.id;
 }
 
+function setServerAcceptedRunId(runId?: string): void {
+  const normalized = String(runId || '').trim();
+  serverAcceptedRunId = normalized || undefined;
+}
+
+function getServerRunIdForDispatch(): string | undefined {
+  const pendingRunId = runtimeState?.pendingRun?.id;
+  if (!pendingRunId) return undefined;
+  if (!roverServerRuntime) return pendingRunId;
+  const activeRunId = roverServerRuntime.getActiveRunId();
+  const effectiveServerRunId = String(activeRunId || serverAcceptedRunId || '').trim();
+  if (!effectiveServerRunId) return undefined;
+  return effectiveServerRunId === pendingRunId ? pendingRunId : undefined;
+}
+
 function addIgnoredRunId(runId?: string): void {
   if (!runId) return;
   ignoredRunIds.add(runId);
@@ -1080,6 +1323,8 @@ function shouldIgnoreRunScopedWorkerMessage(msg: any): boolean {
     typeof msg?.taskBoundaryId === 'string' && msg.taskBoundaryId
       ? msg.taskBoundaryId
       : undefined;
+  const authoritativeActiveRunId =
+    String(roverServerRuntime?.getActiveRunId() || serverAcceptedRunId || '').trim() || undefined;
   return shouldIgnoreRunScopedMessage({
     type,
     messageRunId,
@@ -1087,6 +1332,7 @@ function shouldIgnoreRunScopedWorkerMessage(msg: any): boolean {
     currentTaskBoundaryId: resolveCurrentTaskBoundaryCandidate(),
     pendingRunId: getPendingRunId(),
     sharedActiveRunId: sessionCoordinator?.getState()?.activeRun?.runId,
+    authoritativeActiveRunId,
     taskStatus: runtimeState?.activeTask?.status,
     ignoredRunIds,
   });
@@ -1176,6 +1422,7 @@ function normalizeRunCompletionState(msg: any): {
   needsUserInput: boolean;
   terminalState: 'waiting_input' | 'in_progress' | 'completed' | 'failed';
   contextResetRecommended: boolean;
+  continuationReason?: 'loop_continue' | 'same_tab_navigation_handoff' | 'awaiting_user';
   questions?: RoverAskUserQuestion[];
 } {
   if (!msg || typeof msg !== 'object') {
@@ -1200,11 +1447,23 @@ function normalizeRunCompletionState(msg: any): {
             : 'in_progress';
   const taskComplete = inferredTerminalState === 'completed' || (msg.taskComplete === true && inferredTerminalState !== 'waiting_input');
   const questions = normalizeAskUserQuestions(msg.questions);
+  const continuationRaw = String(msg.continuationReason || '').trim().toLowerCase();
+  const continuationReason =
+    continuationRaw === 'loop_continue'
+    || continuationRaw === 'same_tab_navigation_handoff'
+    || continuationRaw === 'awaiting_user'
+      ? continuationRaw
+      : inferredTerminalState === 'waiting_input'
+        ? 'awaiting_user'
+        : inferredTerminalState === 'in_progress'
+          ? 'loop_continue'
+          : undefined;
   return {
     taskComplete,
     needsUserInput: inferredTerminalState === 'waiting_input' || needsUserInput,
     terminalState: inferredTerminalState,
     contextResetRecommended: msg.contextResetRecommended === true || inferredTerminalState === 'completed',
+    continuationReason,
     ...(questions.length ? { questions } : {}),
   };
 }
@@ -1999,6 +2258,7 @@ function setPendingRun(next: PersistedPendingRun | undefined): void {
     });
   } else {
     runtimeState.pendingRun = undefined;
+    setServerAcceptedRunId(undefined);
   }
   persistRuntimeState();
 }
@@ -2098,7 +2358,7 @@ function postRun(
   }, 5 * 60_000);
 }
 
-function dispatchUserPrompt(
+async function dispatchUserPromptAsync(
   text: string,
   options?: {
     bypassSuggestion?: boolean;
@@ -2106,8 +2366,10 @@ function dispatchUserPrompt(
     reason?: string;
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: RoverAskUserAnswerMeta;
+    continueExistingRun?: boolean;
+    continueRunId?: string;
   },
-): void {
+): Promise<void> {
   const trimmed = buildAskUserDispatchText(text, options?.askUserAnswers);
   if (!trimmed) return;
   maybeClearStalePendingRun();
@@ -2135,13 +2397,93 @@ function dispatchUserPrompt(
   }
 
   hideTaskSuggestion();
+  let runId = options?.continueRunId;
+  let routing: 'auto' | 'act' | 'planner' | undefined = options?.routing;
+  if (roverServerRuntime && currentConfig) {
+    try {
+      const server = await roverServerRuntime.submitRunInput({
+        message: trimmed,
+        clientEventId: crypto.randomUUID(),
+        continueRun: !!options?.continueExistingRun,
+        forceNewRun: !!options?.startNewTask,
+        runId: options?.continueRunId,
+        requestedMode: options?.routing || currentConfig.taskRouting?.mode || 'act',
+      });
+      if (!server) {
+        throw new Error('Server run/input returned no data; run was not accepted.');
+      }
+      if (Number.isFinite(Number(server.epoch || server.currentEpoch))) {
+        runtimeServerEpoch = Math.max(1, Number(server.epoch || server.currentEpoch));
+      }
+      if (server.continuePrompt && server.runId && !options?.bypassSuggestion) {
+        pendingTaskSuggestion = {
+          kind: 'continue_run',
+          runId: server.runId,
+          text: trimmed,
+          createdAt: Date.now(),
+        };
+        ui?.setTaskSuggestion({
+          visible: true,
+          text: 'A task is still active. Continue it or start a fresh task?',
+          primaryLabel: 'Continue',
+          secondaryLabel: 'Start fresh',
+        });
+        setUiStatus(server.message || 'Task still active. Choose continue or start fresh.');
+        return;
+      }
+      const acceptedRunId =
+        typeof server.runId === 'string' && server.runId.trim()
+          ? server.runId.trim()
+          : '';
+      if (!acceptedRunId) {
+        const conflictType = String((server as any)?.conflict?.type || '').trim();
+        const reason = String(server.decisionReason || conflictType || server.message || 'run_not_accepted').trim();
+        throw new Error(`Server did not accept this run (${reason}).`);
+      }
+      runId = acceptedRunId;
+      setServerAcceptedRunId(runId);
+      if (server.acceptedMode === 'act' || server.acceptedMode === 'planner') {
+        routing = server.acceptedMode;
+      }
+    } catch (error: any) {
+      const message = String(error?.message || 'server run submission failed');
+      setServerAcceptedRunId(undefined);
+      appendTimelineEvent({
+        kind: 'error',
+        title: 'Run start failed',
+        detail: message,
+        status: 'error',
+      });
+      appendUiMessage('system', `Unable to start task: ${message}`, true);
+      setUiStatus(`Task could not start (${message})`);
+      emit('error', { message, scope: 'run_input' });
+      return;
+    }
+  }
+
   postRun(trimmed, {
+    runId,
     appendUserMessage: true,
     resume: false,
     autoResume: true,
-    routing: options?.routing,
+    routing,
     askUserAnswers: options?.askUserAnswers,
   });
+}
+
+function dispatchUserPrompt(
+  text: string,
+  options?: {
+    bypassSuggestion?: boolean;
+    startNewTask?: boolean;
+    reason?: string;
+    routing?: 'auto' | 'act' | 'planner';
+    askUserAnswers?: RoverAskUserAnswerMeta;
+    continueExistingRun?: boolean;
+    continueRunId?: string;
+  },
+): void {
+  void dispatchUserPromptAsync(text, options);
 }
 
 function maybeAutoResumePendingRun(): void {
@@ -2506,7 +2848,7 @@ function shouldEnableCloudCheckpointing(cfg: RoverInit): boolean {
   if (cfg.sessionScope === 'tab') return false;
   // Default off to keep hot-path execution local and avoid remote read latency.
   if (cfg.checkpointing?.enabled !== true) return false;
-  if (!(cfg.apiKey || cfg.authToken)) return false;
+  if (!getRuntimeSessionToken(cfg)) return false;
   if (!resolvedVisitorId) return false;
   return true;
 }
@@ -2638,12 +2980,21 @@ function setupCloudCheckpointing(cfg: RoverInit): void {
 
   if (!shouldEnableCloudCheckpointing(cfg)) return;
   if (!resolvedVisitorId) return;
+  const checkpointToken = getRuntimeSessionToken(cfg);
+  if (!checkpointToken) {
+    emit('legacy_checkpoint_blocked', {
+      reason: 'missing_or_invalid_session_token',
+      expectedPrefix: 'rvrsess_',
+      action: 'disabled_cloud_checkpoint_client',
+    });
+    return;
+  }
 
   try {
     const emitCheckpointState = (payload: {
       state: RoverCloudCheckpointState;
       reason?: string;
-      action?: 'roverSessionCheckpointUpsert' | 'roverSessionCheckpointGet';
+      action?: 'session_snapshot_upsert' | 'session_projection_get';
       code?: string;
       message?: string;
     }) => {
@@ -2653,8 +3004,8 @@ function setupCloudCheckpointing(cfg: RoverInit): void {
 
     cloudCheckpointClient = new RoverCloudCheckpointClient({
       apiBase: cfg.apiBase,
-      apiKey: cfg.apiKey,
-      authToken: cfg.authToken,
+      authToken: checkpointToken,
+      getSessionToken: () => getRuntimeSessionToken(currentConfig),
       siteId: cfg.siteId,
       visitorId: resolvedVisitorId,
       ttlHours: cfg.checkpointing?.ttlHours ?? 1,
@@ -3054,16 +3405,62 @@ function handleWorkerMessage(msg: any): void {
     return;
   }
 
-  if (msg.type === 'run_completed') {
+  if (msg.type === 'run_completed' || msg.type === 'run_state_transition') {
     lastStatusSignature = '';
     autoResumeAttempted = false;
-    ui?.setRunning(false);
+    const completionState = normalizeRunCompletionState(msg);
+    const terminalState = completionState.terminalState;
+    const continuationReason = completionState.continuationReason;
+    const isTerminalRunCompletion =
+      msg?.ok === false
+      || terminalState === 'completed'
+      || terminalState === 'failed';
+    ui?.setRunning(!isTerminalRunCompletion);
     if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
-    if (runtimeState?.pendingRun?.id === msg.runId) {
-      setPendingRun(undefined);
-    }
-    if (typeof msg.runId === 'string' && msg.runId) {
-      sessionCoordinator?.releaseWorkflowLock(msg.runId);
+    const completedRunId = typeof msg.runId === 'string' && msg.runId ? msg.runId : undefined;
+    const messageTaskBoundaryId =
+      typeof msg?.taskBoundaryId === 'string' ? normalizeTaskBoundaryId(msg.taskBoundaryId) : undefined;
+    if (isTerminalRunCompletion) {
+      if (runtimeState?.pendingRun?.id === msg.runId) {
+        setPendingRun(undefined);
+      }
+      if (completedRunId) {
+        sessionCoordinator?.releaseWorkflowLock(completedRunId);
+        if (serverAcceptedRunId === completedRunId) {
+          setServerAcceptedRunId(undefined);
+        }
+      }
+      sessionCoordinator?.setActiveRun(undefined);
+      if (completedRunId) {
+        addIgnoredRunId(completedRunId);
+      }
+    } else if (isTaskRunning() && completedRunId) {
+      removeIgnoredRunId(completedRunId);
+      setServerAcceptedRunId(completedRunId);
+      const existing = runtimeState?.pendingRun;
+      const resumedText =
+        existing?.id === completedRunId && existing?.text
+          ? existing.text
+          : (lastUserInputText || existing?.text || 'Continue task');
+      setPendingRun(
+        sanitizePendingRun({
+          id: completedRunId,
+          text: resumedText,
+          startedAt: existing?.startedAt || Date.now(),
+          attempts: existing?.attempts || 0,
+          autoResume: existing?.autoResume !== false,
+          taskBoundaryId: messageTaskBoundaryId || existing?.taskBoundaryId || currentTaskBoundaryId,
+          resumeRequired:
+            terminalState === 'in_progress'
+            && continuationReason === 'same_tab_navigation_handoff',
+          resumeReason:
+            terminalState === 'in_progress'
+            && continuationReason === 'same_tab_navigation_handoff'
+              ? (existing?.resumeReason || 'agent_navigation')
+              : undefined,
+        }),
+      );
+      sessionCoordinator?.setActiveRun({ runId: completedRunId, text: resumedText });
     }
     if (
       runtimeState &&
@@ -3078,19 +3475,20 @@ function handleWorkerMessage(msg: any): void {
       };
       persistRuntimeState();
     }
-    sessionCoordinator?.setActiveRun(undefined);
-    const completedRunId = typeof msg.runId === 'string' && msg.runId ? msg.runId : undefined;
-    if (completedRunId) {
-      addIgnoredRunId(completedRunId);
-    }
     if (!msg.ok && msg.error) {
       if (completedRunId) {
         latestAssistantByRunId.delete(completedRunId);
       }
+      if (completedRunId) {
+        void roverServerRuntime?.controlRun({
+          action: 'cancel',
+          runId: completedRunId,
+          reason: 'worker_run_failed',
+        });
+      }
       if (!isTaskRunning()) {
         return;
       }
-      const completionState = normalizeRunCompletionState(msg);
       ui?.setQuestionPrompt(undefined);
       if (completionState.contextResetRecommended) {
         markTaskCompleted('worker_run_failed_terminal');
@@ -3113,16 +3511,21 @@ function handleWorkerMessage(msg: any): void {
       if (!isTaskRunning()) {
         return;
       }
-      const completionState = normalizeRunCompletionState(msg);
       const taskComplete = completionState.taskComplete;
       const needsUserInput = completionState.needsUserInput;
-      const terminalState = completionState.terminalState;
       const completionQuestions = completionState.questions || normalizeAskUserQuestions(msg.questions);
       const pendingStateQuestions = normalizeAskUserQuestions(runtimeState?.workerState?.pendingAskUser?.questions);
       const questions = completionQuestions.length
         ? completionQuestions
         : (needsUserInput ? pendingStateQuestions : []);
       if (terminalState === 'failed') {
+        if (completedRunId) {
+          void roverServerRuntime?.controlRun({
+            action: 'cancel',
+            runId: completedRunId,
+            reason: 'worker_terminal_failed',
+          });
+        }
         ui?.setQuestionPrompt(undefined);
         if (completionState.contextResetRecommended) {
           markTaskCompleted('worker_run_failed_terminal');
@@ -3139,6 +3542,13 @@ function handleWorkerMessage(msg: any): void {
           status: 'error',
         });
       } else if (taskComplete || terminalState === 'completed') {
+        if (completedRunId) {
+          void roverServerRuntime?.controlRun({
+            action: 'end_task',
+            runId: completedRunId,
+            reason: 'worker_task_complete',
+          });
+        }
         ui?.setQuestionPrompt(undefined);
         markTaskCompleted('worker_task_complete');
         sessionCoordinator?.resetTabsToCurrent(window.location.href, document.title || undefined);
@@ -3148,8 +3558,10 @@ function handleWorkerMessage(msg: any): void {
         const nextReason =
           needsUserInput
             ? 'worker_waiting_for_input'
-            : terminalState === 'in_progress'
-              ? 'worker_continuation'
+            : continuationReason === 'same_tab_navigation_handoff'
+              ? 'worker_navigation_handoff'
+              : terminalState === 'in_progress'
+                ? 'worker_loop_continue'
               : 'worker_task_active';
         markTaskRunning(nextReason);
         if (needsUserInput && questions.length > 0) {
@@ -3159,17 +3571,27 @@ function handleWorkerMessage(msg: any): void {
         } else {
           ui?.setQuestionPrompt(undefined);
         }
-        setUiStatus(needsUserInput ? 'Need more input to continue' : 'Execution finished. Continue when ready.');
-        appendTimelineEvent({
-          kind: 'status',
-          title: needsUserInput ? 'Waiting for your input' : 'Continuation available',
-          detail: needsUserInput
-            ? (questions.length
+        if (needsUserInput) {
+          setUiStatus('Need more input to continue');
+          appendTimelineEvent({
+            kind: 'status',
+            title: 'Waiting for your input',
+            detail: questions.length
               ? `Please answer: ${questions.map(question => `${question.key} (${question.query})`).join('; ')}`
-              : 'Planner requested more information before marking the task complete.')
-            : 'Task is still active and will continue with your next message.',
-          status: 'info',
-        });
+              : 'Planner requested more information before marking the task complete.',
+            status: 'info',
+          });
+        } else if (continuationReason === 'same_tab_navigation_handoff') {
+          setUiStatus('Navigating to continue task...');
+          appendTimelineEvent({
+            kind: 'status',
+            title: 'Navigation handoff',
+            detail: 'Rover will resume after same-tab navigation completes.',
+            status: 'pending',
+          });
+        } else {
+          setUiStatus('Working...');
+        }
       }
     }
     return;
@@ -3501,31 +3923,40 @@ function applyEffectiveSiteConfig(cfg: RoverInit): void {
 }
 
 async function fetchBackendSiteConfig(cfg: RoverInit): Promise<RoverResolvedSiteConfig | null> {
-  const authToken = String(cfg.authToken || cfg.apiKey || '').trim();
-  if (!authToken) return null;
+  let payload: any = null;
+  const runtimeToken = getBootstrapRuntimeAuthToken(cfg) || getRuntimeSessionToken(cfg);
+  if (!runtimeToken) return null;
 
-  const resp = await fetch(resolveExtensionRouterEndpoint(cfg.apiBase), {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${authToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      action: 'roverGetSiteConfig',
-      data: {
-        siteId: cfg.siteId,
-        siteKeyId: cfg.siteKeyId,
-      },
-    }),
-  });
-  if (!resp.ok) return null;
+  const startBody: Record<string, unknown> = {
+    siteId: cfg.siteId,
+    sessionId: runtimeState?.sessionId || cfg.sessionId,
+    host: window.location.hostname,
+    url: window.location.href,
+  };
+  if (runtimeToken.startsWith('rvrsess_')) {
+    startBody.sessionToken = runtimeToken;
+  } else {
+    startBody.bootstrapToken = runtimeToken;
+  }
 
-  const json = await resp.json();
-  if (!json?.success) return null;
+  const baseCandidates = resolveRoverV1Bases(cfg.apiBase);
+  for (const base of baseCandidates) {
+    try {
+      const v1Resp = await fetch(`${base}/session/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(startBody),
+      });
+      const v1Json = await v1Resp.json().catch(() => undefined);
+      if (!v1Resp.ok || !v1Json?.success) continue;
+      payload = v1Json?.data?.siteConfig || null;
+      if (payload) break;
+    } catch {
+      // try next candidate
+    }
+  }
 
-  const payload = (json.data?.siteConfig && typeof json.data.siteConfig === 'object')
-    ? json.data.siteConfig
-    : json.data;
+  if (!payload) return null;
 
   return {
     shortcuts: sanitizeShortcutList(payload?.shortcuts),
@@ -3598,6 +4029,58 @@ function createRuntime(cfg: RoverInit): void {
   const initialAllowActions =
     (cfg.allowActions ?? true) && (sessionCoordinator ? sessionCoordinator.isController() : true);
 
+  const ensureNavigationPendingRun = (
+    reason: 'agent_navigation' | 'cross_host_navigation',
+  ): PersistedPendingRun | undefined => {
+    if (!runtimeState) return undefined;
+
+    const existingPending = sanitizePendingRun(runtimeState.pendingRun);
+    if (existingPending) {
+      const updated = sanitizePendingRun({
+        ...existingPending,
+        taskBoundaryId: existingPending.taskBoundaryId || currentTaskBoundaryId,
+        resumeRequired: true,
+        resumeReason: reason,
+      });
+      runtimeState.pendingRun = updated;
+      if (updated) {
+        sessionCoordinator?.setActiveRun({ runId: updated.id, text: updated.text });
+      }
+      return updated;
+    }
+
+    const sharedActiveRun = sessionCoordinator?.getState().activeRun;
+    const activeRunId = String(
+      roverServerRuntime?.getActiveRunId()
+      || serverAcceptedRunId
+      || sharedActiveRun?.runId
+      || '',
+    ).trim();
+    if (!activeRunId) return undefined;
+
+    const activeRunText = String(
+      sharedActiveRun?.text
+      || lastUserInputText
+      || 'Continue task',
+    ).trim() || 'Continue task';
+
+    const synthesized = sanitizePendingRun({
+      id: activeRunId,
+      text: activeRunText,
+      startedAt: Date.now(),
+      attempts: 0,
+      autoResume: true,
+      taskBoundaryId: currentTaskBoundaryId,
+      resumeRequired: true,
+      resumeReason: reason,
+    });
+    runtimeState.pendingRun = synthesized;
+    if (synthesized) {
+      sessionCoordinator?.setActiveRun({ runId: synthesized.id, text: synthesized.text });
+    }
+    return synthesized;
+  };
+
   bridge = new Bridge({
     allowActions: initialAllowActions,
     runtimeId,
@@ -3623,49 +4106,156 @@ function createRuntime(cfg: RoverInit): void {
         detail: safeSerialize(event),
         status: 'info',
       });
+      if (roverServerRuntime && event?.blockedUrl) {
+        const runId = getServerRunIdForDispatch();
+        if (!runId) return;
+        const currentHost = String(window.location.hostname || '').toLowerCase();
+        const targetHost = (() => {
+          try {
+            return new URL(String(event.blockedUrl)).hostname.toLowerCase();
+          } catch {
+            return undefined;
+          }
+        })();
+        void roverServerRuntime
+          .sendTabEvent({
+            runId,
+            currentUrl: String(event.currentUrl || window.location.href),
+            targetUrl: String(event.blockedUrl),
+            message: String(event.reason || ''),
+            currentHost: currentHost || undefined,
+            targetHost,
+            isCrossHost: !!targetHost && !!currentHost && targetHost !== currentHost,
+          })
+          .then(decision => {
+            if (!decision) return;
+            if (decision.retryAttempted) {
+              emit('tab_event_conflict_retry', {
+                runId: decision.runId || runId,
+                decisionReason: decision.decisionReason,
+                conflict: decision.conflict,
+              });
+            }
+            if (decision.retryExhausted) {
+              emit('tab_event_conflict_exhausted', {
+                runId: decision.runId || runId,
+                decisionReason: decision.decisionReason,
+                conflict: decision.conflict,
+              });
+            }
+          })
+          .catch(() => undefined);
+      }
     },
-    onBeforeAgentNavigation: (intent: NavigationIntentEvent) => {
-      // Always mark agent navigation intent — this flag survives pendingRun mutations
-      // and is used as fallback in pagehide if resumeReason gets overwritten.
+    onBeforeAgentNavigation: async (intent: NavigationIntentEvent) => {
+      const runId = getServerRunIdForDispatch();
+      const currentHost = String(window.location.hostname || '').toLowerCase();
+      const targetHost = (() => {
+        try {
+          return new URL(String(intent?.targetUrl || '')).hostname.toLowerCase();
+        } catch {
+          return undefined;
+        }
+      })();
+      const crossRegistrableDomain =
+        !!currentHost
+        && !!targetHost
+        && deriveRegistrableDomain(currentHost) !== deriveRegistrableDomain(targetHost);
+      const configuredCrossHostPolicy = normalizeCrossHostPolicy(currentConfig?.navigation?.crossHostPolicy);
+      const fallbackDecision: 'allow_same_tab' | 'open_new_tab' =
+        crossRegistrableDomain
+          ? 'open_new_tab'
+          : (intent?.isCrossHost && configuredCrossHostPolicy === 'open_new_tab'
+            ? 'open_new_tab'
+            : 'allow_same_tab');
+
+      let serverDecision: TabEventDecisionResponse | null = null;
+      if (intent?.targetUrl && roverServerRuntime && runId) {
+        const isCrossHost = !!targetHost && !!currentHost && targetHost !== currentHost;
+        serverDecision = await roverServerRuntime
+          .sendTabEvent({
+            runId,
+            currentUrl: window.location.href,
+            targetUrl: intent.targetUrl,
+            message: 'agent_navigation_intent',
+            currentHost: currentHost || undefined,
+            targetHost,
+            isCrossHost,
+          })
+          .catch(() => null);
+
+        if (serverDecision?.retryAttempted) {
+          emit('tab_event_conflict_retry', {
+            runId: serverDecision.runId || runId,
+            decisionReason: serverDecision.decisionReason,
+            conflict: serverDecision.conflict,
+            targetUrl: intent.targetUrl,
+          });
+        }
+        if (serverDecision?.retryExhausted) {
+          emit('tab_event_conflict_exhausted', {
+            runId: serverDecision.runId || runId,
+            decisionReason: serverDecision.decisionReason,
+            conflict: serverDecision.conflict,
+            targetUrl: intent.targetUrl,
+          });
+        }
+      }
+
+      const decision = serverDecision?.decision || fallbackDecision;
+      if (decision === 'block') {
+        return {
+          decision: 'block',
+          reason: serverDecision?.reason || 'Navigation blocked by policy.',
+          decisionReason: serverDecision?.decisionReason || 'policy_blocked',
+        };
+      }
+      if (decision === 'open_new_tab') {
+        return {
+          decision: 'open_new_tab',
+          reason: serverDecision?.reason || 'Open in new tab to preserve runtime continuity.',
+          decisionReason: serverDecision?.decisionReason || 'open_new_tab',
+        };
+      }
+
+      // Same-tab navigation handoff path.
       agentNavigationPending = true;
-      if (!runtimeState) return;
+      if (!runtimeState) {
+        return {
+          decision: 'allow_same_tab',
+          reason: serverDecision?.reason || 'Navigation allowed.',
+          decisionReason: serverDecision?.decisionReason || 'allow_same_tab',
+        };
+      }
       setLatestNavigationHandoff(toPersistedNavigationHandoff(intent));
-      if (!runtimeState.pendingRun) return;
-      // Only mark for same-host — cross-host is handled by onBeforeCrossHostNavigation
-      if (!intent.isCrossHost) {
-        runtimeState.pendingRun = sanitizePendingRun({
-          ...runtimeState.pendingRun,
-          taskBoundaryId: runtimeState.pendingRun.taskBoundaryId || currentTaskBoundaryId,
-          resumeRequired: true,
-          resumeReason: 'agent_navigation',
-        });
+      const pendingRun = ensureNavigationPendingRun(
+        intent.isCrossHost ? 'cross_host_navigation' : 'agent_navigation',
+      );
+      if (pendingRun) {
         persistRuntimeState();
       }
+      return {
+        decision: 'allow_same_tab',
+        reason: serverDecision?.reason || 'Navigation allowed.',
+        decisionReason: serverDecision?.decisionReason || 'allow_same_tab',
+      };
     },
     onBeforeCrossHostNavigation: (intent: NavigationIntentEvent) => {
       agentNavigationPending = true;
       if (!runtimeState || !currentConfig) return;
       setLatestNavigationHandoff(toPersistedNavigationHandoff(intent));
       const handoffForCookie = getUnconsumedNavigationHandoff();
-      // Mark the pending run for cross-host resume
-      if (runtimeState.pendingRun) {
-        runtimeState.pendingRun = sanitizePendingRun({
-          ...runtimeState.pendingRun,
-          taskBoundaryId: runtimeState.pendingRun.taskBoundaryId || currentTaskBoundaryId,
-          resumeRequired: true,
-          resumeReason: 'cross_host_navigation',
-        });
-      }
+      const pendingRun = ensureNavigationPendingRun('cross_host_navigation');
       // Write a cookie scoped to the registrable domain so the new origin can resume
       writeCrossDomainResumeCookie(currentConfig.siteId, {
         sessionId: runtimeState.sessionId,
-        pendingRun: runtimeState.pendingRun
+        pendingRun: pendingRun
           ? {
-              id: runtimeState.pendingRun.id,
-              text: runtimeState.pendingRun.text,
-              startedAt: runtimeState.pendingRun.startedAt,
-              attempts: runtimeState.pendingRun.attempts,
-              taskBoundaryId: runtimeState.pendingRun.taskBoundaryId || currentTaskBoundaryId,
+              id: pendingRun.id,
+              text: pendingRun.text,
+              startedAt: pendingRun.startedAt,
+              attempts: pendingRun.attempts,
+              taskBoundaryId: pendingRun.taskBoundaryId || currentTaskBoundaryId,
             }
           : undefined,
         handoff: handoffForCookie
@@ -3828,6 +4418,11 @@ function createRuntime(cfg: RoverInit): void {
       type: 'init',
       config: {
         ...cfg,
+        publicKey: undefined,
+        authToken: getRuntimeSessionToken(cfg),
+        sessionToken: runtimeSessionToken,
+        sessionId: runtimeState?.sessionId,
+        activeRunId: runtimeState?.pendingRun?.id,
         taskBoundaryId: currentTaskBoundaryId,
       },
       port: channel.port2,
@@ -3841,6 +4436,11 @@ function createRuntime(cfg: RoverInit): void {
     if (pendingRun) {
       addIgnoredRunId(pendingRun.id);
       worker?.postMessage({ type: 'cancel_run', runId: pendingRun.id });
+      void roverServerRuntime?.controlRun({
+        action: 'cancel',
+        runId: pendingRun.id,
+        reason,
+      });
       sessionCoordinator?.releaseWorkflowLock(pendingRun.id);
       sessionCoordinator?.setActiveRun(undefined);
       setPendingRun(undefined);
@@ -3883,6 +4483,11 @@ function createRuntime(cfg: RoverInit): void {
       task.endedAt = Date.now();
       task.boundaryReason = reason;
     }
+    void roverServerRuntime?.controlRun({
+      action: 'cancel',
+      runId: runtimeState.pendingRun?.id,
+      reason,
+    });
     sessionCoordinator?.endTask(reason);
     sessionCoordinator?.setActiveRun(undefined);
     sessionCoordinator?.setWorkerContext(undefined);
@@ -3947,6 +4552,15 @@ function createRuntime(cfg: RoverInit): void {
         });
         return;
       }
+      if (suggestion.kind === 'continue_run') {
+        hideTaskSuggestion();
+        dispatchUserPrompt(suggestion.text, {
+          bypassSuggestion: true,
+          continueExistingRun: true,
+          continueRunId: suggestion.runId,
+        });
+        return;
+      }
       dispatchUserPrompt(suggestion.text, {
         bypassSuggestion: true,
         startNewTask: true,
@@ -3969,6 +4583,15 @@ function createRuntime(cfg: RoverInit): void {
         }
         hideTaskSuggestion();
         newTask({ reason: 'resume_declined_start_fresh', clearUi: true });
+        return;
+      }
+      if (suggestion.kind === 'continue_run') {
+        hideTaskSuggestion();
+        newTask({ reason: 'continue_declined_start_fresh', clearUi: true });
+        dispatchUserPrompt(suggestion.text, {
+          bypassSuggestion: true,
+          startNewTask: false,
+        });
         return;
       }
       dispatchUserPrompt(suggestion.text, {
@@ -4202,6 +4825,7 @@ export function boot(cfg: RoverInit): RoverInstance {
   autoResumeAttempted = false;
 
   createRuntime(currentConfig);
+  void ensureRoverServerRuntime(currentConfig);
   if (runtimeStorageKey) {
     void applyAsyncRuntimeStateHydration(runtimeStorageKey);
   }
@@ -4299,11 +4923,13 @@ export function update(cfg: Partial<RoverInit>): void {
 
   setupCloudCheckpointing(currentConfig);
   setupTelemetry(currentConfig);
+  void ensureRoverServerRuntime(currentConfig);
 
   const shouldReloadRemoteSiteConfig =
     cfg.apiBase !== undefined
-    || cfg.apiKey !== undefined
+    || cfg.publicKey !== undefined
     || cfg.authToken !== undefined
+    || cfg.sessionToken !== undefined
     || cfg.siteId !== undefined
     || cfg.siteKeyId !== undefined
     || cfg.ui?.shortcuts !== undefined
@@ -4336,6 +4962,13 @@ export function update(cfg: Partial<RoverInit>): void {
     type: 'update_config',
     config: {
       ...cfg,
+      publicKey: undefined,
+      authToken: getRuntimeSessionToken(currentConfig),
+      sessionToken: runtimeSessionToken,
+      sessionId: runtimeState?.sessionId,
+      activeRunId: runtimeState?.pendingRun?.id,
+      sessionEpoch: roverServerRuntime?.getEpoch?.() ?? runtimeServerEpoch,
+      sessionSeq: roverServerRuntime?.getLastSeq?.() ?? 0,
       taskBoundaryId: currentTaskBoundaryId,
     },
   });
@@ -4366,6 +4999,12 @@ export function shutdown(): void {
   cloudCheckpointClient?.syncNow();
   cloudCheckpointClient?.stop();
   cloudCheckpointClient = null;
+  roverServerRuntime?.stop();
+  roverServerRuntime = null;
+  runtimeSessionToken = undefined;
+  runtimeSessionTokenExpiresAt = 0;
+  runtimeServerEpoch = 1;
+  setServerAcceptedRunId(undefined);
   sessionCoordinator?.stop();
   sessionCoordinator = null;
 
@@ -4451,6 +5090,11 @@ export function newTask(options?: { reason?: string; clearUi?: boolean }): void 
   if (runtimeState.pendingRun) {
     addIgnoredRunId(runtimeState.pendingRun.id);
     worker?.postMessage({ type: 'cancel_run', runId: runtimeState.pendingRun.id });
+    void roverServerRuntime?.controlRun({
+      action: 'cancel',
+      runId: runtimeState.pendingRun.id,
+      reason,
+    });
     sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
   }
   if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
@@ -4485,6 +5129,7 @@ export function newTask(options?: { reason?: string; clearUi?: boolean }): void 
   persistRuntimeState();
 
   worker?.postMessage({ type: 'start_new_task', taskId: nextTask.taskId, taskBoundaryId: currentTaskBoundaryId });
+  void roverServerRuntime?.controlRun({ action: 'new_task', reason });
   emit('task_started', {
     taskId: nextTask.taskId,
     reason,
@@ -4497,6 +5142,7 @@ export function endTask(options?: { reason?: string }): void {
   const reason = options?.reason || 'manual_end_task';
   const task = ensureActiveTask('manual_end_task');
   if (!task) return;
+  const pendingRunId = runtimeState.pendingRun?.id;
 
   task.status = 'ended';
   task.endedAt = Date.now();
@@ -4504,6 +5150,11 @@ export function endTask(options?: { reason?: string }): void {
   if (runtimeState.pendingRun) {
     addIgnoredRunId(runtimeState.pendingRun.id);
     worker?.postMessage({ type: 'cancel_run', runId: runtimeState.pendingRun.id });
+    void roverServerRuntime?.controlRun({
+      action: 'cancel',
+      runId: runtimeState.pendingRun.id,
+      reason,
+    });
     sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
   }
   setPendingRun(undefined);
@@ -4515,6 +5166,11 @@ export function endTask(options?: { reason?: string }): void {
   ui?.setQuestionPrompt(undefined);
   hideTaskSuggestion();
   setUiStatus('Task ended. Start a new task to continue.');
+  void roverServerRuntime?.controlRun({
+    action: 'end_task',
+    runId: pendingRunId,
+    reason,
+  });
   sessionCoordinator?.endTask(reason);
   sessionCoordinator?.setActiveRun(undefined);
   sessionCoordinator?.setWorkerContext(undefined);
@@ -4624,12 +5280,12 @@ export function installGlobal(): void {
 
     if (scriptEl) {
       const dataSiteId = scriptEl.getAttribute('data-site-id');
-      const dataApiKey = scriptEl.getAttribute('data-api-key');
+      const dataPublicKey = scriptEl.getAttribute('data-public-key');
 
-      if (dataSiteId && dataApiKey) {
+      if (dataSiteId && dataPublicKey) {
         const dataConfig: RoverInit = {
           siteId: dataSiteId,
-          apiKey: dataApiKey,
+          publicKey: dataPublicKey,
         };
 
         const dataAllowedDomains = scriptEl.getAttribute('data-allowed-domains');

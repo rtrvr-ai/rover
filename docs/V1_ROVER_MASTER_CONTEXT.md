@@ -10,9 +10,10 @@ Rover is an embedded, DOM-native web agent runtime that runs inside customer web
 - `packages/ui`: embeddable widget UI, timeline cards, execution mode controls, compact thought visibility.
 
 ## Key v1 Defaults
-- Routing default: `act` (fast path), planner only when explicitly configured or on act-failure escalation.
+- Routing default: `act` (fast path). Planner is used when explicitly configured, or in `auto` mode when ACT does not produce a usable outcome.
 - Domain scope default: `registrable_domain`.
 - External navigation default: `open_new_tab_notice` (same-tab blocked, opens new tab with notice).
+- Cross-host in-scope default: `same_tab` (follow target behavior across allowed hosts).
 - Auth failures: structured machine-readable payloads with `code/message/missing/next_action/retryable`.
 
 ## Persisted State Invariants

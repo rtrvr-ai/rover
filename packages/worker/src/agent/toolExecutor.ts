@@ -94,6 +94,31 @@ function normalizeAgentLog(agentLog: ToolExecutionContext['agentLog']) {
   return { prevSteps, chatLog };
 }
 
+function isExecutionCancelled(ctx?: AgentContext): boolean {
+  if (!ctx?.isCancelled) return false;
+  try {
+    return !!ctx.isCancelled();
+  } catch {
+    return false;
+  }
+}
+
+function throwIfExecutionCancelled(ctx?: AgentContext): void {
+  if (!isExecutionCancelled(ctx)) return;
+  throw new DOMException('Run cancelled', 'AbortError');
+}
+
+function cancelledToolResult(): ToolExecutionResult {
+  return { error: 'Run cancelled' };
+}
+
+async function callExtensionRouterWithCancel(ctx: AgentContext, action: string, request: any): Promise<any> {
+  throwIfExecutionCancelled(ctx);
+  const response = await ctx.callExtensionRouter(action, request);
+  throwIfExecutionCancelled(ctx);
+  return response;
+}
+
 export async function executeToolFromPlan(context: ToolExecutionContext): Promise<ToolExecutionResult> {
   const {
     toolName,
@@ -118,9 +143,15 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
   if (!effectiveCtx) {
     return { error: 'Agent context unavailable' };
   }
+  if (isExecutionCancelled(effectiveCtx)) {
+    return cancelledToolResult();
+  }
 
   const fallbackTabs = Array.isArray(tabs) && tabs.length ? tabs : [{ id: 1 }];
   const resolvedTabs = await resolveRuntimeTabs(bridgeRpc, fallbackTabs);
+  if (isExecutionCancelled(effectiveCtx)) {
+    return cancelledToolResult();
+  }
   const tabOrder = resolvedTabs.tabOrder.length ? resolvedTabs.tabOrder : fallbackTabs.map(tab => tab.id);
   const effectiveAgentLog = normalizeAgentLog(agentLog);
 
@@ -152,6 +183,15 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
               needsUserInput: true,
               questions: Array.isArray(actResult.questions) ? actResult.questions : [],
             }
+          : actResult.navigationPending
+            ? {
+                status: 'in_progress',
+                taskStatus: 'in_progress',
+                navigationPending: true,
+                navigationTool: actResult.navigationTool,
+                navigationOutcome: actResult.navigationOutcome,
+                logicalTabId: actResult.logicalTabId,
+              }
           : undefined);
       return { ...actResult, output: actOutput };
     }
@@ -415,6 +455,9 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
       const results: any[] = [];
       if (Array.isArray(toolCalls)) {
         for (const call of toolCalls) {
+          if (isExecutionCancelled(effectiveCtx)) {
+            return { error: 'Run cancelled', output: results };
+          }
           const name = call.tool_name || call.name;
           const args = call.tool_args || call.args || {};
           try {
@@ -424,8 +467,14 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
             } else {
               res = await bridgeRpc?.('executeClientTool', { name, args });
             }
+            if (isExecutionCancelled(effectiveCtx)) {
+              return { error: 'Run cancelled', output: results };
+            }
             results.push({ name, result: res, success: true });
           } catch (error: any) {
+            if (isExecutionCancelled(effectiveCtx)) {
+              return { error: 'Run cancelled', output: results };
+            }
             results.push({ name, error: error?.message || String(error), success: false });
           }
         }
@@ -436,14 +485,20 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
     case PLANNER_FUNCTION_CALLS.CONFIGURE_API_KEY: {
       return unsupportedToolResult(
         PLANNER_FUNCTION_CALLS.CONFIGURE_API_KEY,
-        'configure_api_key is not supported in rover embed mode. Provide apiKey via rover.boot(...) or rover.update(...).',
+        'configure_api_key is not supported in rover embed mode. Provide publicKey (pk_site_*) via rover.boot(...) or an rvrsess_* sessionToken.',
       );
     }
 
       default: {
         if (toolFunctions && toolFunctions[toolName]) {
           try {
+            if (isExecutionCancelled(effectiveCtx)) {
+              return cancelledToolResult();
+            }
             const result = await bridgeRpc?.('executeClientTool', { name: toolName, args: toolArgs });
+            if (isExecutionCancelled(effectiveCtx)) {
+              return cancelledToolResult();
+            }
             return { output: result };
           } catch (error: any) {
             return { error: error?.message || String(error) };
@@ -509,7 +564,7 @@ async function executeProcessText({
     files,
   };
 
-  const response = await ctx.callExtensionRouter(SUB_AGENTS.processText, request);
+  const response = await callExtensionRouterWithCancel(ctx, SUB_AGENTS.processText, request);
   if (!response?.success) return { error: response?.error || 'process_text failed' };
 
   return {
@@ -571,7 +626,7 @@ async function executeCreateSheetFromData({
     returnDataOnly: useMemory,
   };
 
-  const response = await ctx.callExtensionRouter(SUB_AGENTS.createSheetFromData, request);
+  const response = await callExtensionRouterWithCancel(ctx, SUB_AGENTS.createSheetFromData, request);
   if (!response?.success) return { error: response?.error || 'create_sheet_from_data failed' };
 
   if (useMemory) {
@@ -677,7 +732,7 @@ async function executeInferSheetData({
     files,
   };
 
-  const response = await ctx.callExtensionRouter(SUB_AGENTS.infer, request);
+  const response = await callExtensionRouterWithCancel(ctx, SUB_AGENTS.infer, request);
   if (!response?.success) return { error: response?.error || 'infer_sheet_data failed' };
 
   const inferredItems = Array.isArray(response.data?.data) ? response.data.data : [];
@@ -795,7 +850,7 @@ async function executeQueryDocs({
     userProfile: ctx.userProfile,
   };
 
-  const response = await ctx.callExtensionRouter(SUB_AGENTS.queryRtrvrDocs, request);
+  const response = await callExtensionRouterWithCancel(ctx, SUB_AGENTS.queryRtrvrDocs, request);
   if (!response?.success) return { error: response?.error || 'query_rtrvr_docs failed' };
 
   return {
@@ -915,7 +970,7 @@ async function executeDocGenerator({
 
   let response: any;
   try {
-    response = await ctx.callExtensionRouter(SUB_AGENTS.googleDocGenerator, request);
+    response = await callExtensionRouterWithCancel(ctx, SUB_AGENTS.googleDocGenerator, request);
   } catch (err: any) {
     if (shouldFallbackToMemoryArtifact(err)) {
       const envelope = toRoverErrorEnvelope(err);
@@ -992,7 +1047,7 @@ async function executeSlidesGenerator({
 
   let response: any;
   try {
-    response = await ctx.callExtensionRouter(SUB_AGENTS.googleSlidesGenerator, request);
+    response = await callExtensionRouterWithCancel(ctx, SUB_AGENTS.googleSlidesGenerator, request);
   } catch (err: any) {
     if (shouldFallbackToMemoryArtifact(err)) {
       const envelope = toRoverErrorEnvelope(err);
@@ -1061,7 +1116,7 @@ async function executeWebpageGenerator({
     outputDestination: toolArgs?.output_destination || toolArgs?.outputDestination,
   };
 
-  const response = await ctx.callExtensionRouter(SUB_AGENTS.webpageGenerator, request);
+  const response = await callExtensionRouterWithCancel(ctx, SUB_AGENTS.webpageGenerator, request);
   if (!response?.success) return { error: response?.error || 'webpage_generator failed' };
 
   return {
@@ -1123,7 +1178,7 @@ async function executePdfFiller({
     outputDestination: toolArgs?.output_destination || toolArgs?.outputDestination,
   };
 
-  const response = await ctx.callExtensionRouter(SUB_AGENTS.pdfFiller, request);
+  const response = await callExtensionRouterWithCancel(ctx, SUB_AGENTS.pdfFiller, request);
   if (!response?.success) return { error: response?.error || 'pdf_filler failed' };
 
   return {
@@ -1172,7 +1227,7 @@ async function executeCustomToolGenerator({
     files,
   };
 
-  const response = await ctx.callExtensionRouter(SUB_AGENTS.customToolGenerator, request);
+  const response = await callExtensionRouterWithCancel(ctx, SUB_AGENTS.customToolGenerator, request);
   if (!response?.success) return { error: response?.error || 'custom_tool_generator failed' };
 
   return {

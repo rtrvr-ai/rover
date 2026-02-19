@@ -43,6 +43,7 @@ export function shouldIgnoreRunScopedMessage(params: {
   currentTaskBoundaryId?: string;
   pendingRunId?: string;
   sharedActiveRunId?: string;
+  authoritativeActiveRunId?: string;
   taskStatus?: TaskStatus;
   ignoredRunIds?: Set<string>;
 }): boolean {
@@ -53,32 +54,36 @@ export function shouldIgnoreRunScopedMessage(params: {
     currentTaskBoundaryId,
     pendingRunId,
     sharedActiveRunId,
+    authoritativeActiveRunId,
     taskStatus,
     ignoredRunIds,
   } = params;
   const currentBoundary = normalizeTaskBoundaryId(currentTaskBoundaryId);
   const messageBoundary = normalizeTaskBoundaryId(messageTaskBoundaryId);
-  if ((type === 'run_started' || type === 'run_completed') && currentBoundary) {
+  if ((type === 'run_started' || type === 'run_resumed' || type === 'run_state_transition' || type === 'run_completed') && currentBoundary) {
     if (!messageBoundary || messageBoundary !== currentBoundary) return true;
   }
-  if (!messageRunId && type !== 'run_started') return false;
+  if (!messageRunId && type !== 'run_started' && type !== 'run_resumed') return false;
   if (messageRunId && ignoredRunIds?.has(messageRunId)) return true;
 
-  if (type === 'run_started') {
+  const authoritativeRunId = authoritativeActiveRunId || sharedActiveRunId;
+
+  if (type === 'run_started' || type === 'run_resumed') {
     if (!messageRunId) return false;
+    if (authoritativeRunId && authoritativeRunId === messageRunId) return false;
     if (!pendingRunId) return true;
-    return pendingRunId !== messageRunId;
+    return pendingRunId !== messageRunId && (!authoritativeRunId || authoritativeRunId !== messageRunId);
   }
 
   if (!messageRunId) return false;
 
-  if (type === 'run_completed') {
+  if (type === 'run_completed' || type === 'run_state_transition') {
     if (taskStatus !== 'running') return true;
     if (!pendingRunId) {
-      if (sharedActiveRunId && sharedActiveRunId === messageRunId) return false;
+      if (authoritativeRunId && authoritativeRunId === messageRunId) return false;
       return true;
     }
-    return pendingRunId !== messageRunId;
+    return pendingRunId !== messageRunId && (!authoritativeRunId || authoritativeRunId !== messageRunId);
   }
 
   if (!pendingRunId) return true;
