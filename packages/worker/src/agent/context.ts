@@ -174,6 +174,27 @@ function normalizeRuntimeExternalTabs(input?: RoverRuntimeContextExternalTab[]):
   return Array.from(deduped.values());
 }
 
+function selectExternalIntent(
+  requestedIntent: 'read_context' | 'act' | 'auto' | undefined,
+  message?: string,
+): 'read_context' | 'act' {
+  if (requestedIntent === 'act') return 'act';
+  if (requestedIntent === 'read_context') return 'read_context';
+
+  const normalized = String(message || '').toLowerCase();
+  if (!normalized.trim()) return 'read_context';
+
+  const actionSignals = /\b(click|fill|type|submit|book|buy|purchase|apply|sign up|log in|delete|update|create|post|send|open|navigate|go to)\b/i;
+  const readSignals = /\b(read|summarize|extract|inspect|analyze|check|find|lookup|list|show)\b/i;
+  if (actionSignals.test(normalized) && !/\b(do not|don't)\b/i.test(normalized)) {
+    return 'act';
+  }
+  if (readSignals.test(normalized)) {
+    return 'read_context';
+  }
+  return 'read_context';
+}
+
 function resolveExtensionRouterEndpoint(apiBase?: string): string {
   const fallback = DEFAULT_EXTENSION_ROUTER_BASE;
   const base = String(apiBase || fallback).trim().replace(/\/+$/, '');
@@ -306,7 +327,19 @@ export function createAgentContext(
   const EXTERNAL_PAGE_CACHE_TTL_MS = 45_000;
 
   const callExtensionRouter = async (action: string, data: any): Promise<any> => {
-    const sessionToken = String(config.sessionToken || config.authToken || '').trim();
+    let sessionToken = String(config.sessionToken || config.authToken || '').trim();
+
+    // Brief wait for session token if not yet available (post-navigation resume).
+    // The worker-level `config` object is mutable — when `update_config` arrives from the
+    // main thread (even while this function is awaiting), `config.sessionToken` gets updated.
+    if (!sessionToken || !sessionToken.startsWith('rvrsess_')) {
+      for (let wait = 0; wait < 3; wait++) {
+        await new Promise(resolve => setTimeout(resolve, 800));
+        sessionToken = String(config.sessionToken || config.authToken || '').trim();
+        if (sessionToken && sessionToken.startsWith('rvrsess_')) break;
+      }
+    }
+
     if (!sessionToken || !sessionToken.startsWith('rvrsess_')) {
       throw createRoverError({
         code: 'MISSING_AUTH_TOKEN',
@@ -520,10 +553,16 @@ export function createAgentContext(
     const numericTabId = Number(tabId);
     const rawOptions = options && typeof options === 'object' ? options : undefined;
     const allowExternalFetch = rawOptions?.__roverAllowExternalFetch === true;
-    const externalIntent = rawOptions?.__roverExternalIntent === 'act' ? 'act' : 'read_context';
+    const requestedExternalIntent =
+      rawOptions?.__roverExternalIntent === 'act'
+      || rawOptions?.__roverExternalIntent === 'read_context'
+      || rawOptions?.__roverExternalIntent === 'auto'
+        ? rawOptions.__roverExternalIntent
+        : 'auto';
     const externalMessage = typeof rawOptions?.__roverExternalMessage === 'string'
       ? String(rawOptions.__roverExternalMessage)
       : undefined;
+    const externalIntent = selectExternalIntent(requestedExternalIntent, externalMessage);
     const pageConfig =
       rawOptions && typeof rawOptions === 'object'
         ? Object.fromEntries(

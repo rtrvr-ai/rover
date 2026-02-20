@@ -336,6 +336,21 @@ export function normalizePageConfig(cfg?: PageConfig): PageConfig {
     merged.pageDataTimeoutMs = Math.max(500, Math.floor(merged.pageDataTimeoutMs));
   if (merged.pdfTextSelectionTimeoutMs !== undefined)
     merged.pdfTextSelectionTimeoutMs = Math.max(150, Math.floor(merged.pdfTextSelectionTimeoutMs));
+  if (merged.adaptiveSettleDebounceMs !== undefined) {
+    merged.adaptiveSettleDebounceMs = Math.max(20, Math.min(500, Math.floor(merged.adaptiveSettleDebounceMs)));
+  }
+  if (merged.adaptiveSettleMaxWaitMs !== undefined) {
+    merged.adaptiveSettleMaxWaitMs = Math.max(120, Math.min(5000, Math.floor(merged.adaptiveSettleMaxWaitMs)));
+  }
+  if (merged.adaptiveSettleRetries !== undefined) {
+    merged.adaptiveSettleRetries = Math.max(0, Math.min(6, Math.floor(merged.adaptiveSettleRetries)));
+  }
+  if (merged.sparseTreeRetryDelayMs !== undefined) {
+    merged.sparseTreeRetryDelayMs = Math.max(40, Math.min(1000, Math.floor(merged.sparseTreeRetryDelayMs)));
+  }
+  if (merged.sparseTreeRetryMaxAttempts !== undefined) {
+    merged.sparseTreeRetryMaxAttempts = Math.max(0, Math.min(4, Math.floor(merged.sparseTreeRetryMaxAttempts)));
+  }
 
   return merged;
 }

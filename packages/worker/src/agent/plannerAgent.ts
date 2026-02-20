@@ -79,6 +79,8 @@ export async function executePlanner(options: PlannerOptions & {
       return await ctx.getPageData(tabId, {
         onlyTextContent: false,
         ...(options?.allowExternalFetch ? { __roverAllowExternalFetch: true } : {}),
+        ...(options?.allowExternalFetch ? { __roverExternalIntent: 'auto' } : {}),
+        ...(options?.allowExternalFetch ? { __roverExternalMessage: userInput } : {}),
       });
     } catch {
       const tab = tabMetaById[tabId];

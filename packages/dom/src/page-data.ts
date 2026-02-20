@@ -43,6 +43,19 @@ interface PdfTextExtractionResult {
 }
 
 const pdfTextCache = new Map<string, string>();
+const DEFAULT_ADAPTIVE_SETTLE_DEBOUNCE_MS = 24;
+const DEFAULT_ADAPTIVE_SETTLE_MAX_WAIT_MS = 220;
+const DEFAULT_ADAPTIVE_SETTLE_RETRIES = 0;
+const DEFAULT_SPARSE_TREE_RETRY_DELAY_MS = 35;
+const DEFAULT_SPARSE_TREE_RETRY_MAX_ATTEMPTS = 1;
+
+type AdaptiveDomSettleConfig = {
+  debounceMs: number;
+  maxWaitMs: number;
+  retries: number;
+  sparseTreeRetryDelayMs: number;
+  sparseTreeRetryMaxAttempts: number;
+};
 
 function buildElementLinkRecord(nodes: Record<number, SemanticNode>): Record<number, string> {
   const record: Record<number, string> = {};
@@ -79,6 +92,7 @@ export async function buildPageData(
   };
 
   const globalDeadline = getGlobalDeadline(pageConfig);
+  const adaptiveSettle = resolveAdaptiveDomSettleConfig(pageConfig);
 
   if (analysis.documentType !== DocumentType.HTML) {
     const rawMsgTimeout = Number(pageConfig?.pageDataTimeoutMs);
@@ -132,6 +146,15 @@ export async function buildPageData(
     }
   }
 
+  const prepRemainingBeforeSettle = Math.max(0, prepBudgetMs - (performance.now() - prepStart));
+  if (prepRemainingBeforeSettle > 60) {
+    await waitForAdaptiveDomSettle(doc, {
+      ...adaptiveSettle,
+      deadlineEpochMs: globalDeadline,
+      totalBudgetMs: prepRemainingBeforeSettle,
+    });
+  }
+
   const prepRemaining = Math.max(0, prepBudgetMs - (performance.now() - prepStart));
   if (prepRemaining > 80) {
     await flushListenerScan(doc, {
@@ -142,17 +165,37 @@ export async function buildPageData(
     });
   }
 
-  const snapshot = buildSnapshot(root, instrumentation, {
+  let snapshot = buildSnapshot(root, instrumentation, {
     includeFrames: opts.includeFrames ?? true,
     disableDomAnnotations: opts.disableDomAnnotations ?? true,
   });
+
+  const retryAttempts = Math.max(0, adaptiveSettle.sparseTreeRetryMaxAttempts);
+  let retryCount = 0;
+  while (retryCount < retryAttempts && isTreeSparse(snapshot.rootNodes, snapshot.semanticNodes)) {
+    const waitMs = Math.max(10, Math.min(600, adaptiveSettle.sparseTreeRetryDelayMs));
+    await sleepBgSafe(waitMs, doc);
+    const retryBudget = Math.max(20, Math.min(180, timeLeftMs(globalDeadline)));
+    if (retryBudget > 20) {
+      await waitForAdaptiveDomSettle(doc, {
+        ...adaptiveSettle,
+        deadlineEpochMs: globalDeadline,
+        totalBudgetMs: retryBudget,
+      });
+    }
+    snapshot = buildSnapshot(root, instrumentation, {
+      includeFrames: opts.includeFrames ?? true,
+      disableDomAnnotations: opts.disableDomAnnotations ?? true,
+    });
+    retryCount += 1;
+  }
 
   if (isTreeEmpty(snapshot.rootNodes, snapshot.semanticNodes)) {
     return {
       ...pageMetadata,
       contentType: HTML_MIME_TYPE,
       content: getDocumentTextFallback(doc),
-      metadata: { scrollingPerformed: didScroll },
+      metadata: { scrollingPerformed: didScroll, extractionMethod: retryCount > 0 ? 'sparse_tree_fallback' : undefined },
     };
   }
 
@@ -162,8 +205,100 @@ export async function buildPageData(
     roots: snapshot.rootNodes,
     nodes: snapshot.semanticNodes,
     elementLinkRecord: buildElementLinkRecord(snapshot.semanticNodes),
-    metadata: { scrollingPerformed: didScroll },
+    metadata: { scrollingPerformed: didScroll, extractionMethod: retryCount > 0 ? 'sparse_tree_retry' : undefined },
   };
+}
+
+function resolveAdaptiveDomSettleConfig(pageConfig?: PageConfig): AdaptiveDomSettleConfig {
+  const debounceMs = Number(pageConfig?.adaptiveSettleDebounceMs);
+  const maxWaitMs = Number(pageConfig?.adaptiveSettleMaxWaitMs);
+  const retries = Number(pageConfig?.adaptiveSettleRetries);
+  const sparseTreeRetryDelayMs = Number(pageConfig?.sparseTreeRetryDelayMs);
+  const sparseTreeRetryMaxAttempts = Number(pageConfig?.sparseTreeRetryMaxAttempts);
+  return {
+    debounceMs: Number.isFinite(debounceMs)
+      ? Math.max(8, Math.min(500, Math.floor(debounceMs)))
+      : DEFAULT_ADAPTIVE_SETTLE_DEBOUNCE_MS,
+    maxWaitMs: Number.isFinite(maxWaitMs)
+      ? Math.max(80, Math.min(5000, Math.floor(maxWaitMs)))
+      : DEFAULT_ADAPTIVE_SETTLE_MAX_WAIT_MS,
+    retries: Number.isFinite(retries)
+      ? Math.max(0, Math.min(6, Math.floor(retries)))
+      : DEFAULT_ADAPTIVE_SETTLE_RETRIES,
+    sparseTreeRetryDelayMs: Number.isFinite(sparseTreeRetryDelayMs)
+      ? Math.max(20, Math.min(1_000, Math.floor(sparseTreeRetryDelayMs)))
+      : DEFAULT_SPARSE_TREE_RETRY_DELAY_MS,
+    sparseTreeRetryMaxAttempts: Number.isFinite(sparseTreeRetryMaxAttempts)
+      ? Math.max(0, Math.min(4, Math.floor(sparseTreeRetryMaxAttempts)))
+      : DEFAULT_SPARSE_TREE_RETRY_MAX_ATTEMPTS,
+  };
+}
+
+async function waitForAdaptiveDomSettle(
+  doc: Document,
+  options: AdaptiveDomSettleConfig & { deadlineEpochMs: number; totalBudgetMs: number },
+): Promise<void> {
+  const remainingGlobal = timeLeftMs(options.deadlineEpochMs);
+  if (remainingGlobal <= 20) return;
+  const totalBudgetMs = Math.max(20, Math.min(Math.floor(options.totalBudgetMs), remainingGlobal));
+  const settleDeadline = Date.now() + totalBudgetMs;
+  let attempts = 0;
+
+  while (attempts <= options.retries && timeLeftMs(settleDeadline) > 20) {
+    const windowBudgetMs = Math.max(40, Math.min(options.maxWaitMs, timeLeftMs(settleDeadline)));
+    const settled = await waitForDomQuietWindow(doc, {
+      debounceMs: options.debounceMs,
+      windowBudgetMs,
+      deadlineEpochMs: settleDeadline,
+    });
+    if (settled) return;
+    attempts += 1;
+  }
+}
+
+async function waitForDomQuietWindow(
+  doc: Document,
+  options: { debounceMs: number; windowBudgetMs: number; deadlineEpochMs: number },
+): Promise<boolean> {
+  const root = doc.documentElement;
+  if (!root || typeof MutationObserver === 'undefined') return true;
+
+  let lastMutationAt = Date.now();
+  const observer = new MutationObserver(() => {
+    lastMutationAt = Date.now();
+  });
+  try {
+    observer.observe(root, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      characterData: true,
+    });
+  } catch {
+    return true;
+  }
+
+  const windowDeadline = Date.now() + Math.max(40, Math.floor(options.windowBudgetMs));
+  try {
+    while (timeLeftMs(options.deadlineEpochMs) > 20 && timeLeftMs(windowDeadline) > 20) {
+      const idleMs = Date.now() - lastMutationAt;
+      if (idleMs >= options.debounceMs) return true;
+      const waitMs = Math.max(
+        10,
+        Math.min(
+          60,
+          options.debounceMs - idleMs,
+          timeLeftMs(options.deadlineEpochMs),
+          timeLeftMs(windowDeadline),
+        ),
+      );
+      await sleepBgSafe(waitMs, doc);
+    }
+  } finally {
+    observer.disconnect();
+  }
+
+  return false;
 }
 
 function getGlobalDeadline(pageConfig?: PageConfig): number {
@@ -319,6 +454,16 @@ async function extractGoogleDocsContent(doc: Document): Promise<Partial<PageData
 function isTreeEmpty(roots: number[], nodes: Record<number, any>): boolean {
   if (!Array.isArray(roots) || roots.length === 0) return true;
   if (!nodes || Object.keys(nodes).length === 0) return true;
+  return false;
+}
+
+function isTreeSparse(roots: number[], nodes: Record<number, any>): boolean {
+  if (!Array.isArray(roots) || roots.length === 0) return true;
+  const semanticCount = nodes && typeof nodes === 'object' ? Object.keys(nodes).length : 0;
+  if (semanticCount === 0) return true;
+  if (roots.length === 1 && semanticCount <= 4) return true;
+  const semanticDensity = semanticCount / Math.max(1, roots.length);
+  if (roots.length <= 2 && semanticDensity <= 2) return true;
   return false;
 }
 

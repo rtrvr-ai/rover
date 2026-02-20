@@ -10,9 +10,25 @@
 
 const COOKIE_PREFIX = 'rover_xdr_';
 const MAX_COOKIE_AGE_S = 120; // 2 minutes — cookie is short-lived
+const MULTI_LABEL_TLDS = new Set([
+  'co.uk',
+  'org.uk',
+  'gov.uk',
+  'ac.uk',
+  'com.au',
+  'net.au',
+  'org.au',
+  'co.jp',
+  'com.br',
+  'com.mx',
+  'com.sg',
+  'co.in',
+]);
 
 export interface CrossDomainResumeData {
   sessionId: string;
+  sessionToken?: string;
+  sessionTokenExpiresAt?: number;
   pendingRun?: {
     id: string;
     text: string;
@@ -40,9 +56,16 @@ export interface CrossDomainResumeData {
  * e.g. "rover.rtrvr.ai" → "rtrvr.ai", "app.foo.co.uk" → "co.uk" (simplified).
  */
 function getRegistrableDomain(hostname: string): string {
-  const parts = hostname.split('.').filter(Boolean);
-  if (parts.length < 2) return hostname;
-  return `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+  const host = String(hostname || '').trim().toLowerCase();
+  if (!host) return '';
+  if (host === 'localhost' || /^\d+\.\d+\.\d+\.\d+$/.test(host)) return host;
+  const parts = host.split('.').filter(Boolean);
+  if (parts.length < 2) return host;
+  const tail2 = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+  if (parts.length >= 3 && MULTI_LABEL_TLDS.has(tail2)) {
+    return `${parts[parts.length - 3]}.${tail2}`;
+  }
+  return tail2;
 }
 
 function cookieName(siteId: string): string {
@@ -63,10 +86,12 @@ export function writeCrossDomainResumeCookie(
     const parts = [
       `${name}=${value}`,
       'path=/',
-      `domain=.${domain}`,
       `max-age=${MAX_COOKIE_AGE_S}`,
       'SameSite=Lax',
     ];
+    if (domain && domain !== 'localhost' && !/^\d+\.\d+\.\d+\.\d+$/.test(domain)) {
+      parts.push(`domain=.${domain}`);
+    }
     if (isSecure) parts.push('Secure');
     document.cookie = parts.join('; ');
   } catch {
@@ -103,10 +128,12 @@ export function clearCrossDomainResumeCookie(siteId: string): void {
     const parts = [
       `${name}=`,
       'path=/',
-      `domain=.${domain}`,
       'max-age=0',
       'SameSite=Lax',
     ];
+    if (domain && domain !== 'localhost' && !/^\d+\.\d+\.\d+\.\d+$/.test(domain)) {
+      parts.push(`domain=.${domain}`);
+    }
     if (isSecure) parts.push('Secure');
     document.cookie = parts.join('; ');
   } catch {

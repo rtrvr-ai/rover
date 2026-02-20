@@ -107,6 +107,11 @@ export const DEFAULT_MAX_PAGINATION = 500;
 export const DEFAULT_PAGE_LOAD_DELAY = 1000;
 export const ADDITIONAL_PDF_PAGE_LOAD_DELAY = 200; //plus 200 ms on base page load
 export const DEFAULT_CONSECUTIVE_SCROLL_DELAY = 500;
+export const DEFAULT_ADAPTIVE_SETTLE_DEBOUNCE_MS = 30;
+export const DEFAULT_ADAPTIVE_SETTLE_MAX_WAIT_MS = 320;
+export const DEFAULT_ADAPTIVE_SETTLE_RETRIES = 0;
+export const DEFAULT_SPARSE_TREE_RETRY_DELAY_MS = 50;
+export const DEFAULT_SPARSE_TREE_RETRY_MAX_ATTEMPTS = 1;
 export const DEFAULT_GEMINI_MODEL = GEMINI_MODEL.FLASH;
 export const DEFAULT_MAX_PARALLEL_TABS = 6; // Match Gemini API Free Tier RPM Quota + Schema
 export const DEFAULT_EXTRACTION_CONFIG: ExtractionConfig = {
@@ -179,6 +184,11 @@ export const DEFAULT_PAGE_CONFIG: PageConfig = {
   // ✅ new
   totalBudgetMs: 25000,
   pageDataTimeoutMs: 22000,
+  adaptiveSettleDebounceMs: DEFAULT_ADAPTIVE_SETTLE_DEBOUNCE_MS,
+  adaptiveSettleMaxWaitMs: DEFAULT_ADAPTIVE_SETTLE_MAX_WAIT_MS,
+  adaptiveSettleRetries: DEFAULT_ADAPTIVE_SETTLE_RETRIES,
+  sparseTreeRetryDelayMs: DEFAULT_SPARSE_TREE_RETRY_DELAY_MS,
+  sparseTreeRetryMaxAttempts: DEFAULT_SPARSE_TREE_RETRY_MAX_ATTEMPTS,
 
   // PDF-specific
   pdfTextSelectionTimeoutMs: 12000,

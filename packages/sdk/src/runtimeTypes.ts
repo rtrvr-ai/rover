@@ -61,12 +61,19 @@ export type PersistedWorkerState = {
 
 export type PersistedTaskState = {
   taskId: string;
-  status: 'running' | 'completed' | 'ended';
+  status: 'running' | 'completed' | 'cancelled' | 'failed' | 'ended';
   startedAt: number;
   lastUserAt?: number;
   lastAssistantAt?: number;
   boundaryReason?: string;
   endedAt?: number;
+};
+
+export type PersistedTaskTabScope = {
+  boundaryId: string;
+  seedTabId: number;
+  touchedTabIds: number[];
+  updatedAt: number;
 };
 
 export type PersistedPendingRun = {
@@ -78,6 +85,40 @@ export type PersistedPendingRun = {
   taskBoundaryId?: string;
   resumeRequired?: boolean;
   resumeReason?: 'cross_host_navigation' | 'page_reload' | 'handoff' | 'agent_navigation';
+};
+
+export type RoverRuntimeEventType =
+  | 'run_started'
+  | 'run_state_transition'
+  | 'run_completed'
+  | 'same_tab_navigation_handoff'
+  | 'resume_started'
+  | 'resume_completed'
+  | 'terminal_marked';
+
+export type RoverRuntimeEventEnvelope<TPayload = Record<string, unknown>> = {
+  sessionId: string;
+  taskBoundaryId: string;
+  runId: string;
+  seq: number;
+  epoch: number;
+  ts: number;
+  type: RoverRuntimeEventType;
+  payload: TPayload;
+};
+
+export type SameTabNavigationHandoffPayload = {
+  runId: string;
+  logicalTabId?: number;
+  url?: string;
+  reason?: string;
+  navigationOutcome?: 'same_tab_scheduled';
+};
+
+export type ResumeLifecyclePayload = {
+  runId: string;
+  resumeRequired: boolean;
+  resumeReason?: PersistedPendingRun['resumeReason'];
 };
 
 export type PersistedNavigationHandoff = {
@@ -104,6 +145,7 @@ export type PersistedRuntimeState = {
   lastNavigationHandoff?: PersistedNavigationHandoff;
   taskEpoch?: number;
   activeTask?: PersistedTaskState;
+  taskTabScope?: PersistedTaskTabScope;
   lastRoutingDecision?: {
     mode: 'act' | 'planner';
     score?: number;

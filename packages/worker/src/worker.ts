@@ -8,6 +8,8 @@ import type {
   RoverTab,
   PlannerQuestion,
   PreviousSteps,
+  ToolExecutionResult,
+  RuntimeToolOutput,
   StatusStage,
   TaskRoutingConfig,
 } from './agent/types.js';
@@ -26,6 +28,38 @@ type RoverWorkerConfig = RoverAgentConfig & {
   siteId: string;
   allowActions?: boolean;
   maxToolSteps?: number;
+  scopedTabIds?: number[];
+  taskTabScope?: {
+    boundaryId?: string;
+    seedTabId?: number;
+    touchedTabIds?: number[];
+  };
+  task?: {
+    singleActiveScope?: 'host_session';
+    tabScope?: 'task_touched_only';
+    resume?: {
+      mode?: 'crash_only';
+      ttlMs?: number;
+    };
+    followup?: {
+      mode?: 'heuristic_same_window';
+      ttlMs?: number;
+      minLexicalOverlap?: number;
+    };
+    observerInput?: 'read_only';
+  };
+  chat?: {
+    inRun?: 'empty';
+    resumeFollowup?: {
+      mode?: 'deterministic_cues';
+      maxTurns?: number;
+    };
+  };
+  external?: {
+    intentSelection?: 'auto';
+    requireUserConfirm?: boolean;
+    adversarialGate?: 'pre_tool_block';
+  };
   tools?: { client?: ClientToolDefinition[]; web?: ExternalWebConfig } | ClientToolDefinition[];
   ui?: {
     agent?: {
@@ -84,7 +118,7 @@ type PendingAskUserPrompt = {
 
 type AssistantMessageBlock =
   | { type: 'text'; text: string }
-  | { type: 'tool_output' | 'json'; data: unknown; label?: string; toolName?: string };
+  | { type: 'tool_output' | 'json'; data: RuntimeToolOutput; label?: string; toolName?: string };
 
 type AssistantMessagePayload = {
   text?: string;
@@ -115,8 +149,11 @@ let plannerHistory: any[] = [];
 let agentPrevSteps: PreviousSteps[] = [];
 let pendingAskUser: PendingAskUserPrompt | undefined;
 let rootUserInput = '';
-let trajectoryId: string = crypto.randomUUID();
+let workerSessionId = '';
+let taskTrajectoryId: string = crypto.randomUUID();
 let taskBoundaryId: string = crypto.randomUUID();
+let scopedTabIds: number[] = [];
+let scopedSeedTabId: number | undefined;
 let tabularStore: TabularStore | null = null;
 const PLANNER_TOOL_NAME_SET = new Set<string>(Object.values(PLANNER_FUNCTION_CALLS));
 let activeRun: { runId: string; text: string; startedAt: number; resume: boolean } | null = null;
@@ -126,15 +163,10 @@ let lastStatusKey = '';
 let seenStatusKeys = new Set<string>();
 const terminalRuns = new Map<string, TerminalRunResult>();
 
-const RPC_TIMEOUT_MS = 30_000;
+let RPC_TIMEOUT_MS = 30_000;
 const DETACHED_EXTERNAL_TAB_MAX_AGE_MS = 90_000;
 const PENDING_ATTACH_TAB_MAX_AGE_MS = 20_000;
-const MAX_CHATLOG_ENTRIES = 12;
-const CHATLOG_STOPWORDS = new Set([
-  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'has', 'have', 'how', 'i', 'in', 'is', 'it',
-  'me', 'my', 'of', 'on', 'or', 'our', 'that', 'the', 'their', 'them', 'there', 'they', 'this', 'to', 'was',
-  'we', 'were', 'what', 'when', 'where', 'which', 'who', 'why', 'with', 'you', 'your',
-]);
+const MAX_RESUME_CUE_TURNS = 2;
 
 function resolveAgentName(config: RoverWorkerConfig | null): string {
   const raw = String(config?.ui?.agent?.name || '').trim();
@@ -399,10 +431,13 @@ function cloneUnknown<T>(value: T): T | undefined {
 }
 
 function sanitizeHistoryForPersist(input: ChatMessage[]): ChatMessage[] {
-  return input.slice(-80).map(message => ({
-    ...message,
-    content: String(message?.content ?? ''),
-  }));
+  return input
+    .filter(message => message?.role === 'user')
+    .slice(-20)
+    .map(message => ({
+      role: 'user',
+      content: String(message?.content ?? ''),
+    }));
 }
 
 function sanitizePlannerHistoryForPersist(input: unknown[]): unknown[] {
@@ -533,6 +568,51 @@ function buildAskUserAnswerContext(
 function normalizeRootUserInput(input: string | undefined): string | undefined {
   const normalized = String(input || '').trim();
   return normalized || undefined;
+}
+
+function dedupePositiveTabIds(input: unknown): number[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<number>();
+  const out: number[] = [];
+  for (const value of input) {
+    const tabId = Number(value);
+    if (!Number.isFinite(tabId) || tabId <= 0 || seen.has(tabId)) continue;
+    seen.add(tabId);
+    out.push(tabId);
+  }
+  return out;
+}
+
+function resolveScopedTabConfig(
+  partial: Partial<RoverWorkerConfig> | undefined,
+): { scoped: number[]; seedTabId?: number } {
+  const directScoped = dedupePositiveTabIds((partial as any)?.scopedTabIds);
+  const scope = (partial as any)?.taskTabScope;
+  const scopedFromScope = dedupePositiveTabIds(scope?.touchedTabIds);
+  const seedCandidate = Number(scope?.seedTabId);
+  const seedTabId = Number.isFinite(seedCandidate) && seedCandidate > 0 ? seedCandidate : undefined;
+
+  const scoped = dedupePositiveTabIds(
+    directScoped.length > 0
+      ? directScoped
+      : (scopedFromScope.length > 0
+        ? scopedFromScope
+        : (seedTabId ? [seedTabId] : [])),
+  );
+  if (seedTabId && !scoped.includes(seedTabId)) {
+    scoped.unshift(seedTabId);
+  }
+  return { scoped, seedTabId };
+}
+
+function applyScopedTabConfig(partial: Partial<RoverWorkerConfig> | undefined): void {
+  if (!partial || typeof partial !== 'object') return;
+  const hasScopedTabIds = Object.prototype.hasOwnProperty.call(partial, 'scopedTabIds');
+  const hasTaskTabScope = Object.prototype.hasOwnProperty.call(partial, 'taskTabScope');
+  if (!hasScopedTabIds && !hasTaskTabScope) return;
+  const next = resolveScopedTabConfig(partial);
+  scopedTabIds = next.scoped;
+  scopedSeedTabId = next.seedTabId;
 }
 
 function getRootUserInputFallbackFromHistory(): string | undefined {
@@ -759,7 +839,7 @@ function buildPersistedState(): PersistedWorkerState {
         }
       : undefined;
   return {
-    trajectoryId,
+    trajectoryId: taskTrajectoryId,
     taskBoundaryId,
     ...(normalizedRootUserInput ? { rootUserInput: normalizedRootUserInput } : {}),
     history: sanitizeHistoryForPersist(history),
@@ -848,7 +928,7 @@ function hydrateState(raw: any): void {
   }
 
   if (typeof snapshot.trajectoryId === 'string' && snapshot.trajectoryId.trim()) {
-    trajectoryId = snapshot.trajectoryId.trim();
+    taskTrajectoryId = snapshot.trajectoryId.trim();
   }
 
   if (typeof (snapshot as any).taskBoundaryId === 'string' && String((snapshot as any).taskBoundaryId).trim()) {
@@ -859,7 +939,7 @@ function hydrateState(raw: any): void {
   rootUserInput = hydratedRootUserInput || normalizeRootUserInput(getRootUserInputFallbackFromHistory()) || '';
 
   if (!tabularStore) {
-    tabularStore = new TabularStore(`rover-${trajectoryId}`);
+    tabularStore = new TabularStore(`rover-${taskTrajectoryId}`);
   }
 
   postStateSnapshot();
@@ -882,7 +962,7 @@ function sanitizeAssistantBlocks(input: unknown): AssistantMessageBlock[] | unde
     if (type === 'tool_output' || type === 'json') {
       out.push({
         type,
-        data: cloneUnknown((raw as any).data),
+        data: normalizeRuntimeToolOutput((raw as any).data),
         label: typeof (raw as any).label === 'string' ? (raw as any).label : undefined,
         toolName: typeof (raw as any).toolName === 'string' ? (raw as any).toolName : undefined,
       });
@@ -892,7 +972,22 @@ function sanitizeAssistantBlocks(input: unknown): AssistantMessageBlock[] | unde
   return out.length ? out : undefined;
 }
 
-function summarizeOutputText(output: any): string | undefined {
+function normalizeRuntimeToolOutput(value: unknown): RuntimeToolOutput {
+  const cloned = cloneUnknown(value);
+  if (cloned == null) return null;
+  if (typeof cloned === 'string' || typeof cloned === 'number' || typeof cloned === 'boolean') {
+    return cloned;
+  }
+  if (Array.isArray(cloned)) {
+    return cloned as RuntimeToolOutput;
+  }
+  if (typeof cloned === 'object') {
+    return cloned as RuntimeToolOutput;
+  }
+  return String(cloned);
+}
+
+function summarizeOutputText(output: RuntimeToolOutput | undefined): string | undefined {
   if (output == null) return undefined;
   if (typeof output === 'string') {
     const clean = output.trim();
@@ -904,12 +999,12 @@ function summarizeOutputText(output: any): string | undefined {
   if (Array.isArray(output)) {
     const lines: string[] = [];
     for (const item of output.slice(0, 4)) {
-      const candidate = summarizeOutputText(item);
+      const candidate = summarizeOutputText(item as RuntimeToolOutput);
       if (candidate) lines.push(candidate);
       if (lines.length >= 3) break;
     }
     if (lines.length) return lines.join('\n');
-    return `Received ${output.length} item(s).`;
+    return undefined;
   }
   if (typeof output === 'object') {
     const preferredKeys = ['response', 'message', 'summary', 'text', 'content', 'result', 'description'];
@@ -919,9 +1014,7 @@ function summarizeOutputText(output: any): string | undefined {
         return value.trim();
       }
     }
-    const keys = Object.keys(output);
-    if (!keys.length) return undefined;
-    return `Received ${keys.length} field(s).`;
+    return undefined;
   }
   return undefined;
 }
@@ -936,7 +1029,7 @@ function isSingleTextWrapperObject(value: unknown): boolean {
   return textKeys.has(key);
 }
 
-function shouldAttachStructuredBlock(output: any, summaryText?: string): boolean {
+function shouldAttachStructuredBlock(output: RuntimeToolOutput | undefined, summaryText?: string): boolean {
   if (output == null) return false;
   if (typeof output === 'string') {
     const clean = output.trim();
@@ -963,18 +1056,18 @@ function shouldAttachStructuredBlock(output: any, summaryText?: string): boolean
 }
 
 function buildAssistantPayloadFromToolOutput(
-  output: any,
+  output: RuntimeToolOutput | undefined,
   options?: { label?: string; toolName?: string; fallbackText?: string },
 ): AssistantMessagePayload {
   const summaryText = summarizeOutputText(output);
-  const text = summaryText || options?.fallbackText || 'Done.';
+  const text = summaryText || options?.fallbackText || '';
   const blocks: AssistantMessageBlock[] = [];
   if (shouldAttachStructuredBlock(output, summaryText)) {
     blocks.push({
       type: 'tool_output',
       label: options?.label,
       toolName: options?.toolName,
-      data: cloneUnknown(output),
+      data: normalizeRuntimeToolOutput(output),
     });
   }
   return { text, blocks: blocks.length ? blocks : undefined };
@@ -991,8 +1084,11 @@ function postAssistantMessage(payload: string | AssistantMessagePayload): string
   const resolvedText =
     text
     || firstTextBlock?.text
-    || summarizeOutputText(firstStructuredBlock?.data)
-    || 'Done.';
+    || summarizeOutputText(firstStructuredBlock?.data as RuntimeToolOutput | undefined)
+    || '';
+  if (!resolvedText && (!blocks || blocks.length === 0)) {
+    return '';
+  }
   const runId = activeRun?.runId;
   if (runId && cancelledRunIds.has(runId)) {
     return resolvedText;
@@ -1122,12 +1218,23 @@ function sawRecentSuccessfulNavigationStep(steps: PreviousSteps[] | undefined): 
   return false;
 }
 
+// Error codes that can be transient during post-navigation resume
+// (e.g. session token not yet available after page reload)
+const NAVIGATION_TRANSIENT_CODES = new Set([
+  'UNKNOWN_ERROR',
+  'MISSING_AUTH_TOKEN',
+  'MISSING_AUTH',
+  'SESSION_TOKEN_EXPIRED',
+  'SESSION_TOKEN_INVALID',
+  'BOOTSTRAP_REQUIRED',
+]);
+
 function normalizeLifecycleHandoffError(
   payload: StructuredErrorPayload,
   steps: PreviousSteps[] | undefined,
 ): StructuredErrorPayload {
   const code = String(payload?.error?.code || '').trim().toUpperCase();
-  if (code && code !== 'UNKNOWN_ERROR') return payload;
+  if (code && !NAVIGATION_TRANSIENT_CODES.has(code)) return payload;
   if (!sawRecentSuccessfulNavigationStep(steps)) return payload;
 
   return {
@@ -1137,10 +1244,10 @@ function normalizeLifecycleHandoffError(
       code: 'NAVIGATION_HANDOFF_PENDING',
       message: payload.error?.message || 'Navigation handoff is in progress.',
       retryable: true,
-      next_action: payload.error?.next_action || 'Wait for post-navigation resume and continue the task.',
+      next_action: 'Wait for post-navigation resume and continue the task.',
     },
     retryable: true,
-    next_action: payload.next_action || 'Wait for post-navigation resume and continue the task.',
+    next_action: 'Wait for post-navigation resume and continue the task.',
   };
 }
 
@@ -1167,157 +1274,77 @@ function maybePostNavigationGuardrailFromToolResult(toolResult: any): void {
   });
 }
 
-function buildChatLogFromHistory(input: ChatMessage[], currentUserInput?: string): Array<{ role: 'user' | 'model'; message: string }> {
-  const sanitizeChatText = (raw: string): string => {
-    return String(raw || '').replace(/\s+/g, ' ').trim();
-  };
-  const isAskUserControlMessage = (role: 'user' | 'assistant', content: string): boolean => {
-    const lowered = content.toLowerCase();
-    if (role === 'assistant' && lowered.startsWith('i need a bit more info')) return true;
-    if (lowered.includes('[ask_user_answers]')) return true;
-    if (lowered.includes('[raw_user_reply]')) return true;
-    if (lowered.includes('[continue_planning]')) return true;
-    return false;
-  };
-  const extractDomains = (value: string): Set<string> => {
-    const out = new Set<string>();
-    const urlRegex = /https?:\/\/([a-z0-9.-]+\.[a-z]{2,})/ig;
-    const hostRegex = /\b([a-z0-9.-]+\.[a-z]{2,})(?:\/|\b)/ig;
-    let match: RegExpExecArray | null;
-    while ((match = urlRegex.exec(value)) !== null) {
-      const host = String(match[1] || '').toLowerCase();
-      if (host) out.add(host);
-    }
-    while ((match = hostRegex.exec(value)) !== null) {
-      const host = String(match[1] || '').toLowerCase();
-      if (host && host.includes('.')) out.add(host);
-    }
-    return out;
-  };
-  const tokenize = (value: string): Set<string> => {
-    const out = new Set<string>();
-    const tokens = value.toLowerCase().match(/[a-z0-9._-]+/g) || [];
-    for (const token of tokens) {
-      if (token.length < 3 && !token.includes('.')) continue;
-      if (CHATLOG_STOPWORDS.has(token)) continue;
-      out.add(token);
-      if (out.size >= 120) break;
-    }
-    return out;
-  };
-  const jaccard = (a: Set<string>, b: Set<string>): number => {
-    if (!a.size || !b.size) return 0;
-    let intersection = 0;
-    for (const value of a) {
-      if (b.has(value)) intersection += 1;
-    }
-    const union = a.size + b.size - intersection;
-    if (!union) return 0;
-    return intersection / union;
-  };
-  const hasReferentialCue = (value: string): boolean => {
-    return /\b(this|that|these|those|it|same|above|here|current page|this page|continue|follow up)\b/i.test(value);
-  };
-  const isQuestionLike = (value: string): boolean => /\?$/.test(value) || /\b(what|why|how|where|when|who)\b/i.test(value);
+function assessAdversarialInput(rawText: string): { blocked: boolean; score: number; reasons: string[] } {
+  const text = String(rawText || '').toLowerCase();
+  if (!text.trim()) return { blocked: false, score: 0, reasons: [] };
 
-  const normalizedCurrentUserInput = currentUserInput
-    ? sanitizeChatText(currentUserInput)
-    : '';
-  if (!normalizedCurrentUserInput) return [];
+  const signals: Array<{ reason: string; pattern: RegExp; weight: number }> = [
+    { reason: 'prompt_injection', pattern: /\b(ignore|bypass|override)\b.{0,40}\b(instruction|policy|guardrail|system|developer)\b/i, weight: 2 },
+    { reason: 'secret_exfiltration', pattern: /\b(token|cookie|password|secret|api key|session key)\b.{0,40}\b(extract|dump|reveal|steal|exfiltrat)/i, weight: 3 },
+    { reason: 'credential_harvest', pattern: /\b(phish|credential|login prompt|social engineering)\b/i, weight: 3 },
+    { reason: 'policy_evasion', pattern: /\b(do not tell|without asking|silently|hidden|covert)\b/i, weight: 1 },
+  ];
+
+  const reasons: string[] = [];
+  let score = 0;
+  for (const signal of signals) {
+    if (!signal.pattern.test(text)) continue;
+    reasons.push(signal.reason);
+    score += signal.weight;
+  }
+  const blocked = score >= 3;
+  return { blocked, score, reasons };
+}
+
+function buildChatLogFromHistory(
+  input: ChatMessage[],
+  currentUserInput?: string,
+  maxTurns = MAX_RESUME_CUE_TURNS,
+): Array<{ role: 'user' | 'model'; message: string }> {
+  const normalize = (value: string): string => String(value || '').replace(/\s+/g, ' ').trim();
+  const normalizedCurrent = normalize(String(currentUserInput || ''));
+  if (!normalizedCurrent) return [];
 
   const entries = input
     .filter(message => message.role === 'user' || message.role === 'assistant')
     .map(message => ({
       role: message.role as 'user' | 'assistant',
-      content: sanitizeChatText(String(message.content || '')),
+      content: normalize(String(message.content || '')),
     }))
     .filter(message => !!message.content)
-    .filter(message => !isAskUserControlMessage(message.role, message.content));
+    .filter(message => {
+      const lowered = message.content.toLowerCase();
+      if (lowered.includes('[ask_user_answers]')) return false;
+      if (lowered.includes('[raw_user_reply]')) return false;
+      if (lowered.includes('[continue_planning]')) return false;
+      return true;
+    });
 
-  if (normalizedCurrentUserInput) {
-    for (let i = entries.length - 1; i >= 0; i -= 1) {
-      if (entries[i].role === 'user' && entries[i].content === normalizedCurrentUserInput) {
-        entries.splice(i, 1);
-        break;
-      }
-    }
-  }
-
-  const deduped: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  const turns: Array<{ user?: string; assistant?: string }> = [];
   for (const entry of entries) {
-    const previous = deduped[deduped.length - 1];
-    if (previous && previous.role === entry.role && previous.content === entry.content) continue;
-    deduped.push(entry);
-  }
-
-  type ChatTurn = { user?: string; model?: string; index: number };
-  const turns: ChatTurn[] = [];
-  for (let i = 0; i < deduped.length; i += 1) {
-    const entry = deduped[i];
     if (entry.role === 'user') {
-      turns.push({ user: entry.content, index: i });
+      turns.push({ user: entry.content });
       continue;
     }
     if (!turns.length) continue;
     const latest = turns[turns.length - 1];
-    if (!latest.model) {
-      latest.model = entry.content;
-      latest.index = i;
+    if (!latest.assistant) {
+      latest.assistant = entry.content;
     }
   }
 
   if (!turns.length) return [];
-
-  const currentTokens = tokenize(normalizedCurrentUserInput);
-  const currentDomains = extractDomains(normalizedCurrentUserInput);
-  const referentialCue = hasReferentialCue(normalizedCurrentUserInput);
-  const currentIsQuestion = isQuestionLike(normalizedCurrentUserInput);
-
-  const scored = turns.map((turn, idx) => {
-    const candidateText = sanitizeChatText(`${turn.user || ''} ${turn.model || ''}`);
-    const candidateTokens = tokenize(candidateText);
-    const candidateDomains = extractDomains(candidateText);
-    const lexical = jaccard(currentTokens, candidateTokens);
-    const domain = jaccard(currentDomains, candidateDomains);
-    const candidateQuestion = isQuestionLike(String(turn.user || ''));
-    const intent = candidateQuestion === currentIsQuestion ? 0.08 : 0;
-    const referentialBonus = referentialCue ? 0.06 : 0;
-    const recency = turns.length <= 1 ? 1 : ((idx + 1) / turns.length);
-    const score = Math.min(1, lexical * 0.62 + domain * 0.24 + intent + recency * 0.12 + referentialBonus);
-    return { turn, score, idx };
-  });
-
-  const sorted = [...scored].sort((a, b) => b.score - a.score || b.idx - a.idx);
-  const selectedTurnIndexes = new Set<number>();
-  const primaryThreshold = referentialCue ? 0.12 : 0.20;
-  const secondaryThreshold = referentialCue ? 0.26 : 0.34;
-  if (sorted[0] && sorted[0].score >= primaryThreshold) {
-    selectedTurnIndexes.add(sorted[0].idx);
+  const cappedTurns = turns.slice(-Math.max(1, Math.min(4, Math.floor(maxTurns))));
+  const messages: Array<{ role: 'user' | 'model'; message: string }> = [];
+  for (const turn of cappedTurns) {
+    if (turn.user && turn.user !== normalizedCurrent) {
+      messages.push({ role: 'user', message: turn.user });
+    }
+    if (turn.assistant) {
+      messages.push({ role: 'model', message: turn.assistant });
+    }
   }
-  if (sorted[1] && sorted[1].score >= secondaryThreshold) {
-    selectedTurnIndexes.add(sorted[1].idx);
-  }
-  if (!selectedTurnIndexes.size && referentialCue) {
-    selectedTurnIndexes.add(turns.length - 1);
-  }
-  if (!selectedTurnIndexes.size) return [];
-
-  let selected = [...selectedTurnIndexes]
-    .sort((a, b) => a - b)
-    .flatMap(turnIndex => {
-      const turn = turns[turnIndex];
-      const out: Array<{ role: 'user' | 'assistant'; content: string }> = [];
-      if (turn?.user) out.push({ role: 'user', content: turn.user });
-      if (turn?.model) out.push({ role: 'assistant', content: turn.model });
-      return out;
-    });
-
-  selected = selected.slice(-MAX_CHATLOG_ENTRIES);
-
-  return selected.map(message => ({
-    role: message.role === 'user' ? 'user' : 'model',
-    message: message.content,
-  }));
+  return messages;
 }
 
 function applyAgentPrevSteps(next?: any[], options?: { snapshot?: boolean }): void {
@@ -1368,7 +1395,7 @@ function extractArtifactLinks(toolResult: any): string[] {
   return links;
 }
 
-function buildPlannerToolResultBlocks(toolResults: any[] | undefined): AssistantMessageBlock[] | undefined {
+function buildPlannerToolResultBlocks(toolResults: ToolExecutionResult[] | undefined): AssistantMessageBlock[] | undefined {
   if (!Array.isArray(toolResults) || !toolResults.length) return undefined;
   const blocks: AssistantMessageBlock[] = [];
 
@@ -1383,7 +1410,7 @@ function buildPlannerToolResultBlocks(toolResults: any[] | undefined): Assistant
         type: 'tool_output',
         label: result.toolName ? `${stepLabel}: ${result.toolName}` : stepLabel,
         toolName: typeof result.toolName === 'string' ? result.toolName : undefined,
-        data: cloneUnknown(output),
+        data: normalizeRuntimeToolOutput(output),
       });
     }
 
@@ -1391,7 +1418,7 @@ function buildPlannerToolResultBlocks(toolResults: any[] | undefined): Assistant
       blocks.push({
         type: 'json',
         label: `${stepLabel} error`,
-        data: cloneUnknown({
+        data: normalizeRuntimeToolOutput({
           error: result.error,
           errorDetails: result.errorDetails,
         }),
@@ -1410,7 +1437,7 @@ function buildPlannerToolResultBlocks(toolResults: any[] | undefined): Assistant
   return blocks.length ? blocks : undefined;
 }
 
-function summarizePlannerToolResults(toolResults: any[] | undefined): string | undefined {
+function summarizePlannerToolResults(toolResults: ToolExecutionResult[] | undefined): string | undefined {
   if (!Array.isArray(toolResults) || !toolResults.length) return undefined;
   const lines: string[] = [];
   for (let i = 0; i < toolResults.length; i += 1) {
@@ -1427,7 +1454,7 @@ function summarizePlannerToolResults(toolResults: any[] | undefined): string | u
   return lines.join('\n\n');
 }
 
-function extractLatestPrevStepsFromPlanner(toolResults: any[] | undefined): PreviousSteps[] | undefined {
+function extractLatestPrevStepsFromPlanner(toolResults: ToolExecutionResult[] | undefined): PreviousSteps[] | undefined {
   if (!Array.isArray(toolResults) || !toolResults.length) return undefined;
   for (let i = toolResults.length - 1; i >= 0; i -= 1) {
     const candidate = toolResults[i]?.prevSteps;
@@ -1493,17 +1520,21 @@ function detectOpenedTabFromToolResult(result: any): OpenedTabMetadata | undefin
   return undefined;
 }
 
-function extractQuestionsFromResult(result: any): PlannerQuestion[] | undefined {
+function extractQuestionsFromResult(
+  result: ToolExecutionResult | Record<string, unknown> | undefined,
+): PlannerQuestion[] | undefined {
   if (!result || typeof result !== 'object') return undefined;
-  const topLevel = normalizePlannerQuestions((result as any).questions);
+  const topLevel = normalizePlannerQuestions((result as { questions?: unknown }).questions);
   if (topLevel.length) return topLevel;
-  const output = (result as any).output;
-  const outputQuestions = normalizePlannerQuestions(output?.questions);
+  const output = (result as { output?: unknown }).output;
+  const outputQuestions = normalizePlannerQuestions(
+    output && typeof output === 'object' ? (output as { questions?: unknown }).questions : undefined,
+  );
   if (outputQuestions.length) return outputQuestions;
   return undefined;
 }
 
-function extractPlannerQuestionsFromToolResults(toolResults: any[] | undefined): PlannerQuestion[] {
+function extractPlannerQuestionsFromToolResults(toolResults: ToolExecutionResult[] | undefined): PlannerQuestion[] {
   if (!Array.isArray(toolResults) || toolResults.length === 0) return [];
   const combined: PlannerQuestion[] = [];
   const seen = new Set<string>();
@@ -1522,16 +1553,82 @@ function extractPlannerQuestionsFromToolResults(toolResults: any[] | undefined):
   return combined.slice(0, 6);
 }
 
-function deriveDirectToolRunOutcome(result: any): RunOutcome {
-  if (!result || typeof result !== 'object') {
+function inferPlannerContinuation(toolResults: ToolExecutionResult[] | undefined): {
+  failed: boolean;
+  needsUserInput: boolean;
+  navigationPending: boolean;
+  sameTabNavigationPending: boolean;
+} {
+  if (!Array.isArray(toolResults) || toolResults.length === 0) {
     return {
-      taskComplete: false,
-      terminalState: 'in_progress',
-      continuationReason: 'loop_continue',
+      failed: false,
+      needsUserInput: false,
+      navigationPending: false,
+      sameTabNavigationPending: false,
     };
   }
 
-  const topLevelNavigationOutcome = String((result as any).navigationOutcome || '').trim().toLowerCase();
+  let failed = false;
+  let needsUserInput = false;
+  let navigationPending = false;
+  let sameTabNavigationPending = false;
+
+  for (const result of toolResults) {
+    if (!result || typeof result !== 'object') continue;
+    if (result.error || result.errorDetails) {
+      failed = true;
+      continue;
+    }
+    const output =
+      result.output && typeof result.output === 'object'
+        ? result.output as Record<string, unknown>
+        : undefined;
+    if (!output) continue;
+
+    const navigationOutcome = String(output.navigationOutcome || '').trim().toLowerCase();
+    if (output.navigationPending === true || navigationOutcome === 'same_tab_scheduled' || navigationOutcome === 'new_tab_opened') {
+      navigationPending = true;
+      if (navigationOutcome === 'same_tab_scheduled') {
+        sameTabNavigationPending = true;
+      }
+    }
+
+    const status = String(output.taskStatus || output.status || '').trim().toLowerCase();
+    if (status === 'failure' || status === 'failed' || status === 'error') {
+      failed = true;
+    }
+    if (status === 'waiting_input' || status === 'needs_input' || status === 'pending_user_input') {
+      needsUserInput = true;
+    }
+
+    if (output.needsUserInput === true || output.waitingForUserInput === true) {
+      needsUserInput = true;
+    }
+    const questions = normalizePlannerQuestions(output.questions);
+    if (questions.length > 0) {
+      needsUserInput = true;
+    }
+  }
+
+  return { failed, needsUserInput, navigationPending, sameTabNavigationPending };
+}
+
+type DirectToolResult = ToolExecutionResult & {
+  status?: string;
+  navigationPending?: boolean;
+  navigationOutcome?: string;
+};
+
+function deriveDirectToolRunOutcome(result: DirectToolResult | undefined): RunOutcome {
+  if (!result || typeof result !== 'object') {
+    return {
+      taskComplete: true,
+      terminalState: 'completed',
+      contextResetRecommended: true,
+    };
+  }
+
+  const topLevelNavigationOutcome = String(result.navigationOutcome || '').trim().toLowerCase();
 
   if (result.navigationPending === true) {
     const isSameTabHandoff = topLevelNavigationOutcome === 'same_tab_scheduled';
@@ -1544,30 +1641,29 @@ function deriveDirectToolRunOutcome(result: any): RunOutcome {
   }
 
   const questions = extractQuestionsFromResult(result);
-
-  const topLevelStatus = String(result.status || '').trim().toLowerCase();
-  if (topLevelStatus === 'failure' || topLevelStatus === 'failed' || topLevelStatus === 'error') {
-    return { taskComplete: false, terminalState: 'failed' };
-  }
-  if (topLevelStatus === 'waiting_input' || topLevelStatus === 'needs_input' || topLevelStatus === 'pending_user_input') {
-    return {
-      taskComplete: false,
-      needsUserInput: true,
-      questions,
-      terminalState: 'waiting_input',
-      continuationReason: 'awaiting_user',
-    };
-  }
-  if (result.error) {
-    return { taskComplete: false, terminalState: 'failed' };
-  }
+  if (result.error) return { taskComplete: false, terminalState: 'failed' };
 
   const output = result.output;
   if (output && typeof output === 'object') {
-    const navigationOutcome = String((output as any).navigationOutcome || '').trim().toLowerCase();
-    const navigationMode = String((output as any).navigation || '').trim().toLowerCase();
+    const outputRecord = output as Record<string, unknown>;
+    const topLevelStatus = String(result.status || '').trim().toLowerCase();
+    if (topLevelStatus === 'failure' || topLevelStatus === 'failed' || topLevelStatus === 'error') {
+      return { taskComplete: false, terminalState: 'failed' };
+    }
+    if (topLevelStatus === 'waiting_input' || topLevelStatus === 'needs_input' || topLevelStatus === 'pending_user_input') {
+      return {
+        taskComplete: false,
+        needsUserInput: true,
+        questions,
+        terminalState: 'waiting_input',
+        continuationReason: 'awaiting_user',
+      };
+    }
+
+    const navigationOutcome = String(outputRecord.navigationOutcome || '').trim().toLowerCase();
+    const navigationMode = String(outputRecord.navigation || '').trim().toLowerCase();
     if (
-      (output as any).navigationPending === true
+      outputRecord.navigationPending === true
       || navigationOutcome === 'same_tab_scheduled'
       || navigationOutcome === 'new_tab_opened'
       || navigationMode === 'same_tab'
@@ -1580,13 +1676,10 @@ function deriveDirectToolRunOutcome(result: any): RunOutcome {
         terminalState: 'in_progress',
         navigationPending: sameTabHandoff,
         continuationReason: sameTabHandoff ? 'same_tab_navigation_handoff' : 'loop_continue',
+        contextResetRecommended: false,
       };
     }
-    if (Array.isArray(output)) {
-      return { taskComplete: true, terminalState: 'completed', contextResetRecommended: true };
-    }
-
-    if ((output as any).needsUserInput === true || (output as any).waitingForUserInput === true) {
+    if (outputRecord.needsUserInput === true || outputRecord.waitingForUserInput === true) {
       return {
         taskComplete: false,
         needsUserInput: true,
@@ -1596,7 +1689,7 @@ function deriveDirectToolRunOutcome(result: any): RunOutcome {
       };
     }
 
-    if (Array.isArray((output as any).questions) && (output as any).questions.length > 0) {
+    if (Array.isArray(outputRecord.questions) && outputRecord.questions.length > 0) {
       return {
         taskComplete: false,
         needsUserInput: true,
@@ -1606,21 +1699,9 @@ function deriveDirectToolRunOutcome(result: any): RunOutcome {
       };
     }
 
-    if ((output as any).error) {
-      return { taskComplete: false, terminalState: 'failed' };
-    }
+    if (outputRecord.error || outputRecord.success === false) return { taskComplete: false, terminalState: 'failed' };
 
-    if (typeof (output as any).taskComplete === 'boolean') {
-      const completed = !!(output as any).taskComplete;
-      return {
-        taskComplete: completed,
-        terminalState: completed ? 'completed' : 'in_progress',
-        continuationReason: completed ? undefined : 'loop_continue',
-        contextResetRecommended: completed,
-      };
-    }
-
-    const taskStatus = String((output as any).taskStatus || (output as any).status || '').toLowerCase();
+    const taskStatus = String(outputRecord.taskStatus || outputRecord.status || '').toLowerCase();
     if (taskStatus) {
       if (taskStatus === 'waiting_input' || taskStatus === 'needs_input' || taskStatus === 'pending_user_input') {
         return {
@@ -1630,46 +1711,27 @@ function deriveDirectToolRunOutcome(result: any): RunOutcome {
           continuationReason: 'awaiting_user',
         };
       }
-      if (taskStatus === 'running' || taskStatus === 'in_progress' || taskStatus === 'pending') {
-        return {
-          taskComplete: false,
-          terminalState: 'in_progress',
-          continuationReason: 'loop_continue',
-        };
-      }
-      if (taskStatus === 'completed' || taskStatus === 'complete' || taskStatus === 'done' || taskStatus === 'success') {
-        return { taskComplete: true, terminalState: 'completed', contextResetRecommended: true };
-      }
       if (taskStatus === 'failure' || taskStatus === 'failed' || taskStatus === 'error') {
         return { taskComplete: false, terminalState: 'failed' };
       }
     }
-
-    if ((output as any).success === false) {
-      return { taskComplete: false, terminalState: 'failed' };
-    }
-
-    if (String((output as any).status || '').trim().toLowerCase() === 'failure') {
-      return { taskComplete: false, terminalState: 'failed' };
-    }
   }
 
-  if (output != null) {
-    return { taskComplete: true, terminalState: 'completed', contextResetRecommended: true };
-  }
-
-  // Direct tool invocation without explicit continuation signals is treated as complete.
-  return { taskComplete: true, terminalState: 'completed', contextResetRecommended: true };
+  return {
+    taskComplete: true,
+    terminalState: 'completed',
+    contextResetRecommended: true,
+  };
 }
 
 function normalizeRunOutcome(outcome?: Partial<RunOutcome> | null): RunOutcome {
   if (!outcome || typeof outcome !== 'object') {
     return {
-      taskComplete: false,
+      taskComplete: true,
       needsUserInput: false,
-      terminalState: 'in_progress',
-      continuationReason: 'loop_continue',
-      contextResetRecommended: false,
+      terminalState: 'completed',
+      continuationReason: undefined,
+      contextResetRecommended: true,
     };
   }
   const inferredNeedsUserInput = outcome.needsUserInput === true;
@@ -1684,7 +1746,9 @@ function normalizeRunOutcome(outcome?: Partial<RunOutcome> | null): RunOutcome {
         ? 'waiting_input'
         : outcome.taskComplete === true
           ? 'completed'
-          : 'in_progress';
+          : outcome.taskComplete === false
+            ? 'in_progress'
+            : 'completed';
   const needsUserInput = terminalState === 'waiting_input' || inferredNeedsUserInput;
   const taskComplete = terminalState === 'completed' || (outcome.taskComplete === true && !needsUserInput);
   const questions = normalizePlannerQuestions((outcome as any).questions);
@@ -1776,6 +1840,22 @@ async function handleUserMessage(
     history[history.length - 1]?.content === text;
 
   const normalizedIncomingText = String(text || '').trim();
+  if (config.external?.adversarialGate === 'pre_tool_block') {
+    const adversarial = assessAdversarialInput(normalizedIncomingText);
+    if (adversarial.blocked) {
+      const blockedMessage = 'I can’t run that request because it appears adversarial. Please rephrase with a safe, task-focused instruction.';
+      postAssistantMessage(blockedMessage);
+      postStatus('Blocked unsafe request', adversarial.reasons.join(', ') || 'adversarial_input', 'complete');
+      postStateSnapshot();
+      return {
+        taskComplete: false,
+        needsUserInput: false,
+        terminalState: 'failed',
+        contextResetRecommended: true,
+      };
+    }
+  }
+
   const pendingAskUserSnapshot =
     pendingAskUser
     && pendingAskUser.boundaryId
@@ -1843,7 +1923,10 @@ async function handleUserMessage(
             accessMode: 'live_dom',
           },
         ];
-  const resolvedTabs = await resolveRuntimeTabs(bridgeRpc, fallbackTabs);
+  const resolvedTabs = await resolveRuntimeTabs(bridgeRpc, fallbackTabs, {
+    scopedTabIds,
+    seedTabId: scopedSeedTabId,
+  });
   throwIfCancelledRun(activeRunId);
   const tabsById = new Map<number, RoverTab>(tabs.map(tab => [tab.id, tab]));
   const orderedTabs = resolvedTabs.tabOrder
@@ -1874,7 +1957,7 @@ async function handleUserMessage(
   }
 
   if (!tabularStore) {
-    tabularStore = new TabularStore(`rover-${trajectoryId}`);
+    tabularStore = new TabularStore(`rover-${taskTrajectoryId}`);
   }
   const agentName = resolveAgentName(config);
   const runtimeContext = buildRoverRuntimeContext({
@@ -1887,7 +1970,7 @@ async function handleUserMessage(
     {
       ...config,
       signal: activeAbortController?.signal,
-      sessionId: trajectoryId,
+      sessionId: workerSessionId || config.sessionId || taskTrajectoryId,
       activeRunId,
       runtimeContext,
       tools: {
@@ -1903,7 +1986,16 @@ async function handleUserMessage(
     removePlannerNameCollisions(toolRegistry.getFunctionDeclarations()),
   );
   const toolFunctions = toolRegistry.getToolFunctions();
-  const chatLog = buildChatLogFromHistory(history, chatLogCurrentInputForDedupe);
+  const resumeFollowupTurns = Math.max(
+    1,
+    Math.min(4, Math.floor(Number(config.chat?.resumeFollowup?.maxTurns) || MAX_RESUME_CUE_TURNS)),
+  );
+  const chatLog = (
+    options?.resume
+    && config.chat?.resumeFollowup?.mode === 'deterministic_cues'
+  )
+    ? buildChatLogFromHistory(history, chatLogCurrentInputForDedupe, resumeFollowupTurns)
+    : [];
   const onPrevStepsUpdate = (steps: PreviousSteps[]) => {
     applyAgentPrevSteps(steps, { snapshot: true });
   };
@@ -1916,7 +2008,7 @@ async function handleUserMessage(
   const result = await handleSendMessageWithFunctions(effectiveUserInput, {
     tabs: tabsForRun,
     previousMessages: history,
-    trajectoryId,
+    trajectoryId: taskTrajectoryId,
     files: [],
     recordingContext: config.recordingContext,
     previousSteps: plannerHistory,
@@ -1952,7 +2044,6 @@ async function handleUserMessage(
     if (isRetryableLifecycleError) {
       const retryMessage = `${errorPayload.error.code}: ${errorPayload.error.message}`;
       postAssistantMessage(retryMessage);
-      history.push({ role: 'assistant', content: retryMessage });
       postStatus('Waiting for navigation/session sync', errorPayload.error.message, 'verify');
       postStateSnapshot();
       return {
@@ -1967,17 +2058,16 @@ async function handleUserMessage(
     if (errorPayload.error.requires_api_key) {
       postAuthRequired(errorPayload.error);
     }
-    const errorMsg = postAssistantMessage({
+    postAssistantMessage({
       text: `${errorPayload.error.code}: ${errorPayload.error.message}`,
       blocks: [
         {
           type: 'json',
           label: 'Error details',
-          data: cloneUnknown(errorPayload),
+          data: normalizeRuntimeToolOutput(errorPayload),
         },
       ],
     });
-    history.push({ role: 'assistant', content: errorMsg });
     postStatus('Execution failed', errorPayload.error.message, 'complete');
     postStateSnapshot();
     return { route: result.route, taskComplete: false, terminalState: 'failed' };
@@ -1989,6 +2079,12 @@ async function handleUserMessage(
     }
     const blocks: AssistantMessageBlock[] = [];
     const lines: string[] = [];
+    let inferredFailed = false;
+    let inferredCompleted = false;
+    let inferredNavigationPending = false;
+    let inferredSameTabPending = false;
+    let inferredNeedsUserInput = false;
+    let inferredQuestions: PlannerQuestion[] = [];
     for (const fn of result.executedFunctions) {
       const summary = summarizeOutputText(fn.result);
       if (fn.result !== undefined && shouldAttachStructuredBlock(fn.result, summary)) {
@@ -1996,29 +2092,101 @@ async function handleUserMessage(
           type: 'tool_output',
           toolName: fn.name,
           label: `${fn.name} output`,
-          data: cloneUnknown(fn.result),
+          data: normalizeRuntimeToolOutput(fn.result),
         });
       }
       if (fn.error) {
         blocks.push({
           type: 'json',
           label: `${fn.name} error`,
-          data: cloneUnknown({ error: fn.error }),
+          data: normalizeRuntimeToolOutput({ error: fn.error }),
         });
       }
       lines.push(summary ? `@${fn.name}: ${summary}` : `@${fn.name}: ${fn.error || 'ok'}`);
+
+      if (fn.error) {
+        inferredFailed = true;
+        continue;
+      }
+
+      const rawResult = fn.result;
+      if (!rawResult || typeof rawResult !== 'object') continue;
+      const normalized = Array.isArray(rawResult)
+        ? rawResult.find(item => item && typeof item === 'object') as Record<string, unknown> | undefined
+        : rawResult as Record<string, unknown>;
+      if (!normalized) continue;
+
+      const taskComplete = normalized.taskComplete;
+      if (typeof taskComplete === 'boolean' && taskComplete) {
+        inferredCompleted = true;
+      }
+
+      const navigationPending = normalized.navigationPending === true;
+      const navigationOutcome = String(normalized.navigationOutcome || '').trim().toLowerCase();
+      if (navigationPending || navigationOutcome === 'same_tab_scheduled' || navigationOutcome === 'new_tab_opened') {
+        inferredNavigationPending = true;
+        if (navigationOutcome === 'same_tab_scheduled') {
+          inferredSameTabPending = true;
+        }
+      }
+
+      const statusRaw = String(normalized.taskStatus || normalized.status || '').trim().toLowerCase();
+      if (statusRaw === 'failed' || statusRaw === 'error' || statusRaw === 'failure') {
+        inferredFailed = true;
+      }
+      if (statusRaw === 'waiting_input' || statusRaw === 'needs_input' || statusRaw === 'pending_user_input') {
+        inferredNeedsUserInput = true;
+      }
+      if (statusRaw === 'completed' || statusRaw === 'complete' || statusRaw === 'done' || statusRaw === 'success') {
+        inferredCompleted = true;
+      }
+
+      if (normalized.needsUserInput === true || normalized.waitingForUserInput === true) {
+        inferredNeedsUserInput = true;
+      }
+      const q = extractQuestionsFromResult(normalized as Record<string, unknown>);
+      if (q?.length) {
+        inferredNeedsUserInput = true;
+        inferredQuestions = normalizePlannerQuestions([...inferredQuestions, ...q]);
+      }
     }
-    const msg = postAssistantMessage({
-      text: lines.join('\n') || 'Done.',
+    postAssistantMessage({
+      text: lines.join('\n'),
       blocks,
     });
-    history.push({ role: 'assistant', content: msg });
     postStatus('Execution completed', 'Function calls finished', 'complete');
     postStateSnapshot();
+    if (inferredFailed) {
+      return {
+        route: result.route,
+        taskComplete: false,
+        terminalState: 'failed',
+      };
+    }
+    if (inferredNavigationPending) {
+      return {
+        route: result.route,
+        taskComplete: false,
+        terminalState: 'in_progress',
+        continuationReason: inferredSameTabPending ? 'same_tab_navigation_handoff' : 'loop_continue',
+        contextResetRecommended: false,
+      };
+    }
+    if (inferredNeedsUserInput) {
+      return {
+        route: result.route,
+        taskComplete: false,
+        needsUserInput: true,
+        questions: inferredQuestions.length ? inferredQuestions : undefined,
+        terminalState: 'waiting_input',
+        continuationReason: 'awaiting_user',
+      };
+    }
     return {
       route: result.route,
       taskComplete: true,
       terminalState: 'completed',
+      continuationReason: undefined,
       contextResetRecommended: true,
     };
   }
@@ -2086,8 +2254,7 @@ async function handleUserMessage(
         },
       ]);
       const qText = questions.map(question => `- ${question.key}: ${questionToDisplayText(question)}`).join('\n');
-      const msg = postAssistantMessage(`I need a bit more info before continuing:\n${qText}`);
-      history.push({ role: 'assistant', content: msg });
+      postAssistantMessage(`I need a bit more info before continuing:\n${qText}`);
       postStatus('Need more input to continue', undefined, 'verify');
       postStateSnapshot();
       return {
@@ -2109,22 +2276,20 @@ async function handleUserMessage(
     if (structuredError?.error.requires_api_key) {
       postAuthRequired(structuredError.error);
     }
-    const msg = structuredError
+    structuredError
       ? postAssistantMessage({
           text: `${structuredError.error.code}: ${structuredError.error.message}`,
           blocks: [
             {
               type: 'json',
               label: 'Error details',
-              data: cloneUnknown(structuredError),
+              data: normalizeRuntimeToolOutput(structuredError),
             },
           ],
         })
       : postAssistantMessage(buildAssistantPayloadFromToolOutput(output, {
-          label: 'Tool output',
-          fallbackText: 'Done.',
-        }));
-    history.push({ role: 'assistant', content: msg });
+        label: 'Tool output',
+      }));
     postStatus('Execution completed', structuredError?.error.message, 'complete');
     postStateSnapshot();
     return {
@@ -2161,9 +2326,7 @@ async function handleUserMessage(
         ? buildPendingAskUserPrompt('planner', questions)
         : undefined;
       const qText = questions.map(question => `- ${question.key}: ${questionToDisplayText(question)}`).join('\n');
-      const msg = `I need a bit more info:\n${qText}`;
-      postAssistantMessage(msg);
-      history.push({ role: 'assistant', content: msg });
+      postAssistantMessage(`I need a bit more info:\n${qText}`);
       postStatus('Planner needs user input', undefined, 'verify');
       postStateSnapshot();
       return {
@@ -2186,45 +2349,52 @@ async function handleUserMessage(
     const responseError = response.error || response.errorDetails
       ? toStructuredErrorPayload(response.errorDetails || { message: response.error }, 'Planner failed')
       : undefined;
+    const plannerContinuation = inferPlannerContinuation(toolResults);
     if (responseError?.error.requires_api_key) {
       postAuthRequired(responseError.error);
     }
-    const msg = responseError
+    responseError
       ? postAssistantMessage({
           text: `${responseError.error.code}: ${responseError.error.message}`,
           blocks: [
             {
               type: 'json',
               label: 'Planner error',
-              data: cloneUnknown(responseError),
+              data: normalizeRuntimeToolOutput(responseError),
             },
             ...(toolBlocks || []),
           ],
         })
       : postAssistantMessage({
-          text: String(response.overallThought || summarizePlannerToolResults(toolResults) || 'Done.'),
-          blocks: toolBlocks,
-        });
-    history.push({ role: 'assistant', content: msg });
+        text: String(response.overallThought || summarizePlannerToolResults(toolResults) || ''),
+        blocks: toolBlocks,
+      });
     postStatus('Planner execution completed', response.overallThought, 'complete');
     postStateSnapshot();
+    const plannerComplete = !!response.taskComplete && !responseError && !plannerContinuation.needsUserInput && !plannerContinuation.navigationPending;
     return {
       route: result.route,
-      taskComplete: !!response.taskComplete && !responseError,
-      needsUserInput: false,
+      taskComplete: plannerComplete,
+      needsUserInput: plannerContinuation.needsUserInput,
       terminalState: responseError
         ? 'failed'
-        : (!!response.taskComplete ? 'completed' : 'in_progress'),
+        : plannerContinuation.needsUserInput
+          ? 'waiting_input'
+          : plannerContinuation.navigationPending
+            ? 'in_progress'
+            : 'completed',
       continuationReason:
-        responseError || response.taskComplete
+        responseError
           ? undefined
-          : 'loop_continue',
-      contextResetRecommended: !responseError && !!response.taskComplete,
+          : plannerContinuation.needsUserInput
+            ? 'awaiting_user'
+            : plannerContinuation.navigationPending
+              ? (plannerContinuation.sameTabNavigationPending ? 'same_tab_navigation_handoff' : 'loop_continue')
+              : undefined,
+      contextResetRecommended: !responseError && plannerComplete,
     };
   }
 
-  const doneMsg = postAssistantMessage('Done.');
-  history.push({ role: 'assistant', content: doneMsg });
   postStatus('Completed', undefined, 'complete');
   postStateSnapshot();
   return {
@@ -2283,6 +2453,12 @@ async function runUserMessage(
   activeAbortController = new AbortController();
   activeRun = { runId, text, startedAt: Date.now(), resume };
   (self as any).postMessage({ type: 'run_started', runId, text, resume, taskBoundaryId: runTaskBoundaryId });
+
+  if (!resume) {
+    // Keep prevSteps/planner history task-sticky; clear conversational history to keep in-run chatlog empty.
+    history.length = 0;
+  }
+
   postStateSnapshot();
 
   try {
@@ -2309,10 +2485,6 @@ async function runUserMessage(
         continuationReason: outcome.continuationReason,
         contextResetRecommended: outcome.contextResetRecommended,
       });
-      if (outcome.contextResetRecommended) {
-        clearTaskScopedContextAfterBoundary('complete');
-        postStateSnapshot();
-      }
     } else {
       terminalRuns.delete(runId);
       (self as any).postMessage({
@@ -2372,8 +2544,6 @@ async function runUserMessage(
         terminalState: 'failed',
         contextResetRecommended: true,
       });
-      clearTaskScopedContextAfterBoundary('complete');
-      postStateSnapshot();
       throw error;
     }
   } finally {
@@ -2388,13 +2558,20 @@ async function runUserMessage(
   try {
     if (data.type === 'init') {
       config = data.config as RoverWorkerConfig;
-      trajectoryId = config.sessionId || crypto.randomUUID();
+      workerSessionId =
+        typeof config.sessionId === 'string' && config.sessionId.trim()
+          ? config.sessionId.trim()
+          : (workerSessionId || crypto.randomUUID());
       taskBoundaryId =
         typeof config.taskBoundaryId === 'string' && config.taskBoundaryId.trim()
           ? config.taskBoundaryId.trim()
           : taskBoundaryId;
+      applyScopedTabConfig(config);
+      if ((config as any)?.timing?.actionTimeoutMs) {
+        RPC_TIMEOUT_MS = Math.max(5_000, Math.min(120_000, Number((config as any).timing.actionTimeoutMs)));
+      }
       if (!tabularStore) {
-        tabularStore = new TabularStore(`rover-${trajectoryId}`);
+        tabularStore = new TabularStore(`rover-${taskTrajectoryId}`);
       }
       if (data.port) {
         bridgeRpc = createRpcClient(data.port as MessagePort);
@@ -2428,17 +2605,16 @@ async function runUserMessage(
         ui: mergeWorkerUi(config.ui, partial.ui),
         tools: mergeWorkerTools(config.tools, partial.tools),
       };
-      if (typeof partial.sessionId === 'string' && partial.sessionId.trim() && partial.sessionId.trim() !== trajectoryId) {
-        trajectoryId = partial.sessionId.trim();
-        clearTaskScopedContextAfterBoundary('new_task');
-        terminalRuns.clear();
-        cancelledRunIds.clear();
-        tabularStore = new TabularStore(`rover-${trajectoryId}`);
-        taskBoundaryId = crypto.randomUUID();
+      if (typeof partial.sessionId === 'string' && partial.sessionId.trim()) {
+        workerSessionId = partial.sessionId.trim();
+      }
+      if ((partial as any)?.timing?.actionTimeoutMs) {
+        RPC_TIMEOUT_MS = Math.max(5_000, Math.min(120_000, Number((partial as any).timing.actionTimeoutMs)));
       }
       if (typeof partial.taskBoundaryId === 'string' && partial.taskBoundaryId.trim()) {
         taskBoundaryId = partial.taskBoundaryId.trim();
       }
+      applyScopedTabConfig(partial);
       const tools = partial.tools;
       if (Array.isArray(tools)) {
         for (const def of tools) toolRegistry.registerTool(def);
@@ -2466,9 +2642,10 @@ async function runUserMessage(
       clearTaskScopedContextAfterBoundary('new_task');
       terminalRuns.clear();
       cancelledRunIds.clear();
-      trajectoryId = nextTaskId;
+      taskTrajectoryId = nextTaskId;
       taskBoundaryId = nextTaskBoundaryId;
-      tabularStore = new TabularStore(`rover-${trajectoryId}`);
+      applyScopedTabConfig(data as Partial<RoverWorkerConfig>);
+      tabularStore = new TabularStore(`rover-${taskTrajectoryId}`);
       activeRun = null;
       activeAbortController = null;
       postStateSnapshot();
@@ -2487,6 +2664,7 @@ async function runUserMessage(
     }
 
     if (data.type === 'run') {
+      applyScopedTabConfig(data as Partial<RoverWorkerConfig>);
       await runUserMessage(String(data.text || ''), {
         runId: data.runId,
         resume: !!data.resume,

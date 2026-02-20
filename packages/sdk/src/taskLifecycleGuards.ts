@@ -1,9 +1,14 @@
 import { normalizeTaskBoundaryId } from './taskBoundaryGuards.js';
 
-export type TaskStatus = 'running' | 'completed' | 'ended';
+export type TaskStatus = 'running' | 'completed' | 'cancelled' | 'failed' | 'ended';
 
 export function shouldStartFreshTask(taskStatus?: TaskStatus): boolean {
-  return taskStatus === 'completed' || taskStatus === 'ended';
+  return (
+    taskStatus === 'completed'
+    || taskStatus === 'cancelled'
+    || taskStatus === 'failed'
+    || taskStatus === 'ended'
+  );
 }
 
 export function canAutoResumePendingRun(taskStatus?: TaskStatus): boolean {
@@ -60,8 +65,15 @@ export function shouldIgnoreRunScopedMessage(params: {
   } = params;
   const currentBoundary = normalizeTaskBoundaryId(currentTaskBoundaryId);
   const messageBoundary = normalizeTaskBoundaryId(messageTaskBoundaryId);
-  if ((type === 'run_started' || type === 'run_resumed' || type === 'run_state_transition' || type === 'run_completed') && currentBoundary) {
-    if (!messageBoundary || messageBoundary !== currentBoundary) return true;
+  const isCompletionEvent = type === 'run_state_transition' || type === 'run_completed';
+  const canRelaxBoundaryForPendingCompletion =
+    isCompletionEvent
+    && !!messageRunId
+    && !!pendingRunId
+    && messageRunId === pendingRunId
+    && taskStatus === 'running';
+  if ((type === 'run_started' || type === 'run_resumed' || isCompletionEvent) && currentBoundary) {
+    if ((!messageBoundary || messageBoundary !== currentBoundary) && !canRelaxBoundaryForPendingCompletion) return true;
   }
   if (!messageRunId && type !== 'run_started' && type !== 'run_resumed') return false;
   if (messageRunId && ignoredRunIds?.has(messageRunId)) return true;

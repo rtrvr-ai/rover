@@ -199,6 +199,11 @@ export type PageConfig = ExtractionConfig & {
   onlyTextContent?: boolean;
   totalBudgetMs?: number;
   deadlineEpochMs?: number;
+  adaptiveSettleDebounceMs?: number;
+  adaptiveSettleMaxWaitMs?: number;
+  adaptiveSettleRetries?: number;
+  sparseTreeRetryDelayMs?: number;
+  sparseTreeRetryMaxAttempts?: number;
 };
 
 export interface TabConfig {
@@ -423,7 +428,8 @@ export interface PreviousSteps {
 }
 
 // --- Output storing/passing to Planner ---
-export type ToolOutputElement = Record<string, any> | (Record<string, any> | string)[] | string;
+export type ToolOutputRecord = Record<string, unknown>;
+export type ToolOutputElement = ToolOutputRecord | (ToolOutputRecord | string)[] | string;
 export type ToolOutput = ToolOutputElement[]; // An array of defined elements
 
 export interface SheetTabInfo {

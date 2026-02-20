@@ -536,41 +536,55 @@ export class RoverServerRuntimeClient {
     runId?: string;
     requestedMode?: 'act' | 'planner' | 'auto';
   }): Promise<RunInputResponse | null> {
-    const result = await this.postJson<RunInputResponse>('/run/input', {
-      message: params.message,
-      runId: params.runId,
-      continueRun: !!params.continueRun,
-      forceNewRun: !!params.forceNewRun,
-      requestedMode: params.requestedMode,
-      expectedEpoch: this.epoch,
-      expectedSeq: this.lastSeq,
-      clientEventId: params.clientEventId,
-      taskBoundaryId: this.options.getTaskBoundaryId?.(),
-    });
-    if (!result.ok) {
-      const data = (result.data || null) as RunInputResponse | null;
-      if (isProjection(data?.projection)) {
-        this.applyProjection(data.projection);
+    const clientEventId =
+      String(params.clientEventId || '').trim()
+      || (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : undefined);
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await this.postJson<RunInputResponse>('/run/input', {
+        message: params.message,
+        runId: params.runId,
+        continueRun: !!params.continueRun,
+        forceNewRun: !!params.forceNewRun,
+        requestedMode: params.requestedMode,
+        expectedEpoch: this.epoch,
+        expectedSeq: this.lastSeq,
+        clientEventId,
+        taskBoundaryId: this.options.getTaskBoundaryId?.(),
+      });
+      if (!result.ok) {
+        const data = (result.data || null) as RunInputResponse | null;
+        if (isProjection(data?.projection)) {
+          this.applyProjection(data.projection);
+        }
+        const conflictType = String(result.conflict?.type || '').trim();
+        const retryableStale =
+          result.conflict?.retryable !== false
+          && (conflictType === 'stale_seq' || conflictType === 'stale_epoch');
+        if (attempt === 0 && retryableStale) {
+          continue;
+        }
+        return data;
+      }
+      const data = result.data as RunInputResponse;
+      if (typeof data?.runId === 'string' && data.runId.trim()) {
+        const nextRunId = data.runId.trim();
+        this.activeRunId = nextRunId;
+        this.lastRunId = nextRunId;
+        if (Number(data?.seq || 0) === 0 && this.lastSeq > 0) {
+          // Run changed but server hasn't published seq yet; reset optimistic cursor.
+          this.lastSeq = 0;
+        }
+      }
+      if (Number.isFinite(Number(data?.epoch))) {
+        this.epoch = Math.max(1, Number(data.epoch));
+      }
+      if (Number.isFinite(Number(data?.seq))) {
+        this.lastSeq = Math.max(0, Number(data?.seq || 0));
       }
       return data;
     }
-    const data = result.data as RunInputResponse;
-    if (typeof data?.runId === 'string' && data.runId.trim()) {
-      const nextRunId = data.runId.trim();
-      this.activeRunId = nextRunId;
-      this.lastRunId = nextRunId;
-      if (Number(data?.seq || 0) === 0 && this.lastSeq > 0) {
-        // Run changed but server hasn't published seq yet; reset optimistic cursor.
-        this.lastSeq = 0;
-      }
-    }
-    if (Number.isFinite(Number(data?.epoch))) {
-      this.epoch = Math.max(1, Number(data.epoch));
-    }
-    if (Number.isFinite(Number(data?.seq))) {
-      this.lastSeq = Math.max(0, Number(data?.seq || 0));
-    }
-    return data;
+    return null;
   }
 
   async controlRun(params: {
@@ -582,23 +596,34 @@ export class RoverServerRuntimeClient {
     const clientEventId =
       String(params.clientEventId || '').trim()
       || (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : undefined);
-    const result = await this.postJson<RunControlResponse>('/run/control', {
-      action: params.action,
-      runId: params.runId,
-      reason: params.reason,
-      expectedEpoch: this.epoch,
-      expectedSeq: this.lastSeq,
-      clientEventId,
-    });
-    if (!result.ok) return result.data || null;
-    const data = result.data as RunControlResponse;
-    if (Number.isFinite(Number(data?.currentSeq))) {
-      this.lastSeq = Math.max(0, Number(data.currentSeq || 0));
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await this.postJson<RunControlResponse>('/run/control', {
+        action: params.action,
+        runId: params.runId,
+        reason: params.reason,
+        expectedEpoch: this.epoch,
+        expectedSeq: this.lastSeq,
+        clientEventId,
+      });
+      if (!result.ok) {
+        // 409: cursor was stale. postJson already synced cursor via syncCursorFromPayload.
+        // Retry once with the updated cursor.
+        if (attempt === 0 && result.conflict?.retryable !== false) {
+          continue;
+        }
+        return result.data || null;
+      }
+      const data = result.data as RunControlResponse;
+      if (Number.isFinite(Number(data?.currentSeq))) {
+        this.lastSeq = Math.max(0, Number(data.currentSeq || 0));
+      }
+      if (isProjection(data?.projection)) {
+        this.applyProjection(data.projection);
+      }
+      return data;
     }
-    if (isProjection(data?.projection)) {
-      this.applyProjection(data.projection);
-    }
-    return data;
+    return null;
   }
 
   async sendTabEvent(params: {

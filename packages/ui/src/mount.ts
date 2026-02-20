@@ -1,3 +1,5 @@
+import type { ToolOutput } from '@rover/shared/lib/types/index.js';
+
 export type RoverShortcut = {
   id: string;
   label: string;
@@ -52,7 +54,7 @@ export type RoverMessageBlock =
     }
   | {
       type: 'tool_output' | 'json';
-      data: unknown;
+      data: ToolOutput | Record<string, unknown> | unknown[] | string | number | boolean | null;
       label?: string;
       toolName?: string;
     };
