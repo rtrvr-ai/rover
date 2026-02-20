@@ -70,15 +70,15 @@ test('run lifecycle messages are gated by task boundary id', () => {
   });
   assert.equal(ignoreBoundaryMismatch, true);
 
-  const ignoreMissingBoundary = shouldIgnoreRunScopedMessage({
+  const ignoreMissingBoundaryForNonPending = shouldIgnoreRunScopedMessage({
     type: 'run_completed',
-    messageRunId: 'run-1',
+    messageRunId: 'run-2',
     currentTaskBoundaryId: 'boundary-new',
     pendingRunId: 'run-1',
     taskStatus: 'running',
     ignoredRunIds: new Set(),
   });
-  assert.equal(ignoreMissingBoundary, true);
+  assert.equal(ignoreMissingBoundaryForNonPending, true);
 
   const acceptMatchingBoundary = shouldIgnoreRunScopedMessage({
     type: 'run_completed',
@@ -90,4 +90,17 @@ test('run lifecycle messages are gated by task boundary id', () => {
     ignoredRunIds: new Set(),
   });
   assert.equal(acceptMatchingBoundary, false);
+});
+
+test('pending completion is accepted even if boundary metadata is missing', () => {
+  const acceptPendingCompletion = shouldIgnoreRunScopedMessage({
+    type: 'run_completed',
+    messageRunId: 'run-pending',
+    messageTaskBoundaryId: undefined,
+    currentTaskBoundaryId: 'boundary-current',
+    pendingRunId: 'run-pending',
+    taskStatus: 'running',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(acceptPendingCompletion, false);
 });

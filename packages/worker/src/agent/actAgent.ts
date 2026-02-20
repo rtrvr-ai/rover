@@ -34,6 +34,7 @@ export type AgenticSeekResult = {
   functionCalls?: FunctionCall[];
   prevSteps?: PreviousSteps[];
   error?: string;
+  errorDetails?: any;
   warnings?: string[];
   creditsUsed?: number;
   needsUserInput?: boolean;
@@ -99,6 +100,8 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
         webPageMap[activeTabId] = await ctx.getPageData(activeTabId, {
           ...(pageDataOptions || {}),
           __roverAllowExternalFetch: true,
+          __roverExternalIntent: 'auto',
+          __roverExternalMessage: userInput,
         });
       } catch {
         retry++;
@@ -163,7 +166,11 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
         return { error: 'Run cancelled', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
       }
       if (!response?.success) {
-        return { error: response?.error || 'Failed to process tab workflows', creditsUsed: totalCreditsUsed };
+        return {
+          error: response?.error || 'Failed to process tab workflows',
+          errorDetails: response?.errorDetails || undefined,
+          creditsUsed: totalCreditsUsed,
+        };
       }
 
       const data = response.data;
@@ -313,7 +320,12 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
       }
       retry++;
       if (retry >= MAX_RETRIES) {
-        return { error: error?.message || 'Agentic seek failed', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
+        return {
+          error: error?.message || 'Agentic seek failed',
+          errorDetails: error?.roverError || undefined,
+          prevSteps: accumulatedPrevSteps,
+          creditsUsed: totalCreditsUsed,
+        };
       }
       await new Promise(resolve => setTimeout(resolve, 500 * retry));
     }

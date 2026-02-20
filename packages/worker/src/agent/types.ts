@@ -1,5 +1,14 @@
 import type { ToolOutput } from '@rover/shared/lib/types/index.js';
 
+export type RuntimeToolOutput =
+  | ToolOutput
+  | Record<string, unknown>
+  | unknown[]
+  | string
+  | number
+  | boolean
+  | null;
+
 export type RoverTab = {
   id: number;
   url?: string;
@@ -146,7 +155,12 @@ export type PreviousSteps = {
   functions?: Array<{
     name: string;
     args: Record<string, unknown>;
-    response: { status: 'Success' | 'Failure' | 'Pending execution'; error?: string; output?: any; allowFallback?: boolean };
+    response: {
+      status: 'Success' | 'Failure' | 'Pending execution';
+      error?: string;
+      output?: RuntimeToolOutput;
+      allowFallback?: boolean;
+    };
   }>;
   data?: string;
   fail?: string;
@@ -154,7 +168,8 @@ export type PreviousSteps = {
 };
 
 export type ToolExecutionResult = {
-  output?: ToolOutput | Record<string, any> | unknown[] | string | number | boolean | null;
+  toolName?: string;
+  output?: RuntimeToolOutput;
   error?: string;
   errorDetails?: any;
   creditsUsed?: number;

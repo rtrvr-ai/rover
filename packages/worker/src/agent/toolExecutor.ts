@@ -148,7 +148,17 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
   }
 
   const fallbackTabs = Array.isArray(tabs) && tabs.length ? tabs : [{ id: 1 }];
-  const resolvedTabs = await resolveRuntimeTabs(bridgeRpc, fallbackTabs);
+  const scopedTabIds = Array.from(
+    new Set(
+      fallbackTabs
+        .map(tab => Number(tab?.id))
+        .filter(tabId => Number.isFinite(tabId) && tabId > 0),
+    ),
+  );
+  const resolvedTabs = await resolveRuntimeTabs(bridgeRpc, fallbackTabs, {
+    scopedTabIds,
+    seedTabId: scopedTabIds[0],
+  });
   if (isExecutionCancelled(effectiveCtx)) {
     return cancelledToolResult();
   }

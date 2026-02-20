@@ -336,21 +336,26 @@ export class RoverCloudCheckpointClient {
   private async callRoverV1(action: CheckpointAction, data: any): Promise<any> {
     const sessionToken = this.getToken();
     if (action === 'session_snapshot_upsert') {
+      const body = JSON.stringify({
+        requestNonce: createRequestNonce(),
+        sessionToken,
+        sessionId: data?.sessionId,
+        visitorId: data?.visitorId,
+        ttlHours: data?.ttlHours,
+        updatedAt: data?.updatedAt,
+        version: data?.checkpoint?.version || data?.version || 1,
+        checkpoint: data?.checkpoint,
+      });
+      // keepalive ensures the request survives page navigation (e.g. same-tab nav).
+      // The spec limits keepalive request bodies to 64KB; skip if payload is too large.
+      const useKeepalive = body.length < 60_000;
       const { response, payload } = await this.requestJson('/session/snapshot', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          requestNonce: createRequestNonce(),
-          sessionToken,
-          sessionId: data?.sessionId,
-          visitorId: data?.visitorId,
-          ttlHours: data?.ttlHours,
-          updatedAt: data?.updatedAt,
-          version: data?.checkpoint?.version || data?.version || 1,
-          checkpoint: data?.checkpoint,
-        }),
+        keepalive: useKeepalive,
+        body,
       });
       if (!response.ok || !payload?.success) {
         throw toError(`Checkpoint HTTP ${response.status}`, {

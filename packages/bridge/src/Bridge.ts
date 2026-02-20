@@ -74,6 +74,14 @@ export type BridgeOptions = {
   instrumentation?: InstrumentationController;
   instrumentationOptions?: InstrumentationOptions;
   uploadBytesProvider?: (args: { token: string; byteLength: number; timeoutMs?: number }) => Promise<ArrayBuffer>;
+  navigationDelayMs?: number;
+  domSettle?: {
+    debounceMs?: number;
+    maxWaitMs?: number;
+    retries?: number;
+    sparseTreeRetryDelayMs?: number;
+    sparseTreeRetryMaxAttempts?: number;
+  };
 };
 
 export class Bridge {
@@ -95,6 +103,12 @@ export class Bridge {
   private instrumentation: InstrumentationController;
   private highlightEl: HTMLDivElement | null = null;
   private clientTools = new Map<string, { handler: (args: any) => any | Promise<any>; def: any }>();
+  private navigationDelayMs: number;
+  private domSettleDebounceMs: number;
+  private domSettleMaxWaitMs: number;
+  private domSettleRetries: number;
+  private sparseTreeRetryDelayMs: number;
+  private sparseTreeRetryMaxAttempts: number;
   private uploadStore = new Map<string, { bytes: ArrayBuffer; createdAt: number }>();
   private uploadProviderInstalled = false;
   private actionGateContext: ActionGateContext = {};
@@ -116,6 +130,12 @@ export class Bridge {
     this.onNavigationGuardrail = opts.onNavigationGuardrail;
     this.onBeforeAgentNavigation = opts.onBeforeAgentNavigation;
     this.onBeforeCrossHostNavigation = opts.onBeforeCrossHostNavigation;
+    this.navigationDelayMs = opts.navigationDelayMs ?? 80;
+    this.domSettleDebounceMs = normalizeDomSettleNumber(opts.domSettle?.debounceMs, 24, 8, 500);
+    this.domSettleMaxWaitMs = normalizeDomSettleNumber(opts.domSettle?.maxWaitMs, 220, 80, 5000);
+    this.domSettleRetries = normalizeDomSettleNumber(opts.domSettle?.retries, 0, 0, 6);
+    this.sparseTreeRetryDelayMs = normalizeDomSettleNumber(opts.domSettle?.sparseTreeRetryDelayMs, 35, 20, 1000);
+    this.sparseTreeRetryMaxAttempts = normalizeDomSettleNumber(opts.domSettle?.sparseTreeRetryMaxAttempts, 1, 0, 4);
     this.instrumentation =
       opts.instrumentation ??
       installInstrumentation({
@@ -188,10 +208,33 @@ export class Bridge {
 
   async getPageData(params?: { pageConfig?: PageConfig }) {
     await ensureListenerScan(this.root);
+    const pageConfig: PageConfig = {
+      ...(params?.pageConfig || {}),
+      adaptiveSettleDebounceMs:
+        Number((params?.pageConfig as any)?.adaptiveSettleDebounceMs) > 0
+          ? Number((params?.pageConfig as any)?.adaptiveSettleDebounceMs)
+          : this.domSettleDebounceMs,
+      adaptiveSettleMaxWaitMs:
+        Number((params?.pageConfig as any)?.adaptiveSettleMaxWaitMs) > 0
+          ? Number((params?.pageConfig as any)?.adaptiveSettleMaxWaitMs)
+          : this.domSettleMaxWaitMs,
+      adaptiveSettleRetries:
+        Number.isFinite(Number((params?.pageConfig as any)?.adaptiveSettleRetries))
+          ? Number((params?.pageConfig as any)?.adaptiveSettleRetries)
+          : this.domSettleRetries,
+      sparseTreeRetryDelayMs:
+        Number((params?.pageConfig as any)?.sparseTreeRetryDelayMs) > 0
+          ? Number((params?.pageConfig as any)?.sparseTreeRetryDelayMs)
+          : this.sparseTreeRetryDelayMs,
+      sparseTreeRetryMaxAttempts:
+        Number.isFinite(Number((params?.pageConfig as any)?.sparseTreeRetryMaxAttempts))
+          ? Number((params?.pageConfig as any)?.sparseTreeRetryMaxAttempts)
+          : this.sparseTreeRetryMaxAttempts,
+    };
     return await buildPageData(this.root, this.instrumentation, {
       includeFrames: this.includeFrames,
       disableDomAnnotations: this.disableDomAnnotations,
-      pageConfig: params?.pageConfig,
+      pageConfig,
     });
   }
 
@@ -859,7 +902,7 @@ export class Bridge {
       } else {
         window.location.reload();
       }
-    }, 0);
+    }, this.navigationDelayMs);
   }
 
   private scheduleSameTabNavigation(
@@ -874,7 +917,7 @@ export class Bridge {
       } catch {
         window.location.assign(targetUrl);
       }
-    }, 0);
+    }, this.navigationDelayMs);
     return {
       success: true,
       output: {
@@ -1375,6 +1418,12 @@ function normalizeExternalNavigationPolicy(policy?: ExternalNavigationPolicy): E
 function normalizeCrossHostPolicy(policy?: CrossHostPolicy): CrossHostPolicy {
   if (policy === 'same_tab' || policy === 'open_new_tab') return policy;
   return 'same_tab';
+}
+
+function normalizeDomSettleNumber(input: unknown, fallback: number, min: number, max: number): number {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(parsed)));
 }
 
 function normalizeAllowedDomains(input: string | string[] | undefined, currentHost: string, scopeMode: DomainScopeMode): string[] {

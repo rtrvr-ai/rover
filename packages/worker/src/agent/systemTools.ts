@@ -1,5 +1,5 @@
 import { SystemToolNames } from '@rover/shared/lib/system-tools/tools.js';
-import type { FunctionCall } from './types.js';
+import type { FunctionCall, RuntimeToolOutput } from './types.js';
 
 export type LLMFunction = {
   name: string;
@@ -7,9 +7,16 @@ export type LLMFunction = {
   response: {
     status: 'Success' | 'Failure' | 'Pending execution';
     error?: string;
-    output?: any;
+    output?: RuntimeToolOutput;
     allowFallback?: boolean;
   };
+};
+
+type BridgeToolResponse = {
+  success?: boolean;
+  error?: string;
+  allowFallback?: boolean;
+  output?: RuntimeToolOutput;
 };
 
 export type SystemNavigationOutcome =
@@ -62,7 +69,7 @@ export async function executeSystemToolCallsSequentially({
   isCancelled,
 }: {
   calls: FunctionCall[];
-  bridgeRpc: (method: string, params?: any) => Promise<any>;
+  bridgeRpc: (method: string, params?: any) => Promise<BridgeToolResponse>;
   isCancelled?: () => boolean;
 }): Promise<SystemToolBatchResult> {
   const results: LLMFunction[] = [];
@@ -93,7 +100,7 @@ export async function executeSystemToolCallsSequentially({
       continue;
     }
 
-    let response: any;
+    let response: BridgeToolResponse;
     try {
       throwIfCancelled(isCancelled);
       response = await bridgeRpc('executeTool', { call });

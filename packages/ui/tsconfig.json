@@ -2,7 +2,12 @@
   "extends": "@rover/tsconfig/module",
   "compilerOptions": {
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "baseUrl": ".",
+    "paths": {
+      "@rover/shared": ["../shared/dist/index.d.ts"],
+      "@rover/shared/*": ["../shared/dist/*"]
+    }
   },
   "include": ["src"]
 }

@@ -2,7 +2,16 @@ import { executePlannerWithTools } from './plannerAgent.js';
 import { executeToolFromPlan } from './toolExecutor.js';
 import { parseMessage, validateFunctionCall, convertParametersToTypes } from './toolParser.js';
 import { PLANNER_FUNCTION_CALLS } from '@rover/shared/lib/utils/constants.js';
-import type { MessageOrchestratorOptions, PlannerOptions, FunctionDeclaration, TaskRoutingMode, ToolExecutionResult } from './types.js';
+import type {
+  MessageOrchestratorOptions,
+  PlannerOptions,
+  FunctionDeclaration,
+  TaskRoutingMode,
+  ToolExecutionResult,
+  RuntimeToolOutput,
+  PlannerResponse,
+  PreviousSteps,
+} from './types.js';
 import type { AgentContext } from './context.js';
 
 export interface OrchestratorResult {
@@ -15,10 +24,10 @@ export interface OrchestratorResult {
 export interface ExecutedFunction {
   name: string;
   parameters: Record<string, any>;
-  result?: any;
+  result?: RuntimeToolOutput;
   error?: string;
   isRequired: boolean;
-  prevSteps?: any[];
+  prevSteps?: PreviousSteps[];
 }
 
 type RoutingDecision = {
@@ -32,7 +41,7 @@ export type HandleSendMessageResult = {
   processedMessage: string;
   error?: string;
   executedFunctions?: ExecutedFunction[];
-  plannerResponse?: any;
+  plannerResponse?: PlannerResponse;
   directToolResult?: ToolExecutionResult;
   route?: RoutingDecision;
 };
@@ -110,6 +119,35 @@ function hasCrossDomainPlanDependency(
   });
 }
 
+function countCrossDomainNavigationDependencies(
+  userInput: string,
+  tabs: Array<{ url?: string }> | undefined,
+): number {
+  const currentUrl = String(
+    tabs?.find(tab => typeof tab?.url === 'string' && String(tab.url || '').trim())?.url || '',
+  );
+  const currentDomain = registrableDomain(extractHostFromUrl(currentUrl));
+  const urls = String(userInput || '').match(/https?:\/\/[^\s)]+/g) || [];
+  if (!urls.length || !currentDomain) return 0;
+  const distinct = new Set<string>();
+  for (const url of urls) {
+    const targetDomain = registrableDomain(extractHostFromUrl(url));
+    if (!targetDomain || targetDomain === currentDomain) continue;
+    distinct.add(targetDomain);
+  }
+  return distinct.size;
+}
+
+function hasMultiStepDependencyMarkers(text: string): boolean {
+  const input = String(text || '').toLowerCase();
+  if (!input) return false;
+  const sequenceMarkers = (input.match(/\b(first|second|third|then|after that|next|finally)\b/g) || []).length;
+  if (sequenceMarkers >= 2) return true;
+  if ((input.match(/\bstep\s*[1-9]\b/g) || []).length >= 2) return true;
+  if ((input.match(/\b\d+\.\s+/g) || []).length >= 2) return true;
+  return false;
+}
+
 function computeComplexityScore(text: string): number {
   const input = String(text || '').toLowerCase().trim();
   if (!input) return 0;
@@ -144,7 +182,7 @@ function computeComplexityScore(text: string): number {
 
 function decideRouting(
   message: string,
-  options: Pick<MessageOrchestratorOptions, 'taskRouting' | 'previousSteps'>,
+  options: Pick<MessageOrchestratorOptions, 'taskRouting' | 'previousSteps' | 'tabs'>,
 ): RoutingDecision {
   const mode = options.taskRouting?.mode || 'act';
   if (mode === 'planner') {
@@ -169,18 +207,38 @@ function decideRouting(
     };
   }
 
-  const score = computeComplexityScore(message);
-  if (score >= 7) {
+  if (hasMultiStepDependencyMarkers(message)) {
+    const score = computeComplexityScore(message);
     return {
       mode: 'planner',
       score,
-      reason: `Complexity score ${score} >= 7`,
+      reason: 'Forced planner due to multi-step dependency markers in prompt.',
+    };
+  }
+
+  const crossDomainDependencies = countCrossDomainNavigationDependencies(message, options.tabs || []);
+  if (crossDomainDependencies > 1) {
+    const score = computeComplexityScore(message);
+    return {
+      mode: 'planner',
+      score,
+      reason: `Forced planner due to ${crossDomainDependencies} cross-domain dependencies.`,
+    };
+  }
+
+  const score = computeComplexityScore(message);
+  const plannerThreshold = Math.max(3, Math.min(10, Number(options.taskRouting?.actHeuristicThreshold) || 7));
+  if (score >= plannerThreshold) {
+    return {
+      mode: 'planner',
+      score,
+      reason: `Complexity score ${score} >= ${plannerThreshold}`,
     };
   }
   return {
     mode: 'act',
     score,
-    reason: `Complexity score ${score} < 7`,
+    reason: `Complexity score ${score} < ${plannerThreshold}`,
   };
 }
 
@@ -361,6 +419,8 @@ export async function handleSendMessageWithFunctions(
           }, 0)
         : 0;
       const crossDomainPlanDependency = hasCrossDomainPlanDependency(userInput, context.tabs || []);
+      const crossDomainDependencyCount = countCrossDomainNavigationDependencies(userInput, context.tabs || []);
+      const multiStepDependency = hasMultiStepDependencyMarkers(userInput);
       const actProducedUsableOutcome = hasUsableActOutcome(actResult);
 
       const shouldEscalateToPlanner =
@@ -374,7 +434,9 @@ export async function handleSendMessageWithFunctions(
           || actElapsedMs > 8_000
           || actFunctionCount > 3
           || recoverableFailures >= 2
+          || crossDomainDependencyCount > 1
           || crossDomainPlanDependency
+          || multiStepDependency
         );
 
       if (!shouldEscalateToPlanner) {

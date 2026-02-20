@@ -163,6 +163,25 @@ export function toRoverErrorEnvelope(err: any, fallbackMessage = 'Operation fail
     };
   }
 
+  // Handle plain string errors — preserve the original message for proper code inference
+  if (typeof err === 'string') {
+    const message = err || fallbackMessage;
+    const code = inferErrorCode(message);
+    return {
+      code,
+      message,
+      requires_api_key: code === 'MISSING_API_KEY' || code === 'INVALID_API_KEY',
+      missing: code === 'MISSING_AUTH' || code === 'MISSING_AUTH_TOKEN' ? ['authToken'] : undefined,
+      next_action: defaultNextActionForCode(code),
+      retryable:
+        code === 'NETWORK_ERROR'
+        || code === 'STALE_SEQ'
+        || code === 'STALE_EPOCH'
+        || code === 'SESSION_TOKEN_EXPIRED'
+        || code === 'NAVIGATION_HANDOFF_PENDING',
+    };
+  }
+
   const message = String(err?.message || err?.error || fallbackMessage);
   const code = inferErrorCode(message);
   const requiresApiKey = code === 'MISSING_API_KEY' || code === 'INVALID_API_KEY';

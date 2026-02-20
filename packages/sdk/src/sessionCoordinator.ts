@@ -65,7 +65,7 @@ export type SharedLease = {
 
 export type SharedTaskState = {
   taskId: string;
-  status: 'running' | 'completed' | 'ended';
+  status: 'running' | 'completed' | 'cancelled' | 'failed' | 'ended';
   startedAt: number;
   lastUserAt?: number;
   lastAssistantAt?: number;
@@ -180,7 +180,11 @@ function sanitizeSharedTask(raw: any): SharedTaskState | undefined {
   if (!taskId) return undefined;
 
   const status =
-    raw.status === 'completed' || raw.status === 'ended' || raw.status === 'running'
+    raw.status === 'completed'
+    || raw.status === 'cancelled'
+    || raw.status === 'failed'
+    || raw.status === 'ended'
+    || raw.status === 'running'
       ? raw.status
       : 'running';
 
@@ -736,16 +740,6 @@ export class SessionCoordinator {
 
     this.registerCurrentTab(window.location.href, document.title || undefined, initialHandoff);
     this.claimLease(false);
-    if (!this.state.task) {
-      this.mutate('local', draft => {
-        draft.task = {
-          taskId: randomId('task'),
-          status: 'running',
-          startedAt: now(),
-          boundaryReason: 'session_start',
-        };
-      });
-    }
 
     if (typeof BroadcastChannel !== 'undefined') {
       this.channel = new BroadcastChannel(this.channelName);
@@ -942,7 +936,13 @@ export class SessionCoordinator {
     const startedAt = Number(task.startedAt) || now();
     const nextTask: SharedTaskState = {
       taskId: String(task.taskId || randomId('task')),
-      status: task.status === 'completed' || task.status === 'ended' ? task.status : 'running',
+      status:
+        task.status === 'completed'
+        || task.status === 'cancelled'
+        || task.status === 'failed'
+        || task.status === 'ended'
+          ? task.status
+          : 'running',
       startedAt,
       lastUserAt: Number(task.lastUserAt) || startedAt,
       lastAssistantAt: Number(task.lastAssistantAt) || undefined,
@@ -1098,13 +1098,6 @@ export class SessionCoordinator {
         startedAt: draft.activeRun?.runId === activeRun.runId ? draft.activeRun.startedAt : now(),
         updatedAt: now(),
       };
-      if (!draft.task) {
-        draft.task = {
-          taskId: randomId('task'),
-          status: 'running',
-          startedAt: now(),
-        };
-      }
     });
   }
 
@@ -1585,6 +1578,30 @@ export class SessionCoordinator {
         ? draft.tabs.find(tab => tab.runtimeId === remoteHolderRuntimeId)
         : undefined;
       const remoteHolderAlive = !!(remoteHolderTab && remoteHolderTab.updatedAt > now() - 2 * this.heartbeatMs);
+      const lockHolderRuntimeId = draft.workflowLock?.runtimeId;
+      const lockHolderTab = lockHolderRuntimeId
+        ? draft.tabs.find(tab => tab.runtimeId === lockHolderRuntimeId)
+        : undefined;
+      const lockHolderAlive = !!(
+        lockHolderTab
+        && lockHolderTab.runtimeId
+        && lockHolderTab.runtimeId !== this.runtimeId
+        && lockHolderTab.updatedAt > now() - 2 * this.heartbeatMs
+      );
+      if (
+        draft.workflowLock
+        && draft.workflowLock.runtimeId !== this.runtimeId
+        && (draft.workflowLock.expiresAt <= now() || !lockHolderAlive)
+      ) {
+        draft.workflowLock = undefined;
+      }
+      if (draft.activeRun?.runtimeId && draft.activeRun.runtimeId !== this.runtimeId) {
+        const runHolderTab = draft.tabs.find(tab => tab.runtimeId === draft.activeRun?.runtimeId);
+        const runHolderAlive = !!(runHolderTab && runHolderTab.updatedAt > now() - 2 * this.heartbeatMs);
+        if (!runHolderAlive) {
+          draft.activeRun = undefined;
+        }
+      }
       const hasRemoteActiveRun = !!(draft.activeRun?.runtimeId && draft.activeRun.runtimeId !== this.runtimeId);
       const hasRemoteWorkflowLock = !!(
         draft.workflowLock

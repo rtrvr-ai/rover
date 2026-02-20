@@ -203,3 +203,41 @@ test('task boundary hard-resets logical tabs to the current runtime tab', () => 
     env.restore();
   }
 });
+
+test('setActiveRun does not synthesize task lifecycle state', () => {
+  const env = installBrowserEnv();
+  try {
+    const runtime = new SessionCoordinator({
+      siteId: 'site-e',
+      sessionId: 'session-e',
+      runtimeId: 'runtime-a',
+    });
+
+    runtime.registerCurrentTab('https://example.com/start', 'Start');
+    runtime.setActiveRun({ runId: 'run-1', text: 'test run' });
+    const state = runtime.getState();
+
+    assert.equal(state.activeRun?.runId, 'run-1');
+    assert.equal(state.task, undefined);
+  } finally {
+    env.restore();
+  }
+});
+
+test('start remains transport-only and does not synthesize task lifecycle state', () => {
+  const env = installBrowserEnv();
+  try {
+    const runtime = new SessionCoordinator({
+      siteId: 'site-f',
+      sessionId: 'session-f',
+      runtimeId: 'runtime-a',
+    });
+    runtime.start();
+    const state = runtime.getState();
+
+    assert.equal(state.task, undefined);
+    runtime.stop();
+  } finally {
+    env.restore();
+  }
+});
