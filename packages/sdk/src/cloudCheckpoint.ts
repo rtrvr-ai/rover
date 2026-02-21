@@ -57,17 +57,51 @@ function truncateText(value: unknown, max = 8_000): string {
 }
 
 function buildRevisionKey(payload: RoverCloudCheckpointPayload): string {
-  const seq = Number(payload.sharedState?.seq || 0);
-  const sharedCount = Array.isArray(payload.sharedState?.uiMessages) ? payload.sharedState.uiMessages.length : 0;
-  const runtimeUpdated = Number(payload.runtimeState?.updatedAt || 0);
-  const runtimeCount = Array.isArray(payload.runtimeState?.uiMessages) ? payload.runtimeState.uiMessages.length : 0;
+  const sharedMessages = Array.isArray(payload.sharedState?.uiMessages) ? payload.sharedState.uiMessages : [];
+  const sharedTimeline = Array.isArray(payload.sharedState?.timeline) ? payload.sharedState.timeline : [];
+  const runtimeMessages = Array.isArray(payload.runtimeState?.uiMessages) ? payload.runtimeState.uiMessages : [];
+  const runtimeTimeline = Array.isArray(payload.runtimeState?.timeline) ? payload.runtimeState.timeline : [];
+  const sharedTabs = Array.isArray(payload.sharedState?.tabs) ? payload.sharedState.tabs : [];
+  const runtimeWorkerState = payload.runtimeState?.workerState as any;
+  const taskScope = payload.runtimeState?.taskTabScope as any;
+  const sharedTabSignature = sharedTabs
+    .slice(-12)
+    .map(tab => [
+      Number(tab?.logicalTabId) || 0,
+      String(tab?.url || ''),
+      String(tab?.title || ''),
+      tab?.external ? 1 : 0,
+      String(tab?.detachedReason || ''),
+      String(tab?.handoffId || ''),
+      tab?.runtimeId ? 1 : 0,
+    ].join('|'))
+    .join(';');
   return [
     payload.sessionId,
-    toFiniteNumber(payload.updatedAt, 0),
-    seq,
-    sharedCount,
-    runtimeUpdated,
-    runtimeCount,
+    Number(payload.sharedState?.taskEpoch || 0),
+    String(payload.sharedState?.task?.taskId || ''),
+    String(payload.sharedState?.task?.status || ''),
+    String(payload.sharedState?.activeRun?.runId || ''),
+    sharedMessages.length,
+    String(sharedMessages[sharedMessages.length - 1]?.id || ''),
+    sharedTimeline.length,
+    String(sharedTimeline[sharedTimeline.length - 1]?.id || ''),
+    sharedTabSignature,
+    Number(payload.runtimeState?.taskEpoch || 0),
+    String(payload.runtimeState?.activeTask?.taskId || ''),
+    String(payload.runtimeState?.activeTask?.status || ''),
+    String(payload.runtimeState?.pendingRun?.id || ''),
+    payload.runtimeState?.pendingRun?.resumeRequired ? 1 : 0,
+    runtimeMessages.length,
+    String(runtimeMessages[runtimeMessages.length - 1]?.id || ''),
+    runtimeTimeline.length,
+    String(runtimeTimeline[runtimeTimeline.length - 1]?.id || ''),
+    String(runtimeWorkerState?.taskBoundaryId || ''),
+    String(runtimeWorkerState?.trajectoryId || ''),
+    Array.isArray(runtimeWorkerState?.history) ? runtimeWorkerState.history.length : 0,
+    Array.isArray(runtimeWorkerState?.plannerHistory) ? runtimeWorkerState.plannerHistory.length : 0,
+    Array.isArray(runtimeWorkerState?.agentPrevSteps) ? runtimeWorkerState.agentPrevSteps.length : 0,
+    Array.isArray(taskScope?.touchedTabIds) ? taskScope.touchedTabIds.join(',') : '',
   ].join(':');
 }
 
