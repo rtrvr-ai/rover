@@ -358,6 +358,10 @@ let telemetryBuffer: TelemetryEventRecord[] = [];
 let telemetryInFlight = false;
 let telemetryPausedAuth = false;
 let telemetrySeq = 0;
+let telemetryLastStatusAt = 0;
+let telemetryLastCheckpointStateAt = 0;
+const TELEMETRY_STATUS_MIN_INTERVAL_MS = 1_500;
+const TELEMETRY_CHECKPOINT_STATE_MIN_INTERVAL_MS = 5_000;
 let resolvedVisitorId: string | undefined = undefined;
 let resolvedVisitor: { name?: string; email?: string } | undefined = undefined;
 let greetingDismissed = false;
@@ -1357,10 +1361,18 @@ function recordTelemetryEvent(event: RoverEventName, payload?: any): void {
   if (!canUseTelemetry(currentConfig) || telemetryPausedAuth) return;
   const telemetry = normalizeTelemetryConfig(currentConfig);
   if (telemetry.sampleRate < 1 && Math.random() > telemetry.sampleRate) return;
+  const nowTs = Date.now();
+  if (event === 'status') {
+    if (nowTs - telemetryLastStatusAt < TELEMETRY_STATUS_MIN_INTERVAL_MS) return;
+    telemetryLastStatusAt = nowTs;
+  } else if (event === 'checkpoint_state') {
+    if (nowTs - telemetryLastCheckpointStateAt < TELEMETRY_CHECKPOINT_STATE_MIN_INTERVAL_MS) return;
+    telemetryLastCheckpointStateAt = nowTs;
+  }
 
   const next: TelemetryEventRecord = {
     name: event,
-    ts: Date.now(),
+    ts: nowTs,
     seq: ++telemetrySeq,
     payload: buildTelemetryPayload(payload, telemetry.includePayloads),
   };
@@ -2280,7 +2292,7 @@ function sanitizePendingRun(input: any): PersistedPendingRun | undefined {
   };
 }
 
-function persistRuntimeState(): void {
+function persistRuntimeState(options?: { markCheckpointDirty?: boolean }): void {
   if (!runtimeState || !runtimeStorageKey) return;
   try {
     runtimeState.updatedAt = Date.now();
@@ -2289,7 +2301,7 @@ function persistRuntimeState(): void {
       runtimeStateStore?.remove(runtimeStorageLegacyKey);
       runtimeStorageLegacyKey = null;
     }
-    if (!suppressCheckpointSync) {
+    if (!suppressCheckpointSync && options?.markCheckpointDirty !== false) {
       cloudCheckpointClient?.markDirty();
     }
   } catch {
@@ -2668,7 +2680,8 @@ function appendTimelineEvent(
     if (runtimeState.timeline.length > MAX_TIMELINE_EVENTS) {
       runtimeState.timeline = runtimeState.timeline.slice(-MAX_TIMELINE_EVENTS);
     }
-    persistRuntimeState();
+    // Timeline is UI affordance; avoid forcing checkpoint writes on every status tick.
+    persistRuntimeState({ markCheckpointDirty: false });
   }
 
   if (sessionCoordinator && event.publishShared !== false) {
@@ -2710,7 +2723,8 @@ function setUiStatus(text: string, options?: { publishShared?: boolean }): void 
   ui?.setStatus(text);
   if (runtimeState) {
     runtimeState.uiStatus = truncateText(text, 300);
-    persistRuntimeState();
+    // Status text can update frequently while a run is active.
+    persistRuntimeState({ markCheckpointDirty: false });
   }
   if (sessionCoordinator && options?.publishShared !== false) {
     sessionCoordinator.setStatus(text);
@@ -3926,6 +3940,7 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
   }
   syncQuestionPromptFromWorkerState();
   runtimeState.activeTask = sanitizeTask(runtimeState.activeTask, createDefaultTaskState('implicit'));
+  if (source === 'local') return;
   persistRuntimeState();
 }
 
@@ -6574,6 +6589,8 @@ export function shutdown(): void {
   telemetryPausedAuth = false;
   telemetryBuffer = [];
   telemetrySeq = 0;
+  telemetryLastStatusAt = 0;
+  telemetryLastCheckpointStateAt = 0;
   currentMode = 'controller';
   pendingTaskSuggestion = null;
   runtimeStateStore = null;
