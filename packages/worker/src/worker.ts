@@ -20,7 +20,7 @@ import { TabularStore } from './tabular-memory/tabular-store.js';
 import { PLANNER_FUNCTION_CALLS } from '@rover/shared/lib/utils/constants.js';
 import { isApiKeyRequiredError, toRoverErrorEnvelope } from './agent/errors.js';
 import { resolveRuntimeTabs } from './agent/runtimeTabs.js';
-import { shouldBuildResumeCueChatLog, shouldClearHistoryForRun } from './runHistoryGuards.js';
+import { shouldBuildResumeCueChatLog, shouldClearHistoryForRun, shouldUseFollowupChatLog } from './runHistoryGuards.js';
 
 type RpcRequest = { t: 'req'; id: string; method: string; params?: unknown };
 type RpcResponse = { t: 'res'; id: string; ok: boolean; result?: unknown; error?: { message: string } };
@@ -81,6 +81,11 @@ type PersistedWorkerState = {
   agentPrevSteps: PreviousSteps[];
   lastToolPreviousSteps?: PreviousSteps[];
   pendingAskUser?: PendingAskUserPrompt;
+};
+
+type FollowupChatLogEntry = {
+  role: 'user' | 'model';
+  message: string;
 };
 
 type RunTerminalState = 'waiting_input' | 'in_progress' | 'completed' | 'failed';
@@ -162,6 +167,7 @@ const cancelledRunIds = new Set<string>();
 let activeAbortController: AbortController | null = null;
 let lastStatusKey = '';
 let seenStatusKeys = new Set<string>();
+let lastRuntimeTabsDiagnosticsKey = '';
 const terminalRuns = new Map<string, TerminalRunResult>();
 
 let RPC_TIMEOUT_MS = 30_000;
@@ -417,6 +423,32 @@ function postStatus(message: string, thought?: string, stage?: StatusStage) {
   postStateSnapshot();
 }
 
+function postRuntimeTabsDiagnostics(payload: {
+  hasExplicitScope: boolean;
+  scopedTabIdsInput: number[];
+  listedTabIds: number[];
+  keptScopedTabIds: number[];
+  resolvedTabOrder: number[];
+}): void {
+  const runId = activeRun?.runId || 'no-run';
+  if (runId !== 'no-run' && cancelledRunIds.has(runId)) return;
+  const signature = [
+    runId,
+    payload.hasExplicitScope ? '1' : '0',
+    payload.scopedTabIdsInput.join(','),
+    payload.listedTabIds.join(','),
+    payload.keptScopedTabIds.join(','),
+    payload.resolvedTabOrder.join(','),
+  ].join('|');
+  if (signature === lastRuntimeTabsDiagnosticsKey) return;
+  lastRuntimeTabsDiagnosticsKey = signature;
+  (self as any).postMessage({
+    type: 'runtime_tabs_diagnostics',
+    runId: activeRun?.runId,
+    diagnostics: payload,
+  });
+}
+
 function cloneUnknown<T>(value: T): T | undefined {
   if (value == null) return value;
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
@@ -569,6 +601,27 @@ function buildAskUserAnswerContext(
 function normalizeRootUserInput(input: string | undefined): string | undefined {
   const normalized = String(input || '').trim();
   return normalized || undefined;
+}
+
+function normalizeFollowupChatLog(
+  input: unknown,
+): FollowupChatLogEntry[] {
+  if (!Array.isArray(input)) return [];
+  const normalized = input
+    .map(entry => ({
+      role: entry?.role === 'user' ? ('user' as const) : ('model' as const),
+      message: String(entry?.message || '').replace(/\s+/g, ' ').trim(),
+    }))
+    .filter(entry => !!entry.message);
+  if (!normalized.length) return [];
+
+  const deduped: FollowupChatLogEntry[] = [];
+  for (const entry of normalized) {
+    const previous = deduped[deduped.length - 1];
+    if (previous && previous.role === entry.role && previous.message === entry.message) continue;
+    deduped.push(entry);
+  }
+  return deduped.slice(-12);
 }
 
 function dedupePositiveTabIds(input: unknown): number[] {
@@ -1861,6 +1914,7 @@ async function handleUserMessage(
   options?: {
     resume?: boolean;
     preserveHistory?: boolean;
+    followupChatLog?: FollowupChatLogEntry[];
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: AskUserAnswerMeta;
   },
@@ -1964,6 +2018,9 @@ async function handleUserMessage(
   const resolvedTabs = await resolveRuntimeTabs(bridgeRpc, fallbackTabs, {
     scopedTabIds,
     seedTabId: scopedSeedTabId,
+    onDiagnostics: payload => {
+      postRuntimeTabsDiagnostics(payload);
+    },
   });
   throwIfCancelledRun(activeRunId);
   const tabsById = new Map<number, RoverTab>(tabs.map(tab => [tab.id, tab]));
@@ -2028,13 +2085,21 @@ async function handleUserMessage(
     1,
     Math.min(4, Math.floor(Number(config.chat?.resumeFollowup?.maxTurns) || MAX_RESUME_CUE_TURNS)),
   );
+  const normalizedFollowupChatLog = normalizeFollowupChatLog(options?.followupChatLog);
   const chatLog = shouldBuildResumeCueChatLog({
     resume: options?.resume,
     preserveHistory: options?.preserveHistory,
     resumeFollowupMode: config.chat?.resumeFollowup?.mode,
   })
     ? buildChatLogFromHistory(history, chatLogCurrentInputForDedupe, resumeFollowupTurns)
-    : [];
+    : (
+      shouldUseFollowupChatLog({
+        resume: options?.resume,
+        followupChatLogLength: normalizedFollowupChatLog.length,
+      })
+        ? normalizedFollowupChatLog
+        : []
+    );
   const onPrevStepsUpdate = (steps: PreviousSteps[]) => {
     applyAgentPrevSteps(steps, { snapshot: true });
   };
@@ -2469,6 +2534,7 @@ async function runUserMessage(
     runId?: string;
     resume?: boolean;
     preserveHistory?: boolean;
+    followupChatLog?: FollowupChatLogEntry[];
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: AskUserAnswerMeta;
   },
@@ -2514,6 +2580,7 @@ async function runUserMessage(
   const runTaskBoundaryId = taskBoundaryId;
   lastStatusKey = '';
   seenStatusKeys = new Set<string>();
+  lastRuntimeTabsDiagnosticsKey = '';
   cancelledRunIds.delete(runId);
   activeAbortController = new AbortController();
   activeRun = { runId, text, startedAt: Date.now(), resume, preserveHistory };
@@ -2530,6 +2597,7 @@ async function runUserMessage(
     const outcome = normalizeRunOutcome(await handleUserMessage(text, {
       resume,
       preserveHistory,
+      followupChatLog: normalizeFollowupChatLog(meta?.followupChatLog),
       routing: meta?.routing,
       askUserAnswers: meta?.askUserAnswers,
     }));
@@ -2735,6 +2803,7 @@ async function runUserMessage(
         runId: data.runId,
         resume: !!data.resume,
         preserveHistory: !!data.preserveHistory,
+        followupChatLog: normalizeFollowupChatLog(data.followupChatLog),
         routing: data.routing,
         askUserAnswers: data.askUserAnswers,
       });
@@ -2746,6 +2815,7 @@ async function runUserMessage(
         runId: data.runId,
         resume: !!data.resume,
         preserveHistory: !!data.preserveHistory,
+        followupChatLog: normalizeFollowupChatLog(data.followupChatLog),
         askUserAnswers: data.askUserAnswers,
       });
       return;

@@ -62,6 +62,22 @@ export type RunControlResponse = {
   projection?: RoverServerProjection | null;
 };
 
+export type ExternalContextResponse = {
+  intent?: 'open_only' | 'read_context' | 'act';
+  mode?: 'open_only';
+  reason?: string;
+  pageData?: Record<string, unknown>;
+  url?: string;
+  runId?: string;
+  runStatus?: string;
+  conflict?: {
+    type: 'stale_seq' | 'stale_epoch' | 'active_run_exists';
+    currentSeq?: number;
+    currentEpoch?: number;
+    retryable: boolean;
+  };
+};
+
 export type TabEventDecisionResponse = {
   decision?: 'allow_same_tab' | 'open_new_tab' | 'block' | 'stale_run';
   reason?: string;
@@ -518,7 +534,11 @@ export class RoverServerRuntimeClient {
     }
     if (!response.ok || !json?.success) {
       const message = json?.error || `request failed (${response.status})`;
-      throw new Error(String(message));
+      const error = new Error(String(message));
+      (error as any).status = response.status;
+      (error as any).code = String(json?.error || json?.data?.code || '').trim() || undefined;
+      (error as any).details = json?.data || json;
+      throw error;
     }
     this.syncCursorFromPayload(json?.data);
     return {
@@ -623,6 +643,60 @@ export class RoverServerRuntimeClient {
       }
       return data;
     }
+    return null;
+  }
+
+  async fetchExternalContext(params: {
+    runId?: string;
+    tabId?: string | number;
+    url: string;
+    intent?: 'open_only' | 'read_context' | 'act';
+    message?: string;
+    source?: 'google_search' | 'direct_url';
+    adversarialScore?: number;
+  }): Promise<ExternalContextResponse | null> {
+    const runId = String(params.runId || this.activeRunId || this.lastRunId || '').trim() || undefined;
+    const logicalTabId =
+      typeof params.tabId === 'string' && params.tabId.trim()
+        ? params.tabId.trim()
+        : Number.isFinite(Number(params.tabId)) && Number(params.tabId) > 0
+          ? String(Math.trunc(Number(params.tabId)))
+          : undefined;
+    const intent =
+      params.intent === 'act' || params.intent === 'open_only' || params.intent === 'read_context'
+        ? params.intent
+        : 'read_context';
+    const source = params.source === 'google_search' ? 'google_search' : 'direct_url';
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const result = await this.postJson<ExternalContextResponse>('/context/external', {
+        runId,
+        logicalTabId,
+        url: params.url,
+        intent,
+        source,
+        message: params.message,
+        adversarialScore: Number.isFinite(Number(params.adversarialScore))
+          ? Number(params.adversarialScore)
+          : undefined,
+        expectedEpoch: this.epoch,
+        expectedSeq: this.lastSeq,
+      });
+
+      if (!result.ok) {
+        const conflictType = String(result.conflict?.type || '').trim();
+        const staleRetryable =
+          result.conflict?.retryable !== false
+          && (conflictType === 'stale_seq' || conflictType === 'stale_epoch');
+        if (attempt === 0 && staleRetryable) {
+          continue;
+        }
+        return (result.data || null) as ExternalContextResponse | null;
+      }
+
+      return (result.data || null) as ExternalContextResponse | null;
+    }
+
     return null;
   }
 

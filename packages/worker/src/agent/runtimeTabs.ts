@@ -17,6 +17,13 @@ type ResolveRuntimeTabsOptions = {
   staleRuntimeTabMaxAgeMs?: number;
   scopedTabIds?: number[];
   seedTabId?: number;
+  onDiagnostics?: (payload: {
+    hasExplicitScope: boolean;
+    scopedTabIdsInput: number[];
+    listedTabIds: number[];
+    keptScopedTabIds: number[];
+    resolvedTabOrder: number[];
+  }) => void;
 };
 
 const DEFAULT_MAX_CONTEXT_TABS = 8;
@@ -111,7 +118,9 @@ export async function resolveRuntimeTabs(
   const staleRuntimeTabMaxAgeMs =
     Math.max(10_000, Number(options?.staleRuntimeTabMaxAgeMs) || DEFAULT_STALE_RUNTIME_TAB_MAX_AGE_MS);
   const scopedTabIds = dedupePositiveTabIds(options?.scopedTabIds || []);
-  const scopedTabSet = new Set(scopedTabIds);
+  const hasExplicitScope = scopedTabIds.length > 0;
+  const scopedOrder = [...scopedTabIds];
+  const scopedTabSet = new Set(scopedOrder);
 
   const fallbackSnapshots = normalizeFallbackTabs(fallbackTabs);
   const fallbackTabIds = dedupePositiveTabIds(
@@ -122,23 +131,32 @@ export async function resolveRuntimeTabs(
   );
   let tabIds = [...fallbackTabIds];
   let listedTabs: RuntimeTabSnapshot[] = [];
+  let listedTabIds: number[] = [];
+
+  const isTabInScope = (tabId: number): boolean => {
+    if (!hasExplicitScope) return true;
+    return scopedTabSet.has(tabId);
+  };
 
   if (bridgeRpc) {
     try {
-      listedTabs = normalizeListedTabs(await bridgeRpc('listSessionTabs'));
-      if (scopedTabIds.length > 0) {
-        listedTabs = listedTabs.filter(tab => scopedTabSet.has(tab.id));
-      }
-      const listedIds = dedupePositiveTabIds(listedTabs.map(tab => tab.id));
-      if (listedIds.length > 0) {
-        tabIds = scopedTabIds.length > 0 ? filterTabIdsToScope(listedIds, scopedTabIds) : listedIds;
+      const listed = await bridgeRpc('listSessionTabs');
+      listedTabs = normalizeListedTabs(Array.isArray(listed) ? listed : []);
+      listedTabIds = dedupePositiveTabIds(listedTabs.map(tab => tab.id));
+      if (listedTabIds.length > 0) {
+        tabIds = hasExplicitScope ? filterTabIdsToScope(listedTabIds, scopedOrder) : listedTabIds;
+      } else if (hasExplicitScope) {
+        tabIds = [...scopedOrder];
       }
     } catch {
       // keep fallback tab ids
     }
   }
-  if (scopedTabIds.length > 0) {
-    tabIds = filterTabIdsToScope(tabIds, scopedTabIds);
+  if (hasExplicitScope) {
+    tabIds = dedupePositiveTabIds(tabIds).filter(tabId => isTabInScope(tabId));
+    if (!tabIds.length && scopedOrder.length) {
+      tabIds = [...scopedOrder];
+    }
   }
 
   let activeTabId =
@@ -152,7 +170,7 @@ export async function resolveRuntimeTabs(
       if (
         Number.isFinite(candidate)
         && candidate > 0
-        && (scopedTabIds.length === 0 || scopedTabSet.has(candidate))
+        && isTabInScope(candidate)
       ) {
         activeTabId = candidate;
       }
@@ -161,8 +179,8 @@ export async function resolveRuntimeTabs(
     }
   }
 
-  if (scopedTabIds.length > 0 && !scopedTabSet.has(activeTabId)) {
-    activeTabId = scopedTabIds[0];
+  if (hasExplicitScope && !isTabInScope(activeTabId) && scopedOrder.length > 0) {
+    activeTabId = scopedOrder[0];
   }
 
   const nowMs = Date.now();
@@ -178,16 +196,18 @@ export async function resolveRuntimeTabs(
     if (
       Number.isFinite(freshestRuntimeTabId)
       && freshestRuntimeTabId > 0
-      && (scopedTabIds.length === 0 || scopedTabSet.has(freshestRuntimeTabId))
+      && isTabInScope(freshestRuntimeTabId)
     ) {
       activeTabId = freshestRuntimeTabId;
     }
   }
   if (!tabIds.length) {
-    tabIds = scopedTabIds.length > 0 ? [...scopedTabIds] : [activeTabId];
+    tabIds = hasExplicitScope
+      ? (scopedOrder.length > 0 ? [...scopedOrder] : [activeTabId])
+      : [activeTabId];
   } else if (!tabIds.includes(activeTabId)) {
-    if (scopedTabIds.length > 0) {
-      tabIds = [...scopedTabIds];
+    if (hasExplicitScope) {
+      tabIds = scopedOrder.length > 0 ? [...scopedOrder] : tabIds;
     } else if (listedTabs.length > 0) {
       activeTabId = tabIds[0];
     } else {
@@ -195,8 +215,8 @@ export async function resolveRuntimeTabs(
     }
   }
 
-  const baseOrder = scopedTabIds.length > 0
-    ? [...scopedTabIds]
+  const baseOrder = hasExplicitScope
+    ? [...scopedOrder]
     : (listedTabs.length > 0
       ? dedupePositiveTabIds(listedTabs.map(tab => tab.id))
       : [...tabIds]);
@@ -204,7 +224,9 @@ export async function resolveRuntimeTabs(
   const prioritized = baseOrder.filter(tabId => {
     if (tabId === activeTabId) return true;
     const listed = listedById.get(tabId);
-    if (!listed) return false;
+    if (!listed) {
+      return hasExplicitScope;
+    }
     if (listed.runtimeId) {
       return nowMs - (listed.updatedAt || 0) <= staleRuntimeTabMaxAgeMs;
     }
@@ -214,10 +236,10 @@ export async function resolveRuntimeTabs(
     return nowMs - (listed.updatedAt || 0) <= staleRuntimeTabMaxAgeMs;
   });
 
-  let tabOrder = scopedTabIds.length > 0
-    ? preferScopedOrder(scopedTabIds, activeTabId, maxContextTabs)
+  let tabOrder = hasExplicitScope
+    ? preferScopedOrder(scopedOrder, activeTabId, maxContextTabs)
     : [...new Set(prioritized.length ? prioritized : (baseOrder.length ? baseOrder : tabIds))];
-  if (scopedTabIds.length === 0) {
+  if (!hasExplicitScope) {
     if (tabOrder.includes(activeTabId)) {
       tabOrder = [activeTabId, ...tabOrder.filter(tabId => tabId !== activeTabId)];
     } else {
@@ -226,32 +248,47 @@ export async function resolveRuntimeTabs(
     tabOrder = tabOrder.slice(0, maxContextTabs);
   }
   if (!tabOrder.length) {
-    tabOrder = scopedTabIds.length > 0
-      ? preferScopedOrder(scopedTabIds, activeTabId || scopedTabIds[0], maxContextTabs)
+    tabOrder = hasExplicitScope
+      ? (scopedOrder.length > 0
+        ? preferScopedOrder(scopedOrder, activeTabId || scopedOrder[0], maxContextTabs)
+        : [activeTabId || 1])
       : [activeTabId || 1];
   }
 
   const tabMetaById: Record<number, RuntimeTabSnapshot> = {};
   for (const tab of fallbackSnapshots) tabMetaById[tab.id] = tab;
   for (const tab of listedTabs) tabMetaById[tab.id] = { ...(tabMetaById[tab.id] || {}), ...tab };
-  for (const tabId of scopedTabIds) {
+  for (const tabId of scopedOrder) {
     if (!tabMetaById[tabId]) tabMetaById[tabId] = { id: tabId };
   }
   for (const tabId of tabOrder) {
     if (!tabMetaById[tabId]) tabMetaById[tabId] = { id: tabId };
   }
 
-  if (scopedTabIds.length > 0) {
-    if (!scopedTabSet.has(activeTabId)) {
-      activeTabId = scopedTabIds[0];
+  const diagnostics = {
+    hasExplicitScope,
+    scopedTabIdsInput: scopedTabIds,
+    listedTabIds,
+    keptScopedTabIds: scopedOrder,
+    resolvedTabOrder: tabOrder,
+  };
+
+  if (hasExplicitScope) {
+    if (scopedOrder.length && !scopedTabSet.has(activeTabId)) {
+      activeTabId = scopedOrder[0];
     }
-    tabOrder = preferScopedOrder(scopedTabIds, activeTabId, maxContextTabs);
+    tabOrder = preferScopedOrder(scopedOrder, activeTabId, maxContextTabs);
     const scopedMeta: Record<number, RuntimeTabSnapshot> = {};
-    for (const tabId of scopedTabIds) {
+    for (const tabId of scopedOrder) {
       scopedMeta[tabId] = tabMetaById[tabId] || { id: tabId };
     }
+    options?.onDiagnostics?.({
+      ...diagnostics,
+      resolvedTabOrder: tabOrder,
+    });
     return { tabOrder, activeTabId, tabMetaById: scopedMeta };
   }
 
+  options?.onDiagnostics?.(diagnostics);
   return { tabOrder, activeTabId, tabMetaById };
 }

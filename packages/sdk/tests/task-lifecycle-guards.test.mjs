@@ -11,6 +11,8 @@ import {
 
 test('complete -> follow-up starts fresh task', () => {
   assert.equal(shouldStartFreshTask('completed'), true);
+  assert.equal(shouldStartFreshTask('failed'), true);
+  assert.equal(shouldStartFreshTask('cancelled'), true);
   assert.equal(shouldStartFreshTask('ended'), true);
   assert.equal(shouldStartFreshTask('running'), false);
   assert.equal(canAutoResumePendingRun('running'), true);

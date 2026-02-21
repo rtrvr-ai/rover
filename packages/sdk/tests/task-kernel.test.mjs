@@ -39,7 +39,7 @@ test('new_task rotates boundary and clears pending/worker state', () => {
   assert.equal(result.clearWorkerState, true);
 });
 
-test('terminal transition keeps boundary and clears pending run only', () => {
+test('terminal transition keeps boundary and clears pending + worker state', () => {
   const result = reduceTaskKernel(
     {
       task: {
@@ -63,7 +63,7 @@ test('terminal transition keeps boundary and clears pending run only', () => {
   assert.equal(result.taskEpoch, 3);
   assert.equal(result.rotateBoundary, false);
   assert.equal(result.clearPendingRun, true);
-  assert.equal(result.clearWorkerState, false);
+  assert.equal(result.clearWorkerState, true);
 });
 
 test('awaiting_user keeps running task without boundary rotation', () => {

@@ -73,6 +73,31 @@ test('resolveRuntimeTabs enforces scope even when active tab is user-opened out-
   assert.equal(resolved.tabMetaById[2], undefined);
 });
 
+test('resolveRuntimeTabs keeps explicitly scoped ids even when listing is partial', async () => {
+  const bridgeRpc = async (method) => {
+    if (method === 'listSessionTabs') {
+      return [
+        { logicalTabId: 1, runtimeId: 'runtime-agent', url: 'https://app.example.com', updatedAt: Date.now() },
+        { logicalTabId: 3, runtimeId: 'runtime-agent', url: 'https://app.example.com/details', updatedAt: Date.now() },
+      ];
+    }
+    if (method === 'getTabContext') {
+      return { activeLogicalTabId: 1 };
+    }
+    return undefined;
+  };
+
+  const resolved = await resolveRuntimeTabs(
+    bridgeRpc,
+    [{ id: 1 }, { id: 3 }, { id: 99 }],
+    { scopedTabIds: [1, 3, 99], seedTabId: 1 },
+  );
+
+  assert.deepEqual(resolved.tabOrder, [1, 3, 99]);
+  assert.equal(resolved.tabMetaById[99]?.id, 99);
+  assert.equal(resolved.tabMetaById[99]?.accessMode, 'live_dom');
+});
+
 test('ACT loop keeps tabOrder limited to scoped tabs', async () => {
   const bridgeRpc = createScopedBridgeRpc();
   const requests = [];

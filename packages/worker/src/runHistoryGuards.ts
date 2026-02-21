@@ -12,3 +12,11 @@ export function shouldBuildResumeCueChatLog(params: {
 }): boolean {
   return !!(params.resume || params.preserveHistory) && params.resumeFollowupMode === 'deterministic_cues';
 }
+
+export function shouldUseFollowupChatLog(params: {
+  resume?: boolean;
+  followupChatLogLength?: number;
+}): boolean {
+  if (params.resume) return false;
+  return Number(params.followupChatLogLength) > 0;
+}

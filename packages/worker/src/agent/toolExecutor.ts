@@ -112,6 +112,65 @@ function cancelledToolResult(): ToolExecutionResult {
   return { error: 'Run cancelled' };
 }
 
+async function executeRoverExternalContextPlannerTool(params: {
+  toolName: string;
+  toolArgs: Record<string, any>;
+  userInput: string;
+  bridgeRpc: ToolExecutionContext['bridgeRpc'];
+  onStatusUpdate?: ToolExecutionContext['onStatusUpdate'];
+}): Promise<ToolExecutionResult> {
+  const bridge = params.bridgeRpc;
+  if (!bridge) {
+    return { error: `Bridge RPC unavailable for ${params.toolName}` };
+  }
+
+  const message =
+    String(
+      params.toolArgs?.message
+      || params.toolArgs?.user_input
+      || params.toolArgs?.task_instruction
+      || params.userInput
+      || '',
+    ).trim();
+
+  params.onStatusUpdate?.(
+    params.toolName === PLANNER_FUNCTION_CALLS.ROVER_EXTERNAL_ACT_CONTEXT
+      ? 'Fetching external action context...'
+      : 'Fetching external context...',
+    `Calling ${params.toolName}`,
+    'execute',
+  );
+
+  const routedResponse = await bridge('executeTool', {
+    call: {
+      name: params.toolName,
+      args: {
+        ...params.toolArgs,
+        ...(message ? { message } : {}),
+      },
+    },
+  });
+
+  const success = routedResponse?.success === true;
+  if (!success) {
+    const errorMessage = String(
+      routedResponse?.output?.error?.message
+      || routedResponse?.error
+      || `${params.toolName} failed`,
+    );
+    return {
+      error: errorMessage,
+      output: routedResponse?.output,
+      warnings: errorMessage ? [errorMessage] : undefined,
+    };
+  }
+
+  return {
+    output: routedResponse?.output,
+    warnings: Array.isArray(routedResponse?.output?.warnings) ? routedResponse.output.warnings : undefined,
+  };
+}
+
 async function callExtensionRouterWithCancel(ctx: AgentContext, action: string, request: any): Promise<any> {
   throwIfExecutionCancelled(ctx);
   const response = await ctx.callExtensionRouter(action, request);
@@ -341,6 +400,17 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
         agentLog: effectiveAgentLog,
         ctx: effectiveCtx,
         driveAuthToken: toolArgs?.authToken || toolArgs?.driveAuthToken || driveAuthToken,
+      });
+    }
+
+    case PLANNER_FUNCTION_CALLS.ROVER_EXTERNAL_READ_CONTEXT:
+    case PLANNER_FUNCTION_CALLS.ROVER_EXTERNAL_ACT_CONTEXT: {
+      return executeRoverExternalContextPlannerTool({
+        toolName,
+        toolArgs: toolArgs || {},
+        userInput,
+        bridgeRpc,
+        onStatusUpdate,
       });
     }
 

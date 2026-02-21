@@ -9,6 +9,11 @@ import type { UploadFilePayload } from '@rover/shared/lib/system-tools/wire.js';
 import { fetchFileForUploadSmart } from '@rover/shared/lib/page/file-upload-utils.js';
 import { buildPageData, buildSnapshot, executeMainWorldTool, ensureMainWorldActions, ensureScrollDetector } from '@rover/dom';
 import { installInstrumentation, type InstrumentationController, type InstrumentationOptions } from '@rover/instrumentation';
+import {
+  extractHostname,
+  isUrlAllowedByDomains,
+  normalizeAllowedDomains,
+} from './navigationScope.js';
 
 export type DomainScopeMode = 'host_only' | 'registrable_domain';
 export type ExternalNavigationPolicy = 'open_new_tab_notice' | 'block' | 'allow';
@@ -1405,40 +1410,6 @@ function normalizeDomSettleNumber(input: unknown, fallback: number, min: number,
   return Math.max(min, Math.min(max, Math.floor(parsed)));
 }
 
-function normalizeAllowedDomains(input: string | string[] | undefined, currentHost: string, scopeMode: DomainScopeMode): string[] {
-  const candidates = Array.isArray(input) ? input : typeof input === 'string' && input.trim() ? [input] : [];
-  const out = new Set<string>();
-
-  for (const raw of candidates) {
-    const cleaned = String(raw || '')
-      .trim()
-      .toLowerCase()
-      .replace(/^\./, '');
-    if (cleaned) out.add(cleaned);
-  }
-
-  if (!out.size) {
-    const inferred = inferDefaultAllowedDomain(currentHost, scopeMode);
-    if (inferred) out.add(inferred);
-  }
-
-  return Array.from(out);
-}
-
-function inferDefaultAllowedDomain(host: string, scopeMode: DomainScopeMode): string {
-  const clean = String(host || '').trim().toLowerCase();
-  if (!clean) return '';
-  if (clean === 'localhost' || /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(clean)) return `=${clean}`;
-  if (scopeMode === 'host_only') return `=${clean}`;
-  const parts = clean.split('.').filter(Boolean);
-  if (parts.length < 2) return clean;
-  const tail2 = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
-  if (parts.length >= 3 && MULTI_LABEL_TLDS.has(tail2)) {
-    return `${parts[parts.length - 3]}.${tail2}`;
-  }
-  return tail2;
-}
-
 function normalizeUrl(raw: string, base: string): string | null {
   const value = String(raw || '').trim();
   if (!value) return null;
@@ -1449,58 +1420,6 @@ function normalizeUrl(raw: string, base: string): string | null {
     return null;
   }
 }
-
-function isUrlAllowedByDomains(url: string, allowedDomains: string[]): boolean {
-  const host = extractHostname(url);
-  if (!host) return false;
-  if (!allowedDomains.length) return true;
-
-  for (const pattern of allowedDomains) {
-    if (matchesDomainPattern(host, pattern)) return true;
-  }
-
-  return false;
-}
-
-function extractHostname(url: string): string | null {
-  try {
-    return new URL(url).hostname.toLowerCase();
-  } catch {
-    return null;
-  }
-}
-
-function matchesDomainPattern(host: string, pattern: string): boolean {
-  const clean = String(pattern || '').trim().toLowerCase().replace(/^\./, '');
-  if (!clean) return false;
-  if (clean === '*') return true;
-  if (clean.startsWith('=')) {
-    const exact = clean.slice(1);
-    return !!exact && host === exact;
-  }
-  if (clean.startsWith('*.')) {
-    const base = clean.slice(2);
-    if (!base) return false;
-    return host === base || host.endsWith(`.${base}`);
-  }
-  if (host === clean) return true;
-  return host.endsWith(`.${clean}`);
-}
-
-const MULTI_LABEL_TLDS = new Set([
-  'co.uk',
-  'org.uk',
-  'gov.uk',
-  'ac.uk',
-  'com.au',
-  'net.au',
-  'org.au',
-  'co.jp',
-  'com.br',
-  'com.mx',
-  'com.sg',
-  'co.in',
-]);
 
 function findAnchorWithHref(element: Element): HTMLAnchorElement | null {
   if (element instanceof HTMLAnchorElement && element.href) return element;

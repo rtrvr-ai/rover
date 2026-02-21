@@ -176,6 +176,9 @@ Runtime contract notes:
 - `POST /tab/event` stale/missing run is non-fatal (`decision='stale_run'`).
 - Cross-registrable navigation preflight is resilient: if `/tab/event` is unavailable, Rover falls back to local policy (in-scope targets stay same-tab; out-of-scope targets follow `externalNavigationPolicy`).
 - External intent routing: `/context/external` uses `read_context` (read/navigation-context prompts) or `act` (mutation prompts). Navigation-only external opens are represented by `/tab/event` + external placeholder tab handling.
+- Any message after a terminal task (`completed`, `failed`, `cancelled`, `ended`) starts a fresh task boundary automatically.
+- `awaiting_user` tasks resume by default; reset intents like `new task`, `start over`, or `start fresh` force a new task boundary.
+- `task.followup` config is accepted for compatibility but is non-operative in Rover v1 runtime decisions.
 - Runtime does not use legacy browser checkpoint routes (`roverSessionCheckpointGet/Upsert`).
 
 ## API Methods

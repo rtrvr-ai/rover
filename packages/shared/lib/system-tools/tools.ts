@@ -69,6 +69,8 @@ export enum SystemToolNames {
   describe_images = 'describe_images',
   google_search = 'google_search',
   network_run_recipe = 'network_run_recipe',
+  rover_external_read_context = 'rover_external_read_context',
+  rover_external_act_context = 'rover_external_act_context',
 
   // ============================================
   // CLIPBOARD ACTIONS

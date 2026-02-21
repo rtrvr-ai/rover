@@ -443,6 +443,9 @@ Runtime semantics:
 - `POST /tab/event` stale/missing run is non-fatal via `200 decision='stale_run'`.
 - Cross-registrable navigation preflight is resilient: when `/tab/event` is unavailable, Rover falls back to local policy (in-scope targets stay same-tab; out-of-scope targets follow `externalNavigationPolicy`).
 - External intent routing: `/context/external` uses `read_context` (read/navigation-context prompts) or `act` (mutation prompts). Navigation-only external opens are represented by `/tab/event` + external placeholder tab handling.
+- Any message after a terminal task (`completed`, `failed`, `cancelled`, `ended`) starts a fresh task boundary automatically.
+- `awaiting_user` tasks resume by default; reset intents like `new task`, `start over`, or `start fresh` force a new task boundary.
+- `task.followup` config is tolerated input for compatibility but is non-operative in Rover v1 runtime decisions.
 - Browser runtime path is legacy-free: no checkpoint calls to `roverSessionCheckpointGet/Upsert`.
 
 ### Client Tools
@@ -507,6 +510,7 @@ off(); // unsubscribe
 - When inactivity combined with semantic shift suggests a new intent, Rover shows a "Start new" vs "Continue" prompt (no extra LLM call — purely local heuristic).
 - `newTask` clears conversation/timeline and worker context, starting a fresh task boundary.
 - `endTask` closes the current task without destroying the widget session.
+- After terminal completion/failure/cancel/end, the next user prompt is always treated as a new task.
 
 ---
 

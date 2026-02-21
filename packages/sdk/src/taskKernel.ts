@@ -107,7 +107,7 @@ export function reduceTaskKernel(
       lifecycle: 'terminal',
       rotateBoundary: false,
       clearPendingRun: true,
-      clearWorkerState: false,
+      clearWorkerState: true,
     };
   }
 
