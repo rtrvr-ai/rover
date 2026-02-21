@@ -13,7 +13,7 @@ test('missing target tab fallback stays non-external for page data', () => {
   );
 
   assert.equal(result?.metadata?.external, false);
-  assert.equal(result?.metadata?.accessMode, 'inactive_tab');
+  assert.equal(result?.metadata?.accessMode, 'detached_runtime_placeholder');
   assert.equal(result?.metadata?.reason, 'target_tab_missing');
 });
 

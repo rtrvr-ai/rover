@@ -109,6 +109,7 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `allowedDomains` | `string[]` | `[]` | Hostnames where Rover may operate |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | Domain matching strategy |
 | `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
+| `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | In-scope cross-host navigation policy |
 | `mode` | `'full' \| 'safe'` | `'full'` | Runtime mode |
 | `allowActions` | `boolean` | `true` | Enable or disable action tools |
 | `openOnInit` | `boolean` | `false` | Open panel immediately on boot |
@@ -116,6 +117,9 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `taskRouting.mode` | `'auto' \| 'act' \| 'planner'` | `'act'` | Task routing strategy |
 | `taskRouting.plannerOnActError` | `boolean` | `true` | In `auto` mode, retry planner only when ACT does not produce a usable outcome |
 | `taskRouting.actHeuristicThreshold` | `number` | `5` (auto mode) | Auto-routing threshold |
+| `task.followup.mode` | `'heuristic_same_window'` | `'heuristic_same_window'` | Heuristic follow-up chat-cue carryover mode |
+| `task.followup.ttlMs` | `number` | `120000` | Max age (ms) of prior completed/ended task eligible for follow-up chat cues |
+| `task.followup.minLexicalOverlap` | `number` | `0.18` | Minimum lexical overlap ratio to attach follow-up chat cues |
 | `checkpointing.enabled` | `boolean` | `true` | Cloud checkpoint sync is enabled by default in v1. Set to `false` to disable. |
 | `checkpointing.autoVisitorId` | `boolean` | `true` | Auto-generate visitor ID when needed |
 | `checkpointing.ttlHours` | `number` | `1` | Checkpoint TTL in hours |
@@ -174,11 +178,12 @@ Runtime contract notes:
 - `plannerOnActError` applies only in `auto` mode and only when ACT has no usable outcome.
 - Typed conflicts: `stale_seq`, `stale_epoch`, `active_run_exists`.
 - `POST /tab/event` stale/missing run is non-fatal (`decision='stale_run'`).
-- Cross-registrable navigation preflight is resilient: if `/tab/event` is unavailable, Rover falls back to local policy (in-scope targets stay same-tab; out-of-scope targets follow `externalNavigationPolicy`).
+- Cross-registrable navigation preflight is resilient: if `/tab/event` is unavailable, Rover falls back to local policy (in-scope targets follow `navigation.crossHostPolicy`, default `same_tab`; out-of-scope targets follow `externalNavigationPolicy`).
 - External intent routing: `/context/external` uses `read_context` (read/navigation-context prompts) or `act` (mutation prompts). Navigation-only external opens are represented by `/tab/event` + external placeholder tab handling.
-- Any message after a terminal task (`completed`, `failed`, `cancelled`, `ended`) starts a fresh task boundary automatically.
-- `awaiting_user` tasks resume by default; reset intents like `new task`, `start over`, or `start fresh` force a new task boundary.
-- `task.followup` config is accepted for compatibility but is non-operative in Rover v1 runtime decisions.
+- Any normal user send starts a fresh task boundary (fresh `prevSteps`, fresh run-scoped tab order/scope).
+- `ask_user` answer submissions are the only continuation path and keep the same task boundary.
+- `task.followup` is operative heuristic carryover for chat cues only (`user` + `model` summary pair); it never carries previous task state/tab scope.
+- Auto-resume only runs for validated handoff/reload contexts with a ready `rvrsess_*` token; otherwise resume is safely blocked and cleared.
 - Runtime does not use legacy browser checkpoint routes (`roverSessionCheckpointGet/Upsert`).
 
 ## API Methods

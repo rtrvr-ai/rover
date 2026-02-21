@@ -259,10 +259,22 @@ export async function resolveRuntimeTabs(
   for (const tab of fallbackSnapshots) tabMetaById[tab.id] = tab;
   for (const tab of listedTabs) tabMetaById[tab.id] = { ...(tabMetaById[tab.id] || {}), ...tab };
   for (const tabId of scopedOrder) {
-    if (!tabMetaById[tabId]) tabMetaById[tabId] = { id: tabId };
+    if (!tabMetaById[tabId]) {
+      tabMetaById[tabId] = {
+        id: tabId,
+        accessMode: 'live_dom',
+        inaccessibleReason: 'detached_runtime_placeholder',
+      };
+    }
   }
   for (const tabId of tabOrder) {
-    if (!tabMetaById[tabId]) tabMetaById[tabId] = { id: tabId };
+    if (!tabMetaById[tabId]) {
+      tabMetaById[tabId] = {
+        id: tabId,
+        accessMode: 'live_dom',
+        inaccessibleReason: 'detached_runtime_placeholder',
+      };
+    }
   }
 
   const diagnostics = {

@@ -735,7 +735,7 @@ export class SessionCoordinator {
 
     this.mutate('local', draft => {
       // Page refreshes can leave detached virtual tabs from previous runs.
-      this.pruneDetachedTabs(draft, { dropRuntimeDetached: true, dropAllDetachedExternal: true });
+      this.pruneDetachedTabs(draft, { dropRuntimeDetached: true });
     });
 
     this.registerCurrentTab(window.location.href, document.title || undefined, initialHandoff);
@@ -879,7 +879,7 @@ export class SessionCoordinator {
 
   hydrateExternalState(raw: any): boolean {
     const incoming = sanitizeSharedState(raw, this.siteId, this.sessionId);
-    this.pruneDetachedTabs(incoming, { dropRuntimeDetached: true, dropAllDetachedExternal: true });
+    this.pruneDetachedTabs(incoming, { dropRuntimeDetached: true });
     const beforeSeq = this.state.seq;
     const beforeUpdatedAt = this.state.updatedAt;
 
@@ -895,7 +895,7 @@ export class SessionCoordinator {
       if (hasDetachedCandidates) {
         const beforeTabCount = this.state.tabs.length;
         this.mutate('local', draft => {
-          this.pruneDetachedTabs(draft, { dropRuntimeDetached: true, dropAllDetachedExternal: true });
+          this.pruneDetachedTabs(draft, { dropRuntimeDetached: true });
         });
         changed = this.state.tabs.length !== beforeTabCount;
       }
@@ -1172,6 +1172,24 @@ export class SessionCoordinator {
           });
           nextLocalTabId = logicalTabId;
         }
+      }
+
+      if (nextLocalTabId) {
+        draft.tabs = draft.tabs.filter(tab => {
+          if (tab.logicalTabId === nextLocalTabId) return true;
+          if (tab.runtimeId || tab.external) return true;
+          if (handoffId && String(tab.handoffId || '').trim() === handoffId) {
+            return false;
+          }
+          const freshnessAge = nowTs - this.tabFreshnessTs(tab);
+          if (!String(tab.url || '').trim() && freshnessAge > STALE_PENDING_ATTACH_TAB_MS) {
+            return false;
+          }
+          if (normalizedUrl && tab.url === normalizedUrl && freshnessAge <= STALE_NAVIGATION_HANDOFF_TAB_MS) {
+            return false;
+          }
+          return true;
+        });
       }
 
       const activeEntry = draft.activeLogicalTabId
