@@ -334,6 +334,7 @@ rover.boot(config);
 | `allowedDomains` | `string[]` | `[]` | Hostnames where Rover may operate |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | Domain matching strategy |
 | `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
+| `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | In-scope cross-host navigation policy |
 | `openOnInit` | `boolean` | `false` | Open panel after boot |
 | `allowActions` | `boolean` | `true` | Enable/disable action tools |
 | `tabPolicy.observerByDefault` | `boolean` | `true` | Observer preference for shared tab sessions |
@@ -355,6 +356,9 @@ rover.boot(config);
 | `taskContext.inactivityMs` | `number` | — | Optional inactivity hint for continuity logic |
 | `taskContext.suggestReset` | `boolean` | `true` | Allow reset suggestions when continuity is unclear |
 | `taskContext.semanticSimilarityThreshold` | `number` | — | Optional similarity hint for continuity scoring |
+| `task.followup.mode` | `'heuristic_same_window'` | `'heuristic_same_window'` | Heuristic follow-up chat-cue carryover mode |
+| `task.followup.ttlMs` | `number` | `120000` | Max age (ms) of prior completed/ended task eligible for follow-up chat cues |
+| `task.followup.minLexicalOverlap` | `number` | `0.18` | Minimum lexical overlap ratio to attach follow-up chat cues |
 
 ### Checkpointing
 
@@ -441,11 +445,12 @@ Runtime semantics:
 - `taskRouting.plannerOnActError` applies only in `auto` mode, and planner fallback is not triggered after usable ACT success.
 - Typed conflicts: `409 stale_seq`, `409 stale_epoch`, `409 active_run_exists`.
 - `POST /tab/event` stale/missing run is non-fatal via `200 decision='stale_run'`.
-- Cross-registrable navigation preflight is resilient: when `/tab/event` is unavailable, Rover falls back to local policy (in-scope targets stay same-tab; out-of-scope targets follow `externalNavigationPolicy`).
+- Cross-registrable navigation preflight is resilient: when `/tab/event` is unavailable, Rover falls back to local policy (in-scope targets follow `navigation.crossHostPolicy`, default `same_tab`; out-of-scope targets follow `externalNavigationPolicy`).
 - External intent routing: `/context/external` uses `read_context` (read/navigation-context prompts) or `act` (mutation prompts). Navigation-only external opens are represented by `/tab/event` + external placeholder tab handling.
-- Any message after a terminal task (`completed`, `failed`, `cancelled`, `ended`) starts a fresh task boundary automatically.
-- `awaiting_user` tasks resume by default; reset intents like `new task`, `start over`, or `start fresh` force a new task boundary.
-- `task.followup` config is tolerated input for compatibility but is non-operative in Rover v1 runtime decisions.
+- Any normal user send starts a fresh task boundary (fresh `prevSteps`, fresh run-scoped tab order/scope).
+- `ask_user` answer submissions are the only continuation path and keep the same task boundary.
+- `task.followup` is operative heuristic carryover for chat cues only (`user` + `model` summary pair); it never carries previous task state/tab scope.
+- Auto-resume only runs for validated handoff/reload contexts with a ready `rvrsess_*` token; otherwise resume is safely blocked and cleared.
 - Browser runtime path is legacy-free: no checkpoint calls to `roverSessionCheckpointGet/Upsert`.
 
 ### Client Tools
@@ -506,11 +511,11 @@ off(); // unsubscribe
 
 ## Task Context Behavior
 
-- Rover keeps task context by default within a session.
-- When inactivity combined with semantic shift suggests a new intent, Rover shows a "Start new" vs "Continue" prompt (no extra LLM call — purely local heuristic).
+- Every normal `send` call starts a fresh task boundary in Rover v1.
+- `ask_user` answer submission is the only case that continues the existing task boundary.
+- Follow-up continuity is chat-cue only: `task.followup.*` can attach prior task intent/output heuristically (TTL + lexical overlap), but does not carry `prevSteps` or tab scope.
 - `newTask` clears conversation/timeline and worker context, starting a fresh task boundary.
 - `endTask` closes the current task without destroying the widget session.
-- After terminal completion/failure/cancel/end, the next user prompt is always treated as a new task.
 
 ---
 

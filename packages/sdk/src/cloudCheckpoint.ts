@@ -210,9 +210,22 @@ export class RoverCloudCheckpointClient {
     this.dirty = true;
   }
 
-  syncNow(): void {
-    void this.flush(true);
-    void this.pull(true);
+  syncNow(options?: { push?: boolean; pull?: boolean }): void {
+    const push = options?.push !== false;
+    const pull = options?.pull !== false;
+    if (push) void this.flush(true);
+    if (pull) void this.pull(true);
+  }
+
+  syncPullFirst(): void {
+    void (async () => {
+      await this.pull(true);
+      await this.flush(true);
+    })();
+  }
+
+  pullNow(force = true): void {
+    void this.pull(!!force);
   }
 
   private getActiveEndpoint(): string {
@@ -364,7 +377,12 @@ export class RoverCloudCheckpointClient {
           payload,
         });
       }
-      return { saved: !!payload?.data?.saved };
+      return {
+        saved: !!payload?.data?.saved,
+        stale: payload?.data?.stale === true,
+        checkpoint: payload?.data?.checkpoint,
+        updatedAt: Number(payload?.data?.updatedAt) || undefined,
+      };
     }
 
     const params = new URLSearchParams({

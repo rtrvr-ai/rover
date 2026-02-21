@@ -29,6 +29,9 @@ export interface CrossDomainResumeData {
   sessionId: string;
   sessionToken?: string;
   sessionTokenExpiresAt?: number;
+  targetUrl?: string;
+  sourceHost?: string;
+  handoffId?: string;
   pendingRun?: {
     id: string;
     text: string;
@@ -73,6 +76,60 @@ function cookieName(siteId: string): string {
   return `${COOKIE_PREFIX}${siteId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)}`;
 }
 
+function normalizeUrlForMatch(url: string): string {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw, window.location.href);
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return raw;
+  }
+}
+
+function normalizePathname(pathname: string): string {
+  const value = String(pathname || '').trim();
+  if (!value || value === '/') return '/';
+  return value.replace(/\/+$/, '') || '/';
+}
+
+function hasQuerySubset(target: URLSearchParams, current: URLSearchParams): boolean {
+  const targetKeys = new Set<string>();
+  for (const [key] of target.entries()) targetKeys.add(key);
+  for (const key of targetKeys) {
+    const expectedValues = target.getAll(key);
+    if (!expectedValues.length) continue;
+    const actualValues = current.getAll(key);
+    if (!actualValues.length) return false;
+    const counts = new Map<string, number>();
+    for (const value of actualValues) {
+      counts.set(value, (counts.get(value) || 0) + 1);
+    }
+    for (const expected of expectedValues) {
+      const available = counts.get(expected) || 0;
+      if (available <= 0) return false;
+      counts.set(expected, available - 1);
+    }
+  }
+  return true;
+}
+
+function matchesTargetUrl(targetUrl: string, currentUrl: string): boolean {
+  const normalizedTarget = normalizeUrlForMatch(targetUrl);
+  const normalizedCurrent = normalizeUrlForMatch(currentUrl);
+  if (!normalizedTarget || !normalizedCurrent) return false;
+  try {
+    const target = new URL(normalizedTarget, window.location.href);
+    const current = new URL(normalizedCurrent, window.location.href);
+    if (target.origin.toLowerCase() !== current.origin.toLowerCase()) return false;
+    if (normalizePathname(target.pathname) !== normalizePathname(current.pathname)) return false;
+    return hasQuerySubset(target.searchParams, current.searchParams);
+  } catch {
+    return normalizedTarget === normalizedCurrent;
+  }
+}
+
 export function writeCrossDomainResumeCookie(
   siteId: string,
   data: CrossDomainResumeData,
@@ -99,17 +156,58 @@ export function writeCrossDomainResumeCookie(
   }
 }
 
-export function readCrossDomainResumeCookie(siteId: string): CrossDomainResumeData | null {
+export function readCrossDomainResumeCookie(
+  siteId: string,
+  options?: {
+    currentUrl?: string;
+    currentHost?: string;
+    expectedHandoffId?: string;
+    requireTargetMatch?: boolean;
+    maxAgeMs?: number;
+  },
+): CrossDomainResumeData | null {
   try {
     const name = cookieName(siteId);
     const cookies = document.cookie.split(';');
+    const maxAgeMs = Math.max(1_000, Number(options?.maxAgeMs) || MAX_COOKIE_AGE_S * 1000);
+    const currentUrl = normalizeUrlForMatch(options?.currentUrl || window.location.href);
+    const currentHost = String(options?.currentHost || window.location.hostname || '').trim().toLowerCase();
+    const expectedHandoffId = String(options?.expectedHandoffId || '').trim();
+    const requireTargetMatch = options?.requireTargetMatch !== false;
+
     for (const cookie of cookies) {
       const [key, ...rest] = cookie.trim().split('=');
       if (key === name) {
         const value = rest.join('=');
         const data = JSON.parse(decodeURIComponent(value)) as CrossDomainResumeData;
         // Only use if reasonably recent
-        if (data.timestamp && Date.now() - data.timestamp < MAX_COOKIE_AGE_S * 1000) {
+        if (!data.timestamp || Date.now() - data.timestamp >= maxAgeMs) {
+          continue;
+        }
+
+        const handoffId = String(data.handoffId || data.handoff?.handoffId || '').trim();
+        if (!handoffId) {
+          continue;
+        }
+        if (expectedHandoffId && handoffId !== expectedHandoffId) {
+          continue;
+        }
+
+        if (requireTargetMatch) {
+          const targetUrl = normalizeUrlForMatch(data.targetUrl || data.handoff?.targetUrl || '');
+          if (!targetUrl || !currentUrl || !matchesTargetUrl(targetUrl, currentUrl)) {
+            continue;
+          }
+        }
+
+        if (data.sourceHost) {
+          const sourceHost = String(data.sourceHost || '').trim().toLowerCase();
+          if (sourceHost && currentHost && sourceHost === currentHost) {
+            continue;
+          }
+        }
+
+        if (data.sessionId && typeof data.sessionId === 'string') {
           return data;
         }
       }

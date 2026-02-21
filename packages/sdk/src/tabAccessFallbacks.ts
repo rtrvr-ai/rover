@@ -8,12 +8,12 @@ export function buildInaccessibleTabPageData(
 ): Record<string, any> {
   const logicalTabId = Number(tab?.logicalTabId) || undefined;
   const url = tab?.url || '';
-  const title = tab?.title || (tab?.external ? 'External Tab (Inaccessible)' : 'Inactive Tab');
+  const title = tab?.title || (tab?.external ? 'External Tab (Inaccessible)' : 'Detached Runtime Tab (Unavailable)');
   const normalizedReason = String(reason || '').trim();
   const reasonLine = normalizedReason ? ` Reason: ${normalizedReason}.` : '';
   const content = tab?.external
     ? `This external tab is tracked in virtual mode only. Live DOM control and accessibility-tree access are unavailable here.${reasonLine}`
-    : `This tab is currently not attached to an active Rover runtime. Switch to a live tab or reopen it.${reasonLine}`;
+    : `This tab is a detached runtime placeholder and is not attached to an active Rover runtime. Switch to an attached tab or reopen the page.${reasonLine}`;
 
   return {
     url,
@@ -23,7 +23,7 @@ export function buildInaccessibleTabPageData(
     metadata: {
       inaccessible: true,
       external: !!tab?.external,
-      accessMode: tab?.external ? 'external_placeholder' : 'inactive_tab',
+      accessMode: tab?.external ? 'external_placeholder' : 'detached_runtime_placeholder',
       reason,
       logicalTabId,
     },

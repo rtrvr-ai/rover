@@ -133,7 +133,9 @@ class IndexedDbJsonStorage<T> implements AsyncJsonStorageAdapter<T> {
 
 export type RuntimeStateStore<T> = {
   readSync: (key: string) => T | null;
+  readSyncAny: (keys: string[]) => T | null;
   readAsync: (key: string) => Promise<T | null>;
+  readAsyncAny: (keys: string[]) => Promise<T | null>;
   write: (key: string, value: T) => void;
   remove: (key: string) => void;
 };
@@ -144,7 +146,23 @@ export function createRuntimeStateStore<T>(): RuntimeStateStore<T> {
 
   return {
     readSync: (key: string) => session.read(key),
+    readSyncAny: (keys: string[]) => {
+      for (const key of keys) {
+        if (!key) continue;
+        const value = session.read(key);
+        if (value) return value;
+      }
+      return null;
+    },
     readAsync: async (key: string) => indexed.read(key),
+    readAsyncAny: async (keys: string[]) => {
+      for (const key of keys) {
+        if (!key) continue;
+        const value = await indexed.read(key);
+        if (value) return value;
+      }
+      return null;
+    },
     write: (key: string, value: T) => {
       session.write(key, value);
       void indexed.write(key, value);

@@ -98,6 +98,7 @@ export class Bridge {
   private domainScopeMode: DomainScopeMode;
   private allowedDomains: string[];
   private externalNavigationPolicy: ExternalNavigationPolicy;
+  private crossHostPolicy: CrossHostPolicy;
   private registerOpenedTab?: BridgeOptions['registerOpenedTab'];
   private listKnownTabs?: BridgeOptions['listKnownTabs'];
   private switchToLogicalTab?: BridgeOptions['switchToLogicalTab'];
@@ -127,6 +128,7 @@ export class Bridge {
     this.domainScopeMode = normalizeDomainScopeMode(opts.domainScopeMode);
     this.allowedDomains = normalizeAllowedDomains(opts.allowedDomains, window.location.hostname, this.domainScopeMode);
     this.externalNavigationPolicy = normalizeExternalNavigationPolicy(opts.externalNavigationPolicy);
+    this.crossHostPolicy = normalizeCrossHostPolicy(opts.crossHostPolicy);
     this.registerOpenedTab = opts.registerOpenedTab;
     this.listKnownTabs = opts.listKnownTabs;
     this.switchToLogicalTab = opts.switchToLogicalTab;
@@ -196,8 +198,9 @@ export class Bridge {
     if (options.externalNavigationPolicy) {
       this.externalNavigationPolicy = normalizeExternalNavigationPolicy(options.externalNavigationPolicy);
     }
-    // Legacy field accepted but intentionally ignored in v1 runtime behavior.
-    void options.crossHostPolicy;
+    if (options.crossHostPolicy) {
+      this.crossHostPolicy = normalizeCrossHostPolicy(options.crossHostPolicy);
+    }
   }
 
   async getSnapshot() {
@@ -781,6 +784,9 @@ export class Bridge {
   private getNavigationFallbackDecision(targetUrl?: string): 'allow_same_tab' | 'open_new_tab' | 'block' {
     if (!targetUrl) return 'allow_same_tab';
     if (isUrlAllowedByDomains(targetUrl, this.allowedDomains)) {
+      if (this.crossHostPolicy === 'open_new_tab' && this.isCrossHostNavigation(targetUrl)) {
+        return 'open_new_tab';
+      }
       return 'allow_same_tab';
     }
     if (this.externalNavigationPolicy === 'block') {
@@ -1402,6 +1408,11 @@ function normalizeExternalNavigationPolicy(policy?: ExternalNavigationPolicy): E
     return policy;
   }
   return 'open_new_tab_notice';
+}
+
+function normalizeCrossHostPolicy(policy?: CrossHostPolicy): CrossHostPolicy {
+  if (policy === 'open_new_tab' || policy === 'same_tab') return policy;
+  return 'same_tab';
 }
 
 function normalizeDomSettleNumber(input: unknown, fallback: number, min: number, max: number): number {
