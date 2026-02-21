@@ -112,6 +112,65 @@ function cancelledToolResult(): ToolExecutionResult {
   return { error: 'Run cancelled' };
 }
 
+async function executeRoverExternalContextPlannerTool(params: {
+  toolName: string;
+  toolArgs: Record<string, any>;
+  userInput: string;
+  bridgeRpc: ToolExecutionContext['bridgeRpc'];
+  onStatusUpdate?: ToolExecutionContext['onStatusUpdate'];
+}): Promise<ToolExecutionResult> {
+  const bridge = params.bridgeRpc;
+  if (!bridge) {
+    return { error: `Bridge RPC unavailable for ${params.toolName}` };
+  }
+
+  const message =
+    String(
+      params.toolArgs?.message
+      || params.toolArgs?.user_input
+      || params.toolArgs?.task_instruction
+      || params.userInput
+      || '',
+    ).trim();
+
+  params.onStatusUpdate?.(
+    params.toolName === PLANNER_FUNCTION_CALLS.ROVER_EXTERNAL_ACT_CONTEXT
+      ? 'Fetching external action context...'
+      : 'Fetching external context...',
+    `Calling ${params.toolName}`,
+    'execute',
+  );
+
+  const routedResponse = await bridge('executeTool', {
+    call: {
+      name: params.toolName,
+      args: {
+        ...params.toolArgs,
+        ...(message ? { message } : {}),
+      },
+    },
+  });
+
+  const success = routedResponse?.success === true;
+  if (!success) {
+    const errorMessage = String(
+      routedResponse?.output?.error?.message
+      || routedResponse?.error
+      || `${params.toolName} failed`,
+    );
+    return {
+      error: errorMessage,
+      output: routedResponse?.output,
+      warnings: errorMessage ? [errorMessage] : undefined,
+    };
+  }
+
+  return {
+    output: routedResponse?.output,
+    warnings: Array.isArray(routedResponse?.output?.warnings) ? routedResponse.output.warnings : undefined,
+  };
+}
+
 async function callExtensionRouterWithCancel(ctx: AgentContext, action: string, request: any): Promise<any> {
   throwIfExecutionCancelled(ctx);
   const response = await ctx.callExtensionRouter(action, request);
@@ -125,6 +184,10 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
     toolArgs,
     userInput,
     tabs,
+    scopedTabIds,
+    seedTabId,
+    getScopedTabRuntimeContext,
+    onScopedTabIdsTouched,
     trajectoryId,
     plannerPrevSteps,
     files,
@@ -148,16 +211,25 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
   }
 
   const fallbackTabs = Array.isArray(tabs) && tabs.length ? tabs : [{ id: 1 }];
-  const scopedTabIds = Array.from(
-    new Set(
-      fallbackTabs
-        .map(tab => Number(tab?.id))
-        .filter(tabId => Number.isFinite(tabId) && tabId > 0),
-    ),
-  );
+  const runtimeScope = getScopedTabRuntimeContext?.() || {};
+  const scopedTabIdsInput = runtimeScope.scopedTabIds ?? scopedTabIds;
+  const seedTabIdInput = runtimeScope.seedTabId ?? seedTabId;
+  const resolvedScopedTabIds =
+    Array.isArray(scopedTabIdsInput) && scopedTabIdsInput.length
+      ? Array.from(new Set(scopedTabIdsInput.map(tabId => Number(tabId)).filter(tabId => Number.isFinite(tabId) && tabId > 0)))
+      : Array.from(
+        new Set(
+          fallbackTabs
+            .map(tab => Number(tab?.id))
+            .filter(tabId => Number.isFinite(tabId) && tabId > 0),
+        ),
+      );
+  const resolvedSeedTabId = Number(seedTabIdInput) > 0
+    ? Number(seedTabIdInput)
+    : resolvedScopedTabIds[0];
   const resolvedTabs = await resolveRuntimeTabs(bridgeRpc, fallbackTabs, {
-    scopedTabIds,
-    seedTabId: scopedTabIds[0],
+    scopedTabIds: resolvedScopedTabIds,
+    seedTabId: resolvedSeedTabId,
   });
   if (isExecutionCancelled(effectiveCtx)) {
     return cancelledToolResult();
@@ -171,6 +243,9 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
       const prompt = toolArgs?.user_input || toolArgs?.prompt || toolArgs?.task_instruction || userInput;
       const actResult = await executeAgenticSeek({
         tabOrder,
+        scopedTabIds: resolvedScopedTabIds,
+        seedTabId: resolvedSeedTabId,
+        onScopedTabIdsTouched,
         userInput: prompt,
         schema: toolArgs?.schema,
         previousSteps: effectiveAgentLog.prevSteps,
@@ -214,6 +289,9 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
       const returnDataOnly = toolArgs?.return_data_only ?? toolArgs?.returnDataOnly ?? shouldMemory;
       const extractResult = await executeExtract({
         tabOrder,
+        scopedTabIds: resolvedScopedTabIds,
+        seedTabId: resolvedSeedTabId,
+        onScopedTabIdsTouched,
         userInput: prompt,
         schema: toolArgs?.schema,
         outputDestination,
@@ -322,6 +400,17 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
         agentLog: effectiveAgentLog,
         ctx: effectiveCtx,
         driveAuthToken: toolArgs?.authToken || toolArgs?.driveAuthToken || driveAuthToken,
+      });
+    }
+
+    case PLANNER_FUNCTION_CALLS.ROVER_EXTERNAL_READ_CONTEXT:
+    case PLANNER_FUNCTION_CALLS.ROVER_EXTERNAL_ACT_CONTEXT: {
+      return executeRoverExternalContextPlannerTool({
+        toolName,
+        toolArgs: toolArgs || {},
+        userInput,
+        bridgeRpc,
+        onStatusUpdate,
       });
     }
 

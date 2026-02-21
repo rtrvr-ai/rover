@@ -9,6 +9,11 @@ import type { UploadFilePayload } from '@rover/shared/lib/system-tools/wire.js';
 import { fetchFileForUploadSmart } from '@rover/shared/lib/page/file-upload-utils.js';
 import { buildPageData, buildSnapshot, executeMainWorldTool, ensureMainWorldActions, ensureScrollDetector } from '@rover/dom';
 import { installInstrumentation, type InstrumentationController, type InstrumentationOptions } from '@rover/instrumentation';
+import {
+  extractHostname,
+  isUrlAllowedByDomains,
+  normalizeAllowedDomains,
+} from './navigationScope.js';
 
 export type DomainScopeMode = 'host_only' | 'registrable_domain';
 export type ExternalNavigationPolicy = 'open_new_tab_notice' | 'block' | 'allow';
@@ -93,7 +98,6 @@ export class Bridge {
   private domainScopeMode: DomainScopeMode;
   private allowedDomains: string[];
   private externalNavigationPolicy: ExternalNavigationPolicy;
-  private crossHostPolicy: CrossHostPolicy;
   private registerOpenedTab?: BridgeOptions['registerOpenedTab'];
   private listKnownTabs?: BridgeOptions['listKnownTabs'];
   private switchToLogicalTab?: BridgeOptions['switchToLogicalTab'];
@@ -112,7 +116,7 @@ export class Bridge {
   private uploadStore = new Map<string, { bytes: ArrayBuffer; createdAt: number }>();
   private uploadProviderInstalled = false;
   private actionGateContext: ActionGateContext = {};
-  private static readonly NAV_PREFLIGHT_TIMEOUT_MS = 500;
+  private static readonly NAV_PREFLIGHT_TIMEOUT_MS = 1500;
 
   constructor(opts: BridgeOptions = {}) {
     this.root = opts.root ?? document.body ?? document.documentElement;
@@ -123,7 +127,6 @@ export class Bridge {
     this.domainScopeMode = normalizeDomainScopeMode(opts.domainScopeMode);
     this.allowedDomains = normalizeAllowedDomains(opts.allowedDomains, window.location.hostname, this.domainScopeMode);
     this.externalNavigationPolicy = normalizeExternalNavigationPolicy(opts.externalNavigationPolicy);
-    this.crossHostPolicy = normalizeCrossHostPolicy(opts.crossHostPolicy);
     this.registerOpenedTab = opts.registerOpenedTab;
     this.listKnownTabs = opts.listKnownTabs;
     this.switchToLogicalTab = opts.switchToLogicalTab;
@@ -193,9 +196,8 @@ export class Bridge {
     if (options.externalNavigationPolicy) {
       this.externalNavigationPolicy = normalizeExternalNavigationPolicy(options.externalNavigationPolicy);
     }
-    if (options.crossHostPolicy) {
-      this.crossHostPolicy = normalizeCrossHostPolicy(options.crossHostPolicy);
-    }
+    // Legacy field accepted but intentionally ignored in v1 runtime behavior.
+    void options.crossHostPolicy;
   }
 
   async getSnapshot() {
@@ -338,7 +340,7 @@ export class Bridge {
         if (intent.isCrossHost) {
           const preflight = await this.resolveAgentNavigationDecision(
             intent,
-            this.getCrossHostFallbackDecision(clickTargetUrl),
+            this.getNavigationFallbackDecision(clickTargetUrl),
           );
           if (preflight.decision === 'block') {
             return this.domainScopeBlockedResponse(
@@ -350,7 +352,7 @@ export class Bridge {
           if (preflight.decision === 'open_new_tab') {
             return this.openUrlInNewTab(clickTargetUrl, {
               policyBlocked: true,
-              reason: preflight.reason || 'Cross-host policy requires opening a new tab.',
+              reason: preflight.reason || 'Navigation policy requires opening a new tab.',
               decisionReason: preflight.decisionReason || 'open_new_tab',
             });
           }
@@ -509,7 +511,7 @@ export class Bridge {
           }
           const preflight = await this.resolveAgentNavigationDecision(
             intent,
-            this.getCrossHostFallbackDecision(targetUrl),
+            this.getNavigationFallbackDecision(targetUrl),
           );
           if (preflight.decision === 'block') {
             return this.domainScopeBlockedResponse(
@@ -544,7 +546,7 @@ export class Bridge {
 
         const intent = this.buildNavigationIntent(targetUrl);
         if (intent.isCrossHost) {
-          const preflight = await this.resolveAgentNavigationDecision(intent, this.getCrossHostFallbackDecision(targetUrl));
+          const preflight = await this.resolveAgentNavigationDecision(intent, this.getNavigationFallbackDecision(targetUrl));
           if (preflight.decision === 'block') {
             return this.domainScopeBlockedResponse(
               targetUrl,
@@ -555,7 +557,7 @@ export class Bridge {
           if (preflight.decision === 'open_new_tab') {
             return await this.openUrlInNewTab(targetUrl, {
               policyBlocked: true,
-              reason: preflight.reason || 'Cross-host policy requires opening a new tab.',
+              reason: preflight.reason || 'Navigation policy requires opening a new tab.',
               decisionReason: preflight.decisionReason || 'open_new_tab',
             });
           }
@@ -583,7 +585,7 @@ export class Bridge {
           }
           const preflight = await this.resolveAgentNavigationDecision(
             intent,
-            this.getCrossHostFallbackDecision(targetUrl),
+            this.getNavigationFallbackDecision(targetUrl),
           );
           if (preflight.decision === 'block') {
             return this.domainScopeBlockedResponse(
@@ -618,7 +620,7 @@ export class Bridge {
 
         const intent = this.buildNavigationIntent(targetUrl);
         if (intent.isCrossHost) {
-          const preflight = await this.resolveAgentNavigationDecision(intent, this.getCrossHostFallbackDecision(targetUrl));
+          const preflight = await this.resolveAgentNavigationDecision(intent, this.getNavigationFallbackDecision(targetUrl));
           if (preflight.decision === 'block') {
             return this.domainScopeBlockedResponse(
               targetUrl,
@@ -629,7 +631,7 @@ export class Bridge {
           if (preflight.decision === 'open_new_tab') {
             return await this.openUrlInNewTab(targetUrl, {
               policyBlocked: true,
-              reason: preflight.reason || 'Cross-host policy requires opening a new tab.',
+              reason: preflight.reason || 'Navigation policy requires opening a new tab.',
               decisionReason: preflight.decisionReason || 'open_new_tab',
             });
           }
@@ -691,15 +693,6 @@ export class Bridge {
         if (!rawUrl) return { success: false, error: 'open_new_tab: missing url', allowFallback: true };
         const targetUrl = normalizeUrl(rawUrl, window.location.href);
         if (!targetUrl) return { success: false, error: `open_new_tab: invalid url "${rawUrl}"`, allowFallback: true };
-        if (this.shouldConvertOpenNewTabToSameTab(targetUrl)) {
-          const intent = this.buildNavigationIntent(targetUrl);
-          this.notifyAgentNavigation(intent);
-          return this.scheduleSameTabNavigation(targetUrl, intent, {
-            convertedFrom: 'open_new_tab',
-            decisionReason: 'allow_same_tab',
-            reason: 'Converted open_new_tab to same-tab navigation by policy.',
-          });
-        }
         const intent = this.buildNavigationIntent(targetUrl);
         const preflight = await this.resolveAgentNavigationDecision(intent, 'open_new_tab');
         if (preflight.decision === 'block') {
@@ -781,26 +774,22 @@ export class Bridge {
   }
 
   private shouldPreserveHostRuntime(targetUrl: string): boolean {
-    if (isCrossRegistrableDomainUrl(window.location.href, targetUrl)) return true;
-    if (this.crossHostPolicy !== 'open_new_tab') return false;
-    const currentHost = extractHostname(window.location.href);
-    const targetHost = extractHostname(targetUrl);
-    if (!currentHost || !targetHost) return false;
-    return currentHost !== targetHost;
+    if (this.externalNavigationPolicy === 'allow') return false;
+    return !isUrlAllowedByDomains(targetUrl, this.allowedDomains);
   }
 
-  private shouldConvertOpenNewTabToSameTab(targetUrl: string): boolean {
-    if (this.crossHostPolicy !== 'same_tab') return false;
-    if (isCrossRegistrableDomainUrl(window.location.href, targetUrl)) return false;
-    if (!isUrlAllowedByDomains(window.location.href, this.allowedDomains)) return false;
-    return isUrlAllowedByDomains(targetUrl, this.allowedDomains);
-  }
-
-  private getCrossHostFallbackDecision(targetUrl?: string): 'allow_same_tab' | 'open_new_tab' {
-    if (targetUrl && isCrossRegistrableDomainUrl(window.location.href, targetUrl)) {
+  private getNavigationFallbackDecision(targetUrl?: string): 'allow_same_tab' | 'open_new_tab' | 'block' {
+    if (!targetUrl) return 'allow_same_tab';
+    if (isUrlAllowedByDomains(targetUrl, this.allowedDomains)) {
+      return 'allow_same_tab';
+    }
+    if (this.externalNavigationPolicy === 'block') {
+      return 'block';
+    }
+    if (this.externalNavigationPolicy === 'open_new_tab_notice') {
       return 'open_new_tab';
     }
-    return this.crossHostPolicy === 'open_new_tab' ? 'open_new_tab' : 'allow_same_tab';
+    return 'allow_same_tab';
   }
 
   private isCrossHostNavigation(targetUrl: string): boolean {
@@ -962,7 +951,7 @@ export class Bridge {
       }
       return {
         targetUrl,
-        reason: 'Opened in a new tab to preserve Rover runtime continuity across hostnames.',
+        reason: 'Opened in a new tab to preserve Rover runtime continuity outside allowed domains.',
         forceOpenInNewTab: true,
       };
     }
@@ -1415,49 +1404,10 @@ function normalizeExternalNavigationPolicy(policy?: ExternalNavigationPolicy): E
   return 'open_new_tab_notice';
 }
 
-function normalizeCrossHostPolicy(policy?: CrossHostPolicy): CrossHostPolicy {
-  if (policy === 'same_tab' || policy === 'open_new_tab') return policy;
-  return 'same_tab';
-}
-
 function normalizeDomSettleNumber(input: unknown, fallback: number, min: number, max: number): number {
   const parsed = Number(input);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(parsed)));
-}
-
-function normalizeAllowedDomains(input: string | string[] | undefined, currentHost: string, scopeMode: DomainScopeMode): string[] {
-  const candidates = Array.isArray(input) ? input : typeof input === 'string' && input.trim() ? [input] : [];
-  const out = new Set<string>();
-
-  for (const raw of candidates) {
-    const cleaned = String(raw || '')
-      .trim()
-      .toLowerCase()
-      .replace(/^\./, '');
-    if (cleaned) out.add(cleaned);
-  }
-
-  if (!out.size) {
-    const inferred = inferDefaultAllowedDomain(currentHost, scopeMode);
-    if (inferred) out.add(inferred);
-  }
-
-  return Array.from(out);
-}
-
-function inferDefaultAllowedDomain(host: string, scopeMode: DomainScopeMode): string {
-  const clean = String(host || '').trim().toLowerCase();
-  if (!clean) return '';
-  if (clean === 'localhost' || /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(clean)) return `=${clean}`;
-  if (scopeMode === 'host_only') return `=${clean}`;
-  const parts = clean.split('.').filter(Boolean);
-  if (parts.length < 2) return clean;
-  const tail2 = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
-  if (parts.length >= 3 && MULTI_LABEL_TLDS.has(tail2)) {
-    return `${parts[parts.length - 3]}.${tail2}`;
-  }
-  return tail2;
 }
 
 function normalizeUrl(raw: string, base: string): string | null {
@@ -1470,78 +1420,6 @@ function normalizeUrl(raw: string, base: string): string | null {
     return null;
   }
 }
-
-function isUrlAllowedByDomains(url: string, allowedDomains: string[]): boolean {
-  const host = extractHostname(url);
-  if (!host) return false;
-  if (!allowedDomains.length) return true;
-
-  for (const pattern of allowedDomains) {
-    if (matchesDomainPattern(host, pattern)) return true;
-  }
-
-  return false;
-}
-
-function extractHostname(url: string): string | null {
-  try {
-    return new URL(url).hostname.toLowerCase();
-  } catch {
-    return null;
-  }
-}
-
-function deriveRegistrableDomain(host: string): string {
-  const clean = String(host || '').trim().toLowerCase();
-  if (!clean) return '';
-  if (clean === 'localhost' || /^\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(clean)) return clean;
-  const parts = clean.split('.').filter(Boolean);
-  if (parts.length < 2) return clean;
-  const tail2 = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
-  if (parts.length >= 3 && MULTI_LABEL_TLDS.has(tail2)) {
-    return `${parts[parts.length - 3]}.${tail2}`;
-  }
-  return tail2;
-}
-
-function isCrossRegistrableDomainUrl(currentUrl: string, targetUrl: string): boolean {
-  const currentHost = extractHostname(currentUrl);
-  const targetHost = extractHostname(targetUrl);
-  if (!currentHost || !targetHost) return false;
-  return deriveRegistrableDomain(currentHost) !== deriveRegistrableDomain(targetHost);
-}
-
-function matchesDomainPattern(host: string, pattern: string): boolean {
-  const clean = String(pattern || '').trim().toLowerCase().replace(/^\./, '');
-  if (!clean) return false;
-  if (clean === '*') return true;
-  if (clean.startsWith('=')) {
-    const exact = clean.slice(1);
-    return !!exact && host === exact;
-  }
-  if (clean.startsWith('*.')) {
-    const base = clean.slice(2);
-    if (!base) return false;
-    return host === base || host.endsWith(`.${base}`);
-  }
-  if (host === clean) return true;
-  return host.endsWith(`.${clean}`);
-}
-
-const MULTI_LABEL_TLDS = new Set([
-  'co.uk',
-  'org.uk',
-  'gov.uk',
-  'ac.uk',
-  'com.au',
-  'net.au',
-  'org.au',
-  'co.jp',
-  'com.br',
-  'com.mx',
-  'com.sg',
-  'co.in',
-]);
 
 function findAnchorWithHref(element: Element): HTMLAnchorElement | null {
   if (element instanceof HTMLAnchorElement && element.href) return element;

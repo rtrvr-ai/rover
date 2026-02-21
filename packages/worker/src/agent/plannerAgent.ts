@@ -53,6 +53,9 @@ export async function executePlanner(options: PlannerOptions & {
   const {
     userInput,
     tabs,
+    scopedTabIds,
+    seedTabId,
+    getScopedTabRuntimeContext,
     previousMessages = [],
     trajectoryId,
     previousSteps = [],
@@ -67,8 +70,14 @@ export async function executePlanner(options: PlannerOptions & {
     functionDeclarations,
   } = options;
 
+  const runtimeScope = getScopedTabRuntimeContext?.() || {};
+  const scopedTabIdsInput = runtimeScope.scopedTabIds ?? scopedTabIds;
+  const seedTabIdInput = runtimeScope.seedTabId ?? seedTabId;
   const fallbackTabs = Array.isArray(tabs) && tabs.length ? tabs : [{ id: 1 }];
-  const resolvedTabs = await resolveRuntimeTabs(bridgeRpc, fallbackTabs);
+  const resolvedTabs = await resolveRuntimeTabs(bridgeRpc, fallbackTabs, {
+    scopedTabIds: scopedTabIdsInput,
+    seedTabId: seedTabIdInput,
+  });
   const tabOrder = resolvedTabs.tabOrder.length ? resolvedTabs.tabOrder : fallbackTabs.map(tab => tab.id);
   const activeTabId = resolvedTabs.activeTabId;
   const tabMetaById = resolvedTabs.tabMetaById;

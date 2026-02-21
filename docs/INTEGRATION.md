@@ -334,7 +334,6 @@ rover.boot(config);
 | `allowedDomains` | `string[]` | `[]` | Hostnames where Rover may operate |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | Domain matching strategy |
 | `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
-| `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | Behavior for in-scope host changes (subdomain hops). `same_tab` follows target behavior. |
 | `openOnInit` | `boolean` | `false` | Open panel after boot |
 | `allowActions` | `boolean` | `true` | Enable/disable action tools |
 | `tabPolicy.observerByDefault` | `boolean` | `true` | Observer preference for shared tab sessions |
@@ -361,7 +360,7 @@ rover.boot(config);
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `checkpointing.enabled` | `boolean` | `false` | Enable cloud checkpoint sync |
+| `checkpointing.enabled` | `boolean` | `true` | Cloud checkpoint sync is enabled by default in v1. Set to `false` to disable. |
 | `checkpointing.autoVisitorId` | `boolean` | `true` | Auto-generate visitor ID when needed |
 | `checkpointing.flushIntervalMs` | `number` | service default | Push interval for checkpoint writes |
 | `checkpointing.pullIntervalMs` | `number` | service default | Pull interval for checkpoint refresh |
@@ -442,6 +441,11 @@ Runtime semantics:
 - `taskRouting.plannerOnActError` applies only in `auto` mode, and planner fallback is not triggered after usable ACT success.
 - Typed conflicts: `409 stale_seq`, `409 stale_epoch`, `409 active_run_exists`.
 - `POST /tab/event` stale/missing run is non-fatal via `200 decision='stale_run'`.
+- Cross-registrable navigation preflight is resilient: when `/tab/event` is unavailable, Rover falls back to local policy (in-scope targets stay same-tab; out-of-scope targets follow `externalNavigationPolicy`).
+- External intent routing: `/context/external` uses `read_context` (read/navigation-context prompts) or `act` (mutation prompts). Navigation-only external opens are represented by `/tab/event` + external placeholder tab handling.
+- Any message after a terminal task (`completed`, `failed`, `cancelled`, `ended`) starts a fresh task boundary automatically.
+- `awaiting_user` tasks resume by default; reset intents like `new task`, `start over`, or `start fresh` force a new task boundary.
+- `task.followup` config is tolerated input for compatibility but is non-operative in Rover v1 runtime decisions.
 - Browser runtime path is legacy-free: no checkpoint calls to `roverSessionCheckpointGet/Upsert`.
 
 ### Client Tools
@@ -496,7 +500,7 @@ off(); // unsubscribe
 - Other tabs stay in observer mode and mirror chat and execution progress.
 - Worker context (`history`, `plannerPrevSteps`, `agentPrevSteps`) is mirrored for controller handoff.
 - `open_new_tab` and `switch_tab` actions manage logical tab records; `switch_tab` routes control by logical tab ID.
-- With `checkpointing.enabled`, Rover syncs a throttled cloud checkpoint for crash recovery and cross-subdomain restore.
+- By default, Rover syncs a throttled cloud checkpoint for crash recovery and cross-subdomain restore (`checkpointing.enabled !== false`).
 
 ---
 
@@ -506,6 +510,7 @@ off(); // unsubscribe
 - When inactivity combined with semantic shift suggests a new intent, Rover shows a "Start new" vs "Continue" prompt (no extra LLM call — purely local heuristic).
 - `newTask` clears conversation/timeline and worker context, starting a fresh task boundary.
 - `endTask` closes the current task without destroying the widget session.
+- After terminal completion/failure/cancel/end, the next user prompt is always treated as a new task.
 
 ---
 

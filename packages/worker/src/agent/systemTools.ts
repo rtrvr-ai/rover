@@ -57,6 +57,12 @@ const VIEWPORT_SENSITIVE_TOOLS = new Set<SystemToolNames>([
 ]);
 
 const ACTION_DELAY_MS = 600;
+const NAVIGATION_OUTCOMES = new Set<SystemNavigationOutcome>([
+  'same_tab_scheduled',
+  'new_tab_opened',
+  'blocked',
+  'switch_tab',
+]);
 
 function throwIfCancelled(isCancelled?: () => boolean): void {
   if (!isCancelled?.()) return;
@@ -120,31 +126,44 @@ export async function executeSystemToolCallsSequentially({
     results.push(resolvedResult);
 
     if (response?.success) {
-      if (NAVIGATION_TOOLS.has(name)) {
+      const output = response?.output && typeof response.output === 'object'
+        ? response.output as Record<string, unknown>
+        : undefined;
+      const outputNavigationOutcomeRaw = String(output?.navigationOutcome || '').trim().toLowerCase();
+      const outputNavigationOutcome =
+        NAVIGATION_OUTCOMES.has(outputNavigationOutcomeRaw as SystemNavigationOutcome)
+          ? outputNavigationOutcomeRaw as SystemNavigationOutcome
+          : undefined;
+      const outputNavigationPending = output?.navigationPending === true;
+      const outputOpenedInNewTab = output?.openedInNewTab === true;
+      const inferredNavigation =
+        !!outputNavigationOutcome
+        || outputNavigationPending
+        || outputOpenedInNewTab;
+
+      if (NAVIGATION_TOOLS.has(name) || inferredNavigation) {
         navigationOccurred = true;
         navigationTool = name;
         sawViewportSensitiveToolSuccess = false;
-        const output = response?.output && typeof response.output === 'object'
-          ? response.output as Record<string, unknown>
-          : undefined;
-        const outputNavigationOutcome = String(output?.navigationOutcome || '').trim().toLowerCase();
-        if (
-          outputNavigationOutcome === 'same_tab_scheduled'
-          || outputNavigationOutcome === 'new_tab_opened'
-          || outputNavigationOutcome === 'blocked'
-        ) {
-          navigationOutcome = outputNavigationOutcome as SystemNavigationOutcome;
+        if (outputNavigationOutcome) {
+          navigationOutcome = outputNavigationOutcome;
+        } else if (outputOpenedInNewTab) {
+          navigationOutcome = 'new_tab_opened';
         } else if (name === SystemToolNames.switch_tab) {
           navigationOutcome = 'switch_tab';
         } else if (name === SystemToolNames.open_new_tab) {
           navigationOutcome = 'new_tab_opened';
+        } else if (outputNavigationPending) {
+          navigationOutcome = 'same_tab_scheduled';
         } else {
           navigationOutcome = 'same_tab_scheduled';
         }
 
         const outputLogicalTabId = Number(
           output?.logicalTabId
+          ?? output?.logical_tab_id
           ?? output?.tabId
+          ?? output?.tab_id
           ?? args?.logical_tab_id
           ?? args?.tab_id,
         );

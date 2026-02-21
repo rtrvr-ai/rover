@@ -14,6 +14,9 @@ import { resolveRuntimeTabs } from './runtimeTabs.js';
 
 export type AgenticSeekOptions = {
   tabOrder: number[];
+  scopedTabIds?: number[];
+  seedTabId?: number;
+  onScopedTabIdsTouched?: (tabIds: number[]) => void;
   userInput: string;
   schema?: any;
   previousSteps?: PreviousSteps[];
@@ -47,9 +50,25 @@ export type AgenticSeekResult = {
 
 const MAX_RETRIES = 3;
 
+function dedupePositiveTabIds(input: unknown): number[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<number>();
+  const out: number[] = [];
+  for (const value of input) {
+    const tabId = Number(value);
+    if (!Number.isFinite(tabId) || tabId <= 0 || seen.has(tabId)) continue;
+    seen.add(tabId);
+    out.push(tabId);
+  }
+  return out;
+}
+
 export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<AgenticSeekResult> {
   const {
     tabOrder,
+    scopedTabIds,
+    seedTabId,
+    onScopedTabIdsTouched,
     userInput,
     schema,
     previousSteps = [],
@@ -73,6 +92,20 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
   const allWarnings: string[] = [];
   const accumulatedPrevSteps: PreviousSteps[] = Array.isArray(previousSteps) ? previousSteps : [];
   const fallbackTabs = tabOrder.map(id => ({ id }));
+  let runtimeScopedTabIds = dedupePositiveTabIds(scopedTabIds || []);
+  if (Number(seedTabId) > 0 && !runtimeScopedTabIds.includes(Number(seedTabId))) {
+    runtimeScopedTabIds.unshift(Number(seedTabId));
+  }
+  const touchScopedTabIds = (tabIds: Array<number | undefined>): void => {
+    const touched = dedupePositiveTabIds(tabIds);
+    if (!touched.length) return;
+    const nextScoped = dedupePositiveTabIds([...runtimeScopedTabIds, ...touched]);
+    if (nextScoped.length === runtimeScopedTabIds.length && nextScoped.every((id, index) => id === runtimeScopedTabIds[index])) {
+      return;
+    }
+    runtimeScopedTabIds = nextScoped;
+    onScopedTabIdsTouched?.(nextScoped);
+  };
   let retry = 0;
   let pageDataOptions: { disableAutoScroll?: boolean } | undefined;
 
@@ -89,7 +122,10 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
 
       onStatusUpdate?.('Analyzing page content...', 'Calling seek workflow', 'analyze');
 
-      const { tabOrder: runtimeTabOrder, activeTabId } = await resolveRuntimeTabs(bridgeRpc, fallbackTabs);
+      const { tabOrder: runtimeTabOrder, activeTabId } = await resolveRuntimeTabs(bridgeRpc, fallbackTabs, {
+        scopedTabIds: runtimeScopedTabIds,
+        seedTabId,
+      });
       if (ctx.isCancelled?.()) {
         return { error: 'Run cancelled', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };
       }
@@ -219,6 +255,9 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
       if (processResult.navigationOccurred) {
         const navigationOutcome = processResult.navigationOutcome;
         const logicalTabId = Number(processResult.logicalTabId);
+        if (Number.isFinite(logicalTabId) && logicalTabId > 0) {
+          touchScopedTabIds([logicalTabId]);
+        }
         if (
           navigationOutcome === 'new_tab_opened'
           || navigationOutcome === 'switch_tab'

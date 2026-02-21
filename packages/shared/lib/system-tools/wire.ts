@@ -129,6 +129,8 @@ export enum SystemToolOpcode {
   answer_task = 37,
   dispatch_pointer_path = 38,
   network_run_recipe = 40,
+  rover_external_read_context = 41,
+  rover_external_act_context = 42,
 }
 
 // skipped tools: google_search, close_tab, switch_tab, answer_task doesn't go through content script
@@ -174,6 +176,8 @@ export const ToolNameToOpcode: Record<SystemToolNames, SystemToolOpcode> = {
   [SystemToolNames.answer_task]: SystemToolOpcode.answer_task,
   [SystemToolNames.dispatch_pointer_path]: SystemToolOpcode.dispatch_pointer_path,
   [SystemToolNames.network_run_recipe]: SystemToolOpcode.network_run_recipe,
+  [SystemToolNames.rover_external_read_context]: SystemToolOpcode.rover_external_read_context,
+  [SystemToolNames.rover_external_act_context]: SystemToolOpcode.rover_external_act_context,
 } as Record<SystemToolNames, SystemToolOpcode>;
 
 export const ToolOpcodeToName: Record<SystemToolOpcode, SystemToolNames> = Object.fromEntries(
