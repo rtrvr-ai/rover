@@ -766,6 +766,33 @@ function getRuntimeStateKey(siteId: string, sessionId?: string): string {
   return `${RUNTIME_STATE_PREFIX}${siteId}:${stableHash(normalizedSessionId)}`;
 }
 
+function getRuntimeStateKeyHintStorageKey(siteId: string): string {
+  return `${RUNTIME_STATE_PREFIX}${siteId}:latest_key`;
+}
+
+function readRuntimeStateKeyHint(siteId: string): string | undefined {
+  try {
+    const raw = String(sessionStorage.getItem(getRuntimeStateKeyHintStorageKey(siteId)) || '').trim();
+    if (!raw || !raw.startsWith(RUNTIME_STATE_PREFIX)) return undefined;
+    return raw;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeRuntimeStateKeyHint(siteId: string, key?: string): void {
+  if (!siteId) return;
+  try {
+    if (!key) {
+      sessionStorage.removeItem(getRuntimeStateKeyHintStorageKey(siteId));
+      return;
+    }
+    sessionStorage.setItem(getRuntimeStateKeyHintStorageKey(siteId), key);
+  } catch {
+    // ignore
+  }
+}
+
 function getNavigationHandoffBootstrapKey(siteId: string): string {
   return `${NAV_HANDOFF_BOOTSTRAP_PREFIX}${siteId}`;
 }
@@ -6042,15 +6069,35 @@ export function boot(cfg: RoverInit): RoverInstance {
   backendSiteConfig = null;
   resumeContextValidated = false;
   const explicitSessionId = cfg.sessionId?.trim();
-  const initialRuntimeStorageKey = getRuntimeStateKey(cfg.siteId, explicitSessionId);
+  const hintedRuntimeStorageKey = readRuntimeStateKeyHint(cfg.siteId);
+  const visitorSessionIdHint =
+    !explicitSessionId && cfg.sessionScope !== 'tab' && resolvedVisitorId
+      ? createVisitorSessionId(cfg.siteId, resolvedVisitorId)
+      : undefined;
+  const initialRuntimeStorageKey = getRuntimeStateKey(cfg.siteId, explicitSessionId || visitorSessionIdHint);
   const initialLegacyStorageKey = getRuntimeStateLegacyKey(cfg.siteId);
-  runtimeStorageKey = initialRuntimeStorageKey;
-  runtimeStorageLegacyKey = initialLegacyStorageKey !== initialRuntimeStorageKey
+  const initialStorageCandidates = Array.from(new Set([
+    explicitSessionId ? initialRuntimeStorageKey : hintedRuntimeStorageKey,
+    initialRuntimeStorageKey,
+    hintedRuntimeStorageKey,
+    visitorSessionIdHint ? getRuntimeStateKey(cfg.siteId, visitorSessionIdHint) : undefined,
+    initialLegacyStorageKey,
+  ].filter((value): value is string => !!value)));
+  let loaded: PersistedRuntimeState | null = null;
+  let loadedStorageKey: string | null = null;
+  for (const candidateKey of initialStorageCandidates) {
+    const candidateState = loadPersistedState(candidateKey);
+    if (!candidateState) continue;
+    loaded = candidateState;
+    loadedStorageKey = candidateKey;
+    break;
+  }
+  runtimeStorageKey = loadedStorageKey || initialRuntimeStorageKey;
+  runtimeStorageLegacyKey = initialLegacyStorageKey !== runtimeStorageKey
     ? initialLegacyStorageKey
     : null;
-  const loaded =
-    loadPersistedState(initialRuntimeStorageKey)
-    || (runtimeStorageLegacyKey ? loadPersistedState(runtimeStorageLegacyKey) : null);
+  const asyncHydrationFallbackKeys = initialStorageCandidates.filter(key => key !== runtimeStorageKey);
+  writeRuntimeStateKeyHint(cfg.siteId, runtimeStorageKey);
 
   // Check for cross-domain resume cookie (e.g. navigating from rtrvr.ai → rover.rtrvr.ai).
   // Per-origin storage is empty on the new subdomain, but the cookie carries the session ID
@@ -6136,6 +6183,8 @@ export function boot(cfg: RoverInit): RoverInstance {
   currentTaskBoundaryId = resolveTaskBoundaryIdFromState(runtimeState);
   if (handoffBootstrap && runtimeState.activeTask?.status === 'running') {
     resumeContextValidated = true;
+    runtimeState.uiHidden = false;
+    runtimeState.uiOpen = true;
     runtimeState.pendingRun = sanitizePendingRun({
       ...(runtimeState.pendingRun || {}),
       id: runtimeState.pendingRun?.id || handoffBootstrap.runId,
@@ -6232,6 +6281,7 @@ export function boot(cfg: RoverInit): RoverInstance {
   runtimeStorageLegacyKey = runtimeStorageKey !== getRuntimeStateLegacyKey(cfg.siteId)
     ? getRuntimeStateLegacyKey(cfg.siteId)
     : null;
+  writeRuntimeStateKeyHint(cfg.siteId, runtimeStorageKey);
   runtimeState.executionMode = runtimeState.executionMode || 'controller';
   runtimeState.timeline = sanitizeTimelineEvents(runtimeState.timeline);
   runtimeState.uiMessages = sanitizeUiMessages(runtimeState.uiMessages);
@@ -6280,7 +6330,9 @@ export function boot(cfg: RoverInit): RoverInstance {
   if (runtimeStorageKey) {
     void applyAsyncRuntimeStateHydration(
       runtimeStorageKey,
-      runtimeStorageLegacyKey ? [runtimeStorageLegacyKey] : undefined,
+      asyncHydrationFallbackKeys.length
+        ? asyncHydrationFallbackKeys
+        : (runtimeStorageLegacyKey ? [runtimeStorageLegacyKey] : undefined),
     );
   }
   ensureUnloadHandler();
@@ -6469,6 +6521,11 @@ export function update(cfg: Partial<RoverInit>): void {
 
   if (cfg.sessionId && runtimeState) {
     runtimeState.sessionId = cfg.sessionId;
+    runtimeStorageKey = getRuntimeStateKey(currentConfig.siteId, runtimeState.sessionId);
+    runtimeStorageLegacyKey = runtimeStorageKey !== getRuntimeStateLegacyKey(currentConfig.siteId)
+      ? getRuntimeStateLegacyKey(currentConfig.siteId)
+      : null;
+    writeRuntimeStateKeyHint(currentConfig.siteId, runtimeStorageKey);
     persistRuntimeState();
     setupSessionCoordinator(currentConfig);
   } else if (cfg.sessionScope || cfg.tabPolicy) {
