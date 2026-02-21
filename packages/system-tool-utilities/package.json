@@ -1,6 +1,6 @@
 {
   "name": "@rover/system-tool-utilities",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "rtrvr.ai chrome extension - system tool utilities",
   "type": "module",
   "private": true,
