@@ -14,7 +14,8 @@
   "scripts": {
     "build": "tsc -b && node ./scripts/bundle.mjs",
     "lint": "eslint .",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "test": "node --test --test-force-exit tests/**/*.test.mjs"
   },
   "dependencies": {
     "@rover/shared": "workspace:*"

@@ -109,7 +109,6 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `allowedDomains` | `string[]` | `[]` | Hostnames where Rover may operate |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | Domain matching strategy |
 | `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
-| `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | Behavior for in-scope host changes (for example, `app.example.com` to `www.example.com`) |
 | `mode` | `'full' \| 'safe'` | `'full'` | Runtime mode |
 | `allowActions` | `boolean` | `true` | Enable or disable action tools |
 | `openOnInit` | `boolean` | `false` | Open panel immediately on boot |
@@ -117,7 +116,7 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `taskRouting.mode` | `'auto' \| 'act' \| 'planner'` | `'act'` | Task routing strategy |
 | `taskRouting.plannerOnActError` | `boolean` | `true` | In `auto` mode, retry planner only when ACT does not produce a usable outcome |
 | `taskRouting.actHeuristicThreshold` | `number` | `5` (auto mode) | Auto-routing threshold |
-| `checkpointing.enabled` | `boolean` | `false` | Enable cloud checkpoint sync |
+| `checkpointing.enabled` | `boolean` | `true` | Cloud checkpoint sync is enabled by default in v1. Set to `false` to disable. |
 | `checkpointing.autoVisitorId` | `boolean` | `true` | Auto-generate visitor ID when needed |
 | `checkpointing.ttlHours` | `number` | `1` | Checkpoint TTL in hours |
 | `checkpointing.onStateChange` | `(payload) => void` | — | Checkpoint lifecycle updates (`active`, `paused_auth`) |
@@ -175,6 +174,8 @@ Runtime contract notes:
 - `plannerOnActError` applies only in `auto` mode and only when ACT has no usable outcome.
 - Typed conflicts: `stale_seq`, `stale_epoch`, `active_run_exists`.
 - `POST /tab/event` stale/missing run is non-fatal (`decision='stale_run'`).
+- Cross-registrable navigation preflight is resilient: if `/tab/event` is unavailable, Rover falls back to local policy (in-scope targets stay same-tab; out-of-scope targets follow `externalNavigationPolicy`).
+- External intent routing: `/context/external` uses `read_context` (read/navigation-context prompts) or `act` (mutation prompts). Navigation-only external opens are represented by `/tab/event` + external placeholder tab handling.
 - Runtime does not use legacy browser checkpoint routes (`roverSessionCheckpointGet/Upsert`).
 
 ## API Methods

@@ -10,13 +10,9 @@
 - `block`: hard-block out-of-scope navigation/actions.
 - `allow`: no domain guardrail blocking.
 
-## Cross-Host In-Scope Policy
-- `crossHostPolicy: 'same_tab'` (default): follow target behavior for in-scope host hops.
-- `crossHostPolicy: 'open_new_tab'`: open host hops in new tabs for continuity-protection mode.
-
 ## Action Safety Rules
 - If current tab URL is out-of-scope and policy is not `allow`, direct DOM actions are blocked.
-- Navigation tools (`goto_url`, `google_search`) apply policy checks before same-tab navigation.
+- Navigation tools (`goto_url`, `google_search`) keep in-scope targets in the same tab and apply policy checks only for out-of-scope targets.
 - Outbound link clicks are intercepted and redirected by policy when possible.
 - Popup-blocked new-tab attempts return deterministic structured error (`POPUP_BLOCKED`).
 

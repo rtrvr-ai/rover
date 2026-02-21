@@ -125,6 +125,10 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
     toolArgs,
     userInput,
     tabs,
+    scopedTabIds,
+    seedTabId,
+    getScopedTabRuntimeContext,
+    onScopedTabIdsTouched,
     trajectoryId,
     plannerPrevSteps,
     files,
@@ -148,16 +152,25 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
   }
 
   const fallbackTabs = Array.isArray(tabs) && tabs.length ? tabs : [{ id: 1 }];
-  const scopedTabIds = Array.from(
-    new Set(
-      fallbackTabs
-        .map(tab => Number(tab?.id))
-        .filter(tabId => Number.isFinite(tabId) && tabId > 0),
-    ),
-  );
+  const runtimeScope = getScopedTabRuntimeContext?.() || {};
+  const scopedTabIdsInput = runtimeScope.scopedTabIds ?? scopedTabIds;
+  const seedTabIdInput = runtimeScope.seedTabId ?? seedTabId;
+  const resolvedScopedTabIds =
+    Array.isArray(scopedTabIdsInput) && scopedTabIdsInput.length
+      ? Array.from(new Set(scopedTabIdsInput.map(tabId => Number(tabId)).filter(tabId => Number.isFinite(tabId) && tabId > 0)))
+      : Array.from(
+        new Set(
+          fallbackTabs
+            .map(tab => Number(tab?.id))
+            .filter(tabId => Number.isFinite(tabId) && tabId > 0),
+        ),
+      );
+  const resolvedSeedTabId = Number(seedTabIdInput) > 0
+    ? Number(seedTabIdInput)
+    : resolvedScopedTabIds[0];
   const resolvedTabs = await resolveRuntimeTabs(bridgeRpc, fallbackTabs, {
-    scopedTabIds,
-    seedTabId: scopedTabIds[0],
+    scopedTabIds: resolvedScopedTabIds,
+    seedTabId: resolvedSeedTabId,
   });
   if (isExecutionCancelled(effectiveCtx)) {
     return cancelledToolResult();
@@ -171,6 +184,9 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
       const prompt = toolArgs?.user_input || toolArgs?.prompt || toolArgs?.task_instruction || userInput;
       const actResult = await executeAgenticSeek({
         tabOrder,
+        scopedTabIds: resolvedScopedTabIds,
+        seedTabId: resolvedSeedTabId,
+        onScopedTabIdsTouched,
         userInput: prompt,
         schema: toolArgs?.schema,
         previousSteps: effectiveAgentLog.prevSteps,
@@ -214,6 +230,9 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
       const returnDataOnly = toolArgs?.return_data_only ?? toolArgs?.returnDataOnly ?? shouldMemory;
       const extractResult = await executeExtract({
         tabOrder,
+        scopedTabIds: resolvedScopedTabIds,
+        seedTabId: resolvedSeedTabId,
+        onScopedTabIdsTouched,
         userInput: prompt,
         schema: toolArgs?.schema,
         outputDestination,

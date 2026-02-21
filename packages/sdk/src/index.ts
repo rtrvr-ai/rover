@@ -67,6 +67,9 @@ import {
   type RoverServerProjection,
   type RoverServerPolicy,
 } from './serverRuntime.js';
+import { shouldAdoptCheckpointState } from './checkpointAdoptionGuards.js';
+import { resolveNavigationDecision } from './navigationPreflightPolicy.js';
+import { resolveNavigationMessageContext } from './navigationMessageContext.js';
 
 export type RoverWebToolsConfig = {
   enableExternalWebContext?: boolean;
@@ -883,7 +886,9 @@ function normalizeTelemetryConfig(cfg: RoverInit | null): {
 }
 
 function normalizeCrossHostPolicy(policy?: 'open_new_tab' | 'same_tab'): 'open_new_tab' | 'same_tab' {
-  if (policy === 'same_tab' || policy === 'open_new_tab') return policy;
+  // Legacy input is accepted for backward compatibility, but v1 runtime always keeps
+  // in-scope host/subdomain navigation in the current tab.
+  if (policy === 'same_tab' || policy === 'open_new_tab') return 'same_tab';
   return 'same_tab';
 }
 
@@ -898,6 +903,61 @@ function deriveRegistrableDomain(host: string): string {
     return `${parts[parts.length - 3]}.${tail2}`;
   }
   return tail2;
+}
+
+function normalizeHostToken(input: string): string {
+  const raw = String(input || '').trim().toLowerCase();
+  if (!raw) return '';
+  try {
+    if (raw.includes('://')) {
+      return new URL(raw).hostname.toLowerCase();
+    }
+    if (raw.startsWith('//')) {
+      return new URL(`https:${raw}`).hostname.toLowerCase();
+    }
+  } catch {
+    // Fall through to manual normalization.
+  }
+  return raw.replace(/:\d+$/, '').replace(/[^a-z0-9.-]/g, '');
+}
+
+function matchesDomainPattern(host: string, pattern: string): boolean {
+  const clean = String(pattern || '').trim().toLowerCase().replace(/^\./, '');
+  if (!clean) return false;
+  if (clean === '*') return true;
+  if (clean.startsWith('=')) {
+    const exact = clean.slice(1);
+    return !!exact && host === exact;
+  }
+  if (clean.startsWith('*.')) {
+    const base = clean.slice(2);
+    if (!base) return false;
+    return host === base || host.endsWith(`.${base}`);
+  }
+  if (host === clean) return true;
+  return host.endsWith(`.${clean}`);
+}
+
+function isHostInNavigationScope(params: {
+  host?: string;
+  currentHost?: string;
+  allowedDomains?: string[];
+  domainScopeMode?: 'host_only' | 'registrable_domain';
+}): boolean {
+  const host = normalizeHostToken(params.host || '');
+  if (!host) return false;
+  const allowedDomains = Array.isArray(params.allowedDomains)
+    ? params.allowedDomains.map(token => String(token || '').trim()).filter(Boolean)
+    : [];
+  if (allowedDomains.length > 0) {
+    return allowedDomains.some(pattern => matchesDomainPattern(host, pattern));
+  }
+  const currentHost = normalizeHostToken(params.currentHost || '');
+  if (!currentHost) return true;
+  if (params.domainScopeMode === 'host_only') {
+    return host === currentHost;
+  }
+  return deriveRegistrableDomain(host) === deriveRegistrableDomain(currentHost);
 }
 
 function resolveActionGateReason(mode: 'controller' | 'observer', allowActions: boolean): string {
@@ -1079,6 +1139,16 @@ function shouldContinueSameWindowFollowup(input: string): boolean {
   return false;
 }
 
+function resolveNavigationPreflightMessageContext(): string {
+  return resolveNavigationMessageContext({
+    pendingRunText: runtimeState?.pendingRun?.text,
+    activeRunText: sessionCoordinator?.getState()?.activeRun?.text,
+    rootWorkerInput: runtimeState?.workerState?.rootUserInput,
+    lastUserInputText,
+    fallback: 'navigation request',
+  });
+}
+
 function normalizeKernelRuntimeFeature(value?: boolean): boolean {
   return value !== false;
 }
@@ -1185,7 +1255,7 @@ function applyServerPolicy(policy?: RoverServerPolicy): void {
   if (policy.crossHostPolicy === 'open_new_tab' || policy.crossHostPolicy === 'same_tab') {
     currentConfig.navigation = {
       ...(currentConfig.navigation || {}),
-      crossHostPolicy: policy.crossHostPolicy,
+      crossHostPolicy: normalizeCrossHostPolicy(policy.crossHostPolicy),
     };
   }
   if (!currentConfig.tools) currentConfig.tools = {};
@@ -2940,6 +3010,7 @@ function postRun(
   options?: {
     runId?: string;
     resume?: boolean;
+    preserveHistory?: boolean;
     appendUserMessage?: boolean;
     autoResume?: boolean;
     routing?: 'auto' | 'act' | 'planner';
@@ -3037,6 +3108,7 @@ function postRun(
     text: trimmed,
     runId,
     resume,
+    preserveHistory: !!options?.preserveHistory,
     routing: options?.routing,
     askUserAnswers: options?.askUserAnswers,
     scopedTabIds,
@@ -3199,6 +3271,7 @@ async function dispatchUserPromptAsync(
     runId,
     appendUserMessage: true,
     resume: false,
+    preserveHistory: shouldContinueTerminalFollowup,
     autoResume: true,
     routing,
     askUserAnswers: options?.askUserAnswers,
@@ -3332,12 +3405,24 @@ function maybeAutoResumePendingRun(): void {
   });
 }
 
+function shouldAdoptIncomingRuntimeState(params: {
+  localState: PersistedRuntimeState;
+  incomingState: PersistedRuntimeState;
+  allowRicherIncomingOnResume?: boolean;
+}): boolean {
+  return shouldAdoptCheckpointState({
+    localUpdatedAt: Number(params.localState.updatedAt) || 0,
+    incomingUpdatedAt: Number(params.incomingState.updatedAt) || 0,
+    localState: params.localState,
+    incomingState: params.incomingState,
+    crossDomainResumeActive: !!params.allowRicherIncomingOnResume && crossDomainResumeActive,
+  });
+}
+
 async function applyAsyncRuntimeStateHydration(key: string): Promise<void> {
   if (!runtimeState) return;
   const loaded = await loadPersistedStateFromAsyncStore(key);
   if (!loaded || !runtimeState) return;
-
-  const localUpdatedAt = Number(runtimeState.updatedAt) || 0;
   const normalized = normalizePersistedState(
     {
       ...loaded,
@@ -3347,8 +3432,15 @@ async function applyAsyncRuntimeStateHydration(key: string): Promise<void> {
     runtimeState.sessionId,
     runtimeId,
   );
-  const incomingUpdatedAt = Number(normalized.updatedAt) || 0;
-  if (incomingUpdatedAt <= localUpdatedAt + 200) return;
+  if (
+    !shouldAdoptIncomingRuntimeState({
+      localState: runtimeState,
+      incomingState: normalized,
+      allowRicherIncomingOnResume: true,
+    })
+  ) {
+    return;
+  }
   const localTaskEpoch = Math.max(1, Number(runtimeState.taskEpoch) || 1);
   const incomingTaskEpoch = Math.max(1, Number(normalized.taskEpoch) || 1);
   const incomingBoundaryId = resolveExistingTaskBoundaryIdFromState(normalized);
@@ -3636,8 +3728,8 @@ function cloneRuntimeStateForCheckpoint(state: PersistedRuntimeState): Persisted
 
 function shouldEnableCloudCheckpointing(cfg: RoverInit): boolean {
   if (cfg.sessionScope === 'tab') return false;
-  // Default off to keep hot-path execution local and avoid remote read latency.
-  if (cfg.checkpointing?.enabled !== true) return false;
+  // V1 default is enabled when token + visitor prerequisites are available.
+  if (cfg.checkpointing?.enabled === false) return false;
   if (!getRuntimeSessionToken(cfg)) return false;
   if (!resolvedVisitorId) return false;
   return true;
@@ -3703,9 +3795,13 @@ function applyCloudCheckpointPayload(payload: RoverCloudCheckpointPayload): void
         remoteSessionId,
         runtimeId,
       );
-      const localUpdatedAt = Number(runtimeState.updatedAt) || 0;
-      const incomingUpdatedAt = Number(incomingState.updatedAt) || 0;
-      if (incomingUpdatedAt > localUpdatedAt + 200) {
+      if (
+        shouldAdoptIncomingRuntimeState({
+          localState: runtimeState,
+          incomingState,
+          allowRicherIncomingOnResume: true,
+        })
+      ) {
         const localTaskEpoch = Math.max(1, Number(runtimeState.taskEpoch) || 1);
         const incomingTaskEpoch = Math.max(1, Number(incomingState.taskEpoch) || 1);
         const incomingBoundaryId = resolveExistingTaskBoundaryIdFromState(incomingState);
@@ -5010,13 +5106,21 @@ function createRuntime(cfg: RoverInit): void {
         !!currentHost
         && !!targetHost
         && deriveRegistrableDomain(currentHost) !== deriveRegistrableDomain(targetHost);
-      const configuredCrossHostPolicy = normalizeCrossHostPolicy(currentConfig?.navigation?.crossHostPolicy);
-      const fallbackDecision: 'allow_same_tab' | 'open_new_tab' =
-        crossRegistrableDomain
-          ? 'open_new_tab'
-          : (intent?.isCrossHost && configuredCrossHostPolicy === 'open_new_tab'
-            ? 'open_new_tab'
-            : 'allow_same_tab');
+      const targetInScope = isHostInNavigationScope({
+        host: targetHost,
+        currentHost,
+        allowedDomains: currentConfig?.allowedDomains,
+        domainScopeMode: currentConfig?.domainScopeMode,
+      });
+      const fallbackDecision: 'allow_same_tab' | 'open_new_tab' | 'block' =
+        targetInScope
+          ? 'allow_same_tab'
+          : currentConfig?.externalNavigationPolicy === 'block'
+            ? 'block'
+            : currentConfig?.externalNavigationPolicy === 'allow'
+              ? 'allow_same_tab'
+              : 'open_new_tab';
+      const preflightMessage = resolveNavigationPreflightMessageContext();
 
       let serverDecision: TabEventDecisionResponse | null = null;
       if (intent?.targetUrl && roverServerRuntime && runId) {
@@ -5026,7 +5130,7 @@ function createRuntime(cfg: RoverInit): void {
             runId,
             currentUrl: window.location.href,
             targetUrl: intent.targetUrl,
-            message: 'agent_navigation_intent',
+            message: preflightMessage,
             currentHost: currentHost || undefined,
             targetHost,
             isCrossHost,
@@ -5051,29 +5155,47 @@ function createRuntime(cfg: RoverInit): void {
         }
       }
 
-      const decision = serverDecision?.decision || fallbackDecision;
+      const resolvedDecision = resolveNavigationDecision({
+        crossRegistrableDomain,
+        fallbackDecision,
+        serverDecision: serverDecision?.decision,
+        serverAvailable: !!serverDecision,
+      });
+      const decision = resolvedDecision.decision;
       if (decision === 'block') {
         return {
           decision: 'block',
-          reason: serverDecision?.reason || 'Navigation blocked by policy.',
-          decisionReason: serverDecision?.decisionReason || 'policy_blocked',
+          reason: resolvedDecision.failSafeBlocked
+            ? 'Cross-domain navigation blocked because preflight policy check is unavailable.'
+            : (serverDecision?.reason || 'Navigation blocked by policy.'),
+          decisionReason: resolvedDecision.failSafeBlocked
+            ? 'preflight_unavailable_block'
+            : (serverDecision?.decisionReason || 'policy_blocked'),
         };
       }
       if (decision === 'open_new_tab') {
+        const usedFallback = resolvedDecision.decisionReason === 'preflight_unavailable_fallback' && !serverDecision;
         return {
           decision: 'open_new_tab',
-          reason: serverDecision?.reason || 'Open in new tab to preserve runtime continuity.',
-          decisionReason: serverDecision?.decisionReason || 'open_new_tab',
+          reason: serverDecision?.reason
+            || (usedFallback
+              ? 'Preflight is unavailable; using local policy to open in a new tab and preserve runtime continuity.'
+              : 'Open in new tab to preserve runtime continuity.'),
+          decisionReason: serverDecision?.decisionReason || resolvedDecision.decisionReason || 'open_new_tab',
         };
       }
 
       // Same-tab navigation handoff path.
       agentNavigationPending = true;
       if (!runtimeState) {
+        const usedFallback = resolvedDecision.decisionReason === 'preflight_unavailable_fallback' && !serverDecision;
         return {
           decision: 'allow_same_tab',
-          reason: serverDecision?.reason || 'Navigation allowed.',
-          decisionReason: serverDecision?.decisionReason || 'allow_same_tab',
+          reason: serverDecision?.reason
+            || (usedFallback
+              ? 'Preflight is unavailable; allowing navigation using local policy.'
+              : 'Navigation allowed.'),
+          decisionReason: serverDecision?.decisionReason || resolvedDecision.decisionReason || 'allow_same_tab',
         };
       }
       setLatestNavigationHandoff(toPersistedNavigationHandoff(intent));
@@ -5088,8 +5210,11 @@ function createRuntime(cfg: RoverInit): void {
       cloudCheckpointClient?.syncNow();
       return {
         decision: 'allow_same_tab',
-        reason: serverDecision?.reason || 'Navigation allowed.',
-        decisionReason: serverDecision?.decisionReason || 'allow_same_tab',
+        reason: serverDecision?.reason
+          || (resolvedDecision.decisionReason === 'preflight_unavailable_fallback' && !serverDecision
+            ? 'Preflight is unavailable; allowing navigation using local policy.'
+            : 'Navigation allowed.'),
+        decisionReason: serverDecision?.decisionReason || resolvedDecision.decisionReason || 'allow_same_tab',
       };
     },
     onBeforeCrossHostNavigation: (intent: NavigationIntentEvent) => {

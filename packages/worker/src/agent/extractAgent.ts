@@ -6,6 +6,9 @@ import { resolveRuntimeTabs } from './runtimeTabs.js';
 
 export type ExtractOptions = {
   tabOrder: number[];
+  scopedTabIds?: number[];
+  seedTabId?: number;
+  onScopedTabIdsTouched?: (tabIds: number[]) => void;
   userInput: string;
   schema?: any;
   outputDestination?: any;
@@ -33,9 +36,25 @@ export type ExtractResult = {
 
 const MAX_RETRIES = 3;
 
+function dedupePositiveTabIds(input: unknown): number[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<number>();
+  const out: number[] = [];
+  for (const value of input) {
+    const tabId = Number(value);
+    if (!Number.isFinite(tabId) || tabId <= 0 || seen.has(tabId)) continue;
+    seen.add(tabId);
+    out.push(tabId);
+  }
+  return out;
+}
+
 export async function executeExtract(options: ExtractOptions): Promise<ExtractResult> {
   const {
     tabOrder,
+    scopedTabIds,
+    seedTabId,
+    onScopedTabIdsTouched,
     userInput,
     schema,
     outputDestination,
@@ -59,6 +78,20 @@ export async function executeExtract(options: ExtractOptions): Promise<ExtractRe
   let totalCreditsUsed = 0;
   const warnings: string[] = [];
   const fallbackTabs = tabOrder.map(id => ({ id }));
+  let runtimeScopedTabIds = dedupePositiveTabIds(scopedTabIds || []);
+  if (Number(seedTabId) > 0 && !runtimeScopedTabIds.includes(Number(seedTabId))) {
+    runtimeScopedTabIds.unshift(Number(seedTabId));
+  }
+  const touchScopedTabIds = (tabIds: Array<number | undefined>): void => {
+    const touched = dedupePositiveTabIds(tabIds);
+    if (!touched.length) return;
+    const nextScoped = dedupePositiveTabIds([...runtimeScopedTabIds, ...touched]);
+    if (nextScoped.length === runtimeScopedTabIds.length && nextScoped.every((id, index) => id === runtimeScopedTabIds[index])) {
+      return;
+    }
+    runtimeScopedTabIds = nextScoped;
+    onScopedTabIdsTouched?.(nextScoped);
+  };
   const prevSteps: PreviousSteps[] = Array.isArray(previousSteps) ? previousSteps : [];
   let pageDataOptions: { disableAutoScroll?: boolean } | undefined;
 
@@ -67,7 +100,10 @@ export async function executeExtract(options: ExtractOptions): Promise<ExtractRe
     if (ctx.isCancelled?.()) {
       return { error: 'Run cancelled', prevSteps, creditsUsed: totalCreditsUsed, warnings };
     }
-    const { activeTabId } = await resolveRuntimeTabs(bridgeRpc, fallbackTabs);
+    const { activeTabId } = await resolveRuntimeTabs(bridgeRpc, fallbackTabs, {
+      scopedTabIds: runtimeScopedTabIds,
+      seedTabId,
+    });
     if (ctx.isCancelled?.()) {
       return { error: 'Run cancelled', prevSteps, creditsUsed: totalCreditsUsed, warnings };
     }
@@ -155,6 +191,12 @@ export async function executeExtract(options: ExtractOptions): Promise<ExtractRe
       if (processResult.needsRetry) {
         pageDataOptions = processResult.disableAutoScroll ? { disableAutoScroll: true } : undefined;
         continue;
+      }
+      if (processResult.navigationOccurred) {
+        const logicalTabId = Number(processResult.logicalTabId);
+        if (Number.isFinite(logicalTabId) && logicalTabId > 0) {
+          touchScopedTabIds([logicalTabId]);
+        }
       }
       pageDataOptions = processResult.disableAutoScroll ? { disableAutoScroll: true } : undefined;
       if (processResult.data) {

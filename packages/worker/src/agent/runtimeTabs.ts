@@ -90,6 +90,12 @@ function preferScopedOrder(
   return ordered.slice(0, maxContextTabs);
 }
 
+function filterTabIdsToScope(tabIds: number[], scopedTabIds: number[]): number[] {
+  if (!scopedTabIds.length) return dedupePositiveTabIds(tabIds);
+  const scoped = new Set(scopedTabIds);
+  return dedupePositiveTabIds(tabIds).filter(tabId => scoped.has(tabId));
+}
+
 export async function resolveRuntimeTabs(
   bridgeRpc: ((method: string, params?: any) => Promise<any>) | undefined,
   fallbackTabs: RoverTab[],
@@ -105,6 +111,7 @@ export async function resolveRuntimeTabs(
   const staleRuntimeTabMaxAgeMs =
     Math.max(10_000, Number(options?.staleRuntimeTabMaxAgeMs) || DEFAULT_STALE_RUNTIME_TAB_MAX_AGE_MS);
   const scopedTabIds = dedupePositiveTabIds(options?.scopedTabIds || []);
+  const scopedTabSet = new Set(scopedTabIds);
 
   const fallbackSnapshots = normalizeFallbackTabs(fallbackTabs);
   const fallbackTabIds = dedupePositiveTabIds(
@@ -120,17 +127,18 @@ export async function resolveRuntimeTabs(
     try {
       listedTabs = normalizeListedTabs(await bridgeRpc('listSessionTabs'));
       if (scopedTabIds.length > 0) {
-        listedTabs = listedTabs.filter(tab => scopedTabIds.includes(tab.id));
+        listedTabs = listedTabs.filter(tab => scopedTabSet.has(tab.id));
       }
       const listedIds = dedupePositiveTabIds(listedTabs.map(tab => tab.id));
       if (listedIds.length > 0) {
-        tabIds = scopedTabIds.length > 0
-          ? scopedTabIds.filter(tabId => listedIds.includes(tabId))
-          : listedIds;
+        tabIds = scopedTabIds.length > 0 ? filterTabIdsToScope(listedIds, scopedTabIds) : listedIds;
       }
     } catch {
       // keep fallback tab ids
     }
+  }
+  if (scopedTabIds.length > 0) {
+    tabIds = filterTabIdsToScope(tabIds, scopedTabIds);
   }
 
   let activeTabId =
@@ -144,7 +152,7 @@ export async function resolveRuntimeTabs(
       if (
         Number.isFinite(candidate)
         && candidate > 0
-        && (scopedTabIds.length === 0 || scopedTabIds.includes(candidate))
+        && (scopedTabIds.length === 0 || scopedTabSet.has(candidate))
       ) {
         activeTabId = candidate;
       }
@@ -153,7 +161,7 @@ export async function resolveRuntimeTabs(
     }
   }
 
-  if (scopedTabIds.length > 0 && !scopedTabIds.includes(activeTabId)) {
+  if (scopedTabIds.length > 0 && !scopedTabSet.has(activeTabId)) {
     activeTabId = scopedTabIds[0];
   }
 
@@ -167,7 +175,11 @@ export async function resolveRuntimeTabs(
     const freshestRuntimeTabId = [...freshRuntimeListedIds].sort(
       (a, b) => Number(listedById.get(b)?.updatedAt || 0) - Number(listedById.get(a)?.updatedAt || 0),
     )[0];
-    if (Number.isFinite(freshestRuntimeTabId) && freshestRuntimeTabId > 0) {
+    if (
+      Number.isFinite(freshestRuntimeTabId)
+      && freshestRuntimeTabId > 0
+      && (scopedTabIds.length === 0 || scopedTabSet.has(freshestRuntimeTabId))
+    ) {
       activeTabId = freshestRuntimeTabId;
     }
   }
@@ -227,6 +239,18 @@ export async function resolveRuntimeTabs(
   }
   for (const tabId of tabOrder) {
     if (!tabMetaById[tabId]) tabMetaById[tabId] = { id: tabId };
+  }
+
+  if (scopedTabIds.length > 0) {
+    if (!scopedTabSet.has(activeTabId)) {
+      activeTabId = scopedTabIds[0];
+    }
+    tabOrder = preferScopedOrder(scopedTabIds, activeTabId, maxContextTabs);
+    const scopedMeta: Record<number, RuntimeTabSnapshot> = {};
+    for (const tabId of scopedTabIds) {
+      scopedMeta[tabId] = tabMetaById[tabId] || { id: tabId };
+    }
+    return { tabOrder, activeTabId, tabMetaById: scopedMeta };
   }
 
   return { tabOrder, activeTabId, tabMetaById };

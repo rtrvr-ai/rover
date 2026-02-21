@@ -20,6 +20,7 @@ import { TabularStore } from './tabular-memory/tabular-store.js';
 import { PLANNER_FUNCTION_CALLS } from '@rover/shared/lib/utils/constants.js';
 import { isApiKeyRequiredError, toRoverErrorEnvelope } from './agent/errors.js';
 import { resolveRuntimeTabs } from './agent/runtimeTabs.js';
+import { shouldBuildResumeCueChatLog, shouldClearHistoryForRun } from './runHistoryGuards.js';
 
 type RpcRequest = { t: 'req'; id: string; method: string; params?: unknown };
 type RpcResponse = { t: 'res'; id: string; ok: boolean; result?: unknown; error?: { message: string } };
@@ -156,7 +157,7 @@ let scopedTabIds: number[] = [];
 let scopedSeedTabId: number | undefined;
 let tabularStore: TabularStore | null = null;
 const PLANNER_TOOL_NAME_SET = new Set<string>(Object.values(PLANNER_FUNCTION_CALLS));
-let activeRun: { runId: string; text: string; startedAt: number; resume: boolean } | null = null;
+let activeRun: { runId: string; text: string; startedAt: number; resume: boolean; preserveHistory: boolean } | null = null;
 const cancelledRunIds = new Set<string>();
 let activeAbortController: AbortController | null = null;
 let lastStatusKey = '';
@@ -613,6 +614,21 @@ function applyScopedTabConfig(partial: Partial<RoverWorkerConfig> | undefined): 
   const next = resolveScopedTabConfig(partial);
   scopedTabIds = next.scoped;
   scopedSeedTabId = next.seedTabId;
+}
+
+function touchRunScopedTabIds(tabIds: unknown): number[] {
+  const touched = dedupePositiveTabIds(Array.isArray(tabIds) ? tabIds : [tabIds]);
+  if (!touched.length) return scopedTabIds;
+  const next = dedupePositiveTabIds([
+    ...(Number(scopedSeedTabId) > 0 ? [Number(scopedSeedTabId)] : []),
+    ...scopedTabIds,
+    ...touched,
+  ]);
+  if (next.length === scopedTabIds.length && next.every((tabId, index) => tabId === scopedTabIds[index])) {
+    return scopedTabIds;
+  }
+  scopedTabIds = next;
+  return scopedTabIds;
 }
 
 function getRootUserInputFallbackFromHistory(): string | undefined {
@@ -1520,6 +1536,23 @@ function detectOpenedTabFromToolResult(result: any): OpenedTabMetadata | undefin
   return undefined;
 }
 
+function extractTouchedTabIdsFromToolResult(result: any): number[] {
+  if (!result || typeof result !== 'object') return [];
+  const output = result.output && typeof result.output === 'object' ? result.output : undefined;
+  const candidates = [
+    Number(result.logicalTabId ?? result.logical_tab_id ?? result.tabId ?? result.tab_id),
+    Number(output?.logicalTabId ?? output?.logical_tab_id ?? output?.tabId ?? output?.tab_id),
+  ];
+  const unique = new Set<number>();
+  const out: number[] = [];
+  for (const value of candidates) {
+    if (!Number.isFinite(value) || value <= 0 || unique.has(value)) continue;
+    unique.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
 function extractQuestionsFromResult(
   result: ToolExecutionResult | Record<string, unknown> | undefined,
 ): PlannerQuestion[] | undefined {
@@ -1825,7 +1858,12 @@ async function maybeWaitForNewTab(
 
 async function handleUserMessage(
   text: string,
-  options?: { resume?: boolean; routing?: 'auto' | 'act' | 'planner'; askUserAnswers?: AskUserAnswerMeta },
+  options?: {
+    resume?: boolean;
+    preserveHistory?: boolean;
+    routing?: 'auto' | 'act' | 'planner';
+    askUserAnswers?: AskUserAnswerMeta;
+  },
 ): Promise<RunOutcome> {
   if (!config) throw new Error('Worker not initialized');
   if (!bridgeRpc) throw new Error('Bridge RPC not initialized');
@@ -1990,10 +2028,11 @@ async function handleUserMessage(
     1,
     Math.min(4, Math.floor(Number(config.chat?.resumeFollowup?.maxTurns) || MAX_RESUME_CUE_TURNS)),
   );
-  const chatLog = (
-    options?.resume
-    && config.chat?.resumeFollowup?.mode === 'deterministic_cues'
-  )
+  const chatLog = shouldBuildResumeCueChatLog({
+    resume: options?.resume,
+    preserveHistory: options?.preserveHistory,
+    resumeFollowupMode: config.chat?.resumeFollowup?.mode,
+  })
     ? buildChatLogFromHistory(history, chatLogCurrentInputForDedupe, resumeFollowupTurns)
     : [];
   const onPrevStepsUpdate = (steps: PreviousSteps[]) => {
@@ -2003,10 +2042,21 @@ async function handleUserMessage(
     plannerHistory = sanitizePlannerHistoryForPersist(Array.isArray(steps) ? steps : []);
     postStateSnapshot();
   };
+  const getScopedTabRuntimeContext = () => ({
+    scopedTabIds: [...scopedTabIds],
+    seedTabId: scopedSeedTabId,
+  });
+  const onScopedTabIdsTouched = (tabIds: number[]) => {
+    touchRunScopedTabIds(tabIds);
+  };
 
   throwIfCancelledRun(activeRunId);
   const result = await handleSendMessageWithFunctions(effectiveUserInput, {
     tabs: tabsForRun,
+    scopedTabIds,
+    seedTabId: scopedSeedTabId,
+    getScopedTabRuntimeContext,
+    onScopedTabIdsTouched,
     previousMessages: history,
     trajectoryId: taskTrajectoryId,
     files: [],
@@ -2029,6 +2079,14 @@ async function handleUserMessage(
     onPlannerHistoryUpdate,
   });
   throwIfCancelledRun(activeRunId);
+  if (result.directToolResult) {
+    touchRunScopedTabIds(extractTouchedTabIdsFromToolResult(result.directToolResult));
+  }
+  if (Array.isArray(result.executedFunctions) && result.executedFunctions.length > 0) {
+    for (const executed of result.executedFunctions) {
+      touchRunScopedTabIds(extractTouchedTabIdsFromToolResult(executed?.result));
+    }
+  }
 
   if (!result.success) {
     const rawErrorPayload = toStructuredErrorPayload(result.error, 'Something went wrong.');
@@ -2407,7 +2465,13 @@ async function handleUserMessage(
 
 async function runUserMessage(
   text: string,
-  meta?: { runId?: string; resume?: boolean; routing?: 'auto' | 'act' | 'planner'; askUserAnswers?: AskUserAnswerMeta },
+  meta?: {
+    runId?: string;
+    resume?: boolean;
+    preserveHistory?: boolean;
+    routing?: 'auto' | 'act' | 'planner';
+    askUserAnswers?: AskUserAnswerMeta;
+  },
 ): Promise<void> {
   const runId = meta?.runId || crypto.randomUUID();
   const terminal = terminalRuns.get(runId);
@@ -2446,16 +2510,17 @@ async function runUserMessage(
     return;
   }
   const resume = !!meta?.resume;
+  const preserveHistory = !!meta?.preserveHistory;
   const runTaskBoundaryId = taskBoundaryId;
   lastStatusKey = '';
   seenStatusKeys = new Set<string>();
   cancelledRunIds.delete(runId);
   activeAbortController = new AbortController();
-  activeRun = { runId, text, startedAt: Date.now(), resume };
+  activeRun = { runId, text, startedAt: Date.now(), resume, preserveHistory };
   (self as any).postMessage({ type: 'run_started', runId, text, resume, taskBoundaryId: runTaskBoundaryId });
 
-  if (!resume) {
-    // Keep prevSteps/planner history task-sticky; clear conversational history to keep in-run chatlog empty.
+  if (shouldClearHistoryForRun({ resume, preserveHistory })) {
+    // Keep prevSteps/planner history task-sticky. Clear chat history unless caller explicitly preserves follow-up cues.
     history.length = 0;
   }
 
@@ -2464,6 +2529,7 @@ async function runUserMessage(
   try {
     const outcome = normalizeRunOutcome(await handleUserMessage(text, {
       resume,
+      preserveHistory,
       routing: meta?.routing,
       askUserAnswers: meta?.askUserAnswers,
     }));
@@ -2668,6 +2734,7 @@ async function runUserMessage(
       await runUserMessage(String(data.text || ''), {
         runId: data.runId,
         resume: !!data.resume,
+        preserveHistory: !!data.preserveHistory,
         routing: data.routing,
         askUserAnswers: data.askUserAnswers,
       });
@@ -2678,6 +2745,7 @@ async function runUserMessage(
       await runUserMessage(String(data.text || ''), {
         runId: data.runId,
         resume: !!data.resume,
+        preserveHistory: !!data.preserveHistory,
         askUserAnswers: data.askUserAnswers,
       });
       return;

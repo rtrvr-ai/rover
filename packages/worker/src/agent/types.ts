@@ -19,6 +19,11 @@ export type RoverTab = {
   inaccessibleReason?: string;
 };
 
+export type ScopedTabRuntimeContext = {
+  scopedTabIds?: number[];
+  seedTabId?: number;
+};
+
 export type ExternalWebConfig = {
   enableExternalWebContext?: boolean;
   allowDomains?: string[];
@@ -203,6 +208,10 @@ export type PlannerResponse = {
 export type MessageOrchestratorOptions = {
   message: string;
   tabs: RoverTab[];
+  scopedTabIds?: number[];
+  seedTabId?: number;
+  getScopedTabRuntimeContext?: () => ScopedTabRuntimeContext;
+  onScopedTabIdsTouched?: (tabIds: number[]) => void;
   previousMessages?: ChatMessage[];
   trajectoryId: string;
   files?: any[];
@@ -223,6 +232,10 @@ export type MessageOrchestratorOptions = {
 export type PlannerOptions = {
   userInput: string;
   tabs: RoverTab[];
+  scopedTabIds?: number[];
+  seedTabId?: number;
+  getScopedTabRuntimeContext?: () => ScopedTabRuntimeContext;
+  onScopedTabIdsTouched?: (tabIds: number[]) => void;
   previousMessages?: ChatMessage[];
   files?: any[];
   trajectoryId: string;
@@ -246,6 +259,10 @@ export type ToolExecutionContext = {
   userInput: string;
   webPageMapInput?: Record<number, any>;
   tabs: RoverTab[];
+  scopedTabIds?: number[];
+  seedTabId?: number;
+  getScopedTabRuntimeContext?: () => ScopedTabRuntimeContext;
+  onScopedTabIdsTouched?: (tabIds: number[]) => void;
   trajectoryId: string;
   plannerPrevSteps?: PlannerPreviousStep[];
   files?: any[];
