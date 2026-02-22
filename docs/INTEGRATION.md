@@ -445,6 +445,8 @@ Runtime semantics:
 - `taskRouting.plannerOnActError` applies only in `auto` mode, and planner fallback is not triggered after usable ACT success.
 - Typed conflicts: `409 stale_seq`, `409 stale_epoch`, `409 active_run_exists`.
 - `POST /tab/event` stale/missing run is non-fatal via `200 decision='stale_run'`.
+- `GET /session/projection` is metadata-first by default (`includeSnapshot=false`). Use `includeSnapshot=true` only when full checkpoint payload is required.
+- Projection payloads expose `snapshotMeta` (`updatedAt`, `digest`) for lightweight change detection. Full `snapshot` is sent at bootstrap and selective resync points.
 - Cross-registrable navigation preflight is resilient: when `/tab/event` is unavailable, Rover falls back to local policy (in-scope targets follow `navigation.crossHostPolicy`, default `same_tab`; out-of-scope targets follow `externalNavigationPolicy`).
 - External intent routing: `/context/external` uses `read_context` (read/navigation-context prompts) or `act` (mutation prompts). Navigation-only external opens are represented by `/tab/event` + external placeholder tab handling.
 - Any normal user send starts a fresh task boundary (fresh `prevSteps`, fresh run-scoped tab order/scope).
