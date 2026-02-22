@@ -8,6 +8,11 @@ export type RoverServerPolicy = {
   externalDenyDomains?: string[];
 };
 
+export type RoverSnapshotMeta = {
+  updatedAt?: number;
+  digest?: string;
+};
+
 export type RoverServerProjection = {
   sessionId: string;
   epoch: number;
@@ -17,7 +22,9 @@ export type RoverServerProjection = {
   events?: Array<{ seq: number; type: string; ts?: any; data?: Record<string, unknown> }>;
   tabs?: Array<{ logicalTabId: string; status: string; scope: string; url?: string; reason?: string; updatedAt?: number }>;
   snapshot?: Record<string, unknown>;
+  snapshotMeta?: RoverSnapshotMeta;
   snapshotUpdatedAt?: number;
+  resyncReason?: 'initial' | 'digest_changed' | 'forced';
 };
 
 type SessionStartResponse = {
@@ -269,6 +276,7 @@ export class RoverServerRuntimeClient {
   private started = false;
   private lastSeq = 0;
   private lastRunId = '';
+  private lastSnapshotDigest = '';
   private activeRunId: string | undefined;
 
   constructor(options: RoverServerRuntimeOptions) {
@@ -320,6 +328,7 @@ export class RoverServerRuntimeClient {
     }
     this.lastSeq = 0;
     this.lastRunId = '';
+    this.lastSnapshotDigest = '';
     this.activeRunId = undefined;
   }
 
@@ -396,6 +405,10 @@ export class RoverServerRuntimeClient {
   }
 
   private applyProjection(projection: RoverServerProjection): void {
+    const prevEpoch = this.epoch;
+    const prevRunId = this.lastRunId;
+    const prevSeq = this.lastSeq;
+    const prevSnapshotDigest = this.lastSnapshotDigest;
     this.sessionId = projection.sessionId || this.sessionId;
     this.epoch = Math.max(1, Number(projection.epoch || this.epoch));
     const projectionRunId = String(projection.activeRunId || '');
@@ -409,6 +422,27 @@ export class RoverServerRuntimeClient {
       const seq = Number(events[events.length - 1]?.seq || 0);
       if (Number.isFinite(seq) && seq > this.lastSeq) this.lastSeq = seq;
     }
+    const snapshotDigest =
+      String(projection.snapshotMeta?.digest || '').trim()
+      || (
+        Number.isFinite(Number(projection.snapshotMeta?.updatedAt))
+          ? `u:${Math.max(0, Number(projection.snapshotMeta?.updatedAt || 0))}`
+          : (
+            Number.isFinite(Number(projection.snapshotUpdatedAt))
+              ? `u:${Math.max(0, Number(projection.snapshotUpdatedAt || 0))}`
+              : ''
+          )
+      );
+    if (snapshotDigest) {
+      this.lastSnapshotDigest = snapshotDigest;
+    }
+    const hasMaterialChange =
+      this.epoch !== prevEpoch
+      || projectionRunId !== prevRunId
+      || this.lastSeq !== prevSeq
+      || !!projection.snapshot
+      || (snapshotDigest && snapshotDigest !== prevSnapshotDigest);
+    if (!hasMaterialChange) return;
     this.options.onProjection?.(projection);
   }
 
@@ -874,7 +908,7 @@ export class RoverServerRuntimeClient {
     if (this.pollTimer != null) return;
     this.pollTimer = window.setInterval(() => {
       void this.fetchProjection().catch(error => this.reportError(error));
-    }, 4_000);
+    }, 6_000);
   }
 
   private scheduleSseReconnect(): void {

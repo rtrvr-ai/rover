@@ -360,8 +360,19 @@ let telemetryPausedAuth = false;
 let telemetrySeq = 0;
 let telemetryLastStatusAt = 0;
 let telemetryLastCheckpointStateAt = 0;
+let telemetryLastFlushAt = 0;
+let telemetryFlushPending = false;
+let telemetryFastLaneTimer: ReturnType<typeof setTimeout> | null = null;
 const TELEMETRY_STATUS_MIN_INTERVAL_MS = 1_500;
 const TELEMETRY_CHECKPOINT_STATE_MIN_INTERVAL_MS = 5_000;
+const TELEMETRY_MIN_FLUSH_COOLDOWN_MS = 10_000;
+const TELEMETRY_FAST_LANE_MAX_DELAY_MS = 1_200;
+const TELEMETRY_FAST_LANE_EVENTS = new Set<RoverEventName>([
+  'error',
+  'navigation_guardrail',
+  'checkpoint_error',
+  'tab_event_conflict_exhausted',
+]);
 let resolvedVisitorId: string | undefined = undefined;
 let resolvedVisitor: { name?: string; email?: string } | undefined = undefined;
 let greetingDismissed = false;
@@ -379,6 +390,7 @@ let backendSiteConfig: {
   version?: string;
 } | null = null;
 let suppressCheckpointSync = false;
+let lastQuestionPromptFlushSignature = '';
 let currentMode: RoverExecutionMode = 'controller';
 let workerReady = false;
 let sessionReady = false;
@@ -407,6 +419,7 @@ let runtimeSessionToken: string | undefined;
 let runtimeSessionTokenExpiresAt = 0;
 let runtimeServerEpoch = 1;
 let serverAcceptedRunId: string | undefined;
+let lastAppliedServerSnapshotKey = '';
 const RUN_SCOPED_WORKER_MESSAGE_TYPES = new Set([
   'run_started',
   'run_state_transition',
@@ -1081,6 +1094,11 @@ function stopTelemetry(): void {
     clearInterval(telemetryFlushTimer);
     telemetryFlushTimer = null;
   }
+  if (telemetryFastLaneTimer) {
+    clearTimeout(telemetryFastLaneTimer);
+    telemetryFastLaneTimer = null;
+  }
+  telemetryFlushPending = false;
 }
 
 function getTelemetryEndpoint(cfg: RoverInit): string {
@@ -1177,7 +1195,22 @@ function applyServerProjection(projection: RoverServerProjection): void {
     });
   }
 
+  const projectionSnapshotDigest =
+    String(projection.snapshotMeta?.digest || '').trim()
+    || (
+      Number.isFinite(Number(projection.snapshotMeta?.updatedAt))
+        ? `u:${Math.max(0, Number(projection.snapshotMeta?.updatedAt || 0))}`
+        : (
+          Number.isFinite(Number(projection.snapshotUpdatedAt))
+            ? `u:${Math.max(0, Number(projection.snapshotUpdatedAt || 0))}`
+            : ''
+        )
+    );
+  const projectionSnapshotKey = projectionSnapshotDigest ? `${projection.sessionId}:${projectionSnapshotDigest}` : '';
   if (projection.snapshot && typeof projection.snapshot === 'object') {
+    if (projectionSnapshotKey && projectionSnapshotKey === lastAppliedServerSnapshotKey) {
+      return;
+    }
     const maybeRuntime = (projection.snapshot as any)?.runtimeState;
     const maybeShared = (projection.snapshot as any)?.sharedState;
     if (maybeRuntime && typeof maybeRuntime === 'object') {
@@ -1194,6 +1227,9 @@ function applyServerProjection(projection: RoverServerProjection): void {
         });
       } finally {
         suppressCheckpointSync = false;
+      }
+      if (projectionSnapshotKey) {
+        lastAppliedServerSnapshotKey = projectionSnapshotKey;
       }
     }
   }
@@ -1220,6 +1256,7 @@ async function ensureRoverServerRuntime(cfg: RoverInit): Promise<void> {
         runtimeServerEpoch = Math.max(1, Number(session.epoch || runtimeServerEpoch));
         if (runtimeState && session.sessionId && runtimeState.sessionId !== session.sessionId) {
           runtimeState.sessionId = session.sessionId;
+          lastAppliedServerSnapshotKey = '';
           persistRuntimeState();
         }
         applyServerPolicy(session.policy);
@@ -1325,6 +1362,7 @@ async function flushTelemetry(force = false): Promise<void> {
   if (!batch.length) return;
 
   telemetryInFlight = true;
+  telemetryLastFlushAt = Date.now();
   try {
     const response = await fetch(getTelemetryEndpoint(currentConfig), {
       method: 'POST',
@@ -1407,8 +1445,32 @@ function recordTelemetryEvent(event: RoverEventName, payload?: any): void {
   if (telemetryBuffer.length > TELEMETRY_MAX_BUFFER_SIZE) {
     telemetryBuffer = telemetryBuffer.slice(-TELEMETRY_MAX_BUFFER_SIZE);
   }
+  const isFastLane = TELEMETRY_FAST_LANE_EVENTS.has(event);
+  if (isFastLane) {
+    const sinceLastFlush = Date.now() - telemetryLastFlushAt;
+    if (sinceLastFlush >= TELEMETRY_FAST_LANE_MAX_DELAY_MS) {
+      void flushTelemetry(false);
+      return;
+    }
+    if (!telemetryFastLaneTimer) {
+      telemetryFastLaneTimer = setTimeout(() => {
+        telemetryFastLaneTimer = null;
+        void flushTelemetry(false);
+      }, TELEMETRY_FAST_LANE_MAX_DELAY_MS - sinceLastFlush);
+    }
+    return;
+  }
   if (telemetryBuffer.length >= telemetry.maxBatchSize) {
-    void flushTelemetry(false);
+    const sinceLastFlush = Date.now() - telemetryLastFlushAt;
+    if (sinceLastFlush >= TELEMETRY_MIN_FLUSH_COOLDOWN_MS) {
+      void flushTelemetry(false);
+    } else if (!telemetryFlushPending) {
+      telemetryFlushPending = true;
+      setTimeout(() => {
+        telemetryFlushPending = false;
+        void flushTelemetry(false);
+      }, TELEMETRY_MIN_FLUSH_COOLDOWN_MS - sinceLastFlush);
+    }
   }
 }
 
@@ -2071,8 +2133,14 @@ function sanitizeWorkerState(input: any): PersistedWorkerState | undefined {
     .slice(-MAX_WORKER_HISTORY)
     .map(message => toWorkerHistoryEntry(message))
     .filter((message): message is { role: string; content: string } => !!message);
-  const plannerHistory = cloneUnknownArrayTail(plannerRaw, MAX_WORKER_STEPS);
-  const agentPrevSteps = cloneUnknownArrayTail(agentPrevStepsRaw, MAX_WORKER_STEPS * 2);
+  const plannerHistory = cloneUnknownArrayTail(
+    plannerRaw,
+    Math.max(MAX_WORKER_STEPS, plannerRaw.length),
+  );
+  const agentPrevSteps = cloneUnknownArrayTail(
+    agentPrevStepsRaw,
+    Math.max(MAX_WORKER_STEPS * 2, agentPrevStepsRaw.length),
+  );
   const pendingQuestions = normalizeAskUserQuestions(input?.pendingAskUser?.questions);
   const pendingStepRefRaw = input?.pendingAskUser?.stepRef;
   const pendingStepRef =
@@ -2216,8 +2284,14 @@ function toSharedWorkerContext(state: PersistedWorkerState | undefined): SharedW
           .map(message => toWorkerHistoryEntry(message))
           .filter((message): message is { role: string; content: string } => !!message)
       : [],
-    plannerHistory: cloneUnknownArrayTail(state.plannerHistory, MAX_WORKER_STEPS),
-    agentPrevSteps: cloneUnknownArrayTail(state.agentPrevSteps, MAX_WORKER_STEPS * 2),
+    plannerHistory: cloneUnknownArrayTail(
+      state.plannerHistory,
+      Math.max(MAX_WORKER_STEPS, Array.isArray(state.plannerHistory) ? state.plannerHistory.length : 0),
+    ),
+    agentPrevSteps: cloneUnknownArrayTail(
+      state.agentPrevSteps,
+      Math.max(MAX_WORKER_STEPS * 2, Array.isArray(state.agentPrevSteps) ? state.agentPrevSteps.length : 0),
+    ),
     pendingAskUser: pendingQuestions.length
       ? {
           questions: pendingQuestions,
@@ -2319,7 +2393,7 @@ function sanitizePendingRun(input: any): PersistedPendingRun | undefined {
   };
 }
 
-function persistRuntimeState(options?: { markCheckpointDirty?: boolean }): void {
+function persistRuntimeStateImmediate(options?: { markCheckpointDirty?: boolean }): void {
   if (!runtimeState || !runtimeStorageKey) return;
   try {
     runtimeState.updatedAt = Date.now();
@@ -2334,6 +2408,61 @@ function persistRuntimeState(options?: { markCheckpointDirty?: boolean }): void 
   } catch {
     // ignore storage failures
   }
+}
+
+let persistScheduled = false;
+let persistDirtyCheckpoint = false;
+let lastPersistTime = 0;
+let firstPersistRequestAt = 0;
+const MIN_PERSIST_INTERVAL_MS = 100;
+const MAX_PERSIST_COALESCE_DELAY_MS = 250;
+
+function flushCheckpointCritical(reason: string): void {
+  persistRuntimeStateImmediate({ markCheckpointDirty: true });
+  cloudCheckpointClient?.syncNow({ push: true, pull: false });
+  recordTelemetryEvent('checkpoint_state', {
+    event: 'critical_flush',
+    reason,
+  });
+}
+
+function persistRuntimeState(options?: { markCheckpointDirty?: boolean }): void {
+  if (options?.markCheckpointDirty !== false) persistDirtyCheckpoint = true;
+  const now = Date.now();
+  if (!persistScheduled) {
+    firstPersistRequestAt = now;
+  } else if (firstPersistRequestAt > 0 && now - firstPersistRequestAt >= MAX_PERSIST_COALESCE_DELAY_MS) {
+    persistScheduled = false;
+    firstPersistRequestAt = 0;
+    const dirty = persistDirtyCheckpoint;
+    persistDirtyCheckpoint = false;
+    lastPersistTime = now;
+    persistRuntimeStateImmediate({ markCheckpointDirty: dirty });
+    return;
+  }
+  if (persistScheduled) return;
+  persistScheduled = true;
+  setTimeout(() => {
+    persistScheduled = false;
+    firstPersistRequestAt = 0;
+    const dirty = persistDirtyCheckpoint;
+    persistDirtyCheckpoint = false;
+    const nowMs = Date.now();
+    if (nowMs - lastPersistTime < MIN_PERSIST_INTERVAL_MS) {
+      // Re-schedule for later to throttle writes
+      persistScheduled = true;
+      setTimeout(() => {
+        persistScheduled = false;
+        firstPersistRequestAt = 0;
+        lastPersistTime = Date.now();
+        persistRuntimeStateImmediate({ markCheckpointDirty: persistDirtyCheckpoint || dirty });
+        persistDirtyCheckpoint = false;
+      }, MIN_PERSIST_INTERVAL_MS - (nowMs - lastPersistTime));
+      return;
+    }
+    lastPersistTime = nowMs;
+    persistRuntimeStateImmediate({ markCheckpointDirty: dirty });
+  }, 0);
 }
 
 function ensureUnloadHandler(): void {
@@ -2373,7 +2502,7 @@ function ensureUnloadHandler(): void {
     if (runtimeState?.pendingRun) {
       sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
     }
-    persistRuntimeState();
+    persistRuntimeStateImmediate();
     void flushTelemetry(true);
     stopTelemetry();
     cloudCheckpointClient?.markDirty();
@@ -2416,6 +2545,8 @@ function applyTaskKernelCommand(
   options?: { syncShared?: boolean; persist?: boolean; rotateBoundary?: boolean },
 ): PersistedTaskState | undefined {
   if (!runtimeState) return undefined;
+  const previousStatus = runtimeState.activeTask?.status;
+  const previousBoundaryId = normalizeTaskBoundaryId(currentTaskBoundaryId);
   const transition = reduceTaskKernel(
     {
       task: runtimeState.activeTask,
@@ -2457,7 +2588,16 @@ function applyTaskKernelCommand(
     sessionCoordinator?.syncTask({ ...transition.task }, runtimeState.taskEpoch);
   }
   if (options?.persist !== false) {
-    persistRuntimeState();
+    const nextBoundaryId = normalizeTaskBoundaryId(currentTaskBoundaryId);
+    const taskStatusChanged = previousStatus !== transition.task.status;
+    const taskBoundaryChanged = !!nextBoundaryId && nextBoundaryId !== previousBoundaryId;
+    if (taskStatusChanged) {
+      flushCheckpointCritical('run_status_transition');
+    } else if (taskBoundaryChanged) {
+      flushCheckpointCritical('task_boundary_transition');
+    } else {
+      persistRuntimeState();
+    }
   }
 
   return transition.task;
@@ -2562,6 +2702,7 @@ function dropMismatchedPendingAskUserForBoundary(
 
 function syncQuestionPromptFromWorkerState(): void {
   if (runtimeState?.activeTask?.status !== 'running') {
+    lastQuestionPromptFlushSignature = '';
     ui?.setQuestionPrompt(undefined);
     return;
   }
@@ -2572,13 +2713,20 @@ function syncQuestionPromptFromWorkerState(): void {
     && pendingBoundaryId
     && pendingBoundaryId !== normalizeTaskBoundaryId(currentBoundaryId)
   ) {
+    lastQuestionPromptFlushSignature = '';
     ui?.setQuestionPrompt(undefined);
     return;
   }
   const questions = normalizeAskUserQuestions(runtimeState?.workerState?.pendingAskUser?.questions);
   if (!questions.length) {
+    lastQuestionPromptFlushSignature = '';
     ui?.setQuestionPrompt(undefined);
     return;
+  }
+  const promptSignature = `${normalizeTaskBoundaryId(pendingBoundaryId || currentBoundaryId) || ''}:${questions.map(question => `${question.key}:${question.query}`).join('|')}`;
+  if (promptSignature !== lastQuestionPromptFlushSignature) {
+    lastQuestionPromptFlushSignature = promptSignature;
+    flushCheckpointCritical('question_prompt_boundary');
   }
   ui?.setQuestionPrompt({ questions });
 }
@@ -3770,8 +3918,13 @@ async function applyAsyncRuntimeStateHydration(key: string, fallbackKeys?: strin
   }
 }
 
+let applyingCoordinatorState = false;
+
 function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'remote'): void {
   if (!runtimeState) return;
+  if (applyingCoordinatorState) return;
+  applyingCoordinatorState = true;
+  try {
 
   if (source === 'remote') {
     const localTaskEpoch = Math.max(1, Number(runtimeState.taskEpoch) || 1);
@@ -3969,6 +4122,10 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
   runtimeState.activeTask = sanitizeTask(runtimeState.activeTask, createDefaultTaskState('implicit'));
   if (source === 'local') return;
   persistRuntimeState();
+
+  } finally {
+    applyingCoordinatorState = false;
+  }
 }
 
 function cloneRuntimeStateForCheckpoint(state: PersistedRuntimeState): PersistedRuntimeState {
@@ -5538,15 +5695,10 @@ function createRuntime(cfg: RoverInit): void {
         };
       }
       setLatestNavigationHandoff(toPersistedNavigationHandoff(intent));
-      const pendingRun = ensureNavigationPendingRun(
+      ensureNavigationPendingRun(
         intent.isCrossHost ? 'cross_host_navigation' : 'agent_navigation',
       );
-      if (pendingRun) {
-        persistRuntimeState();
-      }
-      // Flush to cloud so cross-domain resume can recover workerState
-      cloudCheckpointClient?.markDirty();
-      cloudCheckpointClient?.syncNow({ push: true, pull: false });
+      flushCheckpointCritical('same_tab_navigation_handoff');
       return {
         decision: 'allow_same_tab',
         reason: serverDecision?.reason
@@ -5597,10 +5749,7 @@ function createRuntime(cfg: RoverInit): void {
         taskEpoch: runtimeState.taskEpoch,
         timestamp: Date.now(),
       });
-      persistRuntimeState();
-      // Flush to cloud so the new origin can recover workerState via cloud checkpoint
-      cloudCheckpointClient?.markDirty();
-      cloudCheckpointClient?.syncNow({ push: true, pull: false });
+      flushCheckpointCritical('cross_domain_handoff_pre_navigation');
     },
     instrumentationOptions: cfg.mode === 'safe' ? { observeInlineMutations: false } : undefined,
   } as any);
@@ -6603,7 +6752,7 @@ export function update(cfg: Partial<RoverInit>): void {
 
 export function shutdown(): void {
   hideTaskSuggestion();
-  persistRuntimeState();
+  persistRuntimeStateImmediate();
   void flushTelemetry(true);
   stopTelemetry();
   cloudCheckpointClient?.markDirty();
@@ -6616,6 +6765,7 @@ export function shutdown(): void {
   runtimeSessionTokenExpiresAt = 0;
   runtimeServerEpoch = 1;
   setServerAcceptedRunId(undefined);
+  lastAppliedServerSnapshotKey = '';
   sessionCoordinator?.stop();
   sessionCoordinator = null;
 
@@ -6648,6 +6798,13 @@ export function shutdown(): void {
   telemetrySeq = 0;
   telemetryLastStatusAt = 0;
   telemetryLastCheckpointStateAt = 0;
+  telemetryLastFlushAt = 0;
+  telemetryFlushPending = false;
+  if (telemetryFastLaneTimer) {
+    clearTimeout(telemetryFastLaneTimer);
+    telemetryFastLaneTimer = null;
+  }
+  lastQuestionPromptFlushSignature = '';
   currentMode = 'controller';
   pendingTaskSuggestion = null;
   runtimeStateStore = null;
@@ -6875,6 +7032,16 @@ function normalizeCommandName(command: string): keyof RoverInstance | undefined 
   if (c === 'on') return 'on';
   return undefined;
 }
+
+export const __roverInternalsForTests = {
+  sanitizeWorkerState,
+  cloneRuntimeStateForCheckpoint,
+  getPersistGovernorConfig: () => ({
+    minPersistIntervalMs: MIN_PERSIST_INTERVAL_MS,
+    maxCoalesceDelayMs: MAX_PERSIST_COALESCE_DELAY_MS,
+  }),
+  getTelemetryFastLaneEvents: () => Array.from(TELEMETRY_FAST_LANE_EVENTS.values()),
+};
 
 type RoverGlobalFn = ((command: string, ...args: any[]) => any) & Partial<RoverInstance> & { q?: any[]; l?: number };
 

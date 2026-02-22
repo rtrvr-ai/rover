@@ -10,6 +10,7 @@ export type RoverCloudCheckpointPayload = {
   visitorId: string;
   sessionId: string;
   updatedAt: number;
+  digest?: string;
   sharedState?: SharedSessionState;
   runtimeState?: PersistedRuntimeState;
 };
@@ -56,53 +57,114 @@ function truncateText(value: unknown, max = 8_000): string {
   return `${text.slice(0, max)}…`;
 }
 
+function normalizeUrlIdentity(value: unknown): string {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    parsed.hash = '';
+    return `${parsed.origin}${parsed.pathname}${parsed.search}`;
+  } catch {
+    return raw;
+  }
+}
+
+function stableSerialize(value: unknown): string {
+  if (value == null) return 'null';
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : JSON.stringify(String(value));
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(item => stableSerialize(item)).join(',')}]`;
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => key !== 'updatedAt' && key !== 'ts' && key !== 'timestamp')
+      .sort(([a], [b]) => a.localeCompare(b));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableSerialize(v)}`).join(',')}}`;
+  }
+  return JSON.stringify(String(value));
+}
+
+function hashSemanticDigest(input: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `sd:${(hash >>> 0).toString(16)}`;
+}
+
 function buildRevisionKey(payload: RoverCloudCheckpointPayload): string {
-  const sharedMessages = Array.isArray(payload.sharedState?.uiMessages) ? payload.sharedState.uiMessages : [];
-  const sharedTimeline = Array.isArray(payload.sharedState?.timeline) ? payload.sharedState.timeline : [];
-  const runtimeMessages = Array.isArray(payload.runtimeState?.uiMessages) ? payload.runtimeState.uiMessages : [];
-  const runtimeTimeline = Array.isArray(payload.runtimeState?.timeline) ? payload.runtimeState.timeline : [];
   const sharedTabs = Array.isArray(payload.sharedState?.tabs) ? payload.sharedState.tabs : [];
-  const runtimeWorkerState = payload.runtimeState?.workerState as any;
-  const taskScope = payload.runtimeState?.taskTabScope as any;
-  const sharedTabSignature = sharedTabs
-    .slice(-12)
-    .map(tab => [
-      Number(tab?.logicalTabId) || 0,
-      String(tab?.url || ''),
-      String(tab?.title || ''),
-      tab?.external ? 1 : 0,
-      String(tab?.detachedReason || ''),
-      String(tab?.handoffId || ''),
-      tab?.runtimeId ? 1 : 0,
-    ].join('|'))
-    .join(';');
-  return [
-    payload.sessionId,
-    Number(payload.sharedState?.taskEpoch || 0),
-    String(payload.sharedState?.task?.taskId || ''),
-    String(payload.sharedState?.task?.status || ''),
-    String(payload.sharedState?.activeRun?.runId || ''),
-    sharedMessages.length,
-    String(sharedMessages[sharedMessages.length - 1]?.id || ''),
-    sharedTimeline.length,
-    String(sharedTimeline[sharedTimeline.length - 1]?.id || ''),
-    sharedTabSignature,
-    Number(payload.runtimeState?.taskEpoch || 0),
-    String(payload.runtimeState?.activeTask?.taskId || ''),
-    String(payload.runtimeState?.activeTask?.status || ''),
-    String(payload.runtimeState?.pendingRun?.id || ''),
-    payload.runtimeState?.pendingRun?.resumeRequired ? 1 : 0,
-    runtimeMessages.length,
-    String(runtimeMessages[runtimeMessages.length - 1]?.id || ''),
-    runtimeTimeline.length,
-    String(runtimeTimeline[runtimeTimeline.length - 1]?.id || ''),
-    String(runtimeWorkerState?.taskBoundaryId || ''),
-    String(runtimeWorkerState?.trajectoryId || ''),
-    Array.isArray(runtimeWorkerState?.history) ? runtimeWorkerState.history.length : 0,
-    Array.isArray(runtimeWorkerState?.plannerHistory) ? runtimeWorkerState.plannerHistory.length : 0,
-    Array.isArray(runtimeWorkerState?.agentPrevSteps) ? runtimeWorkerState.agentPrevSteps.length : 0,
-    Array.isArray(taskScope?.touchedTabIds) ? taskScope.touchedTabIds.join(',') : '',
-  ].join(':');
+  const worker = (payload.runtimeState?.workerState || {}) as Record<string, any>;
+  const taskScope = (payload.runtimeState?.taskTabScope || {}) as Record<string, any>;
+  const sharedActiveRun = (payload.sharedState?.activeRun || {}) as Record<string, any>;
+  const runtimePendingRun = (payload.runtimeState?.pendingRun || {}) as Record<string, any>;
+  const plannerHistory = Array.isArray(worker.plannerHistory) ? worker.plannerHistory : [];
+  const agentPrevSteps = Array.isArray(worker.agentPrevSteps) ? worker.agentPrevSteps : [];
+  const lastPlannerStep = plannerHistory.length ? plannerHistory[plannerHistory.length - 1] : undefined;
+  const lastAgentStep = agentPrevSteps.length ? agentPrevSteps[agentPrevSteps.length - 1] : undefined;
+  const plannerStepMarkers = plannerHistory.map((step: any) => String(
+    step?.id
+    || step?.toolCall?.name
+    || step?.toolName
+    || step?.name
+    || '',
+  ));
+  const agentStepMarkers = agentPrevSteps.map((step: any) => String(
+    step?.id
+    || step?.toolCall?.name
+    || step?.toolName
+    || step?.name
+    || '',
+  ));
+  const semantic = {
+    sessionId: String(payload.sessionId || ''),
+    shared: {
+      taskEpoch: Number(payload.sharedState?.taskEpoch || 0),
+      taskId: String(payload.sharedState?.task?.taskId || ''),
+      taskStatus: String(payload.sharedState?.task?.status || ''),
+      activeRunId: String(sharedActiveRun.runId || ''),
+      activeRunStatus: String(sharedActiveRun.status || ''),
+      tabs: sharedTabs.map((tab: any) => ({
+        logicalTabId: Number(tab?.logicalTabId) || 0,
+        scope: String(tab?.scope || ''),
+        status: String(tab?.status || ''),
+        url: normalizeUrlIdentity(tab?.url),
+        external: !!tab?.external,
+      })),
+    },
+    runtime: {
+      taskEpoch: Number(payload.runtimeState?.taskEpoch || 0),
+      activeTaskId: String(payload.runtimeState?.activeTask?.taskId || ''),
+      activeTaskStatus: String(payload.runtimeState?.activeTask?.status || ''),
+      pendingRunId: String(runtimePendingRun.id || ''),
+      pendingRunStatus: String(runtimePendingRun.status || ''),
+      pendingResumeRequired: runtimePendingRun.resumeRequired === true,
+      worker: {
+        taskBoundaryId: String(worker.taskBoundaryId || ''),
+        trajectoryId: String(worker.trajectoryId || ''),
+        pendingAskBoundaryId: String(worker.pendingAskUser?.boundaryId || ''),
+        plannerHistoryCount: plannerHistory.length,
+        agentPrevStepsCount: agentPrevSteps.length,
+        lastPlannerStepId: String((lastPlannerStep as any)?.id || ''),
+        lastAgentStepId: String((lastAgentStep as any)?.id || ''),
+        plannerStepMarkers,
+        agentStepMarkers,
+      },
+      continuity: {
+        boundaryId: String(taskScope.boundaryId || ''),
+        seedTabId: Number(taskScope.seedTabId || 0),
+        touchedTabIds: Array.isArray(taskScope.touchedTabIds)
+          ? taskScope.touchedTabIds.map((id: any) => Number(id) || 0).filter((id: number) => id > 0)
+          : [],
+      },
+    },
+  };
+  return hashSemanticDigest(stableSerialize(semantic));
+}
+
+export function buildSemanticCheckpointDigest(payload: RoverCloudCheckpointPayload): string {
+  return buildRevisionKey(payload);
 }
 
 function normalizeBaseOrigin(apiBase?: string): string {
@@ -174,6 +236,7 @@ export class RoverCloudCheckpointClient {
   private lastPullAt = 0;
   private lastUploadedRevision = '';
   private lastAppliedRemoteUpdatedAt = 0;
+  private lastAppliedRemoteDigest = '';
   private pushInFlight = false;
   private pullInFlight = false;
   private state: RoverCloudCheckpointState = 'active';
@@ -198,8 +261,8 @@ export class RoverCloudCheckpointClient {
     this.siteId = options.siteId;
     this.visitorId = options.visitorId;
     this.ttlHours = Math.max(1, Math.min(24 * 7, Math.floor(toFiniteNumber(options.ttlHours, 1))));
-    this.flushIntervalMs = Math.max(2_000, Math.floor(toFiniteNumber(options.flushIntervalMs, 8_000)));
-    this.pullIntervalMs = Math.max(2_000, Math.floor(toFiniteNumber(options.pullIntervalMs, 9_000)));
+    this.flushIntervalMs = Math.max(2_000, Math.floor(toFiniteNumber(options.flushIntervalMs, 12_000)));
+    this.pullIntervalMs = Math.max(2_000, Math.floor(toFiniteNumber(options.pullIntervalMs, 15_000)));
     this.minFlushIntervalMs = Math.max(1_000, Math.floor(toFiniteNumber(options.minFlushIntervalMs, 2_500)));
     this.shouldWrite = options.shouldWrite || (() => true);
     this.buildCheckpoint = options.buildCheckpoint;
@@ -311,6 +374,7 @@ export class RoverCloudCheckpointClient {
     if (!payload) return;
 
     const revision = buildRevisionKey(payload);
+    payload.digest = revision;
     if (!force && revision === this.lastUploadedRevision) {
       this.dirty = false;
       return;
@@ -371,8 +435,10 @@ export class RoverCloudCheckpointClient {
 
   private applyRemoteCheckpoint(checkpoint: RoverCloudCheckpointPayload, source: CheckpointSource): void {
     const updatedAt = Math.max(0, Math.floor(toFiniteNumber(checkpoint?.updatedAt, 0)));
-    if (updatedAt <= this.lastAppliedRemoteUpdatedAt) return;
+    const digest = String(checkpoint?.digest || '').trim() || buildRevisionKey(checkpoint);
+    if (updatedAt <= this.lastAppliedRemoteUpdatedAt && (!digest || digest === this.lastAppliedRemoteDigest)) return;
     this.lastAppliedRemoteUpdatedAt = updatedAt;
+    if (digest) this.lastAppliedRemoteDigest = digest;
     this.onCheckpoint(checkpoint, source);
   }
 
@@ -422,6 +488,7 @@ export class RoverCloudCheckpointClient {
     const params = new URLSearchParams({
       sessionId: String(data?.sessionId || ''),
       sessionToken,
+      includeSnapshot: 'true',
     });
     const { response, payload } = await this.requestJson(`/session/projection?${params.toString()}`, {
       method: 'GET',

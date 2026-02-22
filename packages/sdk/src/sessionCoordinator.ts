@@ -1556,11 +1556,38 @@ export class SessionCoordinator {
     this.notifyRoleChange();
   }
 
+  private lastFullHeartbeatAt = 0;
+
   private heartbeat(): void {
     if (this.closing) return;
 
     const currentUrl = normalizeUrl(window.location.href);
     const currentTitle = document.title || undefined;
+    const nowMs = now();
+
+    // Fast path: if lease is still valid for this runtime and was recently fully checked,
+    // only update the local tab's updatedAt + URL/title in-place without full sanitize cycle.
+    const lease = this.state.lease;
+    const leaseValid = lease && lease.holderRuntimeId === this.runtimeId && lease.expiresAt > nowMs;
+    const recentFullHeartbeat = nowMs - this.lastFullHeartbeatAt < 5_000;
+    const localTab = this.state.tabs.find(tab => tab.runtimeId === this.runtimeId);
+
+    if (leaseValid && recentFullHeartbeat && localTab) {
+      // Lightweight update: skip mutate/sanitize AND skip persist/broadcast.
+      // The updatedAt timestamp only needs to be in memory for local liveness checks.
+      // It gets persisted on the next full heartbeat (every 5s), which is well within
+      // the lease window (12s). This avoids triggering storage events + JSON.parse
+      // in all other tabs on every 2s heartbeat.
+      localTab.url = currentUrl || localTab.url;
+      localTab.title = currentTitle || localTab.title;
+      localTab.updatedAt = nowMs;
+      localTab.detachedAt = undefined;
+      localTab.detachedReason = undefined;
+      this.state.updatedAt = nowMs;
+      return;
+    }
+
+    this.lastFullHeartbeatAt = nowMs;
 
     this.mutate('local', draft => {
       const currentTab = draft.tabs.find(tab => tab.runtimeId === this.runtimeId);
