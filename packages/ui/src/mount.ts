@@ -3188,10 +3188,16 @@ export function mountWidget(opts: MountOptions): RoverUi {
     overflowMenu.classList.remove('visible');
   }
 
+  let lastShortcutsKey = '';
+
   function renderShortcuts(shortcuts: RoverShortcut[]): void {
-    currentShortcuts = shortcuts
+    const filtered = shortcuts
       .filter(shortcut => shortcut && shortcut.enabled !== false)
       .slice(0, SHORTCUTS_RENDER_LIMIT);
+    const key = filtered.map(sc => `${sc.id || sc.label}|${sc.label}|${sc.description || ''}|${sc.icon || ''}`).join(';;');
+    if (key === lastShortcutsKey) return;
+    lastShortcutsKey = key;
+    currentShortcuts = filtered;
 
     // Render empty-state cards
     shortcutsGrid.innerHTML = '';
@@ -4104,7 +4110,14 @@ export function mountWidget(opts: MountOptions): RoverUi {
   }
 
   /* ── Tab Bar Logic ── */
+  let lastTabsKey = '';
+  const faviconCache = new Map<string, string>();
+
   function setTabs(tabs: RoverTabInfo[]): void {
+    const key = tabs.map(t => `${t.logicalTabId}|${t.url}|${t.title || ''}|${t.isActive}|${t.isCurrent}`).join(';;');
+    if (key === lastTabsKey) return;
+    lastTabsKey = key;
+
     tabBar.innerHTML = '';
     if (!tabs.length) {
       tabBar.classList.remove('visible');
@@ -4120,7 +4133,14 @@ export function mountWidget(opts: MountOptions): RoverUi {
       favicon.className = 'roverTabChipFavicon';
       try {
         const host = new URL(tab.url).hostname;
-        favicon.src = `https://www.google.com/s2/favicons?domain=${host}&sz=28`;
+        const cached = faviconCache.get(host);
+        if (cached) {
+          favicon.src = cached;
+        } else {
+          const url = `https://www.google.com/s2/favicons?domain=${host}&sz=28`;
+          faviconCache.set(host, url);
+          favicon.src = url;
+        }
       } catch { favicon.style.display = 'none'; }
       favicon.onerror = () => { favicon.style.display = 'none'; };
 
@@ -4170,7 +4190,12 @@ export function mountWidget(opts: MountOptions): RoverUi {
     opts.onNewTask?.();
   });
 
+  let lastConversationsKey = '';
+
   function setConversations(conversations: ConversationListItem[]): void {
+    const key = conversations.map(c => `${c.id}|${c.summary}|${c.status}|${c.updatedAt}|${c.isActive}`).join(';;');
+    if (key === lastConversationsKey) return;
+    lastConversationsKey = key;
     conversationList.innerHTML = '';
     for (const conv of conversations) {
       const item = document.createElement('div');

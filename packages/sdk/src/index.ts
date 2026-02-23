@@ -4178,12 +4178,15 @@ function buildWorkerBoundaryConfig(extra?: Record<string, unknown>): Record<stri
   };
 }
 
+let lastBoundaryConfigJson = '';
+
 function postWorkerBoundaryConfig(extra?: Record<string, unknown>): void {
   if (!worker) return;
-  worker.postMessage({
-    type: 'update_config',
-    config: buildWorkerBoundaryConfig(extra),
-  });
+  const config = buildWorkerBoundaryConfig(extra);
+  const json = JSON.stringify(config);
+  if (json === lastBoundaryConfigJson) return;
+  lastBoundaryConfigJson = json;
+  worker.postMessage({ type: 'update_config', config });
 }
 
 function postRun(
