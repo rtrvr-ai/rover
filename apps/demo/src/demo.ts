@@ -48,7 +48,9 @@ type DemoState = {
 };
 
 type DemoConfig = {
-  apiKey: string;
+  publicKey?: string;
+  siteKeyId?: string;
+  apiKey?: string;
   apiBase: string;
   visitorId: string;
   allowedDomains: string[];
@@ -188,20 +190,20 @@ function initRover(config: DemoConfig): ReturnType<typeof init> {
   const workerUrl = new URL('./worker.ts', import.meta.url).toString();
 
   const instance = init({
-    siteId: 'rover-demo-store',
+    siteId: 'rover-local-demo-AK5vXw',
     apiBase: config.apiBase || DEFAULT_API_BASE,
-    apiKey: config.apiKey || undefined,
+    publicKey: config.publicKey || undefined,
+    siteKeyId: config.siteKeyId || undefined,
     visitorId: config.visitorId,
     workerUrl,
     allowActions: true,
     sessionScope: 'shared_site',
-    allowedDomains: config.allowedDomains,
+    allowedDomains: config.allowedDomains || ['localhost'],
     domainScopeMode: config.domainScopeMode,
     externalNavigationPolicy: config.externalNavigationPolicy,
     tabPolicy: { observerByDefault: true, actionLeaseMs: 12000 },
     taskRouting: {
-      mode: 'auto',
-      actHeuristicThreshold: 5,
+      mode: 'act',
       plannerOnActError: true,
     },
     taskContext: {
@@ -210,11 +212,14 @@ function initRover(config: DemoConfig): ReturnType<typeof init> {
       semanticSimilarityThreshold: 0.18,
     },
     checkpointing: {
-      enabled: false,
-      autoVisitorId: false,
+      enabled: true,
+      autoVisitorId: true,
       flushIntervalMs: 7000,
       pullIntervalMs: 8000,
       ttlHours: 1,
+    },
+    telemetry: {
+      includePayloads: true,
     },
     apiMode: true,
     openOnInit: false,
@@ -244,7 +249,8 @@ function initRover(config: DemoConfig): ReturnType<typeof init> {
     instance.identify({ name: 'Jordan', email: 'jordan@example.com' });
   }, 5000);
 
-  setRoverStatus(config.apiKey ? 'Rover ready to chat' : 'Rover booted. Add API key to run planner.', config.apiKey ? 'success' : 'warning');
+  const hasAuth = !!(config.publicKey || config.apiKey);
+  setRoverStatus(hasAuth ? 'Rover ready to chat' : 'Rover booted. Add publicKey or apiKey to run planner.', hasAuth ? 'success' : 'warning');
 
   instance.on('ready', () => {
     setRoverStatus('Rover worker ready', 'success');
@@ -273,11 +279,9 @@ function bindRoverControls(config: DemoConfig): void {
   const closeBtn = byId<HTMLButtonElement>('close-rover-widget');
   const newTaskBtn = byId<HTMLButtonElement>('new-rover-task');
   const endTaskBtn = byId<HTMLButtonElement>('end-rover-task');
-  const apiKeyInput = byId<HTMLInputElement>('rover-api-key');
   const apiBaseInput = byId<HTMLInputElement>('rover-api-base');
   const saveConfigBtn = byId<HTMLButtonElement>('save-rover-config');
 
-  if (apiKeyInput) apiKeyInput.value = config.apiKey;
   if (apiBaseInput) apiBaseInput.value = config.apiBase;
 
   openBtn?.addEventListener('click', () => roverInstance?.open());
@@ -287,7 +291,6 @@ function bindRoverControls(config: DemoConfig): void {
 
   saveConfigBtn?.addEventListener('click', () => {
     const nextConfig: DemoConfig = {
-      apiKey: (apiKeyInput?.value || '').trim(),
       apiBase: (apiBaseInput?.value || '').trim() || DEFAULT_API_BASE,
       visitorId: config.visitorId,
       allowedDomains: config.allowedDomains,
@@ -299,7 +302,6 @@ function bindRoverControls(config: DemoConfig): void {
 
     saveConfig(nextConfig);
     roverInstance?.update({
-      apiKey: nextConfig.apiKey || undefined,
       apiBase: nextConfig.apiBase,
     });
 

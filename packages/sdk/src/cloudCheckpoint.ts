@@ -500,7 +500,7 @@ export class RoverCloudCheckpointClient {
       const { response, payload } = await this.requestJson('/snapshot', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'text/plain',
         },
         keepalive: useKeepalive,
         body,
@@ -527,9 +527,6 @@ export class RoverCloudCheckpointClient {
     });
     const { response, payload } = await this.requestJson(`/state?${params.toString()}`, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
     });
     if (!response.ok || !payload?.success) {
       throw toError(`Checkpoint HTTP ${response.status}`, {

@@ -906,13 +906,16 @@ export class Bridge {
     options?: { convertedFrom?: string; decisionReason?: string; reason?: string },
   ): any {
     this.notifyCrossHostNavigation(intent);
+    // Use increased delay for cross-host navigations (200ms) to ensure state persists
+    const isCrossHost = intent.isCrossHost === true;
+    const delay = isCrossHost ? Math.max(this.navigationDelayMs, 200) : this.navigationDelayMs;
     window.setTimeout(() => {
       try {
         window.location.href = targetUrl;
       } catch {
         window.location.assign(targetUrl);
       }
-    }, this.navigationDelayMs);
+    }, delay);
     return {
       success: true,
       output: {
@@ -998,6 +1001,9 @@ export class Bridge {
       openedInNewTab: false,
     });
 
+    let blockedDomain: string | undefined;
+    try { blockedDomain = new URL(targetUrl).hostname; } catch { /* ignore */ }
+
     return {
       success: false,
       error: reason,
@@ -1020,6 +1026,9 @@ export class Bridge {
         navigationOutcome: 'blocked',
         decisionReason: options?.decisionReason || 'policy_blocked',
         from_current_context: !!options?.fromCurrentContext,
+        // Enhanced agent-facing metadata
+        agentInstruction: `Navigation to ${targetUrl} was blocked by domain policy. Acknowledge to user and proceed with next step. Do NOT retry blocked URLs.`,
+        blockedDomain: blockedDomain || targetUrl,
       },
       errorDetails: {
         code: 'DOMAIN_SCOPE_BLOCKED',
@@ -1029,6 +1038,7 @@ export class Bridge {
           blockedUrl: targetUrl,
           currentUrl: window.location.href,
           policyAction,
+          blockedDomain,
         },
       },
     };
