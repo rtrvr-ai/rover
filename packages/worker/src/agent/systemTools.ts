@@ -133,6 +133,12 @@ export async function executeSystemToolCallsSequentially({
       const output = response?.output && typeof response.output === 'object'
         ? response.output as Record<string, unknown>
         : undefined;
+
+      // SPA navigation: wait for DOM to settle after client-side route transition
+      if (output?.spaNavigation === true) {
+        await new Promise(resolve => setTimeout(resolve, 350));
+      }
+
       const outputNavigationOutcomeRaw = String(output?.navigationOutcome || '').trim().toLowerCase();
       const outputNavigationOutcome =
         NAVIGATION_OUTCOMES.has(outputNavigationOutcomeRaw as SystemNavigationOutcome)

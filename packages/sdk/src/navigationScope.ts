@@ -60,6 +60,16 @@ export function normalizeDomainPatternToken(pattern: string): string {
   return host;
 }
 
+function normalizeScopeAwareDomainPattern(
+  pattern: string,
+  scopeMode?: 'host_only' | 'registrable_domain',
+): string {
+  if (!pattern) return '';
+  if (scopeMode !== 'host_only') return pattern;
+  if (pattern === '*' || pattern.startsWith('=') || pattern.startsWith('*.')) return pattern;
+  return `=${pattern}`;
+}
+
 export function matchesDomainPattern(host: string, pattern: string): boolean {
   const clean = normalizeDomainPatternToken(pattern);
   if (!clean) return false;
@@ -86,7 +96,10 @@ export function isHostInNavigationScope(params: {
   const host = normalizeHostToken(params.host || '');
   if (!host) return false;
   const allowedDomains = Array.isArray(params.allowedDomains)
-    ? params.allowedDomains.map(token => normalizeDomainPatternToken(token)).filter(Boolean)
+    ? params.allowedDomains
+      .map(token => normalizeDomainPatternToken(token))
+      .map(token => normalizeScopeAwareDomainPattern(token, params.domainScopeMode))
+      .filter(Boolean)
     : [];
   if (allowedDomains.length > 0) {
     return allowedDomains.some(pattern => matchesDomainPattern(host, pattern));

@@ -42,3 +42,22 @@ test('exact and wildcard patterns apply correctly', () => {
     true,
   );
 });
+
+test('host_only mode treats plain allowlist tokens as exact host matches', () => {
+  assert.equal(
+    isHostInNavigationScope({
+      host: 'example.com',
+      allowedDomains: ['example.com'],
+      domainScopeMode: 'host_only',
+    }),
+    true,
+  );
+  assert.equal(
+    isHostInNavigationScope({
+      host: 'app.example.com',
+      allowedDomains: ['example.com'],
+      domainScopeMode: 'host_only',
+    }),
+    false,
+  );
+});

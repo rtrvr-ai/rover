@@ -13,6 +13,7 @@ import type {
   PreviousSteps,
 } from './types.js';
 import type { AgentContext } from './context.js';
+import { classifyNavigationContinuation } from '../navigationContinuation.js';
 
 export interface OrchestratorResult {
   processedMessage: string;
@@ -253,7 +254,12 @@ function hasUsableActOutcome(actResult: any): boolean {
   };
 
   if (hasNonEmptyValue(actResult.data)) return true;
-  if (actResult.navigationPending === true) return true;
+  const topLevelNavigation = classifyNavigationContinuation({
+    navigationPending: actResult.navigationPending,
+    navigationOutcome: actResult.navigationOutcome,
+    navigationMode: actResult.navigation,
+  });
+  if (topLevelNavigation.isNavigationProgress) return true;
   if (actResult.needsUserInput === true) return true;
 
   const output = (actResult as any).output;
@@ -262,9 +268,12 @@ function hasUsableActOutcome(actResult: any): boolean {
   if (typeof output !== 'object') return hasNonEmptyValue(output);
   if ((output as any).success === false || (output as any).error) return false;
 
-  const navigationOutcome = String((output as any).navigationOutcome || '').trim().toLowerCase();
-  if (navigationOutcome === 'same_tab_scheduled' || navigationOutcome === 'new_tab_opened') return true;
-  if ((output as any).navigationPending === true) return true;
+  const outputNavigation = classifyNavigationContinuation({
+    navigationPending: (output as any).navigationPending,
+    navigationOutcome: (output as any).navigationOutcome,
+    navigationMode: (output as any).navigation,
+  });
+  if (outputNavigation.isNavigationProgress) return true;
   if ((output as any).needsUserInput === true || (output as any).waitingForUserInput === true) return true;
   if (Array.isArray((output as any).questions) && (output as any).questions.length > 0) return true;
   if (String((output as any).taskStatus || '').trim().toLowerCase() === 'in_progress') return true;

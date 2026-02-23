@@ -522,26 +522,22 @@ export class Bridge {
 
         if (this.shouldPreserveHostRuntime(targetUrl)) {
           const intent = this.buildNavigationIntent(targetUrl);
-          const inAllowedDomain = isUrlAllowedByDomains(targetUrl, this.allowedDomains);
-          if (!inAllowedDomain && this.externalNavigationPolicy === 'block') {
-            return this.domainScopeBlockedResponse(targetUrl, 'Navigation blocked by domain policy.');
-          }
           const preflight = await this.resolveAgentNavigationDecision(
             intent,
             this.getNavigationFallbackDecision(targetUrl),
           );
-          if (preflight.decision === 'block') {
+          const forcedDecision =
+            this.externalNavigationPolicy === 'block'
+              ? 'block'
+              : 'open_new_tab';
+          const effectiveDecision = preflight.decision === 'allow_same_tab' ? forcedDecision : preflight.decision;
+
+          if (effectiveDecision === 'block') {
             return this.domainScopeBlockedResponse(
               targetUrl,
               preflight.reason || 'Navigation blocked by policy.',
               { decisionReason: preflight.decisionReason },
             );
-          }
-          if (preflight.decision === 'allow_same_tab') {
-            return this.scheduleSameTabNavigation(targetUrl, intent, {
-              decisionReason: preflight.decisionReason || 'allow_same_tab',
-              reason: preflight.reason || 'Navigation allowed.',
-            });
           }
           return await this.openUrlInNewTab(targetUrl, {
             policyBlocked: true,
@@ -610,26 +606,22 @@ export class Bridge {
 
         if (this.shouldPreserveHostRuntime(targetUrl)) {
           const intent = this.buildNavigationIntent(targetUrl);
-          const inAllowedDomain = isUrlAllowedByDomains(targetUrl, this.allowedDomains);
-          if (!inAllowedDomain && this.externalNavigationPolicy === 'block') {
-            return this.domainScopeBlockedResponse(targetUrl, 'Google search blocked by domain policy.');
-          }
           const preflight = await this.resolveAgentNavigationDecision(
             intent,
             this.getNavigationFallbackDecision(targetUrl),
           );
-          if (preflight.decision === 'block') {
+          const forcedDecision =
+            this.externalNavigationPolicy === 'block'
+              ? 'block'
+              : 'open_new_tab';
+          const effectiveDecision = preflight.decision === 'allow_same_tab' ? forcedDecision : preflight.decision;
+
+          if (effectiveDecision === 'block') {
             return this.domainScopeBlockedResponse(
               targetUrl,
               preflight.reason || 'Navigation blocked by policy.',
               { decisionReason: preflight.decisionReason },
             );
-          }
-          if (preflight.decision === 'allow_same_tab') {
-            return this.scheduleSameTabNavigation(targetUrl, intent, {
-              decisionReason: preflight.decisionReason || 'allow_same_tab',
-              reason: preflight.reason || 'Navigation allowed.',
-            });
           }
           return await this.openUrlInNewTab(targetUrl, {
             policyBlocked: true,
@@ -931,6 +923,31 @@ export class Bridge {
     }, this.navigationDelayMs);
   }
 
+  private attemptSpaNavigation(targetUrl: string): boolean {
+    try {
+      const target = new URL(targetUrl, window.location.href);
+      if (target.origin !== window.location.origin) return false;
+    } catch { return false; }
+
+    // Detect SPA router: pushState monkey-patched or common framework markers
+    const pushStatePatched = History.prototype.pushState !== history.pushState;
+    const hasFrameworkRoot = !!(
+      document.getElementById('__next')
+      || document.getElementById('root')
+      || document.getElementById('app')
+      || document.querySelector('[data-reactroot]')
+      || document.querySelector('[id^="__nuxt"]')
+    );
+    if (!pushStatePatched && !hasFrameworkRoot) return false;
+
+    try {
+      const beforeHref = window.location.href;
+      window.history.pushState(null, '', targetUrl);
+      window.dispatchEvent(new PopStateEvent('popstate', { state: null }));
+      return window.location.href !== beforeHref;
+    } catch { return false; }
+  }
+
   private scheduleSameTabNavigation(
     targetUrl: string,
     intent: NavigationIntentEvent,
@@ -949,6 +966,29 @@ export class Bridge {
     // getPageData call (with its existing DOM-settle + sparse-tree retry) picks
     // up the new page content — no extra delay needed.
     if (withinScope) {
+      // Try SPA-aware navigation first to avoid full page reload
+      const isSameOrigin = (() => {
+        try { return new URL(targetUrl, window.location.href).origin === window.location.origin; }
+        catch { return false; }
+      })();
+
+      if (isSameOrigin && this.attemptSpaNavigation(targetUrl)) {
+        return {
+          success: true,
+          output: {
+            url: targetUrl,
+            navigation: 'same_tab',
+            navigationOutcome: isCrossHost ? 'subdomain_navigated' : 'same_host_navigated',
+            navigationPending: false,
+            spaNavigation: true,
+            decisionReason: options?.decisionReason || 'allow_same_tab',
+            reason: options?.reason,
+            ...(options?.convertedFrom ? { convertedFrom: options.convertedFrom } : {}),
+          },
+        };
+      }
+
+      // Fallback: full page reload navigation
       window.setTimeout(() => {
         try {
           window.location.href = targetUrl;

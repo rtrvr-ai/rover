@@ -37,3 +37,15 @@ test('isUrlAllowedByDomains matches exact and wildcard behavior correctly', () =
     true,
   );
 });
+
+test('host_only mode treats plain allowlist tokens as exact host matches', () => {
+  const domains = normalizeAllowedDomains(
+    ['example.com'],
+    'app.example.com',
+    'host_only',
+  );
+
+  assert.deepEqual(domains, ['=example.com']);
+  assert.equal(isUrlAllowedByDomains('https://example.com/pricing', domains), true);
+  assert.equal(isUrlAllowedByDomains('https://app.example.com/pricing', domains), false);
+});

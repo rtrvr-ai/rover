@@ -21,6 +21,7 @@ import { PLANNER_FUNCTION_CALLS } from '@rover/shared/lib/utils/constants.js';
 import { isApiKeyRequiredError, toRoverErrorEnvelope } from './agent/errors.js';
 import { resolveRuntimeTabs } from './agent/runtimeTabs.js';
 import { shouldBuildResumeCueChatLog, shouldClearHistoryForRun, shouldUseFollowupChatLog } from './runHistoryGuards.js';
+import { classifyNavigationContinuation } from './navigationContinuation.js';
 import { ROVER_V2_PERSIST_CAPS } from '@rover/shared';
 
 type RpcRequest = { t: 'req'; id: string; method: string; params?: unknown };
@@ -1717,10 +1718,14 @@ function inferPlannerContinuation(toolResults: ToolExecutionResult[] | undefined
         : undefined;
     if (!output) continue;
 
-    const navigationOutcome = String(output.navigationOutcome || '').trim().toLowerCase();
-    if (output.navigationPending === true || navigationOutcome === 'same_tab_scheduled' || navigationOutcome === 'new_tab_opened') {
+    const navigation = classifyNavigationContinuation({
+      navigationPending: output.navigationPending,
+      navigationOutcome: output.navigationOutcome,
+      navigationMode: output.navigation,
+    });
+    if (navigation.isNavigationProgress) {
       navigationPending = true;
-      if (navigationOutcome === 'same_tab_scheduled') {
+      if (navigation.continuationReason === 'same_tab_navigation_handoff') {
         sameTabNavigationPending = true;
       }
     }
@@ -1749,6 +1754,7 @@ type DirectToolResult = ToolExecutionResult & {
   status?: string;
   navigationPending?: boolean;
   navigationOutcome?: string;
+  navigation?: string;
 };
 
 function deriveDirectToolRunOutcome(result: DirectToolResult | undefined): RunOutcome {
@@ -1760,15 +1766,17 @@ function deriveDirectToolRunOutcome(result: DirectToolResult | undefined): RunOu
     };
   }
 
-  const topLevelNavigationOutcome = String(result.navigationOutcome || '').trim().toLowerCase();
-
-  if (result.navigationPending === true) {
-    const isSameTabHandoff = topLevelNavigationOutcome === 'same_tab_scheduled';
+  const topLevelNavigation = classifyNavigationContinuation({
+    navigationPending: result.navigationPending,
+    navigationOutcome: result.navigationOutcome,
+    navigationMode: result.navigation,
+  });
+  if (topLevelNavigation.isNavigationProgress) {
     return {
       taskComplete: false,
       terminalState: 'in_progress',
-      navigationPending: isSameTabHandoff,
-      continuationReason: isSameTabHandoff ? 'same_tab_navigation_handoff' : 'loop_continue',
+      navigationPending: topLevelNavigation.continuationReason === 'same_tab_navigation_handoff',
+      continuationReason: topLevelNavigation.continuationReason || 'loop_continue',
     };
   }
 
@@ -1792,22 +1800,17 @@ function deriveDirectToolRunOutcome(result: DirectToolResult | undefined): RunOu
       };
     }
 
-    const navigationOutcome = String(outputRecord.navigationOutcome || '').trim().toLowerCase();
-    const navigationMode = String(outputRecord.navigation || '').trim().toLowerCase();
-    if (
-      outputRecord.navigationPending === true
-      || navigationOutcome === 'same_tab_scheduled'
-      || navigationOutcome === 'new_tab_opened'
-      || navigationMode === 'same_tab'
-    ) {
-      const sameTabHandoff =
-        navigationOutcome === 'same_tab_scheduled'
-        || navigationMode === 'same_tab';
+    const navigation = classifyNavigationContinuation({
+      navigationPending: outputRecord.navigationPending,
+      navigationOutcome: outputRecord.navigationOutcome,
+      navigationMode: outputRecord.navigation,
+    });
+    if (navigation.isNavigationProgress) {
       return {
         taskComplete: false,
         terminalState: 'in_progress',
-        navigationPending: sameTabHandoff,
-        continuationReason: sameTabHandoff ? 'same_tab_navigation_handoff' : 'loop_continue',
+        navigationPending: navigation.continuationReason === 'same_tab_navigation_handoff',
+        continuationReason: navigation.continuationReason || 'loop_continue',
         contextResetRecommended: false,
       };
     }
@@ -2290,11 +2293,14 @@ async function handleUserMessage(
         inferredCompleted = true;
       }
 
-      const navigationPending = normalized.navigationPending === true;
-      const navigationOutcome = String(normalized.navigationOutcome || '').trim().toLowerCase();
-      if (navigationPending || navigationOutcome === 'same_tab_scheduled' || navigationOutcome === 'new_tab_opened') {
+      const navigation = classifyNavigationContinuation({
+        navigationPending: normalized.navigationPending,
+        navigationOutcome: normalized.navigationOutcome,
+        navigationMode: normalized.navigation,
+      });
+      if (navigation.isNavigationProgress) {
         inferredNavigationPending = true;
-        if (navigationOutcome === 'same_tab_scheduled') {
+        if (navigation.continuationReason === 'same_tab_navigation_handoff') {
           inferredSameTabPending = true;
         }
       }
