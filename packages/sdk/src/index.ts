@@ -730,7 +730,8 @@ function isNavigationResumeReason(reason: PersistedPendingRun['resumeReason'] | 
   return reason === 'agent_navigation'
     || reason === 'cross_host_navigation'
     || reason === 'handoff'
-    || reason === 'worker_interrupted';
+    || reason === 'worker_interrupted'
+    || reason === 'page_reload';
 }
 
 function canValidateResumeFromPersistedHandoff(pending: PersistedPendingRun): boolean {
@@ -4703,6 +4704,7 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
   if (!resumeContextValidated && (
     pending.resumeReason === 'worker_interrupted'
     || pending.resumeReason === 'agent_navigation'
+    || pending.resumeReason === 'page_reload'
   )) {
     resumeContextValidated = true;
   }
