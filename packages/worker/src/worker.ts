@@ -2748,7 +2748,7 @@ async function runUserMessage(
           : taskBoundaryId;
       applyScopedTabConfig(config);
       if ((config as any)?.timing?.actionTimeoutMs) {
-        RPC_TIMEOUT_MS = Math.max(5_000, Math.min(120_000, Number((config as any).timing.actionTimeoutMs)));
+        RPC_TIMEOUT_MS = Math.max(5_000, Math.min(780_000, Number((config as any).timing.actionTimeoutMs)));
       }
       if (!tabularStore) {
         tabularStore = new TabularStore(`rover-${taskTrajectoryId}`);
@@ -2789,7 +2789,7 @@ async function runUserMessage(
         workerSessionId = partial.sessionId.trim();
       }
       if ((partial as any)?.timing?.actionTimeoutMs) {
-        RPC_TIMEOUT_MS = Math.max(5_000, Math.min(120_000, Number((partial as any).timing.actionTimeoutMs)));
+        RPC_TIMEOUT_MS = Math.max(5_000, Math.min(780_000, Number((partial as any).timing.actionTimeoutMs)));
       }
       if (typeof partial.taskBoundaryId === 'string' && partial.taskBoundaryId.trim()) {
         taskBoundaryId = partial.taskBoundaryId.trim();

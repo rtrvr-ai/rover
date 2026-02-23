@@ -210,6 +210,7 @@ export interface PlannedStep {
   };
   thought?: string;
   questions?: PlannerQuestion[];
+  serverResult?: { success: boolean; data?: any; error?: string };
 }
 
 export interface PlannerExistingSheetParams {
