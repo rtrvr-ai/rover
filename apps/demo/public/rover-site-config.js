@@ -3,8 +3,8 @@
   In a real site, owners would set this once in their HTML template.
 */
 window.__ROVER_WEBSITE_CONFIG__ = {
-  // Paste your RTRVR API key here for demo usage.
-  apiKey: 'rtrvr_drCfCgfsaNkES8ydNbmub62gfZCMIi79JyaM9vH0atQ',
+  publicKey: 'pk_site_rDrv_-RJYW94TifVQhm6FAg0s137riGTjGa-tJMTuSo',
+  siteKeyId: '4832cb5f-90e3-404d-914e-9d77d60a50fa',
 
   // Change if you want to point to another backend.
   apiBase: 'https://extensionrouter.rtrvr.ai', //'http://127.0.0.1:5002/rtrvr-extension-functions/us-central1'
@@ -22,11 +22,6 @@ window.__ROVER_WEBSITE_CONFIG__ = {
     agent: {
       name: 'Rover',
     },
-    // mascot: {
-    //   disabled: false,
-    //   mp4Url: 'https://your-cdn.com/mascot.mp4',
-    //   webmUrl: 'https://your-cdn.com/mascot.webm',
-    // },
   },
 
   // Enable external page-data fetch via cloud scrape (best-effort).

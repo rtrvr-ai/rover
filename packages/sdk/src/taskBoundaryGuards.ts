@@ -1,4 +1,5 @@
 import type { TaskStatus } from './taskLifecycleGuards.js';
+import type { TaskState } from './runtimeTypes.js';
 
 export type WorkerBoundarySource =
   | 'worker_snapshot'
@@ -32,7 +33,7 @@ export function shouldAdoptIncomingBoundary(params: {
   currentBoundaryId?: string;
   taskEpochAdvanced?: boolean;
   hasPendingRun?: boolean;
-  taskStatus?: TaskStatus;
+  taskStatus?: TaskStatus | TaskState;
   allowBootstrapAdoption?: boolean;
 }): boolean {
   const incoming = normalizeTaskBoundaryId(params.incomingBoundaryId);
@@ -52,7 +53,7 @@ export function shouldAcceptWorkerSnapshot(params: {
   currentBoundaryId?: string;
   taskEpochAdvanced?: boolean;
   hasPendingRun?: boolean;
-  taskStatus?: TaskStatus;
+  taskStatus?: TaskStatus | TaskState;
   allowBootstrapAdoption?: boolean;
 }): WorkerBoundaryDecision {
   const incoming = normalizeTaskBoundaryId(params.incomingBoundaryId);

@@ -59,6 +59,8 @@ export type PersistedWorkerState = {
   updatedAt?: number;
 };
 
+// ── Legacy types (v1 compat) ─────────────────────────────────────────
+
 export type PersistedTaskState = {
   taskId: string;
   status: 'running' | 'completed' | 'cancelled' | 'failed' | 'ended';
@@ -67,6 +69,47 @@ export type PersistedTaskState = {
   lastAssistantAt?: number;
   boundaryReason?: string;
   endedAt?: number;
+};
+
+// ── New v2 types ─────────────────────────────────────────────────────
+
+/** Authoritative FSM state. Replaces the old `status` field. */
+export type TaskState = 'idle' | 'running' | 'awaiting_user' | 'paused' | 'blocked' | 'completed' | 'failed' | 'cancelled';
+
+/**
+ * Per-task isolated record. Each task owns its own messages, timeline,
+ * worker state, and tab scope — no cross-contamination.
+ */
+export type TaskRecord = {
+  taskId: string;
+  state: TaskState;
+  boundaryId: string;
+
+  // Lifecycle timestamps
+  startedAt: number;
+  endedAt?: number;
+  lastUserAt?: number;
+  lastAssistantAt?: number;
+  pausedAt?: number;
+  blockedAt?: number;
+  blockReason?: string;
+  prePauseState?: 'running' | 'awaiting_user';
+
+  // Per-task isolated data (previously global singletons)
+  uiMessages: PersistedUiMessage[];
+  timeline: PersistedTimelineEvent[];
+  workerState?: PersistedWorkerState;
+  pendingRun?: PersistedPendingRun;
+  tabScope?: PersistedTaskTabScope;
+
+  // Worker assignment
+  workerId?: string;
+
+  // Display
+  rootUserInput?: string;
+  summary?: string;
+  tabIds: number[];
+  scrollPosition?: number;
 };
 
 export type PersistedTaskTabScope = {
@@ -130,22 +173,33 @@ export type PersistedNavigationHandoff = {
   consumed?: boolean;
 };
 
+// ── v2 PersistedRuntimeState ─────────────────────────────────────────
+
 export type PersistedRuntimeState = {
-  version: number;
+  version: number; // 1 = legacy, 2 = multi-task
   sessionId: string;
   runtimeId: string;
   uiOpen: boolean;
   uiHidden: boolean;
+  executionMode?: RoverExecutionMode;
+
+  // Multi-task (v2) — replaces singular activeTask, pendingRun, workerState, etc.
+  tasks: Record<string, TaskRecord>;
+  activeTaskId?: string;
+  taskOrder: string[];
+  taskEpoch?: number;
+
+  // Legacy v1 fields — kept for backward compat during migration
   uiStatus?: string;
   uiMessages: PersistedUiMessage[];
   timeline: PersistedTimelineEvent[];
-  executionMode?: RoverExecutionMode;
   workerState?: PersistedWorkerState;
   pendingRun?: PersistedPendingRun;
-  lastNavigationHandoff?: PersistedNavigationHandoff;
-  taskEpoch?: number;
   activeTask?: PersistedTaskState;
   taskTabScope?: PersistedTaskTabScope;
+
+  // Global state (not per-task)
+  lastNavigationHandoff?: PersistedNavigationHandoff;
   lastRoutingDecision?: {
     mode: 'act' | 'planner';
     score?: number;

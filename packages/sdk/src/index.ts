@@ -2,6 +2,7 @@ import { Bridge, bindRpc, type NavigationIntentEvent } from '@rover/bridge';
 import type { ToolOutput } from '@rover/shared/lib/types/index.js';
 import {
   mountWidget,
+  type ConversationListItem,
   type RoverAskUserAnswerMeta,
   type RoverAskUserQuestion,
   type RoverExecutionMode,
@@ -41,6 +42,8 @@ import type {
   PersistedTimelineEvent,
   PersistedUiMessage,
   PersistedWorkerState,
+  TaskState,
+  TaskRecord,
   UiRole,
 } from './runtimeTypes.js';
 import {
@@ -58,6 +61,17 @@ import {
   type WorkerBoundarySource,
 } from './taskBoundaryGuards.js';
 import {
+  reduceTaskState,
+  isTerminalState,
+  statusFromState,
+  applyTaskEvent,
+  createTaskRecord,
+  type TaskEvent,
+  type TaskTransitionResult,
+  type TaskSideEffect,
+} from './taskStateMachine.js';
+// Backward-compat shim for isTerminalTaskStatus (used throughout index.ts)
+import {
   isTerminalTaskStatus,
   reduceTaskKernel,
   type TaskKernelCommand,
@@ -71,6 +85,10 @@ import {
   type RoverServerPolicy,
 } from './serverRuntime.js';
 import { shouldAdoptCheckpointState } from './checkpointAdoptionGuards.js';
+import { TaskOrchestrator, type TaskOrchestratorOptions } from './taskOrchestrator.js';
+import { WorkerPool, type WorkerConfig } from './workerPool.js';
+import { shouldBlockNavigation, computeAdversarialScore } from './adversarialGuard.js';
+import { applyFaviconBadge, removeFaviconBadge } from './faviconBadge.js';
 import { resolveNavigationDecision } from './navigationPreflightPolicy.js';
 import { resolveNavigationMessageContext } from './navigationMessageContext.js';
 import {
@@ -170,6 +188,12 @@ export type RoverInit = {
     };
     observerInput?: 'read_only';
     autoResumePolicy?: 'auto' | 'confirm' | 'never';
+    /** Maximum concurrent Web Workers. Default: 2, max: 3 */
+    maxConcurrentWorkers?: number;
+    /** Maximum queued tasks waiting for a worker. Default: 5 */
+    maxQueuedTasks?: number;
+    /** Maximum archived (terminal) tasks to keep. Default: 10 */
+    maxArchivedTasks?: number;
   };
   chat?: {
     inRun?: 'empty';
@@ -248,6 +272,15 @@ export type RoverInit = {
       duration?: number;
       disabled?: boolean;
     };
+    /** Tab highlighting indicators when Rover is active. */
+    tabIndicator?: {
+      /** Prepend "[Rover] " to document.title during task execution. Default: true */
+      titlePrefix?: boolean;
+      /** Overlay a colored dot on the favicon. Default: false (opt-in due to CORS). */
+      faviconBadge?: boolean;
+      /** Show in-widget tab bar of agent-controlled tabs. Default: true */
+      widgetTabBar?: boolean;
+    };
   };
   tools?: {
     client?: ClientToolDefinition[];
@@ -314,7 +347,7 @@ type ToolRegistration = {
   handler: (args: any) => any | Promise<any>;
 };
 
-const RUNTIME_STATE_VERSION = 1;
+const RUNTIME_STATE_VERSION = 2;
 const RUNTIME_STATE_PREFIX = 'rover:runtime:';
 const RUNTIME_ID_PREFIX = 'rover:runtime-id:';
 const VISITOR_ID_PREFIX = 'rover:visitor-id:';
@@ -443,6 +476,9 @@ type PendingTaskSuggestion =
 let pendingTaskSuggestion: PendingTaskSuggestion | null = null;
 let lastStatusSignature = '';
 let lastUserInputText: string | undefined;
+let originalDocumentTitle: string | undefined;
+let titlePrefixActive = false;
+let titleObserver: MutationObserver | null = null;
 let lastCompletedTaskInput: string | undefined;
 let lastCompletedTaskSummary: string | undefined;
 let lastCompletedTaskAt = 0;
@@ -454,6 +490,7 @@ let runtimeSessionTokenExpiresAt = 0;
 let runtimeServerEpoch = 1;
 let serverAcceptedRunId: string | undefined;
 let lastAppliedServerSnapshotKey = '';
+let taskOrchestrator: TaskOrchestrator | null = null;
 const RUN_SCOPED_WORKER_MESSAGE_TYPES = new Set([
   'run_started',
   'run_state_transition',
@@ -958,6 +995,10 @@ function createDefaultRuntimeState(sessionId: string, rid: string): PersistedRun
     taskTabScope: undefined,
     lastRoutingDecision: undefined,
     updatedAt: Date.now(),
+    // v2 multi-task fields
+    tasks: {},
+    activeTaskId: undefined,
+    taskOrder: [],
   };
 }
 
@@ -1487,7 +1528,7 @@ async function flushTelemetry(force = false): Promise<void> {
     const response = await fetch(getTelemetryEndpoint(currentConfig), {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': 'text/plain',
       },
       body: JSON.stringify({
         sessionToken: token,
@@ -2559,7 +2600,7 @@ function normalizePersistedState(raw: PersistedRuntimeState | null, sessionId: s
     || undefined;
   const parsedTaskTabScope = sanitizeTaskTabScope((raw as any).taskTabScope, taskBoundaryFallback);
 
-  return {
+  const normalized: PersistedRuntimeState = {
     version: RUNTIME_STATE_VERSION,
     sessionId: typeof raw.sessionId === 'string' && raw.sessionId ? raw.sessionId : sessionId,
     runtimeId: typeof raw.runtimeId === 'string' && raw.runtimeId ? raw.runtimeId : rid,
@@ -2592,7 +2633,24 @@ function normalizePersistedState(raw: PersistedRuntimeState | null, sessionId: s
           }
         : undefined,
     updatedAt: Number(raw.updatedAt) || Date.now(),
+    // v2 multi-task fields — either restore or migrate
+    tasks: raw.tasks && typeof raw.tasks === 'object' ? raw.tasks : {},
+    activeTaskId: typeof raw.activeTaskId === 'string' ? raw.activeTaskId : undefined,
+    taskOrder: Array.isArray(raw.taskOrder) ? raw.taskOrder : [],
   };
+
+  // v1 → v2 migration: create TaskRecord from legacy singular fields
+  const rawVersion = Number(raw.version) || 1;
+  if (rawVersion < 2 && parsedTask && parsedTask.taskId) {
+    const migrated = TaskOrchestrator.fromV1State(normalized);
+    const { tasks, activeTaskId, taskOrder } = migrated.toPersistedState();
+    normalized.tasks = tasks;
+    normalized.activeTaskId = activeTaskId;
+    normalized.taskOrder = taskOrder;
+    migrated.shutdown();
+  }
+
+  return normalized;
 }
 
 function sanitizeTask(input: any, fallback: PersistedTaskState): PersistedTaskState {
@@ -2802,6 +2860,13 @@ function trimRuntimeStateForPersist(
 function persistRuntimeStateImmediate(options?: { markCheckpointDirty?: boolean }): void {
   if (!runtimeState || !runtimeStorageKey) return;
   try {
+    // Sync multi-task state from orchestrator
+    if (taskOrchestrator) {
+      const { tasks, activeTaskId, taskOrder } = taskOrchestrator.toPersistedState();
+      runtimeState.tasks = tasks;
+      runtimeState.activeTaskId = activeTaskId;
+      runtimeState.taskOrder = taskOrder;
+    }
     runtimeState.updatedAt = Date.now();
     const maxPersistBytes = resolveMaxPersistBytes();
     runtimeState = trimRuntimeStateForPersist(runtimeState, maxPersistBytes);
@@ -3016,7 +3081,33 @@ function applyTaskKernelCommand(
   }
   syncMainWorldObserverPause();
 
+  // Lightweight consistency sync: orchestrator is now dispatched first (FSM-primary),
+  // so we only need to persist orchestrator state to runtimeState here.
+  if (taskOrchestrator) {
+    const orchState = taskOrchestrator.toPersistedState();
+    runtimeState.tasks = orchState.tasks;
+    runtimeState.activeTaskId = orchState.activeTaskId;
+    runtimeState.taskOrder = orchState.taskOrder;
+  }
+
   return transition.task;
+}
+
+/** Sync the orchestrator's task list to the UI conversation drawer */
+function syncOrchestratorConversationList(): void {
+  if (!taskOrchestrator || !ui) return;
+  const tasks = taskOrchestrator.listTasks();
+  const activeId = taskOrchestrator.getActiveTask()?.taskId;
+  ui.setConversations(tasks.map(t => ({
+    id: t.taskId,
+    summary: t.rootUserInput || t.taskId.slice(0, 8),
+    status: t.state as ConversationListItem['status'],
+    updatedAt: t.endedAt || t.lastAssistantAt || t.lastUserAt || t.startedAt,
+    isActive: t.taskId === activeId,
+  })));
+  if (activeId) {
+    ui.setActiveConversationId(activeId);
+  }
 }
 
 function markTaskActivity(role: UiRole, timestamp = Date.now()): void {
@@ -3030,48 +3121,136 @@ function markTaskActivity(role: UiRole, timestamp = Date.now()): void {
   if (role === 'assistant') task.lastAssistantAt = timestamp;
 }
 
+function applyTitlePrefix(): void {
+  if (titlePrefixActive) return;
+  const enableTitlePrefix = (currentConfig?.ui as any)?.tabIndicator?.titlePrefix !== false;
+  if (!enableTitlePrefix) return;
+  originalDocumentTitle = document.title;
+  titlePrefixActive = true;
+  if (!document.title.startsWith('[Rover] ')) {
+    document.title = `[Rover] ${document.title}`;
+  }
+  // Observe title changes to re-apply prefix
+  if (!titleObserver) {
+    const titleEl = document.querySelector('title');
+    if (titleEl) {
+      titleObserver = new MutationObserver(() => {
+        if (titlePrefixActive && !document.title.startsWith('[Rover] ')) {
+          document.title = `[Rover] ${document.title}`;
+        }
+      });
+      titleObserver.observe(titleEl, { childList: true, characterData: true, subtree: true });
+    }
+  }
+  // Favicon badge (opt-in)
+  if ((currentConfig?.ui as any)?.tabIndicator?.faviconBadge === true) {
+    applyFaviconBadge();
+  }
+}
+
+function removeTitlePrefix(): void {
+  if (!titlePrefixActive) return;
+  titlePrefixActive = false;
+  if (titleObserver) {
+    titleObserver.disconnect();
+    titleObserver = null;
+  }
+  if (originalDocumentTitle !== undefined) {
+    document.title = originalDocumentTitle;
+    originalDocumentTitle = undefined;
+  } else if (document.title.startsWith('[Rover] ')) {
+    document.title = document.title.slice(8);
+  }
+  removeFaviconBadge();
+}
+
 function markTaskRunning(reason = 'worker_task_active', timestamp = Date.now()): void {
+  // FSM-first: dispatch to orchestrator before kernel
+  if (taskOrchestrator) {
+    const activeTask = taskOrchestrator.getActiveTask();
+    if (activeTask) {
+      taskOrchestrator.dispatch(activeTask.taskId, { type: 'START', reason });
+    }
+  }
+  // Kernel fallback: keep legacy state in sync
   applyTaskKernelCommand({
     type: 'ensure_running',
     reason,
     at: timestamp,
   });
+  applyTitlePrefix();
 }
 
 function markTaskCompleted(reason = 'worker_task_complete', timestamp = Date.now()): void {
+  // FSM-first: dispatch to orchestrator before kernel
+  if (taskOrchestrator) {
+    const activeTask = taskOrchestrator.getActiveTask();
+    if (activeTask) {
+      taskOrchestrator.dispatch(activeTask.taskId, { type: 'COMPLETE' });
+    }
+  }
+  // Kernel fallback
   applyTaskKernelCommand({
     type: 'terminal',
     terminal: 'completed',
     reason,
     at: timestamp,
   });
+  removeTitlePrefix();
 }
 
 function markTaskFailed(reason = 'worker_task_failed', timestamp = Date.now()): void {
+  // FSM-first: dispatch to orchestrator before kernel
+  if (taskOrchestrator) {
+    const activeTask = taskOrchestrator.getActiveTask();
+    if (activeTask) {
+      taskOrchestrator.dispatch(activeTask.taskId, { type: 'FAIL', error: reason });
+    }
+  }
+  // Kernel fallback
   applyTaskKernelCommand({
     type: 'terminal',
     terminal: 'failed',
     reason,
     at: timestamp,
   });
+  removeTitlePrefix();
 }
 
 function markTaskEnded(reason = 'worker_task_ended', timestamp = Date.now()): void {
+  // FSM-first: dispatch to orchestrator before kernel
+  if (taskOrchestrator) {
+    const activeTask = taskOrchestrator.getActiveTask();
+    if (activeTask) {
+      taskOrchestrator.dispatch(activeTask.taskId, { type: 'CANCEL', reason: 'ended' });
+    }
+  }
+  // Kernel fallback
   applyTaskKernelCommand({
     type: 'terminal',
     terminal: 'ended',
     reason,
     at: timestamp,
   });
+  removeTitlePrefix();
 }
 
 function markTaskCancelled(reason = 'worker_task_cancelled', timestamp = Date.now()): void {
+  // FSM-first: dispatch to orchestrator before kernel
+  if (taskOrchestrator) {
+    const activeTask = taskOrchestrator.getActiveTask();
+    if (activeTask) {
+      taskOrchestrator.dispatch(activeTask.taskId, { type: 'CANCEL', reason });
+    }
+  }
+  // Kernel fallback
   applyTaskKernelCommand({
     type: 'terminal',
     terminal: 'cancelled',
     reason,
     at: timestamp,
   });
+  removeTitlePrefix();
 }
 
 function hideTaskSuggestion(): void {
@@ -3666,13 +3845,29 @@ function buildFollowupChatLogForFreshPrompt(prompt: string, previousTaskStatus?:
   reason: string;
   overlap: number;
 } {
+  // Prefer orchestrator task data over module-level globals
+  let prevInput = lastCompletedTaskInput;
+  let prevOutput = lastCompletedTaskSummary;
+  let prevCompletedAt = lastCompletedTaskAt;
+  if (taskOrchestrator) {
+    const tasks = taskOrchestrator.listTasks();
+    const activeTaskId = taskOrchestrator.getActiveTask()?.taskId;
+    const prevTask = tasks.find(t =>
+      t.state === 'completed' && t.taskId !== activeTaskId,
+    );
+    if (prevTask) {
+      prevInput = prevTask.rootUserInput || prevInput;
+      prevOutput = prevTask.summary || prevOutput;
+      prevCompletedAt = prevTask.endedAt || prevCompletedAt;
+    }
+  }
   const followupCfg = currentConfig?.task?.followup;
   const decision = buildHeuristicFollowupChatLog({
     mode: followupCfg?.mode,
     previousTaskStatus,
-    previousTaskUserInput: lastCompletedTaskInput,
-    previousTaskAssistantOutput: lastCompletedTaskSummary,
-    previousTaskCompletedAt: lastCompletedTaskAt,
+    previousTaskUserInput: prevInput,
+    previousTaskAssistantOutput: prevOutput,
+    previousTaskCompletedAt: prevCompletedAt,
     currentPrompt: prompt,
     ttlMs: normalizeTaskFollowupTtlMs(followupCfg?.ttlMs),
     minLexicalOverlap: normalizeTaskFollowupMinLexicalOverlap(followupCfg?.minLexicalOverlap),
@@ -3682,6 +3877,38 @@ function buildFollowupChatLogForFreshPrompt(prompt: string, previousTaskStatus?:
     reason: decision.reason,
     overlap: decision.overlap,
   };
+}
+
+// On-demand external context prefetch cache
+const externalContextCache = new Map<string, { data: any; ts: number }>();
+const EXTERNAL_CONTEXT_CACHE_TTL = 120_000; // 2 minutes
+
+async function fetchAndCacheExternalContext(targetUrl: string): Promise<void> {
+  if (externalContextCache.has(targetUrl)) {
+    const cached = externalContextCache.get(targetUrl)!;
+    if (Date.now() - cached.ts < EXTERNAL_CONTEXT_CACHE_TTL) return;
+    externalContextCache.delete(targetUrl);
+  }
+  const runId = runtimeState?.pendingRun?.id;
+  if (!runId || !roverServerRuntime) return;
+  const result = await roverServerRuntime.fetchExternalContext({
+    runId,
+    url: targetUrl,
+    source: 'direct_url',
+  });
+  if (result) {
+    externalContextCache.set(targetUrl, { data: result, ts: Date.now() });
+  }
+}
+
+function getExternalContextFromCache(url: string): any | undefined {
+  const cached = externalContextCache.get(url);
+  if (!cached) return undefined;
+  if (Date.now() - cached.ts >= EXTERNAL_CONTEXT_CACHE_TTL) {
+    externalContextCache.delete(url);
+    return undefined;
+  }
+  return cached.data;
 }
 
 function isRoverExternalContextToolName(name: unknown): boolean {
@@ -3773,6 +4000,12 @@ async function executeRoverExternalContextToolCall(params: {
   }
 
   try {
+    // Check on-demand prefetch cache first
+    const cachedContext = getExternalContextFromCache(targetUrl);
+    if (cachedContext) {
+      return cachedContext;
+    }
+
     const response = await roverServerRuntime.fetchExternalContext({
       runId,
       tabId,
@@ -4055,7 +4288,29 @@ async function dispatchUserPromptAsync(
       reason: autoReason,
       hadActiveRun,
     });
+
+    // Multi-task: if active task is running, archive it to orchestrator before creating new
+    if (taskOrchestrator && activeTaskStatus === 'running') {
+      const currentActiveTask = taskOrchestrator.getActiveTask();
+      if (currentActiveTask) {
+        // Save current task's UI state before switching
+        currentActiveTask.uiMessages = runtimeState?.uiMessages || [];
+        currentActiveTask.timeline = runtimeState?.timeline || [];
+        currentActiveTask.rootUserInput = currentActiveTask.rootUserInput || lastUserInputText;
+      }
+    }
+
     newTask({ reason: autoReason, clearUi: true });
+
+    // Set rootUserInput on the task already created by newTask() via orchestrator
+    if (taskOrchestrator) {
+      const activeTask = taskOrchestrator.getActiveTask();
+      if (activeTask) {
+        activeTask.rootUserInput = trimmed;
+      }
+      syncOrchestratorConversationList();
+    }
+
     // Allow cancel to propagate to server before starting new run
     if (hadActiveRun && roverServerRuntime) {
       await new Promise(resolve => setTimeout(resolve, 50));
@@ -4705,6 +4960,44 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
   syncMainWorldObserverPause();
   syncQuestionPromptFromWorkerState();
   runtimeState.activeTask = sanitizeTask(runtimeState.activeTask, createDefaultTaskState('implicit'));
+
+  // Sync task-tab mapping to session coordinator for task-aware tab pruning
+  if (sessionCoordinator && taskOrchestrator) {
+    const mapping = new Map<number, string>();
+    for (const task of taskOrchestrator.listTasks()) {
+      for (const tabId of task.tabIds) {
+        mapping.set(tabId, task.taskId);
+      }
+    }
+    sessionCoordinator.setTaskTabMapping(mapping);
+  }
+
+  // Sync tab bar with session coordinator tab state
+  const widgetTabBarEnabled = (currentConfig?.ui as any)?.tabIndicator?.widgetTabBar !== false;
+  if (ui && state.tabs && widgetTabBarEnabled) {
+    const currentLogicalTabId = sessionCoordinator?.getLocalLogicalTabId();
+    const activeLogicalTabId = sessionCoordinator?.getActiveLogicalTabId();
+    const tabs = (state.tabs || [])
+      .filter(t => t && typeof t.logicalTabId === 'number')
+      .map(t => ({
+        logicalTabId: t.logicalTabId,
+        url: String(t.url || ''),
+        title: typeof t.title === 'string' ? t.title : undefined,
+        isActive: t.logicalTabId === activeLogicalTabId,
+        isCurrent: t.logicalTabId === currentLogicalTabId,
+        external: !!t.external,
+        taskId: taskOrchestrator?.getTaskForTab(t.logicalTabId)?.taskId,
+      }));
+    // Only show tab bar when agent has opened extra tabs
+    if (tabs.length > 1) {
+      ui.setTabs(tabs);
+    } else {
+      ui.setTabs([]);
+    }
+  } else if (ui) {
+    ui.setTabs([]);
+  }
+
   if (source === 'local') return;
   persistRuntimeState();
 
@@ -4736,6 +5029,9 @@ function cloneRuntimeStateForCheckpoint(state: PersistedRuntimeState): Persisted
       || sanitizeWorkerState(state.workerState)?.taskBoundaryId,
     ),
     lastNavigationHandoff: sanitizeNavigationHandoff(state.lastNavigationHandoff),
+    tasks: state.tasks ? { ...state.tasks } : {},
+    activeTaskId: state.activeTaskId,
+    taskOrder: state.taskOrder ? [...state.taskOrder] : [],
     taskEpoch: Math.max(1, Number(state.taskEpoch) || 1),
     activeTask: sanitizeTask(state.activeTask, fallbackTask),
     lastRoutingDecision:
@@ -5055,6 +5351,17 @@ function setupSessionCoordinator(cfg: RoverInit): void {
         });
       }
     },
+    onTaskTabsExhausted: (taskId) => {
+      if (taskOrchestrator) {
+        taskOrchestrator.dispatch(taskId, { type: 'PAUSE', reason: 'all_tabs_closed' });
+        syncOrchestratorConversationList();
+        persistRuntimeState();
+        ui?.showPausedTaskBanner({
+          taskId,
+          rootUserInput: taskOrchestrator.getTask(taskId)?.rootUserInput || 'Task',
+        });
+      }
+    },
   });
 
   const startupHandoff = getUnconsumedNavigationHandoff();
@@ -5320,6 +5627,16 @@ function handleWorkerMessage(msg: any): void {
       if (runtimeState.workerState) {
         sessionCoordinator?.setWorkerContext(toSharedWorkerContext(runtimeState.workerState));
       }
+      // Route worker state to correct TaskRecord via boundaryId
+      if (taskOrchestrator && incomingWorkerState?.taskBoundaryId) {
+        const targetTask = taskOrchestrator.getTaskByBoundaryId(incomingWorkerState.taskBoundaryId);
+        if (targetTask) {
+          targetTask.workerState = runtimeState.workerState;
+          if (activeRunId) {
+            targetTask.pendingRun = runtimeState.pendingRun;
+          }
+        }
+      }
       syncQuestionPromptFromWorkerState();
       persistRuntimeState();
     }
@@ -5374,6 +5691,14 @@ function handleWorkerMessage(msg: any): void {
         detail: String(msg.text || ''),
         status: 'pending',
       });
+    }
+    // Route run_started to correct TaskRecord via boundaryId
+    if (taskOrchestrator && messageTaskBoundaryId) {
+      const targetTask = taskOrchestrator.getTaskByBoundaryId(messageTaskBoundaryId);
+      if (targetTask) {
+        targetTask.pendingRun = runtimeState?.pendingRun;
+        taskOrchestrator.dispatch(targetTask.taskId, { type: 'START' });
+      }
     }
     return;
   }
@@ -5561,6 +5886,13 @@ function handleWorkerMessage(msg: any): void {
                 ? 'worker_loop_continue'
               : 'worker_task_active';
         if (needsUserInput) {
+          // FSM-first: dispatch ASK_USER to orchestrator before kernel
+          if (taskOrchestrator) {
+            const activeTask = taskOrchestrator.getActiveTask();
+            if (activeTask) {
+              taskOrchestrator.dispatch(activeTask.taskId, { type: 'ASK_USER' });
+            }
+          }
           applyTaskKernelCommand({
             type: 'awaiting_user',
             reason: nextReason,
@@ -5599,6 +5931,22 @@ function handleWorkerMessage(msg: any): void {
         }
       }
     }
+    // Route run_completed to correct TaskRecord via boundaryId
+    if (taskOrchestrator && messageTaskBoundaryId) {
+      const targetTask = taskOrchestrator.getTaskByBoundaryId(messageTaskBoundaryId);
+      if (targetTask) {
+        if (isTerminalRunCompletion) {
+          const fsmEvent: TaskEvent = terminalState === 'completed'
+            ? { type: 'COMPLETE' }
+            : { type: 'FAIL', error: typeof msg.error === 'string' ? msg.error : undefined };
+          taskOrchestrator.dispatch(targetTask.taskId, fsmEvent);
+          taskOrchestrator.releaseWorker(targetTask.taskId);
+        } else if (completionState.continuationReason === 'awaiting_user') {
+          taskOrchestrator.dispatch(targetTask.taskId, { type: 'ASK_USER' });
+        }
+      }
+    }
+    syncOrchestratorConversationList();
     return;
   }
 
@@ -5966,7 +6314,7 @@ async function fetchBackendSiteConfig(cfg: RoverInit): Promise<RoverResolvedSite
     try {
       const response = await fetch(`${base}/session/open`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'text/plain' },
         body: JSON.stringify(startBody),
       });
       const json = await response.json().catch(() => undefined);
@@ -6181,6 +6529,23 @@ function createRuntime(cfg: RoverInit): void {
     onBeforeAgentNavigation: async (intent: NavigationIntentEvent) => {
       const runId = getServerRunIdForDispatch();
       const currentHost = String(window.location.hostname || '').toLowerCase();
+
+      // Adversarial pre-check: block suspicious URLs before sending tab events
+      if (intent?.targetUrl && shouldBlockNavigation(intent.targetUrl, currentHost)) {
+        const adversarialResult = computeAdversarialScore(intent.targetUrl, currentHost);
+        recordTelemetryEvent('navigation_guardrail', {
+          event: 'adversarial_blocked',
+          targetUrl: intent.targetUrl,
+          score: adversarialResult.score,
+          reasons: adversarialResult.reasons,
+        });
+        return {
+          decision: 'block',
+          reason: `Navigation blocked: suspicious URL detected (adversarial score ${adversarialResult.score}).`,
+          decisionReason: 'adversarial_block',
+        };
+      }
+
       const targetHost = (() => {
         try {
           return new URL(String(intent?.targetUrl || '')).hostname.toLowerCase();
@@ -6265,6 +6630,11 @@ function createRuntime(cfg: RoverInit): void {
         };
       }
       if (decision === 'open_new_tab') {
+        // Fire-and-forget: prefetch external context if on-demand scraping enabled
+        const scrapeMode = (currentConfig?.tools as any)?.web?.scrapeMode;
+        if (scrapeMode === 'on_demand' && roverServerRuntime && intent?.targetUrl) {
+          void fetchAndCacheExternalContext(intent.targetUrl).catch(() => {/* ignore prefetch errors */});
+        }
         const usedFallback = resolvedDecision.decisionReason === 'preflight_unavailable_fallback' && !serverDecision;
         return {
           decision: 'open_new_tab',
@@ -6690,6 +7060,72 @@ function createRuntime(cfg: RoverInit): void {
         bypassSuggestion: true,
       });
     },
+    onSwitchConversation: (conversationId) => {
+      if (!taskOrchestrator || !runtimeState) return;
+      // Save current task scroll position
+      const currentTask = taskOrchestrator.getActiveTask();
+      if (currentTask && ui) {
+        currentTask.scrollPosition = ui.getScrollPosition();
+      }
+      // Switch to target task
+      const target = taskOrchestrator.switchActiveTask(conversationId);
+      if (!target) return;
+      runtimeState.activeTaskId = conversationId;
+      // Replay target task's UI state
+      if (ui) {
+        clearTaskUiState();
+        if (target.uiMessages?.length) {
+          replayUiMessages(target.uiMessages);
+        }
+        if (target.timeline?.length) {
+          replayTimeline(target.timeline);
+        }
+        requestAnimationFrame(() => {
+          if (target.scrollPosition != null) {
+            ui!.setScrollPosition(target.scrollPosition);
+          }
+        });
+        // Show paused banner if needed
+        if (target.state === 'paused') {
+          ui.showPausedTaskBanner({ taskId: target.taskId, rootUserInput: target.rootUserInput || 'Task' });
+        } else {
+          ui.hidePausedTaskBanner();
+        }
+        ui.setActiveConversationId(conversationId);
+      }
+      syncOrchestratorConversationList();
+      persistRuntimeState();
+    },
+    onDeleteConversation: (conversationId) => {
+      if (!taskOrchestrator) return;
+      taskOrchestrator.deleteTask(conversationId);
+      syncOrchestratorConversationList();
+      persistRuntimeState();
+    },
+    onResumeTask: (taskId) => {
+      if (!taskOrchestrator) return;
+      const result = taskOrchestrator.dispatch(taskId, { type: 'RESUME' });
+      if (result.accepted) {
+        ui?.hidePausedTaskBanner();
+        taskOrchestrator.assignWorker(taskId, { /* worker config from current init */ } as any);
+        syncOrchestratorConversationList();
+        persistRuntimeState();
+      }
+    },
+    onCancelPausedTask: (taskId) => {
+      if (!taskOrchestrator) return;
+      const result = taskOrchestrator.dispatch(taskId, { type: 'CANCEL', reason: 'user_cancelled_paused_task' });
+      if (result.accepted) {
+        ui?.hidePausedTaskBanner();
+        taskOrchestrator.archiveTask(taskId);
+        syncOrchestratorConversationList();
+        persistRuntimeState();
+      }
+    },
+    onTabClick: (logicalTabId) => {
+      // Request tab switch via session coordinator
+      sessionCoordinator?.switchToLogicalTab(logicalTabId);
+    },
     showTaskControls: cfg.ui?.showTaskControls !== false,
     muted: cfg.ui?.muted,
     agent: {
@@ -7054,6 +7490,27 @@ export function boot(cfg: RoverInit): RoverInstance {
   runtimeState.taskEpoch = Math.max(1, Number(runtimeState.taskEpoch) || 1);
   currentMode = runtimeState.executionMode;
   if (resolvedVisitor) syncVisitorToAllStores(cfg.siteId, resolvedVisitor);
+
+  // Initialize task orchestrator from persisted multi-task state
+  const orchestratorOptions: TaskOrchestratorOptions = {
+    maxConcurrentWorkers: (cfg.task as any)?.maxConcurrentWorkers ?? 2,
+    maxQueuedTasks: (cfg.task as any)?.maxQueuedTasks ?? 5,
+    maxArchivedTasks: (cfg.task as any)?.maxArchivedTasks ?? 10,
+  };
+  if (runtimeState.tasks && Object.keys(runtimeState.tasks).length > 0) {
+    taskOrchestrator = TaskOrchestrator.fromPersistedState(
+      { tasks: runtimeState.tasks, activeTaskId: runtimeState.activeTaskId, taskOrder: runtimeState.taskOrder },
+      orchestratorOptions,
+    );
+  } else {
+    taskOrchestrator = TaskOrchestrator.fromV1State(runtimeState, orchestratorOptions);
+    // Sync back to runtime state
+    const { tasks, activeTaskId, taskOrder } = taskOrchestrator.toPersistedState();
+    runtimeState.tasks = tasks;
+    runtimeState.activeTaskId = activeTaskId;
+    runtimeState.taskOrder = taskOrder;
+  }
+
   persistRuntimeState();
 
   // Mark this tab as alive — sessionStorage survives refresh but is cleared on tab close
@@ -7403,6 +7860,9 @@ export function shutdown(): void {
   sessionCoordinator?.stop();
   sessionCoordinator = null;
 
+  taskOrchestrator?.shutdown();
+  taskOrchestrator = null;
+
   worker?.terminate();
   worker = null;
   ui?.destroy();
@@ -7529,6 +7989,13 @@ export function newTask(options?: { reason?: string; clearUi?: boolean }): void 
   autoResumeAttempted = false;
   autoResumeSessionWaitAttempts = 0;
   clearResumeArtifacts();
+  // Create the task in the orchestrator first (FSM-primary path)
+  if (taskOrchestrator) {
+    const newRecord = taskOrchestrator.createTask(reason);
+    taskOrchestrator.switchActiveTask(newRecord.taskId);
+    taskOrchestrator.dispatch(newRecord.taskId, { type: 'START', reason });
+  }
+
   const nextTask = applyTaskKernelCommand(
     {
       type: 'new_task',
@@ -7584,6 +8051,13 @@ export function endTask(options?: { reason?: string }): void {
   autoResumeSessionWaitAttempts = 0;
   resumeContextValidated = false;
   clearResumeArtifacts();
+  // FSM-first: dispatch CANCEL to orchestrator before kernel
+  if (taskOrchestrator) {
+    const activeTask = taskOrchestrator.getActiveTask();
+    if (activeTask) {
+      taskOrchestrator.dispatch(activeTask.taskId, { type: 'CANCEL', reason });
+    }
+  }
   const pendingRunId = runtimeState.pendingRun?.id;
   const task = applyTaskKernelCommand(
     {

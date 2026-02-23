@@ -74,6 +74,20 @@ export type SharedTaskState = {
   endedAt?: number;
 };
 
+/** Multi-task record for SharedSessionState v3. */
+export type SharedTaskRecord = {
+  taskId: string;
+  state: import('./runtimeTypes.js').TaskState;
+  startedAt: number;
+  endedAt?: number;
+  activeRun?: SharedActiveRun;
+  workerContext?: SharedWorkerContext;
+  uiMessages: SharedUiMessage[];
+  timeline: SharedTimelineEvent[];
+  rootUserInput?: string;
+  summary?: string;
+};
+
 export type SharedWorkerContext = {
   trajectoryId?: string;
   taskBoundaryId?: string;
@@ -103,7 +117,7 @@ export type SharedWorkflowLock = {
 };
 
 export type SharedSessionState = {
-  version: number;
+  version: number; // 2 = legacy, 3 = multi-task
   siteId: string;
   sessionId: string;
   seq: number;
@@ -112,14 +126,20 @@ export type SharedSessionState = {
   tabs: SharedTabEntry[];
   nextLogicalTabId: number;
   activeLogicalTabId?: number;
+  taskEpoch: number;
+  workflowLock?: SharedWorkflowLock;
+
+  // Multi-task fields (v3)
+  tasks?: Record<string, SharedTaskRecord>;
+  activeTaskId?: string;
+
+  // Legacy single-task fields (v2 compat — kept during migration)
   uiMessages: SharedUiMessage[];
   timeline: SharedTimelineEvent[];
   uiStatus?: string;
   activeRun?: SharedActiveRun;
-  taskEpoch: number;
   task?: SharedTaskState;
   workerContext?: SharedWorkerContext;
-  workflowLock?: SharedWorkflowLock;
 };
 
 export type SessionCoordinatorOptions = {
@@ -133,9 +153,10 @@ export type SessionCoordinatorOptions = {
   onRoleChange?: (role: SharedRole, info: { localLogicalTabId?: number; activeLogicalTabId?: number; holderRuntimeId?: string }) => void;
   onStateChange?: (state: SharedSessionState, source: 'local' | 'remote') => void;
   onSwitchRequested?: (logicalTabId: number) => void;
+  onTaskTabsExhausted?: (taskId: string) => void;
 };
 
-const SHARED_VERSION = 2;
+const SHARED_VERSION = 3;
 const SHARED_KEY_PREFIX = 'rover:shared:';
 const SHARED_CHANNEL_PREFIX = 'rover:channel:';
 const STALE_DETACHED_EXTERNAL_TAB_MS = 2 * 60_000;
@@ -198,6 +219,71 @@ function sanitizeSharedTask(raw: any): SharedTaskState | undefined {
     boundaryReason: typeof raw.boundaryReason === 'string' ? raw.boundaryReason : undefined,
     endedAt: Number(raw.endedAt) || undefined,
   };
+}
+
+const VALID_TASK_STATES = new Set(['idle', 'running', 'awaiting_user', 'paused', 'blocked', 'completed', 'failed', 'cancelled']);
+
+function sanitizeSharedTaskRecord(raw: any): SharedTaskRecord | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const taskId = typeof raw.taskId === 'string' ? raw.taskId.trim() : '';
+  if (!taskId) return undefined;
+  const state = VALID_TASK_STATES.has(raw.state) ? raw.state : 'running';
+  return {
+    taskId,
+    state,
+    startedAt: Number(raw.startedAt) || now(),
+    endedAt: Number(raw.endedAt) || undefined,
+    activeRun:
+      raw.activeRun && typeof raw.activeRun === 'object' && raw.activeRun.runId
+        ? {
+            runId: String(raw.activeRun.runId),
+            text: String(raw.activeRun.text || ''),
+            runtimeId: String(raw.activeRun.runtimeId || ''),
+            startedAt: Number(raw.activeRun.startedAt) || now(),
+            updatedAt: Number(raw.activeRun.updatedAt) || now(),
+          }
+        : undefined,
+    workerContext: sanitizeSharedWorkerContext(raw.workerContext),
+    uiMessages: Array.isArray(raw.uiMessages)
+      ? raw.uiMessages.slice(-5).map((m: any) => ({
+          id: String(m?.id || randomId('msg')),
+          role: m?.role === 'user' || m?.role === 'assistant' || m?.role === 'system' ? m.role : 'system',
+          text: String(m?.text || ''),
+          blocks: sanitizeMessageBlocks(m?.blocks),
+          ts: Number(m?.ts) || now(),
+          sourceRuntimeId: typeof m?.sourceRuntimeId === 'string' ? m.sourceRuntimeId : undefined,
+        })).filter((m: SharedUiMessage) => !!m.text || !!m.blocks?.length)
+      : [],
+    timeline: Array.isArray(raw.timeline)
+      ? raw.timeline.slice(-5).map((e: any) => ({
+          id: String(e?.id || randomId('timeline')),
+          kind: String(e?.kind || 'status'),
+          title: String(e?.title || 'Step'),
+          detail: typeof e?.detail === 'string' ? e.detail : undefined,
+          detailBlocks: sanitizeMessageBlocks(e?.detailBlocks),
+          status: e?.status === 'pending' || e?.status === 'success' || e?.status === 'error' || e?.status === 'info' ? e.status : undefined,
+          ts: Number(e?.ts) || now(),
+          sourceRuntimeId: typeof e?.sourceRuntimeId === 'string' ? e.sourceRuntimeId : undefined,
+        })).filter((e: SharedTimelineEvent) => !!e.title)
+      : [],
+    rootUserInput: typeof raw.rootUserInput === 'string' ? raw.rootUserInput : undefined,
+    summary: typeof raw.summary === 'string' ? raw.summary : undefined,
+  };
+}
+
+function sanitizeSharedTasks(raw: any): Record<string, SharedTaskRecord> | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const result: Record<string, SharedTaskRecord> = {};
+  let count = 0;
+  for (const key of Object.keys(raw)) {
+    if (count >= 20) break; // Safety cap on stored tasks
+    const record = sanitizeSharedTaskRecord(raw[key]);
+    if (record) {
+      result[record.taskId] = record;
+      count++;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function cloneUnknown<T>(value: T): T | undefined {
@@ -350,6 +436,9 @@ function createDefaultSharedState(siteId: string, sessionId: string): SharedSess
     task: undefined,
     workerContext: undefined,
     workflowLock: undefined,
+    // Multi-task v3
+    tasks: undefined,
+    activeTaskId: undefined,
   };
 }
 
@@ -454,6 +543,9 @@ function sanitizeSharedState(raw: any, siteId: string, sessionId: string): Share
             expiresAt: Number(raw.workflowLock.expiresAt) || 0,
           }
         : undefined,
+    // Multi-task v3
+    tasks: raw.tasks && typeof raw.tasks === 'object' ? sanitizeSharedTasks(raw.tasks) : undefined,
+    activeTaskId: typeof raw.activeTaskId === 'string' ? raw.activeTaskId : undefined,
   };
 
   // Deduplicate tabs by logicalTabId (keep first occurrence)
@@ -488,11 +580,13 @@ export class SessionCoordinator {
   private readonly onRoleChange?: SessionCoordinatorOptions['onRoleChange'];
   private readonly onStateChange?: SessionCoordinatorOptions['onStateChange'];
   private readonly onSwitchRequested?: SessionCoordinatorOptions['onSwitchRequested'];
+  private readonly onTaskTabsExhausted?: SessionCoordinatorOptions['onTaskTabsExhausted'];
 
   private readonly key: string;
   private readonly channelName: string;
 
   private state: SharedSessionState;
+  private taskTabMapping: Map<number, string> = new Map(); // logicalTabId → taskId
   private channel: BroadcastChannel | null = null;
   private heartbeatTimer: number | null = null;
   private storageHandler: ((event: StorageEvent) => void) | null = null;
@@ -507,6 +601,7 @@ export class SessionCoordinator {
   private rpcRequestHandler?: (request: { method: string; params: any }) => Promise<any>;
   private lastNotifiedRole: SharedRole | undefined;
   private roleChangeTimer: number | null = null;
+  private probeTimers: ReturnType<typeof setTimeout>[] = [];
   private static readonly ROLE_CHANGE_DEBOUNCE_MS = 200;
 
   private tabFreshnessTs(tab: SharedTabEntry): number {
@@ -622,6 +717,11 @@ export class SessionCoordinator {
     draft.nextLogicalTabId = Math.max(Number(draft.nextLogicalTabId) || 1, maxLogicalTabId + 1);
   }
 
+  /** Update the tab-to-task mapping for task-aware tab pruning. */
+  setTaskTabMapping(mapping: Map<number, string>): void {
+    this.taskTabMapping = mapping;
+  }
+
   private pruneDetachedTabs(
     draft: SharedSessionState,
     options?: TabPruneOptions,
@@ -631,6 +731,19 @@ export class SessionCoordinator {
     const keepOnlyActiveLiveTab = !!options?.keepOnlyActiveLiveTab;
     const keepRecentExternalPlaceholders = !!options?.keepRecentExternalPlaceholders;
     const nowMs = now();
+
+    // Snapshot pre-prune tab IDs per task for exhaustion detection
+    const prePruneTaskTabs = new Map<string, Set<number>>();
+    if (this.onTaskTabsExhausted && this.taskTabMapping.size > 0) {
+      for (const tab of draft.tabs) {
+        const taskId = this.taskTabMapping.get(tab.logicalTabId);
+        if (taskId) {
+          let set = prePruneTaskTabs.get(taskId);
+          if (!set) { set = new Set(); prePruneTaskTabs.set(taskId, set); }
+          set.add(tab.logicalTabId);
+        }
+      }
+    }
 
     draft.tabs = draft.tabs.filter(tab => {
       if (tab.runtimeId) {
@@ -682,6 +795,20 @@ export class SessionCoordinator {
     }
 
     this.normalizeDraftTabs(draft);
+
+    // Detect tasks that lost ALL their tabs after pruning
+    if (this.onTaskTabsExhausted && prePruneTaskTabs.size > 0) {
+      const postPruneTabIds = new Set(draft.tabs.map(t => t.logicalTabId));
+      for (const [taskId, preTabs] of prePruneTaskTabs) {
+        let hasRemaining = false;
+        for (const tabId of preTabs) {
+          if (postPruneTabIds.has(tabId)) { hasRemaining = true; break; }
+        }
+        if (!hasRemaining) {
+          this.onTaskTabsExhausted(taskId);
+        }
+      }
+    }
   }
 
   private resetDraftToSingleCurrentTab(
@@ -727,6 +854,7 @@ export class SessionCoordinator {
     this.onRoleChange = options.onRoleChange;
     this.onStateChange = options.onStateChange;
     this.onSwitchRequested = options.onSwitchRequested;
+    this.onTaskTabsExhausted = options.onTaskTabsExhausted;
 
     this.key = `${SHARED_KEY_PREFIX}${this.siteId}:${this.sessionId}`;
     this.channelName = `${SHARED_CHANNEL_PREFIX}${this.siteId}:${this.sessionId}`;
@@ -822,6 +950,12 @@ export class SessionCoordinator {
       pending.reject(new Error('SessionCoordinator stopped'));
     }
     this.pendingRpcRequests.clear();
+
+    // Clean up probe timers
+    for (const timer of this.probeTimers) {
+      clearTimeout(timer);
+    }
+    this.probeTimers = [];
 
     this.mutate('local', draft => {
       draft.tabs = draft.tabs.filter(tab => tab.runtimeId !== this.runtimeId);
@@ -1257,7 +1391,32 @@ export class SessionCoordinator {
       });
     });
 
+    // Start Rover availability probe: monitor for runtime connecting within 5s
+    if (payload.external) {
+      this.probeRoverAvailability(logicalTabId);
+    }
+
     return { logicalTabId };
+  }
+
+  /** Probe whether Rover is available on a newly opened tab. */
+  private probeRoverAvailability(logicalTabId: number): void {
+    const PROBE_TIMEOUT_MS = 5_000;
+    const timer = setTimeout(() => {
+      // Check if the tab has a runtime attached now
+      const tab = this.state.tabs.find(t => t.logicalTabId === logicalTabId);
+      if (tab && !tab.runtimeId) {
+        // Mark as not available
+        this.mutate('local', draft => {
+          const draftTab = draft.tabs.find(t => t.logicalTabId === logicalTabId);
+          if (draftTab) {
+            (draftTab as any).roverAvailability = 'not_available';
+          }
+        });
+      }
+    }, PROBE_TIMEOUT_MS);
+    // Allow cleanup if coordinator is stopped
+    this.probeTimers.push(timer);
   }
 
   switchToLogicalTab(logicalTabId: number): { ok: boolean; delegated?: boolean; reason?: string } {

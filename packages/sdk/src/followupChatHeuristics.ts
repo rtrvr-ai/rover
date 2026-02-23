@@ -1,4 +1,4 @@
-import type { PersistedTaskState } from './runtimeTypes.js';
+import type { PersistedTaskState, TaskState } from './runtimeTypes.js';
 
 export type FollowupChatEntry = {
   role: 'user' | 'model';
@@ -80,7 +80,7 @@ export function computeNormalizedLexicalOverlap(previousIntent: string, currentP
 
 export function buildHeuristicFollowupChatLog(params: {
   mode?: 'heuristic_same_window';
-  previousTaskStatus?: PersistedTaskState['status'];
+  previousTaskStatus?: PersistedTaskState['status'] | TaskState;
   previousTaskUserInput?: string;
   previousTaskAssistantOutput?: string;
   previousTaskCompletedAt?: number;
@@ -94,7 +94,8 @@ export function buildHeuristicFollowupChatLog(params: {
   }
 
   const status = params.previousTaskStatus;
-  if (status !== 'completed' && status !== 'ended') {
+  // Accept both legacy 'ended' and new 'cancelled' (ended maps to cancelled in v2)
+  if (status !== 'completed' && status !== 'ended' && status !== 'cancelled') {
     return { reason: 'status_ineligible', overlap: 0 };
   }
 

@@ -377,7 +377,7 @@ export function createAgentContext(
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'text/plain',
         },
         body: JSON.stringify({
           action,
@@ -503,7 +503,7 @@ export function createAgentContext(
       const v2Resp = await fetch(`${roverV2Endpoint}/context/external`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'text/plain',
         },
         body: JSON.stringify({
           requestNonce: createRequestNonce(),

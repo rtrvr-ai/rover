@@ -295,6 +295,30 @@ export async function processActionResponse({
         }
       }
 
+      // Inject system observation for blocked navigations so the LLM acknowledges and continues
+      if (navigationOutcome === 'blocked') {
+        const blockedUrl = results.find(r => r.response?.output && typeof r.response.output === 'object'
+          && (r.response.output as Record<string, unknown>).navigationOutcome === 'blocked')
+          ?.response?.output;
+        const blockedDomain = blockedUrl && typeof blockedUrl === 'object'
+          ? String((blockedUrl as Record<string, unknown>).blockedDomain || '')
+          : '';
+        const instruction = blockedUrl && typeof blockedUrl === 'object'
+          ? String((blockedUrl as Record<string, unknown>).agentInstruction || '')
+          : '';
+        prevSteps.push({
+          thought: `[System] Navigation was blocked${blockedDomain ? ` to ${blockedDomain}` : ''}. ${instruction || 'Acknowledge to user and proceed with next step.'}`,
+          functions: [{
+            name: '_system_observation',
+            args: { type: 'navigation_blocked', blockedDomain },
+            response: {
+              status: 'Success',
+              output: { observation: 'navigation_blocked', blockedDomain, instruction } as any,
+            },
+          }],
+        });
+      }
+
       limitPrevSteps(prevSteps);
       onPrevStepsUpdate?.(prevSteps);
       return {

@@ -66,6 +66,26 @@ export type RoverTaskSuggestion = {
   secondaryLabel?: string;
 };
 
+/** Tab info for the in-widget tab bar. */
+export type RoverTabInfo = {
+  logicalTabId: number;
+  url: string;
+  title?: string;
+  isActive: boolean;
+  isCurrent: boolean;
+  external?: boolean;
+  taskId?: string;
+};
+
+/** Conversation item for the conversation drawer. */
+export type ConversationListItem = {
+  id: string;
+  summary: string;
+  status: 'running' | 'paused' | 'completed' | 'failed' | 'cancelled' | 'awaiting_user' | 'blocked' | 'idle';
+  updatedAt: number;
+  isActive: boolean;
+};
+
 export type RoverUi = {
   addMessage: (
     role: 'user' | 'assistant' | 'system',
@@ -99,6 +119,14 @@ export type RoverUi = {
   show: () => void;
   hide: () => void;
   destroy: () => void;
+  // Multi-conversation support
+  setTabs: (tabs: RoverTabInfo[]) => void;
+  setConversations: (conversations: ConversationListItem[]) => void;
+  setActiveConversationId: (id: string) => void;
+  getScrollPosition: () => number;
+  setScrollPosition: (position: number) => void;
+  showPausedTaskBanner: (task: { taskId: string; rootUserInput: string }) => void;
+  hidePausedTaskBanner: () => void;
 };
 
 export type MountOptions = {
@@ -131,6 +159,12 @@ export type MountOptions = {
     disabled?: boolean;
   };
   visitorName?: string;
+  // Multi-conversation callbacks
+  onSwitchConversation?: (conversationId: string) => void;
+  onDeleteConversation?: (conversationId: string) => void;
+  onResumeTask?: (taskId: string) => void;
+  onCancelPausedTask?: (taskId: string) => void;
+  onTabClick?: (logicalTabId: number) => void;
 };
 
 const DEFAULT_AGENT_NAME = 'Rover';
@@ -2476,6 +2510,260 @@ export function mountWidget(opts: MountOptions): RoverUi {
         max-width: 190px;
         padding: 8px 22px 8px 10px;
       }
+
+      .roverTabBar {
+        padding: 4px 8px;
+      }
+
+      .conversationDrawer {
+        width: 100%;
+      }
+    }
+
+    /* ── Tab Bar ── */
+    .roverTabBar {
+      display: none;
+      overflow-x: auto;
+      gap: 4px;
+      padding: 4px 14px;
+      border-bottom: 1px solid var(--c-border, rgba(255,255,255,.08));
+      max-height: 36px;
+      scrollbar-width: none;
+    }
+    .roverTabBar::-webkit-scrollbar { display: none; }
+    .roverTabBar.visible {
+      display: flex;
+    }
+    .roverTabChip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      border-radius: 12px;
+      background: rgba(255,255,255,.06);
+      border: 1px solid rgba(255,255,255,.08);
+      font-size: 11px;
+      color: var(--c-text-secondary, rgba(255,255,255,.55));
+      white-space: nowrap;
+      cursor: pointer;
+      transition: background .15s, border-color .15s;
+      max-width: 140px;
+    }
+    .roverTabChip:hover {
+      background: rgba(255,255,255,.1);
+      border-color: rgba(255,255,255,.14);
+    }
+    .roverTabChip.active {
+      border-color: var(--c-accent, #6b6bff);
+      color: var(--c-text-primary, #fff);
+    }
+    .roverTabChip.current {
+      background: rgba(255,255,255,.12);
+    }
+    .roverTabChipFavicon {
+      width: 14px;
+      height: 14px;
+      border-radius: 2px;
+    }
+    .roverTabChipLabel {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100px;
+    }
+    .roverTabChipDot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--c-accent, #6b6bff);
+      animation: launcherPulse 1.5s infinite;
+    }
+
+    /* ── Conversation Drawer ── */
+    .conversationDrawer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--c-surface, #1a1a2e);
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      transform: translateX(-100%);
+      transition: transform .25s var(--ease-out, cubic-bezier(.215,.61,.355,1));
+    }
+    .conversationDrawer.open {
+      transform: translateX(0);
+    }
+    .conversationDrawerHeader {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--c-border, rgba(255,255,255,.08));
+    }
+    .conversationDrawerTitle {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--c-text-primary, #fff);
+    }
+    .conversationDrawerClose {
+      background: none;
+      border: none;
+      color: var(--c-text-secondary, rgba(255,255,255,.55));
+      cursor: pointer;
+      font-size: 18px;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .conversationDrawerClose:hover {
+      background: rgba(255,255,255,.08);
+    }
+    .conversationList {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+    }
+    .conversationItem {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .conversationItem:hover {
+      background: rgba(255,255,255,.06);
+    }
+    .conversationItem.active {
+      background: rgba(255,255,255,.1);
+    }
+    .conversationDot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: var(--c-text-secondary, rgba(255,255,255,.3));
+    }
+    .conversationItem.running .conversationDot { background: #4ade80; }
+    .conversationItem.paused .conversationDot { background: #fbbf24; }
+    .conversationItem.completed .conversationDot { background: rgba(255,255,255,.3); }
+    .conversationItem.failed .conversationDot { background: #f87171; }
+    .conversationItem.awaiting_user .conversationDot { background: #60a5fa; }
+    .conversationContent {
+      flex: 1;
+      min-width: 0;
+    }
+    .conversationSummary {
+      font-size: 13px;
+      color: var(--c-text-primary, #fff);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .conversationMeta {
+      font-size: 11px;
+      color: var(--c-text-secondary, rgba(255,255,255,.45));
+      margin-top: 2px;
+    }
+    .conversationActions {
+      opacity: 0;
+      transition: opacity .15s;
+    }
+    .conversationItem:hover .conversationActions {
+      opacity: 1;
+    }
+    .conversationDeleteBtn {
+      background: none;
+      border: none;
+      color: var(--c-text-secondary, rgba(255,255,255,.4));
+      cursor: pointer;
+      font-size: 14px;
+      padding: 2px 4px;
+      border-radius: 4px;
+    }
+    .conversationDeleteBtn:hover {
+      color: #f87171;
+      background: rgba(248,113,113,.1);
+    }
+    .conversationNewBtn {
+      display: block;
+      width: calc(100% - 16px);
+      margin: 8px;
+      padding: 10px;
+      background: rgba(255,255,255,.06);
+      border: 1px dashed rgba(255,255,255,.12);
+      border-radius: 8px;
+      color: var(--c-text-secondary, rgba(255,255,255,.55));
+      font-size: 13px;
+      cursor: pointer;
+      text-align: center;
+      transition: background .15s, border-color .15s;
+    }
+    .conversationNewBtn:hover {
+      background: rgba(255,255,255,.1);
+      border-color: rgba(255,255,255,.2);
+    }
+
+    /* ── Paused Task Banner ── */
+    .pausedTaskBanner {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 14px;
+      background: rgba(251,191,36,.08);
+      border-bottom: 1px solid rgba(251,191,36,.15);
+      gap: 8px;
+    }
+    .pausedTaskBanner.visible {
+      display: flex;
+    }
+    .pausedTaskText {
+      font-size: 12px;
+      color: #fbbf24;
+      flex: 1;
+    }
+    .pausedTaskActions {
+      display: flex;
+      gap: 6px;
+    }
+    .pausedTaskActions button {
+      padding: 4px 10px;
+      border-radius: 6px;
+      border: none;
+      font-size: 11px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .pausedTaskResumeBtn {
+      background: #fbbf24;
+      color: #1a1a2e;
+    }
+    .pausedTaskResumeBtn:hover {
+      background: #f59e0b;
+    }
+    .pausedTaskCancelBtn {
+      background: rgba(255,255,255,.08);
+      color: var(--c-text-secondary, rgba(255,255,255,.55));
+    }
+    .pausedTaskCancelBtn:hover {
+      background: rgba(255,255,255,.12);
+    }
+
+    /* ── Conversation List Button ── */
+    .conversationListBtn {
+      background: none;
+      border: none;
+      color: var(--c-text-secondary, rgba(255,255,255,.55));
+      cursor: pointer;
+      padding: 4px;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+    }
+    .conversationListBtn:hover {
+      background: rgba(255,255,255,.08);
     }
   `;
 
@@ -2636,7 +2924,15 @@ export function mountWidget(opts: MountOptions): RoverUi {
   stopBtn.setAttribute('aria-label', 'Cancel task');
   stopBtn.textContent = '\u25A0';
 
+  /* ── Conversation List Button (in header) ── */
+  const conversationListBtn = document.createElement('button');
+  conversationListBtn.type = 'button';
+  conversationListBtn.className = 'conversationListBtn';
+  conversationListBtn.setAttribute('aria-label', 'Conversations');
+  conversationListBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>';
+
   headerActions.appendChild(stopBtn);
+  headerActions.appendChild(conversationListBtn);
   headerActions.appendChild(modeBadge);
   headerActions.appendChild(muteBtn);
   headerActions.appendChild(overflowBtn);
@@ -2799,13 +3095,53 @@ export function mountWidget(opts: MountOptions): RoverUi {
   resizeHandle.className = 'resizeHandle';
   resizeHandle.setAttribute('aria-hidden', 'true');
 
+  /* ── Tab Bar ── */
+  const tabBar = document.createElement('div');
+  tabBar.className = 'roverTabBar';
+
+  /* ── Paused Task Banner ── */
+  const pausedTaskBanner = document.createElement('div');
+  pausedTaskBanner.className = 'pausedTaskBanner';
+  let pausedTaskId = '';
+
+  /* ── Conversation Drawer ── */
+  const conversationDrawer = document.createElement('div');
+  conversationDrawer.className = 'conversationDrawer';
+
+  const conversationDrawerHeader = document.createElement('div');
+  conversationDrawerHeader.className = 'conversationDrawerHeader';
+  const conversationDrawerTitle = document.createElement('span');
+  conversationDrawerTitle.className = 'conversationDrawerTitle';
+  conversationDrawerTitle.textContent = 'Conversations';
+  const conversationDrawerCloseBtn = document.createElement('button');
+  conversationDrawerCloseBtn.type = 'button';
+  conversationDrawerCloseBtn.className = 'conversationDrawerClose';
+  conversationDrawerCloseBtn.textContent = '\u00D7';
+  conversationDrawerHeader.appendChild(conversationDrawerTitle);
+  conversationDrawerHeader.appendChild(conversationDrawerCloseBtn);
+
+  const conversationList = document.createElement('div');
+  conversationList.className = 'conversationList';
+
+  const conversationNewBtn = document.createElement('button');
+  conversationNewBtn.type = 'button';
+  conversationNewBtn.className = 'conversationNewBtn';
+  conversationNewBtn.textContent = 'New conversation';
+
+  conversationDrawer.appendChild(conversationDrawerHeader);
+  conversationDrawer.appendChild(conversationList);
+  conversationDrawer.appendChild(conversationNewBtn);
+
   panel.appendChild(header);
+  panel.appendChild(tabBar);
+  panel.appendChild(pausedTaskBanner);
   panel.appendChild(feedWrapper);
   panel.appendChild(taskSuggestion);
   panel.appendChild(shortcutsBar);
   panel.appendChild(questionPrompt);
   panel.appendChild(composer);
   panel.appendChild(resizeHandle);
+  panel.appendChild(conversationDrawer);
 
   wrapper.appendChild(launcher);
   wrapper.appendChild(greetingBubble);
@@ -3767,6 +4103,181 @@ export function mountWidget(opts: MountOptions): RoverUi {
     renderShortcuts(currentShortcuts);
   }
 
+  /* ── Tab Bar Logic ── */
+  function setTabs(tabs: RoverTabInfo[]): void {
+    tabBar.innerHTML = '';
+    if (!tabs.length) {
+      tabBar.classList.remove('visible');
+      return;
+    }
+    tabBar.classList.add('visible');
+    for (const tab of tabs) {
+      const chip = document.createElement('div');
+      chip.className = `roverTabChip${tab.isActive ? ' active' : ''}${tab.isCurrent ? ' current' : ''}`;
+      chip.title = tab.url;
+
+      const favicon = document.createElement('img');
+      favicon.className = 'roverTabChipFavicon';
+      try {
+        const host = new URL(tab.url).hostname;
+        favicon.src = `https://www.google.com/s2/favicons?domain=${host}&sz=28`;
+      } catch { favicon.style.display = 'none'; }
+      favicon.onerror = () => { favicon.style.display = 'none'; };
+
+      const label = document.createElement('span');
+      label.className = 'roverTabChipLabel';
+      try {
+        label.textContent = tab.title || new URL(tab.url).hostname;
+      } catch { label.textContent = tab.url; }
+
+      chip.appendChild(favicon);
+      chip.appendChild(label);
+
+      if (tab.isActive) {
+        const dot = document.createElement('span');
+        dot.className = 'roverTabChipDot';
+        chip.appendChild(dot);
+      }
+
+      chip.addEventListener('click', () => opts.onTabClick?.(tab.logicalTabId));
+      tabBar.appendChild(chip);
+    }
+  }
+
+  /* ── Conversation Drawer Logic ── */
+  let drawerOpen = false;
+
+  function openConversationDrawer(): void {
+    drawerOpen = true;
+    conversationDrawer.classList.add('open');
+  }
+
+  function closeConversationDrawer(): void {
+    drawerOpen = false;
+    conversationDrawer.classList.remove('open');
+  }
+
+  conversationListBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (drawerOpen) closeConversationDrawer();
+    else openConversationDrawer();
+  });
+
+  conversationDrawerCloseBtn.addEventListener('click', () => closeConversationDrawer());
+
+  conversationNewBtn.addEventListener('click', () => {
+    closeConversationDrawer();
+    opts.onNewTask?.();
+  });
+
+  function setConversations(conversations: ConversationListItem[]): void {
+    conversationList.innerHTML = '';
+    for (const conv of conversations) {
+      const item = document.createElement('div');
+      item.className = `conversationItem ${conv.status}${conv.isActive ? ' active' : ''}`;
+      item.dataset.id = conv.id;
+
+      const dot = document.createElement('span');
+      dot.className = 'conversationDot';
+
+      const content = document.createElement('div');
+      content.className = 'conversationContent';
+      const summary = document.createElement('div');
+      summary.className = 'conversationSummary';
+      summary.textContent = conv.summary.length > 60 ? conv.summary.slice(0, 60) + '...' : conv.summary;
+      const meta = document.createElement('div');
+      meta.className = 'conversationMeta';
+      const statusBadge = conv.status === 'running' ? 'Running' : conv.status === 'paused' ? 'Paused' : conv.status === 'completed' ? 'Done' : conv.status;
+      meta.textContent = `${statusBadge} · ${formatTime(conv.updatedAt)}`;
+      content.appendChild(summary);
+      content.appendChild(meta);
+
+      const actions = document.createElement('div');
+      actions.className = 'conversationActions';
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.className = 'conversationDeleteBtn';
+      deleteBtn.textContent = '\u00D7';
+      deleteBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        opts.onDeleteConversation?.(conv.id);
+      });
+      actions.appendChild(deleteBtn);
+
+      item.appendChild(dot);
+      item.appendChild(content);
+      item.appendChild(actions);
+
+      item.addEventListener('click', () => {
+        closeConversationDrawer();
+        opts.onSwitchConversation?.(conv.id);
+      });
+
+      conversationList.appendChild(item);
+    }
+  }
+
+  function setActiveConversationId(id: string): void {
+    const items = conversationList.querySelectorAll('.conversationItem');
+    items.forEach(item => {
+      if ((item as HTMLElement).dataset.id === id) {
+        item.classList.add('active');
+      } else {
+        item.classList.remove('active');
+      }
+    });
+  }
+
+  /* ── Paused Task Banner Logic ── */
+  function showPausedTaskBanner(task: { taskId: string; rootUserInput: string }): void {
+    pausedTaskId = task.taskId;
+    const truncatedInput = task.rootUserInput.length > 50
+      ? task.rootUserInput.slice(0, 50) + '...'
+      : task.rootUserInput;
+    pausedTaskBanner.innerHTML = '';
+
+    const text = document.createElement('span');
+    text.className = 'pausedTaskText';
+    text.textContent = `Paused: "${truncatedInput}"`;
+
+    const actions = document.createElement('div');
+    actions.className = 'pausedTaskActions';
+
+    const resumeBtn = document.createElement('button');
+    resumeBtn.type = 'button';
+    resumeBtn.className = 'pausedTaskResumeBtn';
+    resumeBtn.textContent = 'Resume';
+    resumeBtn.addEventListener('click', () => opts.onResumeTask?.(pausedTaskId));
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'pausedTaskCancelBtn';
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => opts.onCancelPausedTask?.(pausedTaskId));
+
+    actions.appendChild(resumeBtn);
+    actions.appendChild(cancelBtn);
+    pausedTaskBanner.appendChild(text);
+    pausedTaskBanner.appendChild(actions);
+    pausedTaskBanner.classList.add('visible');
+  }
+
+  function hidePausedTaskBanner(): void {
+    pausedTaskId = '';
+    pausedTaskBanner.classList.remove('visible');
+  }
+
+  /* ── Scroll Position ── */
+  function getScrollPosition(): number {
+    return feed.scrollTop;
+  }
+
+  function setScrollPosition(position: number): void {
+    requestAnimationFrame(() => {
+      feed.scrollTop = position;
+    });
+  }
+
   return {
     addMessage,
     setQuestionPrompt,
@@ -3786,5 +4297,13 @@ export function mountWidget(opts: MountOptions): RoverUi {
     show,
     hide,
     destroy,
+    // Multi-conversation support
+    setTabs,
+    setConversations,
+    setActiveConversationId,
+    getScrollPosition,
+    setScrollPosition,
+    showPausedTaskBanner,
+    hidePausedTaskBanner,
   };
 }

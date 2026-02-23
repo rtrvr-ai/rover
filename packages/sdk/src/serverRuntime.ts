@@ -576,7 +576,7 @@ export class RoverServerRuntimeClient {
     const requestSessionOpen = async (payload: Record<string, unknown>) =>
       this.requestJson('/session/open', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'text/plain' },
         body: JSON.stringify(payload),
       });
 
@@ -637,7 +637,7 @@ export class RoverServerRuntimeClient {
     };
     const { response, json } = await this.requestJson(path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify(payload),
     });
     const authRetryCount = Math.max(0, Number(options?.authRetryCount || 0));
@@ -984,7 +984,6 @@ export class RoverServerRuntimeClient {
     });
     const { response, json } = await this.requestJson(`/state?${query.toString()}`, {
       method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
     });
     const projectionCandidate =
       json?.data && typeof json.data === 'object' && isProjection(json.data?.projection)
@@ -1021,6 +1020,20 @@ export class RoverServerRuntimeClient {
       });
       return !!result?.ok;
     });
+  }
+
+  /**
+   * Send multiple requests as a single batched POST to /batch.
+   * Reduces round-trips for telemetry + snapshot.
+   */
+  async sendBatch(requests: Array<{ path: string; body: Record<string, unknown> }>): Promise<any[]> {
+    if (!requests.length) return [];
+    const maxBatchSize = 5;
+    const batch = requests.slice(0, maxBatchSize);
+    const result = await this.postJson<{ results?: any[] }>('/batch', {
+      requests: batch.map(r => ({ path: r.path, body: r.body })),
+    });
+    return result?.data?.results || [];
   }
 
   private scheduleProjectionPoll(delayMs: number): void {

@@ -1,23 +1,27 @@
 import { normalizeTaskBoundaryId } from './taskBoundaryGuards.js';
+import type { TaskState } from './runtimeTypes.js';
+import { isTerminalState } from './taskStateMachine.js';
 
+/** Legacy compat alias — maps to TaskState values used for guard logic. */
 export type TaskStatus = 'running' | 'completed' | 'cancelled' | 'failed' | 'ended';
-export type AutoResumePolicy = 'auto' | 'confirm' | 'never';
 
-export function shouldStartFreshTask(taskStatus?: TaskStatus): boolean {
-  return (
-    taskStatus === 'completed'
-    || taskStatus === 'cancelled'
-    || taskStatus === 'failed'
-    || taskStatus === 'ended'
-  );
+export function shouldStartFreshTask(taskStatus?: TaskStatus | TaskState): boolean {
+  if (!taskStatus) return true;
+  // Terminal states require a fresh task
+  if (taskStatus === 'completed' || taskStatus === 'cancelled' || taskStatus === 'failed' || taskStatus === 'ended') {
+    return true;
+  }
+  // New FSM terminal state check
+  if (isTerminalState(taskStatus as TaskState)) return true;
+  return false;
 }
 
-export function canAutoResumePendingRun(taskStatus?: TaskStatus): boolean {
+export function canAutoResumePendingRun(taskStatus?: TaskStatus | TaskState): boolean {
   return taskStatus === 'running';
 }
 
 export function resolveAutoResumePolicyAction(params: {
-  policy: AutoResumePolicy;
+  policy: 'auto' | 'confirm' | 'never';
   resumeRequired: boolean;
   hasLiveRemoteController: boolean;
 }): 'auto_resume' | 'prompt_resume' | 'cancel_resume' | 'defer_remote_owner' | 'noop' {
@@ -54,7 +58,7 @@ export function shouldQueueCancelForIgnoredProjectionRun(params: {
 }
 
 export function shouldAdoptSnapshotActiveRun(params: {
-  taskStatus?: TaskStatus;
+  taskStatus?: TaskStatus | TaskState;
   hasPendingRun: boolean;
   activeRunId?: string;
   activeRunText?: string;
@@ -68,8 +72,8 @@ export function shouldAdoptSnapshotActiveRun(params: {
 }
 
 export function shouldClearPendingFromSharedState(params: {
-  localTaskStatus?: TaskStatus;
-  remoteTaskStatus?: TaskStatus;
+  localTaskStatus?: TaskStatus | TaskState;
+  remoteTaskStatus?: TaskStatus | TaskState;
   mode: 'controller' | 'observer';
   hasRemoteActiveRun: boolean;
 }): boolean {
@@ -87,7 +91,7 @@ export function shouldIgnoreRunScopedMessage(params: {
   pendingRunId?: string;
   sharedActiveRunId?: string;
   authoritativeActiveRunId?: string;
-  taskStatus?: TaskStatus;
+  taskStatus?: TaskStatus | TaskState;
   ignoredRunIds?: Set<string>;
 }): boolean {
   const {

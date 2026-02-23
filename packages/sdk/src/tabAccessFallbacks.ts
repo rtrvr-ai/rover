@@ -2,8 +2,10 @@ type TabAccessRuntimeConfig = {
   externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
 };
 
+export type RoverAvailability = 'available' | 'not_available' | 'unknown';
+
 export function buildInaccessibleTabPageData(
-  tab?: { logicalTabId?: number; url?: string; title?: string; external?: boolean },
+  tab?: { logicalTabId?: number; url?: string; title?: string; external?: boolean; roverAvailability?: RoverAvailability },
   reason = 'tab_not_accessible',
 ): Record<string, any> {
   const logicalTabId = Number(tab?.logicalTabId) || undefined;
@@ -24,6 +26,7 @@ export function buildInaccessibleTabPageData(
       inaccessible: true,
       external: !!tab?.external,
       accessMode: tab?.external ? 'external_placeholder' : 'detached_runtime_placeholder',
+      roverAvailability: tab?.roverAvailability || 'unknown',
       reason,
       logicalTabId,
     },
