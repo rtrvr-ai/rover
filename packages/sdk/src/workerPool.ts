@@ -20,9 +20,9 @@ export type WorkerPoolOptions = {
   onWorkerFreed?: (dequeuedTaskId: string) => void;
 };
 
-const DEFAULT_MAX_WORKERS = 2;
-const MAX_ALLOWED_WORKERS = 3;
-const DEFAULT_MAX_QUEUE = 5;
+const DEFAULT_MAX_WORKERS = 1;
+const MAX_ALLOWED_WORKERS = 2;
+const DEFAULT_MAX_QUEUE = 3;
 
 export class WorkerPool {
   private maxWorkers: number;
