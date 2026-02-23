@@ -482,6 +482,21 @@ function addTrackedListener(
 ): void {
   target.addEventListener(event, handler, options);
   _registeredListeners.push({ target, event, handler, options });
+  // Periodically prune listeners on disconnected DOM nodes to prevent retention
+  if (_registeredListeners.length > 100 && _registeredListeners.length % 50 === 0) {
+    pruneDisconnectedListeners();
+  }
+}
+
+function pruneDisconnectedListeners(): void {
+  for (let i = _registeredListeners.length - 1; i >= 0; i--) {
+    const entry = _registeredListeners[i];
+    const target = entry.target;
+    if (target && 'isConnected' in target && (target as Node).isConnected === false) {
+      try { entry.target.removeEventListener(entry.event, entry.handler, entry.options); } catch {}
+      _registeredListeners.splice(i, 1);
+    }
+  }
 }
 
 let lastObserverPauseApplied: boolean | null = null;
@@ -6702,6 +6717,18 @@ function createRuntime(cfg: RoverInit): void {
               : 'open_new_tab';
       const preflightMessage = resolveNavigationPreflightMessageContext();
 
+      // Early handoff setup: prepare handoff synchronously before yielding to any await,
+      // so fire-and-forget callers have the handoff ready before navigation fires.
+      const isSameTabCandidate = fallbackDecision === 'allow_same_tab';
+      if (isSameTabCandidate && runtimeState) {
+        agentNavigationPending = true;
+        setLatestNavigationHandoff(toPersistedNavigationHandoff(intent));
+        ensureNavigationPendingRun(
+          intent.isCrossHost ? 'cross_host_navigation' : 'agent_navigation',
+        );
+        flushCheckpointCritical('same_tab_navigation_handoff_early');
+      }
+
       let serverDecision: TabEventDecisionResponse | null = null;
       if (intent?.targetUrl && roverServerRuntime && runId) {
         const isCrossHost = !!targetHost && !!currentHost && targetHost !== currentHost;
@@ -6743,6 +6770,10 @@ function createRuntime(cfg: RoverInit): void {
       });
       const decision = resolvedDecision.decision;
       if (decision === 'block') {
+        // Rollback early handoff if we set it up optimistically
+        if (isSameTabCandidate) {
+          agentNavigationPending = false;
+        }
         return {
           decision: 'block',
           reason: resolvedDecision.failSafeBlocked
@@ -6754,6 +6785,10 @@ function createRuntime(cfg: RoverInit): void {
         };
       }
       if (decision === 'open_new_tab') {
+        // Rollback early handoff if we set it up optimistically
+        if (isSameTabCandidate) {
+          agentNavigationPending = false;
+        }
         // Fire-and-forget: prefetch external context if on-demand scraping enabled
         const scrapeMode = (currentConfig?.tools as any)?.web?.scrapeMode;
         if (scrapeMode === 'on_demand' && roverServerRuntime && intent?.targetUrl) {
@@ -6771,23 +6806,18 @@ function createRuntime(cfg: RoverInit): void {
       }
 
       // Same-tab navigation handoff path.
-      agentNavigationPending = true;
-      if (!runtimeState) {
-        const usedFallback = resolvedDecision.decisionReason === 'preflight_unavailable_fallback' && !serverDecision;
-        return {
-          decision: 'allow_same_tab',
-          reason: serverDecision?.reason
-            || (usedFallback
-              ? 'Preflight is unavailable; allowing navigation using local policy.'
-              : 'Navigation allowed.'),
-          decisionReason: serverDecision?.decisionReason || resolvedDecision.decisionReason || 'allow_same_tab',
-        };
+      // If early handoff was not set up (fallback was not allow_same_tab but server overrode),
+      // set it up now.
+      if (!isSameTabCandidate && runtimeState) {
+        agentNavigationPending = true;
+        setLatestNavigationHandoff(toPersistedNavigationHandoff(intent));
+        ensureNavigationPendingRun(
+          intent.isCrossHost ? 'cross_host_navigation' : 'agent_navigation',
+        );
+        flushCheckpointCritical('same_tab_navigation_handoff');
+      } else if (!isSameTabCandidate) {
+        agentNavigationPending = true;
       }
-      setLatestNavigationHandoff(toPersistedNavigationHandoff(intent));
-      ensureNavigationPendingRun(
-        intent.isCrossHost ? 'cross_host_navigation' : 'agent_navigation',
-      );
-      flushCheckpointCritical('same_tab_navigation_handoff');
       return {
         decision: 'allow_same_tab',
         reason: serverDecision?.reason

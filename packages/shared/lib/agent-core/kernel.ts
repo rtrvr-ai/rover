@@ -1,10 +1,10 @@
 export const ROVER_V2_PERSIST_CAPS = {
-  plannerHistory: 24,
-  prevSteps: 12,
-  uiMessages: 80,
-  timelineEvents: 120,
-  localPersistBytes: 262_144,
-  snapshotBytes: 524_288,
+  plannerHistory: 16,
+  prevSteps: 8,
+  uiMessages: 40,
+  timelineEvents: 60,
+  localPersistBytes: 131_072,
+  snapshotBytes: 262_144,
 } as const;
 
 export const ROVER_V2_ACC_TREE_POLICY = {

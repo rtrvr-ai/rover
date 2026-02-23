@@ -416,8 +416,8 @@ function postStatus(message: string, thought?: string, stage?: StatusStage) {
   if (key === lastStatusKey || seenStatusKeys.has(key)) return;
   lastStatusKey = key;
   seenStatusKeys.add(key);
-  if (seenStatusKeys.size > 120) {
-    const recent = Array.from(seenStatusKeys).slice(-60);
+  if (seenStatusKeys.size > 60) {
+    const recent = Array.from(seenStatusKeys).slice(-30);
     seenStatusKeys = new Set(recent);
   }
   (self as any).postMessage({ type: 'status', message, thought, stage: resolvedStage, compactThought: compact, runId: activeRun?.runId });
@@ -1912,7 +1912,7 @@ function normalizeRunOutcome(outcome?: Partial<RunOutcome> | null): RunOutcome {
 
 function rememberTerminalRun(runId: string, result: TerminalRunResult): void {
   terminalRuns.set(runId, result);
-  while (terminalRuns.size > 80) {
+  while (terminalRuns.size > 20) {
     const oldest = terminalRuns.keys().next().value;
     if (!oldest) break;
     terminalRuns.delete(oldest);
@@ -1921,7 +1921,7 @@ function rememberTerminalRun(runId: string, result: TerminalRunResult): void {
 
 function rememberCancelledRun(runId: string): void {
   cancelledRunIds.add(runId);
-  while (cancelledRunIds.size > 80) {
+  while (cancelledRunIds.size > 20) {
     const oldest = cancelledRunIds.values().next().value;
     if (!oldest) break;
     cancelledRunIds.delete(oldest);

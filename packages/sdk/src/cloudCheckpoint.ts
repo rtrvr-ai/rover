@@ -271,11 +271,11 @@ export class RoverCloudCheckpointClient {
     this.siteId = options.siteId;
     this.visitorId = options.visitorId;
     this.ttlHours = Math.max(1, Math.min(24 * 7, Math.floor(toFiniteNumber(options.ttlHours, 1))));
-    this.flushIntervalMs = Math.max(2_000, Math.floor(toFiniteNumber(options.flushIntervalMs, 12_000)));
-    this.pullIntervalMs = Math.max(2_000, Math.floor(toFiniteNumber(options.pullIntervalMs, 15_000)));
-    this.idlePullIntervalMs = 60_000; // Pull every 60s when idle (vs 15s active)
+    this.flushIntervalMs = Math.max(2_000, Math.floor(toFiniteNumber(options.flushIntervalMs, 30_000)));
+    this.pullIntervalMs = Math.max(2_000, Math.floor(toFiniteNumber(options.pullIntervalMs, 30_000)));
+    this.idlePullIntervalMs = 120_000; // Pull every 120s when idle (vs 30s active)
     this.minFlushIntervalMs = Math.max(1_000, Math.floor(toFiniteNumber(options.minFlushIntervalMs, 2_500)));
-    this.maxSnapshotBytes = Math.max(64_000, Math.min(2_097_152, Math.floor(toFiniteNumber(options.maxSnapshotBytes, 524_288))));
+    this.maxSnapshotBytes = Math.max(64_000, Math.min(1_048_576, Math.floor(toFiniteNumber(options.maxSnapshotBytes, 262_144))));
     this.shouldSync = options.shouldSync || (() => true);
     this.shouldWrite = options.shouldWrite || (() => true);
     this.buildCheckpoint = options.buildCheckpoint;
@@ -291,7 +291,14 @@ export class RoverCloudCheckpointClient {
 
     if (typeof document !== 'undefined' && !this.visibilityListener) {
       this.visibilityListener = () => {
-        if (!this.started || document.hidden) return;
+        if (!this.started) return;
+        if (document.hidden) {
+          // Tab hidden — pause flush, slow pull to reduce memory churn
+          this.enterIdleMode();
+          return;
+        }
+        // Tab visible again — resume normal intervals
+        this.enterActiveMode();
         if (!this.shouldSync()) return;
         void this.pull(true);
         if (this.dirty) void this.flush(true);

@@ -1159,12 +1159,16 @@ export class RoverServerRuntimeClient {
         .catch(error => this.reportError(error))
         .finally(() => {
           this.rotateBaseCandidate();
-          if (this.shouldKeepTransportActive()) {
-            this.startProjectionPolling();
-            this.scheduleSseReconnect();
-          } else {
+          if (!this.shouldKeepTransportActive()) {
             this.pauseBackgroundTransport();
+            return;
           }
+          // Use polling as fallback — only start if not already polling
+          if (this.pollTimer == null) {
+            this.startProjectionPolling();
+          }
+          // Schedule SSE reconnect — polling will stop once SSE connects (onopen)
+          this.scheduleSseReconnect();
         });
     };
 

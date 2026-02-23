@@ -139,8 +139,8 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
 
   // Avoid exploding on pathological pages with thousands of closed roots / iframe docs.
   // Still generous enough to cover real apps.
-  const MAX_OBSERVED_SHADOW_ROOTS = 500;
-  const MAX_OBSERVED_IFRAME_DOCS = 200;
+  const MAX_OBSERVED_SHADOW_ROOTS = 100;
+  const MAX_OBSERVED_IFRAME_DOCS = 50;
   let observedShadowRootCount = 0;
   let observedIframeDocCount = 0;
 
@@ -613,6 +613,7 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   function scheduleAttributeUpdate(el: Element): void {
     if (isBackgroundWorkPaused()) return;
     pendingAttributeUpdate.add(el);
+    if (pendingAttributeUpdate.size > 2000) pruneDisconnected(1500);
     scheduleWorkFlush();
   }
 
@@ -624,14 +625,15 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
     setBusyFlag();
     scheduleWorkFlush();
 
-    // Prevent unbounded retention on virtualized feeds
-    if (pendingElementScan.size > 8000) pruneDisconnected(3000);
+    // Prevent unbounded retention — lower threshold to reduce memory pressure
+    if (pendingElementScan.size > 2000) pruneDisconnected(1500);
   }
 
-  function pruneDisconnected(limit = 2000) {
+  function pruneDisconnected(limit = 1500) {
     let n = 0;
     for (const el of pendingElementScan) {
-      if (n > limit) break;
+      if (n >= limit) break;
+      n++;
       if (!el.isConnected) {
         pendingElementScan.delete(el);
         pendingScanCount = Math.max(0, pendingScanCount - 1);
@@ -639,7 +641,8 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
     }
     n = 0;
     for (const el of pendingAttributeUpdate) {
-      if (n > limit) break;
+      if (n >= limit) break;
+      n++;
       if (!el.isConnected) pendingAttributeUpdate.delete(el);
     }
     setBusyFlag();
@@ -2003,23 +2006,53 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
     }
   }
 
+  let _mutationBatchQueued = false;
+  let _pendingMutationRecords: MutationRecord[] = [];
+  const MUTATION_BATCH_BUDGET = 200; // max added nodes per flush
+
   function handleMutations(records: MutationRecord[]): void {
     if (isBackgroundWorkPaused()) return;
+    // Batch mutations to avoid processing thousands of records synchronously
+    for (const r of records) _pendingMutationRecords.push(r);
+    if (!_mutationBatchQueued) {
+      _mutationBatchQueued = true;
+      queueMicrotask(flushMutationBatch);
+    }
+  }
+
+  function flushMutationBatch(): void {
+    _mutationBatchQueued = false;
+    const records = _pendingMutationRecords;
+    _pendingMutationRecords = [];
+    if (isBackgroundWorkPaused()) return;
+
+    let addedCount = 0;
     for (const record of records) {
+      if (addedCount >= MUTATION_BATCH_BUDGET) break;
       for (const added of Array.from(record.addedNodes)) {
+        if (addedCount >= MUTATION_BATCH_BUDGET) break;
         if (added.nodeType !== 1) continue;
         const el = added as Element;
         scheduleElementScan(el);
-        el.querySelectorAll?.(
+        addedCount++;
+        // Only query children if the subtree is small enough to avoid O(n^2)
+        const children = el.querySelectorAll?.(
           'a,button,input,select,textarea,summary,[role],[onclick],[ondblclick],[ondoubleclick],[contenteditable],[draggable="true"],[tabindex]',
-        ).forEach(scheduleElementScan);
+        );
+        if (children) {
+          const limit = Math.min(children.length, 50);
+          for (let i = 0; i < limit; i++) {
+            scheduleElementScan(children[i]);
+            addedCount++;
+          }
+        }
       }
 
       if (record.type === 'attributes' && record.target.nodeType === 1) {
         const el = record.target as Element;
         if (record.attributeName === 'class') {
-          // avoid hot-looping on animation class churn
-          if (pageHasFrameworkNow() || isCandidate(el)) scheduleElementScan(el);
+          // Only scan candidates on class changes — skip pure animation churn
+          if (isCandidate(el)) scheduleElementScan(el);
         } else {
           scheduleElementScan(el);
         }

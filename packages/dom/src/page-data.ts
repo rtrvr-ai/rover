@@ -42,7 +42,17 @@ interface PdfTextExtractionResult {
   reason?: 'timeout' | 'no_viewer' | 'no_response' | 'ok';
 }
 
+const PDF_TEXT_CACHE_MAX = 20;
 const pdfTextCache = new Map<string, string>();
+
+function pdfTextCacheSet(key: string, value: string): void {
+  // Evict oldest entries when cache is full
+  if (pdfTextCache.size >= PDF_TEXT_CACHE_MAX && !pdfTextCache.has(key)) {
+    const oldest = pdfTextCache.keys().next().value;
+    if (oldest !== undefined) pdfTextCache.delete(oldest);
+  }
+  pdfTextCache.set(key, value);
+}
 const DEFAULT_ADAPTIVE_SETTLE_DEBOUNCE_MS = 24;
 const DEFAULT_ADAPTIVE_SETTLE_MAX_WAIT_MS = 220;
 const DEFAULT_ADAPTIVE_SETTLE_RETRIES = 0;
@@ -537,7 +547,7 @@ async function getPdfTextContent(doc: Document, pdfTextSelectionTimeoutMs?: numb
 
   const extraction = await extractPdfTextFromViewer(doc, selectionTimeoutMs);
   if (extraction.success && extraction.data.trim()) {
-    pdfTextCache.set(cacheKey, extraction.data);
+    pdfTextCacheSet(cacheKey, extraction.data);
   }
 
   return extraction;
