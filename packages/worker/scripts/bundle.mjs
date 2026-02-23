@@ -12,7 +12,7 @@ await build({
   format: 'esm',
   target: 'es2022',
   platform: 'browser',
-  minify: false,
+  minify: true,
   sourcemap: false,
   // The worker runs in a Web Worker context, not Node
   define: {

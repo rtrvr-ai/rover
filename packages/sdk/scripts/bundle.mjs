@@ -27,7 +27,7 @@ await build({
   format: 'esm',
   target: 'es2022',
   platform: 'browser',
-  minify: false,
+  minify: true,
   sourcemap: false,
   // The SDK uses import.meta.url for default worker URL resolution.
   // In standalone mode, users should provide workerUrl explicitly.

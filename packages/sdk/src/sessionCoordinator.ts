@@ -594,6 +594,7 @@ export class SessionCoordinator {
   private closing = false;
   private started = false;
   private heartbeatCount = 0;
+  private lastNotifiedStateHash = '';
   private static readonly LS_HEARTBEAT_DIVISOR = 5; // localStorage write every 5th heartbeat
   private pendingRpcRequests = new Map<string, {
     resolve: (result: any) => void;
@@ -1985,7 +1986,18 @@ export class SessionCoordinator {
       }
     }
 
-    this.onStateChange?.(this.state, source);
+    const hash = this.computeStateHash(this.state);
+    if (hash !== this.lastNotifiedStateHash) {
+      this.lastNotifiedStateHash = hash;
+      this.onStateChange?.(this.state, source);
+    }
+  }
+
+  private computeStateHash(state: SharedSessionState): string {
+    const tabs = state.tabs;
+    return `${tabs.length}:${tabs.map(t =>
+      `${t.logicalTabId}|${t.runtimeId || ''}|${t.url}|${t.title || ''}|${!!t.detachedAt}`
+    ).join(';')}:${state.activeLogicalTabId ?? ''}:${state.lease?.holderRuntimeId ?? ''}:${state.activeRun?.runId ?? ''}:${state.activeRun?.runtimeId ?? ''}:${state.workflowLock?.runtimeId ?? ''}:${state.taskEpoch ?? ''}:${(state.uiMessages as any[])?.length ?? 0}:${(state.timeline as any[])?.length ?? 0}:${state.uiStatus ?? ''}`;
   }
 
   private applyIncomingState(incoming: SharedSessionState): void {
