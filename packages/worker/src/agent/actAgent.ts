@@ -107,7 +107,7 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
     onScopedTabIdsTouched?.(nextScoped);
   };
   let retry = 0;
-  let pageDataOptions: { disableAutoScroll?: boolean } | undefined;
+  let pageDataOptions: { disableAutoScroll?: boolean; adaptiveSettleMaxWaitMs?: number; sparseTreeRetryMaxAttempts?: number } | undefined;
 
   while (retry < MAX_RETRIES) {
     if (ctx.isCancelled?.()) {
@@ -247,7 +247,13 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
       }
 
       if (processResult.needsRetry) {
-        pageDataOptions = processResult.disableAutoScroll ? { disableAutoScroll: true } : undefined;
+        pageDataOptions = processResult.navigationOccurred
+          ? {
+              ...(processResult.disableAutoScroll ? { disableAutoScroll: true } : {}),
+              adaptiveSettleMaxWaitMs: 80,
+              sparseTreeRetryMaxAttempts: 0,
+            }
+          : processResult.disableAutoScroll ? { disableAutoScroll: true } : undefined;
         retry++;
         continue;
       }
@@ -281,7 +287,11 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
             }
           }
         }
-        pageDataOptions = processResult.disableAutoScroll ? { disableAutoScroll: true } : undefined;
+        pageDataOptions = {
+          ...(processResult.disableAutoScroll ? { disableAutoScroll: true } : {}),
+          adaptiveSettleMaxWaitMs: 80,
+          sparseTreeRetryMaxAttempts: 0,
+        };
         continue;
       }
 
