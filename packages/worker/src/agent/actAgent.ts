@@ -280,21 +280,9 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
               // Best-effort. Runtime tab resolver will re-evaluate active tab on next loop.
             }
           }
-          pageDataOptions = processResult.disableAutoScroll ? { disableAutoScroll: true } : undefined;
-          continue;
         }
-
-        managePrevStepsSize(accumulatedPrevSteps);
-        onPrevStepsUpdate?.(accumulatedPrevSteps);
-        return {
-          prevSteps: accumulatedPrevSteps,
-          creditsUsed: totalCreditsUsed,
-          warnings: allWarnings,
-          navigationPending: true,
-          navigationTool: processResult.navigationTool,
-          navigationOutcome: processResult.navigationOutcome,
-          logicalTabId: processResult.logicalTabId,
-        };
+        pageDataOptions = processResult.disableAutoScroll ? { disableAutoScroll: true } : undefined;
+        continue;
       }
 
       if (processResult.data) {
