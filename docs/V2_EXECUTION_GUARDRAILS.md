@@ -1,4 +1,4 @@
-# Rover v1 Execution Guardrails
+# Rover v2 Execution Guardrails
 
 ## Domain Scope
 - `domainScopeMode: 'registrable_domain' | 'host_only'`.

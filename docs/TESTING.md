@@ -7,7 +7,7 @@ Rover is an embeddable autonomous web agent with a 7-layer architecture:
 ```
 User Input → UI Widget (Shadow DOM) → SDK (init/send/registerTool)
     → MessageChannel RPC → Web Worker (agent loop)
-    → Backend `/v1/rover/*` runtime (`session/start`, `run/input`, `run/control`, `tab/event`)
+    → Backend `/v2/rover/*` runtime (`session/start`, `run/input`, `run/control`, `tab/event`)
     → Gemini LLM → Tool execution via Bridge → DOM actions
 ```
 
@@ -38,7 +38,7 @@ This compiles all packages. The SDK output lives at `packages/sdk/dist/`.
 ### 2. Get a Rover Site Key
 
 Rover bootstraps runtime auth with a **site public key** (`pk_site_...`).
-The browser then exchanges that bootstrap key for a short-lived `rvrsess_*` session token via `POST /v1/rover/session/start`.
+The browser then exchanges that bootstrap key for a short-lived `rvrsess_*` session token via `POST /v2/rover/session/open`.
 
 Without bootstrap auth, Rover emits `auth_required` with code `MISSING_API_KEY` / `INVALID_API_KEY`.
 
@@ -47,9 +47,9 @@ Without bootstrap auth, Rover emits `auth_required` with code `MISSING_API_KEY` 
 | Environment | URL |
 |-------------|-----|
 | **Production base** | `https://extensionrouter.rtrvr.ai` |
-| **Production Rover API** | `https://extensionrouter.rtrvr.ai/v1/rover/*` |
+| **Production Rover API** | `https://extensionrouter.rtrvr.ai/v2/rover/*` |
 | **Firebase Emulator base** | `http://127.0.0.1:5002/rtrvr-extension-functions/us-central1` |
-| **Firebase Emulator Rover API** | `http://127.0.0.1:5002/rtrvr-extension-functions/us-central1/v1/rover/*` |
+| **Firebase Emulator Rover API** | `http://127.0.0.1:5002/rtrvr-extension-functions/us-central1/v2/rover/*` |
 
 ---
 
@@ -241,11 +241,11 @@ init({
 
 **Network tab:**
 - Watch for Rover backend calls:
-  - `POST /v1/rover/session/start`
-  - `POST /v1/rover/run/input`
-  - `POST /v1/rover/run/control`
-  - `POST /v1/rover/tab/event`
-  - `GET /v1/rover/events` (SSE)
+  - `POST /v2/rover/session/open`
+  - `POST /v2/rover/command (type=RUN_INPUT)`
+  - `POST /v2/rover/command (type=RUN_CONTROL)`
+  - `POST /v2/rover/command (type=TAB_EVENT)`
+  - `GET /v2/rover/stream` (SSE)
 - Check request payload includes `sessionToken` for runtime calls.
 - Check responses include `success: true` and run/session identifiers (`sessionId`, `runId`, `epoch`).
 
@@ -281,7 +281,7 @@ init({
 
   // Backend
   apiBase?: string,            // Override backend base URL
-                               // Rover runtime uses `${apiBase}/v1/rover/*`
+                               // Rover runtime uses `${apiBase}/v2/rover/*`
 
   // Worker
   workerUrl?: string,          // Override worker script URL

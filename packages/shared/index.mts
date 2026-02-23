@@ -12,5 +12,11 @@ export * from './lib/page/time-utils.js';
 export * from './lib/page/file-upload-utils.js';
 export * from './lib/page/upload-bytes-store.js';
 
+export * from './lib/agent-core/types.js';
+export * from './lib/agent-core/history-compactor.js';
+export * from './lib/agent-core/tab-order.js';
+export * from './lib/agent-core/resolver.js';
+export * from './lib/agent-core/kernel.js';
+
 export * from './lib/system-tools/wire.js';
 export * from './lib/system-tools/tools.js';

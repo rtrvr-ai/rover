@@ -147,6 +147,7 @@ export type RoverServerRuntimeOptions = RoverServerRuntimeCallbacks & {
   getHost: () => string | undefined;
   getPageUrl: () => string | undefined;
   getTaskBoundaryId?: () => string | undefined;
+  shouldKeepTransportActive?: () => boolean;
 };
 
 function asNumber(value: unknown, fallback: number): number {
@@ -158,11 +159,15 @@ function toBaseUrl(apiBase?: string): string {
   const fallback = 'https://extensionrouter.rtrvr.ai';
   const base = String(apiBase || fallback).trim().replace(/\/+$/, '');
   if (!base) return fallback;
-  if (base.endsWith('/extensionRouter/v1/rover')) {
-    return base.slice(0, -('/extensionRouter/v1/rover'.length));
+  if (base.endsWith('/extensionRouter/v2/rover')) {
+    return base.slice(0, -('/extensionRouter/v2/rover'.length));
+  }
+  const versionedRouterMatch = base.match(/\/v\d+\/rover$/);
+  if (versionedRouterMatch?.[0]) {
+    return base.slice(0, -versionedRouterMatch[0].length);
   }
   if (base.endsWith('/extensionRouter')) return base.slice(0, -('/extensionRouter'.length));
-  if (base.endsWith('/v1/rover')) return base.slice(0, -('/v1/rover'.length));
+  if (base.endsWith('/v2/rover')) return base.slice(0, -('/v2/rover'.length));
   return base;
 }
 
@@ -178,18 +183,32 @@ function unique(values: string[]): string[] {
   return out;
 }
 
-export function resolveRoverV1Bases(apiBase?: string): string[] {
+function resolveRoverBaseCandidates(apiBase: string | undefined): string[] {
   const base = toBaseUrl(apiBase);
-  const primary = `${base}/v1/rover`;
+  const primary = `${base}/v2/rover`;
   const rawApiBase = normalizeUrl(String(apiBase || '').trim());
-  if (rawApiBase.endsWith('/v1/rover') || rawApiBase.endsWith('/extensionRouter/v1/rover')) {
-    return unique([rawApiBase.replace('/extensionRouter/v1/rover', '/v1/rover'), primary]);
+  const directV2 = rawApiBase.replace('/extensionRouter/v2/rover', '/v2/rover');
+  const expectedSuffix = '/v2/rover';
+  if (rawApiBase.endsWith(expectedSuffix) || rawApiBase.endsWith('/extensionRouter/v2/rover')) {
+    return unique([directV2, primary]);
   }
   return unique([primary]);
 }
 
-export function resolveRoverV1Base(apiBase?: string): string {
-  return resolveRoverV1Bases(apiBase)[0] || `${toBaseUrl(apiBase)}/v1/rover`;
+export function resolveRoverV2Bases(apiBase?: string): string[] {
+  return resolveRoverBaseCandidates(apiBase);
+}
+
+export function resolveRoverV2Base(apiBase?: string): string {
+  return resolveRoverV2Bases(apiBase)[0] || `${toBaseUrl(apiBase)}/v2/rover`;
+}
+
+export function resolveRoverBases(apiBase: string | undefined): string[] {
+  return resolveRoverV2Bases(apiBase);
+}
+
+export function resolveRoverBase(apiBase: string | undefined): string {
+  return resolveRoverV2Base(apiBase);
 }
 
 function normalizeUrl(url: string): string {
@@ -278,11 +297,15 @@ export class RoverServerRuntimeClient {
   private lastRunId = '';
   private lastSnapshotDigest = '';
   private activeRunId: string | undefined;
+  private visibilityListener: (() => void) | null = null;
+  private pollIntervalMs = 2_000;
+  private commandInFlight = false;
+  private commandQueue: Promise<void> = Promise.resolve();
 
   constructor(options: RoverServerRuntimeOptions) {
     this.options = options;
-    this.baseCandidates = resolveRoverV1Bases(options.apiBase);
-    this.base = this.baseCandidates[0] || resolveRoverV1Base(options.apiBase);
+    this.baseCandidates = resolveRoverBases(options.apiBase);
+    this.base = this.baseCandidates[0] || resolveRoverBase(options.apiBase);
     this.sessionId = options.getSessionId();
   }
 
@@ -307,24 +330,17 @@ export class RoverServerRuntimeClient {
   }
 
   setApiBase(apiBase?: string): void {
-    this.baseCandidates = resolveRoverV1Bases(apiBase);
+    this.baseCandidates = resolveRoverBases(apiBase);
     this.baseIndex = 0;
-    this.base = this.baseCandidates[0] || resolveRoverV1Base(apiBase);
+    this.base = this.baseCandidates[0] || resolveRoverBase(apiBase);
   }
 
   stop(): void {
     this.started = false;
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
-    }
-    if (this.pollTimer != null) {
-      window.clearInterval(this.pollTimer);
-      this.pollTimer = null;
-    }
-    if (this.reconnectTimer != null) {
-      window.clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+    this.pauseBackgroundTransport();
+    if (this.visibilityListener && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.visibilityListener);
+      this.visibilityListener = null;
     }
     this.lastSeq = 0;
     this.lastRunId = '';
@@ -334,12 +350,88 @@ export class RoverServerRuntimeClient {
 
   async start(): Promise<void> {
     this.started = true;
+    if (typeof document !== 'undefined' && !this.visibilityListener) {
+      this.visibilityListener = () => {
+        this.handleVisibilityChange();
+      };
+      document.addEventListener('visibilitychange', this.visibilityListener);
+    }
     await this.ensureSession(false);
+    if (!this.shouldKeepTransportActive()) {
+      this.pauseBackgroundTransport();
+      return;
+    }
     this.startProjectionStream();
   }
 
   private reportError(error: unknown): void {
     this.options.onError?.(error);
+  }
+
+  private withCommandLock<T>(work: () => Promise<T>): Promise<T> {
+    const run = async () => {
+      this.commandInFlight = true;
+      try {
+        return await work();
+      } finally {
+        this.commandInFlight = false;
+      }
+    };
+    const next = this.commandQueue.then(run, run);
+    this.commandQueue = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  private isDocumentHidden(): boolean {
+    return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  }
+
+  private hasOwnershipTransportAllowance(): boolean {
+    if (typeof this.options.shouldKeepTransportActive === 'function') {
+      try {
+        return !!this.options.shouldKeepTransportActive();
+      } catch {
+        return false;
+      }
+    }
+    return !!this.activeRunId;
+  }
+
+  private shouldKeepTransportActive(): boolean {
+    return !this.isDocumentHidden() || this.hasOwnershipTransportAllowance();
+  }
+
+  private pauseBackgroundTransport(): void {
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+    if (this.pollTimer != null) {
+      window.clearTimeout(this.pollTimer);
+      this.pollTimer = null;
+    }
+    this.pollIntervalMs = 2_000;
+    if (this.reconnectTimer != null) {
+      window.clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  private handleVisibilityChange(): void {
+    if (!this.started) return;
+    if (!this.shouldKeepTransportActive()) {
+      this.pauseBackgroundTransport();
+      return;
+    }
+    void this.ensureSession(false)
+      .catch(error => this.reportError(error))
+      .finally(() => {
+        this.startProjectionStream();
+        if (!this.eventSource) {
+          this.startProjectionPolling();
+        }
+        void this.fetchProjection().catch(error => this.reportError(error));
+      });
   }
 
   private getActiveBase(): string {
@@ -358,7 +450,7 @@ export class RoverServerRuntimeClient {
     init: RequestInit,
   ): Promise<{ response: Response; json: any }> {
     if (!this.baseCandidates.length) {
-      this.baseCandidates = resolveRoverV1Bases(this.base);
+      this.baseCandidates = resolveRoverBases(this.base);
       this.base = this.baseCandidates[0] || this.base;
       this.baseIndex = 0;
     }
@@ -436,6 +528,9 @@ export class RoverServerRuntimeClient {
     if (snapshotDigest) {
       this.lastSnapshotDigest = snapshotDigest;
     }
+    if (this.isDocumentHidden() && !this.shouldKeepTransportActive()) {
+      this.pauseBackgroundTransport();
+    }
     const hasMaterialChange =
       this.epoch !== prevEpoch
       || projectionRunId !== prevRunId
@@ -462,8 +557,10 @@ export class RoverServerRuntimeClient {
     const baseBody: Record<string, unknown> = {
       siteId: this.options.siteId,
       sessionId: this.sessionId,
+      requestedSessionId: this.sessionId,
       host: this.options.getHost(),
       url: this.options.getPageUrl(),
+      pageUrl: this.options.getPageUrl(),
     };
     const includeSessionToken = !forceBootstrap && !!this.sessionToken;
     const body: Record<string, unknown> = {
@@ -476,14 +573,14 @@ export class RoverServerRuntimeClient {
       return null;
     }
 
-    const requestSessionStart = async (payload: Record<string, unknown>) =>
-      this.requestJson('/session/start', {
+    const requestSessionOpen = async (payload: Record<string, unknown>) =>
+      this.requestJson('/session/open', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
 
-    let { response, json } = await requestSessionStart(body);
+    let { response, json } = await requestSessionOpen(body);
     if (
       response.status === 401
       && includeSessionToken
@@ -496,7 +593,7 @@ export class RoverServerRuntimeClient {
     ) {
       this.sessionToken = undefined;
       this.sessionTokenExpiresAt = 0;
-      ({ response, json } = await requestSessionStart({
+      ({ response, json } = await requestSessionOpen({
         ...baseBody,
         bootstrapToken,
       }));
@@ -504,7 +601,7 @@ export class RoverServerRuntimeClient {
 
     if (!response.ok || !json?.success || !json?.data) {
       const authCode = getAuthErrorCode(json);
-      const message = json?.data?.message || json?.error || `session/start failed (${response.status})`;
+      const message = json?.data?.message || json?.error || `session/open failed (${response.status})`;
       const error = new Error(String(message));
       (error as any).code = authCode || undefined;
       throw error;
@@ -590,55 +687,61 @@ export class RoverServerRuntimeClient {
     runId?: string;
     requestedMode?: 'act' | 'planner' | 'auto';
   }): Promise<RunInputResponse | null> {
-    const clientEventId =
-      String(params.clientEventId || '').trim()
-      || (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : undefined);
+    return this.withCommandLock(async () => {
+      const clientEventId =
+        String(params.clientEventId || '').trim()
+        || (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : undefined);
 
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const result = await this.postJson<RunInputResponse>('/run/input', {
-        message: params.message,
-        runId: params.runId,
-        continueRun: !!params.continueRun,
-        forceNewRun: !!params.forceNewRun,
-        requestedMode: params.requestedMode,
-        expectedEpoch: this.epoch,
-        expectedSeq: this.lastSeq,
-        clientEventId,
-        taskBoundaryId: this.options.getTaskBoundaryId?.(),
-      });
-      if (!result.ok) {
-        const data = (result.data || null) as RunInputResponse | null;
-        if (isProjection(data?.projection)) {
-          this.applyProjection(data.projection);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = await this.postJson<any>('/command', {
+          type: 'RUN_INPUT',
+          commandId: clientEventId,
+          expectedEpoch: this.epoch,
+          expectedSeq: this.lastSeq,
+          payload: {
+            runId: params.runId,
+            message: params.message,
+            continueRun: !!params.continueRun,
+            forceNewRun: !!params.forceNewRun,
+            requestedMode: params.requestedMode,
+            taskBoundaryId: this.options.getTaskBoundaryId?.(),
+          },
+        });
+        if (!result.ok) {
+          const envelope = result.data || null;
+          const data = (envelope?.data || null) as RunInputResponse | null;
+          if (isProjection(data?.projection)) {
+            this.applyProjection(data.projection);
+          }
+          const conflictType = String(result.conflict?.type || '').trim();
+          const retryableStale =
+            result.conflict?.retryable !== false
+            && (conflictType === 'stale_seq' || conflictType === 'stale_epoch');
+          if (attempt === 0 && retryableStale) {
+            continue;
+          }
+          return data;
         }
-        const conflictType = String(result.conflict?.type || '').trim();
-        const retryableStale =
-          result.conflict?.retryable !== false
-          && (conflictType === 'stale_seq' || conflictType === 'stale_epoch');
-        if (attempt === 0 && retryableStale) {
-          continue;
+        const envelope = result.data || {};
+        const data = (envelope?.data || null) as RunInputResponse | null;
+        const nextRunId = String(envelope?.runId || data?.runId || '').trim();
+        if (nextRunId) {
+          this.activeRunId = nextRunId;
+          this.lastRunId = nextRunId;
+          if (Number(envelope?.seq || data?.seq || 0) === 0 && this.lastSeq > 0) {
+            this.lastSeq = 0;
+          }
+        }
+        if (Number.isFinite(Number(envelope?.epoch))) {
+          this.epoch = Math.max(1, Number(envelope?.epoch));
+        }
+        if (Number.isFinite(Number(envelope?.seq))) {
+          this.lastSeq = Math.max(0, Number(envelope?.seq || 0));
         }
         return data;
       }
-      const data = result.data as RunInputResponse;
-      if (typeof data?.runId === 'string' && data.runId.trim()) {
-        const nextRunId = data.runId.trim();
-        this.activeRunId = nextRunId;
-        this.lastRunId = nextRunId;
-        if (Number(data?.seq || 0) === 0 && this.lastSeq > 0) {
-          // Run changed but server hasn't published seq yet; reset optimistic cursor.
-          this.lastSeq = 0;
-        }
-      }
-      if (Number.isFinite(Number(data?.epoch))) {
-        this.epoch = Math.max(1, Number(data.epoch));
-      }
-      if (Number.isFinite(Number(data?.seq))) {
-        this.lastSeq = Math.max(0, Number(data?.seq || 0));
-      }
-      return data;
-    }
-    return null;
+      return null;
+    });
   }
 
   async controlRun(params: {
@@ -647,37 +750,41 @@ export class RoverServerRuntimeClient {
     reason?: string;
     clientEventId?: string;
   }): Promise<RunControlResponse | null> {
-    const clientEventId =
-      String(params.clientEventId || '').trim()
-      || (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : undefined);
+    return this.withCommandLock(async () => {
+      const clientEventId =
+        String(params.clientEventId || '').trim()
+        || (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : undefined);
 
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const result = await this.postJson<RunControlResponse>('/run/control', {
-        action: params.action,
-        runId: params.runId,
-        reason: params.reason,
-        expectedEpoch: this.epoch,
-        expectedSeq: this.lastSeq,
-        clientEventId,
-      });
-      if (!result.ok) {
-        // 409: cursor was stale. postJson already synced cursor via syncCursorFromPayload.
-        // Retry once with the updated cursor.
-        if (attempt === 0 && result.conflict?.retryable !== false) {
-          continue;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = await this.postJson<any>('/command', {
+          type: 'RUN_CONTROL',
+          commandId: clientEventId,
+          expectedEpoch: this.epoch,
+          expectedSeq: this.lastSeq,
+          payload: {
+            action: params.action,
+            runId: params.runId,
+            reason: params.reason,
+          },
+        });
+        if (!result.ok) {
+          if (attempt === 0 && result.conflict?.retryable !== false) {
+            continue;
+          }
+          return (result.data?.data || null) as RunControlResponse | null;
         }
-        return result.data || null;
+        const envelope = result.data || {};
+        const data = (envelope?.data || null) as RunControlResponse | null;
+        if (Number.isFinite(Number(envelope?.seq))) {
+          this.lastSeq = Math.max(0, Number(envelope.seq || 0));
+        }
+        if (isProjection(data?.projection)) {
+          this.applyProjection(data.projection);
+        }
+        return data;
       }
-      const data = result.data as RunControlResponse;
-      if (Number.isFinite(Number(data?.currentSeq))) {
-        this.lastSeq = Math.max(0, Number(data.currentSeq || 0));
-      }
-      if (isProjection(data?.projection)) {
-        this.applyProjection(data.projection);
-      }
-      return data;
-    }
-    return null;
+      return null;
+    });
   }
 
   async fetchExternalContext(params: {
@@ -689,49 +796,51 @@ export class RoverServerRuntimeClient {
     source?: 'google_search' | 'direct_url';
     adversarialScore?: number;
   }): Promise<ExternalContextResponse | null> {
-    const runId = String(params.runId || this.activeRunId || this.lastRunId || '').trim() || undefined;
-    const logicalTabId =
-      typeof params.tabId === 'string' && params.tabId.trim()
-        ? params.tabId.trim()
-        : Number.isFinite(Number(params.tabId)) && Number(params.tabId) > 0
-          ? String(Math.trunc(Number(params.tabId)))
-          : undefined;
-    const intent =
-      params.intent === 'act' || params.intent === 'open_only' || params.intent === 'read_context'
-        ? params.intent
-        : 'read_context';
-    const source = params.source === 'google_search' ? 'google_search' : 'direct_url';
+    return this.withCommandLock(async () => {
+      const runId = String(params.runId || this.activeRunId || this.lastRunId || '').trim() || undefined;
+      const logicalTabId =
+        typeof params.tabId === 'string' && params.tabId.trim()
+          ? params.tabId.trim()
+          : Number.isFinite(Number(params.tabId)) && Number(params.tabId) > 0
+            ? String(Math.trunc(Number(params.tabId)))
+            : undefined;
+      const intent =
+        params.intent === 'act' || params.intent === 'open_only' || params.intent === 'read_context'
+          ? params.intent
+          : 'read_context';
+      const source = params.source === 'google_search' ? 'google_search' : 'direct_url';
 
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const result = await this.postJson<ExternalContextResponse>('/context/external', {
-        runId,
-        logicalTabId,
-        url: params.url,
-        intent,
-        source,
-        message: params.message,
-        adversarialScore: Number.isFinite(Number(params.adversarialScore))
-          ? Number(params.adversarialScore)
-          : undefined,
-        expectedEpoch: this.epoch,
-        expectedSeq: this.lastSeq,
-      });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = await this.postJson<ExternalContextResponse>('/context/external', {
+          runId,
+          logicalTabId,
+          url: params.url,
+          intent,
+          source,
+          message: params.message,
+          adversarialScore: Number.isFinite(Number(params.adversarialScore))
+            ? Number(params.adversarialScore)
+            : undefined,
+          expectedEpoch: this.epoch,
+          expectedSeq: this.lastSeq,
+        });
 
-      if (!result.ok) {
-        const conflictType = String(result.conflict?.type || '').trim();
-        const staleRetryable =
-          result.conflict?.retryable !== false
-          && (conflictType === 'stale_seq' || conflictType === 'stale_epoch');
-        if (attempt === 0 && staleRetryable) {
-          continue;
+        if (!result.ok) {
+          const conflictType = String(result.conflict?.type || '').trim();
+          const staleRetryable =
+            result.conflict?.retryable !== false
+            && (conflictType === 'stale_seq' || conflictType === 'stale_epoch');
+          if (attempt === 0 && staleRetryable) {
+            continue;
+          }
+          return (result.data || null) as ExternalContextResponse | null;
         }
+
         return (result.data || null) as ExternalContextResponse | null;
       }
 
-      return (result.data || null) as ExternalContextResponse | null;
-    }
-
-    return null;
+      return null;
+    });
   }
 
   async sendTabEvent(params: {
@@ -746,119 +855,123 @@ export class RoverServerRuntimeClient {
     isCrossHost?: boolean;
     navigationClass?: 'same_host_in_scope' | 'cross_host_in_scope' | 'cross_registrable_external';
   }): Promise<TabEventDecisionResponse | null> {
-    const clientEventId = createRequestNonce();
-    const basePayload = {
-      runId: params.runId,
-      currentUrl: params.currentUrl,
-      targetUrl: params.targetUrl,
-      logicalTabId: params.logicalTabId,
-      message: params.message,
-      adversarialScore: params.adversarialScore,
-      currentHost: params.currentHost,
-      targetHost: params.targetHost,
-      isCrossHost: params.isCrossHost,
-      navigationClass: params.navigationClass,
-      clientEventId,
-    };
+    return this.withCommandLock(async () => {
+      const clientEventId = createRequestNonce();
+      const basePayload = {
+        runId: params.runId,
+        currentUrl: params.currentUrl,
+        targetUrl: params.targetUrl,
+        logicalTabId: params.logicalTabId,
+        message: params.message,
+        adversarialScore: params.adversarialScore,
+        currentHost: params.currentHost,
+        targetHost: params.targetHost,
+        isCrossHost: params.isCrossHost,
+        navigationClass: params.navigationClass,
+        clientEventId,
+      };
 
-    const firstAttempt = await this.postJson<TabEventDecisionResponse>('/tab/event', {
-      ...basePayload,
-      expectedEpoch: this.epoch,
-      expectedSeq: this.lastSeq,
-    });
-    if (firstAttempt.ok) {
-      const data = (firstAttempt.data || null) as TabEventDecisionResponse | null;
-      if (data) {
-        if (Number.isFinite(Number(data?.sessionEpoch))) {
-          this.epoch = Math.max(1, Number(data?.sessionEpoch || this.epoch));
-        }
-        if (Number.isFinite(Number(data?.currentSeq))) {
-          this.lastSeq = Math.max(0, Number(data?.currentSeq || 0));
-        }
-      }
-      return data
-        ? {
-            ...data,
-            clientEventId,
-            retryAttempted: false,
-            retryExhausted: false,
-          }
-        : null;
-    }
-
-    const conflict = firstAttempt.conflict;
-    const isRetryableStaleConflict = conflict?.retryable && (conflict.type === 'stale_seq' || conflict.type === 'stale_epoch');
-    if (isRetryableStaleConflict) {
-      const retryAttempt = await this.postJson<TabEventDecisionResponse>('/tab/event', {
-        ...basePayload,
+      const firstAttempt = await this.postJson<any>('/command', {
+        type: 'TAB_EVENT',
+        commandId: clientEventId,
         expectedEpoch: this.epoch,
         expectedSeq: this.lastSeq,
+        payload: basePayload,
       });
-      if (retryAttempt.ok) {
-        const retryData = (retryAttempt.data || null) as TabEventDecisionResponse | null;
-        if (retryData) {
-          if (Number.isFinite(Number(retryData?.sessionEpoch))) {
-            this.epoch = Math.max(1, Number(retryData?.sessionEpoch || this.epoch));
-          }
-          if (Number.isFinite(Number(retryData?.currentSeq))) {
-            this.lastSeq = Math.max(0, Number(retryData?.currentSeq || 0));
-          }
+      if (firstAttempt.ok) {
+        const envelope = firstAttempt.data || {};
+        const data = (envelope?.data || null) as TabEventDecisionResponse | null;
+        if (Number.isFinite(Number(envelope?.epoch))) {
+          this.epoch = Math.max(1, Number(envelope?.epoch || this.epoch));
         }
-        return retryData
+        if (Number.isFinite(Number(envelope?.seq))) {
+          this.lastSeq = Math.max(0, Number(envelope?.seq || 0));
+        }
+        return data
           ? {
-              ...retryData,
+              ...data,
               clientEventId,
-              retryAttempted: true,
+              retryAttempted: false,
               retryExhausted: false,
             }
-          : {
-              clientEventId,
-              retryAttempted: true,
-              retryExhausted: false,
-            };
+          : null;
       }
 
-      const retryConflict = retryAttempt.conflict || conflict;
-      const retryData = (retryAttempt.data || firstAttempt.data || null) as TabEventDecisionResponse | null;
-      void this.fetchProjection().catch(() => undefined);
-      return {
-        ...(retryData || {}),
-        clientEventId,
-        retryAttempted: true,
-        retryExhausted: true,
-        decisionReason:
-          retryData?.decisionReason
-          || retryConflict?.decisionReason
-          || (retryConflict?.type === 'stale_epoch' ? 'stale_epoch_retryable' : 'stale_seq_retryable'),
-        conflict: retryConflict
-          ? {
-              type: retryConflict.type,
-              currentSeq: retryConflict.currentSeq,
-              currentEpoch: retryConflict.currentEpoch,
-              retryable: !!retryConflict.retryable,
-            }
-          : undefined,
-      };
-    }
-
-    const data = (firstAttempt.data || null) as TabEventDecisionResponse | null;
-    if (conflict?.type) {
-      void this.fetchProjection().catch(() => undefined);
-    }
-    return {
-      ...(data || {}),
-      clientEventId,
-      retryAttempted: false,
-      retryExhausted: !!conflict,
-      conflict: conflict
-        ? {
-            type: conflict.type,
-            currentSeq: conflict.currentSeq,
-            currentEpoch: conflict.currentEpoch,
-            retryable: !!conflict.retryable,
+      const conflict = firstAttempt.conflict;
+      const isRetryableStaleConflict = conflict?.retryable && (conflict.type === 'stale_seq' || conflict.type === 'stale_epoch');
+      if (isRetryableStaleConflict) {
+        const retryAttempt = await this.postJson<any>('/command', {
+          type: 'TAB_EVENT',
+          commandId: clientEventId,
+          expectedEpoch: this.epoch,
+          expectedSeq: this.lastSeq,
+          payload: basePayload,
+        });
+        if (retryAttempt.ok) {
+          const envelope = retryAttempt.data || {};
+          const retryData = (envelope?.data || null) as TabEventDecisionResponse | null;
+          if (Number.isFinite(Number(envelope?.epoch))) {
+            this.epoch = Math.max(1, Number(envelope?.epoch || this.epoch));
           }
-        : data?.conflict,
-    };
+          if (Number.isFinite(Number(envelope?.seq))) {
+            this.lastSeq = Math.max(0, Number(envelope?.seq || 0));
+          }
+          return retryData
+            ? {
+                ...retryData,
+                clientEventId,
+                retryAttempted: true,
+                retryExhausted: false,
+              }
+            : {
+                clientEventId,
+                retryAttempted: true,
+                retryExhausted: false,
+              };
+        }
+
+        const retryConflict = retryAttempt.conflict || conflict;
+        const retryData = ((retryAttempt.data || firstAttempt.data || null)?.data || null) as TabEventDecisionResponse | null;
+        void this.fetchProjection().catch(() => undefined);
+        return {
+          ...(retryData || {}),
+          clientEventId,
+          retryAttempted: true,
+          retryExhausted: true,
+          decisionReason:
+            retryData?.decisionReason
+            || retryConflict?.decisionReason
+            || (retryConflict?.type === 'stale_epoch' ? 'stale_epoch_retryable' : 'stale_seq_retryable'),
+          conflict: retryConflict
+            ? {
+                type: retryConflict.type,
+                currentSeq: retryConflict.currentSeq,
+                currentEpoch: retryConflict.currentEpoch,
+                retryable: !!retryConflict.retryable,
+              }
+            : undefined,
+        };
+      }
+
+      const data = ((firstAttempt.data || null)?.data || null) as TabEventDecisionResponse | null;
+      if (conflict?.type) {
+        void this.fetchProjection().catch(() => undefined);
+      }
+      return {
+        ...(data || {}),
+        clientEventId,
+        retryAttempted: false,
+        retryExhausted: !!conflict,
+        conflict: conflict
+          ? {
+              type: conflict.type,
+              currentSeq: conflict.currentSeq,
+              currentEpoch: conflict.currentEpoch,
+              retryable: !!conflict.retryable,
+            }
+          : data?.conflict,
+      };
+    });
   }
 
   async fetchProjection(): Promise<RoverServerProjection | null> {
@@ -869,14 +982,18 @@ export class RoverServerRuntimeClient {
       seqAfter: String(this.lastSeq),
       sessionToken: this.sessionToken,
     });
-    const { response, json } = await this.requestJson(`/session/projection?${query.toString()}`, {
+    const { response, json } = await this.requestJson(`/state?${query.toString()}`, {
       method: 'GET',
       headers: { 'Content-Type': 'application/json' },
     });
-    if (!response.ok || !json?.success || !isProjection(json?.data)) {
+    const projectionCandidate =
+      json?.data && typeof json.data === 'object' && isProjection(json.data?.projection)
+        ? json.data.projection
+        : json?.data;
+    if (!response.ok || !json?.success || !isProjection(projectionCandidate)) {
       return null;
     }
-    const projection = json.data as RoverServerProjection;
+    const projection = projectionCandidate as RoverServerProjection;
     this.applyProjection(projection);
     return projection;
   }
@@ -891,28 +1008,61 @@ export class RoverServerRuntimeClient {
     ttlHours?: number;
     visitorId?: string;
   }): Promise<boolean> {
-    const result = await this.postJson<{ saved?: boolean }>('/session/snapshot', {
-      checkpoint: params.checkpoint,
-      updatedAt: params.updatedAt,
-      version: params.version,
-      seq: params.seq,
-      chatSummary: params.chatSummary,
-      compactedPrevSteps: params.compactedPrevSteps,
-      ttlHours: params.ttlHours,
-      visitorId: params.visitorId,
+    return this.withCommandLock(async () => {
+      const result = await this.postJson<{ saved?: boolean }>('/snapshot', {
+        checkpoint: params.checkpoint,
+        updatedAt: params.updatedAt,
+        version: params.version,
+        seq: params.seq,
+        chatSummary: params.chatSummary,
+        compactedPrevSteps: params.compactedPrevSteps,
+        ttlHours: params.ttlHours,
+        visitorId: params.visitorId,
+      });
+      return !!result?.ok;
     });
-    return !!result?.ok;
+  }
+
+  private scheduleProjectionPoll(delayMs: number): void {
+    if (this.pollTimer != null) {
+      window.clearTimeout(this.pollTimer);
+      this.pollTimer = null;
+    }
+    this.pollTimer = window.setTimeout(async () => {
+      this.pollTimer = null;
+      if (!this.started || !this.shouldKeepTransportActive()) return;
+      const prevEpoch = this.epoch;
+      const prevSeq = this.lastSeq;
+      const prevSnapshotDigest = this.lastSnapshotDigest;
+      try {
+        await this.fetchProjection();
+      } catch (error) {
+        this.reportError(error);
+      }
+      const changed =
+        this.epoch !== prevEpoch
+        || this.lastSeq !== prevSeq
+        || this.lastSnapshotDigest !== prevSnapshotDigest;
+      if (changed) {
+        this.pollIntervalMs = 2_000;
+      } else {
+        this.pollIntervalMs = Math.min(15_000, Math.round(this.pollIntervalMs * 1.4));
+      }
+      if (this.started && this.shouldKeepTransportActive() && !this.eventSource) {
+        this.scheduleProjectionPoll(this.pollIntervalMs);
+      }
+    }, delayMs);
   }
 
   private startProjectionPolling(): void {
     if (this.pollTimer != null) return;
-    this.pollTimer = window.setInterval(() => {
-      void this.fetchProjection().catch(error => this.reportError(error));
-    }, 6_000);
+    this.pollIntervalMs = 2_000;
+    this.scheduleProjectionPoll(this.pollIntervalMs);
   }
 
   private scheduleSseReconnect(): void {
     if (!this.started) return;
+    if (!this.shouldKeepTransportActive()) return;
     if (this.reconnectTimer != null) return;
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
@@ -922,6 +1072,10 @@ export class RoverServerRuntimeClient {
 
   private startProjectionStream(): void {
     if (!this.started) return;
+    if (!this.shouldKeepTransportActive()) {
+      this.pauseBackgroundTransport();
+      return;
+    }
     if (!this.sessionToken || !this.sessionId) {
       this.startProjectionPolling();
       return;
@@ -934,22 +1088,34 @@ export class RoverServerRuntimeClient {
 
     const query = new URLSearchParams({
       sessionId: this.sessionId,
-      seqAfter: String(this.lastSeq),
+      cursor: String(this.lastSeq),
       sessionToken: this.sessionToken,
     });
-    const url = `${this.getActiveBase()}/events?${query.toString()}`;
+    const url = `${this.getActiveBase()}/stream?${query.toString()}`;
     const source = new EventSource(url, { withCredentials: false });
     this.eventSource = source;
 
-    source.addEventListener('projection', event => {
+    const handleProjectionEvent = (raw: string) => {
       try {
-        const parsed = JSON.parse((event as MessageEvent<string>).data || '{}');
-        if (isProjection(parsed)) {
-          this.applyProjection(parsed);
+        const parsed = JSON.parse(raw || '{}');
+        const projectionCandidate =
+          parsed && typeof parsed === 'object' && isProjection(parsed.projection)
+            ? parsed.projection
+            : parsed;
+        if (isProjection(projectionCandidate)) {
+          this.applyProjection(projectionCandidate);
         }
       } catch (error) {
         this.reportError(error);
       }
+    };
+
+    source.addEventListener('projection', event => {
+      handleProjectionEvent((event as MessageEvent<string>).data || '{}');
+    });
+
+    source.addEventListener('projection_delta', event => {
+      handleProjectionEvent((event as MessageEvent<string>).data || '{}');
     });
 
     source.onerror = () => {
@@ -961,15 +1127,24 @@ export class RoverServerRuntimeClient {
         .catch(error => this.reportError(error))
         .finally(() => {
           this.rotateBaseCandidate();
-          this.startProjectionPolling();
-          this.scheduleSseReconnect();
+          if (this.shouldKeepTransportActive()) {
+            this.startProjectionPolling();
+            this.scheduleSseReconnect();
+          } else {
+            this.pauseBackgroundTransport();
+          }
         });
     };
 
     source.onopen = () => {
+      if (!this.shouldKeepTransportActive()) {
+        this.pauseBackgroundTransport();
+        return;
+      }
       if (this.pollTimer != null) {
-        window.clearInterval(this.pollTimer);
+        window.clearTimeout(this.pollTimer);
         this.pollTimer = null;
+        this.pollIntervalMs = 2_000;
       }
     };
   }

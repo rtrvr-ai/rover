@@ -1,4 +1,5 @@
 import type { RoverMessageBlock } from '@rover/ui';
+import { ROVER_V2_PERSIST_CAPS } from '@rover/shared';
 
 export type SharedRole = 'controller' | 'observer';
 
@@ -244,8 +245,11 @@ function sanitizeMessageBlocks(input: unknown): RoverMessageBlock[] | undefined 
 
 function cloneUnknownArrayTail(input: unknown, max: number): unknown[] {
   if (!Array.isArray(input)) return [];
+  const selected = input.length <= max
+    ? input
+    : [input[0], ...input.slice(-(max - 1))];
   const out: unknown[] = [];
-  for (const entry of input.slice(-max)) {
+  for (const entry of selected) {
     const cloned = cloneUnknown(entry);
     if (cloned !== undefined) out.push(cloned);
   }
@@ -290,7 +294,7 @@ function sanitizeSharedWorkerContext(raw: any): SharedWorkerContext | undefined 
 
   const normalizeEntries = (items: any[]): Array<{ role: string; content: string }> =>
     items
-      .slice(-80)
+      .slice(-ROVER_V2_PERSIST_CAPS.uiMessages)
       .map(item => ({
         role: typeof item?.role === 'string' ? item.role : 'assistant',
         content: typeof item?.content === 'string' ? item.content : '',
@@ -298,8 +302,8 @@ function sanitizeSharedWorkerContext(raw: any): SharedWorkerContext | undefined 
       .filter(item => !!item.content);
 
   const history = Array.isArray(raw.history) ? normalizeEntries(raw.history) : [];
-  const plannerHistory = cloneUnknownArrayTail(raw.plannerHistory, 40);
-  const agentPrevSteps = cloneUnknownArrayTail(raw.agentPrevSteps, 80);
+  const plannerHistory = cloneUnknownArrayTail(raw.plannerHistory, ROVER_V2_PERSIST_CAPS.plannerHistory);
+  const agentPrevSteps = cloneUnknownArrayTail(raw.agentPrevSteps, ROVER_V2_PERSIST_CAPS.prevSteps);
   const rootUserInput = typeof raw.rootUserInput === 'string' ? raw.rootUserInput.trim() : '';
 
   return {
@@ -390,6 +394,7 @@ function sanitizeSharedState(raw: any, siteId: string, sessionId: string): Share
     activeLogicalTabId: Number(raw.activeLogicalTabId) || undefined,
     uiMessages: Array.isArray(raw.uiMessages)
       ? raw.uiMessages
+          .slice(-ROVER_V2_PERSIST_CAPS.uiMessages)
           .map((message: any) => ({
             id: String(message?.id || randomId('msg')),
             role:
@@ -405,6 +410,7 @@ function sanitizeSharedState(raw: any, siteId: string, sessionId: string): Share
       : [],
     timeline: Array.isArray(raw.timeline)
       ? raw.timeline
+          .slice(-ROVER_V2_PERSIST_CAPS.timelineEvents)
           .map((event: any) => ({
             id: String(event?.id || randomId('timeline')),
             kind: String(event?.kind || 'status'),
@@ -716,8 +722,8 @@ export class SessionCoordinator {
     this.runtimeId = options.runtimeId;
     this.leaseMs = Math.max(4000, Number(options.leaseMs) || 12000);
     this.heartbeatMs = Math.max(800, Number(options.heartbeatMs) || 2000);
-    this.maxMessages = Math.max(40, Number(options.maxMessages) || 220);
-    this.maxTimeline = Math.max(40, Number(options.maxTimeline) || 280);
+    this.maxMessages = Math.max(20, Number(options.maxMessages) || ROVER_V2_PERSIST_CAPS.uiMessages);
+    this.maxTimeline = Math.max(20, Number(options.maxTimeline) || ROVER_V2_PERSIST_CAPS.timelineEvents);
     this.onRoleChange = options.onRoleChange;
     this.onStateChange = options.onStateChange;
     this.onSwitchRequested = options.onSwitchRequested;

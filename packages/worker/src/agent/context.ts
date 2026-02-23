@@ -229,15 +229,15 @@ function resolveExtensionRouterEndpoint(apiBase?: string): string {
   return `${base}/extensionRouter`;
 }
 
-function resolveRoverV1Endpoint(apiBase?: string): string {
+function resolveRoverV2Endpoint(apiBase?: string): string {
   const fallback = DEFAULT_EXTENSION_ROUTER_BASE;
   const base = String(apiBase || fallback).trim().replace(/\/+$/, '');
-  if (!base) return `${fallback}/v1/rover`;
+  if (!base) return `${fallback}/v2/rover`;
   if (base.endsWith('/extensionRouter')) {
-    return `${base.slice(0, -('/extensionRouter'.length))}/v1/rover`;
+    return `${base.slice(0, -('/extensionRouter'.length))}/v2/rover`;
   }
-  if (base.endsWith('/v1/rover')) return base;
-  return `${base}/v1/rover`;
+  if (base.endsWith('/v2/rover')) return base;
+  return `${base}/v2/rover`;
 }
 
 function createRequestNonce(): string {
@@ -330,7 +330,7 @@ export function createAgentContext(
   }
 
   const endpoint = resolveExtensionRouterEndpoint(config.apiBase);
-  const roverV1Endpoint = resolveRoverV1Endpoint(config.apiBase);
+  const roverV2Endpoint = resolveRoverV2Endpoint(config.apiBase);
   const runtimeContext = buildRoverRuntimeContext(config);
   const externalWebConfig = normalizeExternalWebConfig(config.tools?.web);
   const externalPageDataCache = new Map<string, { data: any; ts: number }>();
@@ -363,7 +363,7 @@ export function createAgentContext(
         code: 'MISSING_AUTH_TOKEN',
         message: 'Rover session token is required to call backend action routes.',
         requires_api_key: false,
-        next_action: 'Initialize Rover session via /v1/rover/session/start and pass sessionToken to rover.boot(...).',
+        next_action: 'Initialize Rover session via /v2/rover/session/open and pass sessionToken to rover.boot(...).',
         retryable: false,
       });
     }
@@ -495,12 +495,12 @@ export function createAgentContext(
       throw createRoverError({
         code: 'MISSING_AUTH_TOKEN',
         message: 'External context requires a Rover session token.',
-        next_action: 'Initialize Rover v1 session/start before requesting external context.',
+        next_action: 'Initialize Rover v2 session/open before requesting external context.',
         retryable: false,
       });
     }
     try {
-      const v1Resp = await fetch(`${roverV1Endpoint}/context/external`, {
+      const v2Resp = await fetch(`${roverV2Endpoint}/context/external`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -520,14 +520,14 @@ export function createAgentContext(
         }),
         signal: config.signal,
       });
-      const payload = await v1Resp.json().catch(() => undefined);
-      if (!v1Resp.ok || payload?.success === false) {
-        const envelope = toRoverErrorEnvelope(payload, payload?.error || `external context request failed (${v1Resp.status})`);
+      const payload = await v2Resp.json().catch(() => undefined);
+      if (!v2Resp.ok || payload?.success === false) {
+        const envelope = toRoverErrorEnvelope(payload, payload?.error || `external context request failed (${v2Resp.status})`);
         throw createRoverError({
           ...envelope,
           details: {
-            endpoint: `${roverV1Endpoint}/context/external`,
-            status: v1Resp.status,
+            endpoint: `${roverV2Endpoint}/context/external`,
+            status: v2Resp.status,
             response: payload,
           },
         });

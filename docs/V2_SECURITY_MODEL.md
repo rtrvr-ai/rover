@@ -1,4 +1,4 @@
-# Rover v1 Security Model
+# Rover v2 Security Model
 
 ## Threat Model
 Rover runs in customer pages, so client-visible keys are exposed to browser contexts. Security must rely on key scoping, server-side policy checks, and abuse detection.

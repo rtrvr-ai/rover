@@ -33,12 +33,14 @@ export type RoverCloudCheckpointClientOptions = {
   apiBase?: string;
   authToken?: string;
   getSessionToken?: () => string | undefined;
+  shouldSync?: () => boolean;
   siteId: string;
   visitorId: string;
   ttlHours?: number;
   flushIntervalMs?: number;
   pullIntervalMs?: number;
   minFlushIntervalMs?: number;
+  maxSnapshotBytes?: number;
   shouldWrite?: () => boolean;
   buildCheckpoint: () => RoverCloudCheckpointPayload | null;
   onCheckpoint: (checkpoint: RoverCloudCheckpointPayload, source: CheckpointSource) => void;
@@ -171,8 +173,10 @@ function normalizeBaseOrigin(apiBase?: string): string {
   const fallback = DEFAULT_EXTENSION_ROUTER_BASE;
   const base = String(apiBase || fallback).trim().replace(/\/+$/, '');
   if (!base) return fallback;
-  if (base.endsWith('/extensionRouter/v1/rover')) return base.slice(0, -('/extensionRouter/v1/rover'.length));
-  if (base.endsWith('/v1/rover')) return base.slice(0, -('/v1/rover'.length));
+  if (base.endsWith('/extensionRouter/v2/rover')) return base.slice(0, -('/extensionRouter/v2/rover'.length));
+  if (base.endsWith('/v2/rover')) return base.slice(0, -('/v2/rover'.length));
+  const versionedRouterMatch = base.match(/\/v\d+\/rover$/);
+  if (versionedRouterMatch?.[0]) return base.slice(0, -versionedRouterMatch[0].length);
   if (base.endsWith('/extensionRouter')) return base.slice(0, -('/extensionRouter'.length));
   return base;
 }
@@ -189,13 +193,13 @@ function unique(values: string[]): string[] {
   return out;
 }
 
-function normalizeRoverV1Bases(apiBase?: string): string[] {
+function normalizeRoverV2Bases(apiBase?: string): string[] {
   const base = normalizeBaseOrigin(apiBase);
   const rawApiBase = String(apiBase || '').trim().replace(/\/+$/, '');
-  if (rawApiBase.endsWith('/v1/rover') || rawApiBase.endsWith('/extensionRouter/v1/rover')) {
-    return unique([rawApiBase.replace('/extensionRouter/v1/rover', '/v1/rover'), `${base}/v1/rover`]);
+  if (rawApiBase.endsWith('/v2/rover') || rawApiBase.endsWith('/extensionRouter/v2/rover')) {
+    return unique([rawApiBase.replace('/extensionRouter/v2/rover', '/v2/rover'), `${base}/v2/rover`]);
   }
-  return unique([`${base}/v1/rover`]);
+  return unique([`${base}/v2/rover`]);
 }
 
 function toError(message: string, details?: any): Error {
@@ -222,6 +226,8 @@ export class RoverCloudCheckpointClient {
   private readonly flushIntervalMs: number;
   private readonly pullIntervalMs: number;
   private readonly minFlushIntervalMs: number;
+  private readonly maxSnapshotBytes: number;
+  private readonly shouldSync: () => boolean;
   private readonly shouldWrite: () => boolean;
   private readonly buildCheckpoint: RoverCloudCheckpointClientOptions['buildCheckpoint'];
   private readonly onCheckpoint: RoverCloudCheckpointClientOptions['onCheckpoint'];
@@ -240,6 +246,7 @@ export class RoverCloudCheckpointClient {
   private pushInFlight = false;
   private pullInFlight = false;
   private state: RoverCloudCheckpointState = 'active';
+  private visibilityListener: (() => void) | null = null;
 
   constructor(options: RoverCloudCheckpointClientOptions) {
     const staticToken = String(options.authToken || '').trim();
@@ -249,8 +256,8 @@ export class RoverCloudCheckpointClient {
       throw toError('Rover cloud checkpoint requires a session token (rvrsess_...).');
     }
 
-    this.endpointCandidates = normalizeRoverV1Bases(options.apiBase);
-    this.endpoint = this.endpointCandidates[0] || `${DEFAULT_EXTENSION_ROUTER_BASE}/v1/rover`;
+    this.endpointCandidates = normalizeRoverV2Bases(options.apiBase);
+    this.endpoint = this.endpointCandidates[0] || `${DEFAULT_EXTENSION_ROUTER_BASE}/v2/rover`;
     this.getToken = () => {
       const next = provider ? String(provider() || '').trim() : staticToken;
       if (!next || !next.startsWith(SESSION_TOKEN_PREFIX)) {
@@ -264,6 +271,8 @@ export class RoverCloudCheckpointClient {
     this.flushIntervalMs = Math.max(2_000, Math.floor(toFiniteNumber(options.flushIntervalMs, 12_000)));
     this.pullIntervalMs = Math.max(2_000, Math.floor(toFiniteNumber(options.pullIntervalMs, 15_000)));
     this.minFlushIntervalMs = Math.max(1_000, Math.floor(toFiniteNumber(options.minFlushIntervalMs, 2_500)));
+    this.maxSnapshotBytes = Math.max(64_000, Math.min(2_097_152, Math.floor(toFiniteNumber(options.maxSnapshotBytes, 524_288))));
+    this.shouldSync = options.shouldSync || (() => true);
     this.shouldWrite = options.shouldWrite || (() => true);
     this.buildCheckpoint = options.buildCheckpoint;
     this.onCheckpoint = options.onCheckpoint;
@@ -276,11 +285,23 @@ export class RoverCloudCheckpointClient {
     this.started = true;
     this.setState('active');
 
+    if (typeof document !== 'undefined' && !this.visibilityListener) {
+      this.visibilityListener = () => {
+        if (!this.started || document.hidden) return;
+        if (!this.shouldSync()) return;
+        void this.pull(true);
+        if (this.dirty) void this.flush(true);
+      };
+      document.addEventListener('visibilitychange', this.visibilityListener);
+    }
+
     this.flushTimer = window.setInterval(() => {
+      if (!this.shouldSync()) return;
       void this.flush(false);
     }, this.flushIntervalMs);
 
     this.pullTimer = window.setInterval(() => {
+      if (!this.shouldSync()) return;
       void this.pull(false);
     }, this.pullIntervalMs);
 
@@ -298,6 +319,10 @@ export class RoverCloudCheckpointClient {
     if (this.pullTimer != null) {
       window.clearInterval(this.pullTimer);
       this.pullTimer = null;
+    }
+    if (this.visibilityListener && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.visibilityListener);
+      this.visibilityListener = null;
     }
 
     void this.flush(true);
@@ -366,6 +391,7 @@ export class RoverCloudCheckpointClient {
   private async flush(force: boolean): Promise<void> {
     if (this.pushInFlight) return;
     if (this.state === 'paused_auth') return;
+    if (!force && !this.shouldSync()) return;
     if (!this.dirty && !force) return;
     if (!this.shouldWrite()) return;
     if (!force && Date.now() - this.lastFlushAt < this.minFlushIntervalMs) return;
@@ -412,6 +438,7 @@ export class RoverCloudCheckpointClient {
   private async pull(force: boolean): Promise<void> {
     if (this.pullInFlight) return;
     if (this.state === 'paused_auth') return;
+    if (!force && !this.shouldSync()) return;
     if (!force && Date.now() - this.lastPullAt < this.pullIntervalMs) return;
 
     this.pullInFlight = true;
@@ -443,10 +470,10 @@ export class RoverCloudCheckpointClient {
   }
 
   private async callCheckpointApi(checkpointAction: CheckpointAction, data: any): Promise<any> {
-    return this.callRoverV1(checkpointAction, data);
+    return this.callRoverV2(checkpointAction, data);
   }
 
-  private async callRoverV1(action: CheckpointAction, data: any): Promise<any> {
+  private async callRoverV2(action: CheckpointAction, data: any): Promise<any> {
     const sessionToken = this.getToken();
     if (action === 'session_snapshot_upsert') {
       const body = JSON.stringify({
@@ -459,10 +486,18 @@ export class RoverCloudCheckpointClient {
         version: data?.checkpoint?.version || data?.version || 1,
         checkpoint: data?.checkpoint,
       });
+      if (body.length > this.maxSnapshotBytes) {
+        throw toError('Checkpoint snapshot exceeds maxSnapshotBytes limit.', {
+          action,
+          size: body.length,
+          maxSnapshotBytes: this.maxSnapshotBytes,
+          code: 'SNAPSHOT_TOO_LARGE',
+        });
+      }
       // keepalive ensures the request survives page navigation (e.g. same-tab nav).
       // The spec limits keepalive request bodies to 64KB; skip if payload is too large.
       const useKeepalive = body.length < 60_000;
-      const { response, payload } = await this.requestJson('/session/snapshot', {
+      const { response, payload } = await this.requestJson('/snapshot', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -490,7 +525,7 @@ export class RoverCloudCheckpointClient {
       sessionToken,
       includeSnapshot: 'true',
     });
-    const { response, payload } = await this.requestJson(`/session/projection?${params.toString()}`, {
+    const { response, payload } = await this.requestJson(`/state?${params.toString()}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -503,7 +538,9 @@ export class RoverCloudCheckpointClient {
         payload,
       });
     }
-    const checkpoint = payload?.data?.snapshot;
+    const checkpoint =
+      payload?.data?.projection?.snapshot
+      ?? payload?.data?.snapshot;
     return {
       found: !!checkpoint,
       checkpoint,

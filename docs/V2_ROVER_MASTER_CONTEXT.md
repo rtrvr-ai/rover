@@ -1,4 +1,4 @@
-# Rover v1 Master Context
+# Rover v2 Master Context
 
 ## What Rover Is
 Rover is an embedded, DOM-native web agent runtime that runs inside customer websites without extension APIs. It preserves the core intelligence model from relay/cloud (planner loop, tool loop, history continuity) while operating through `window`, DOM tools, and backend sub-agent endpoints.

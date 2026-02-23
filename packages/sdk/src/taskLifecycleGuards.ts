@@ -1,6 +1,7 @@
 import { normalizeTaskBoundaryId } from './taskBoundaryGuards.js';
 
 export type TaskStatus = 'running' | 'completed' | 'cancelled' | 'failed' | 'ended';
+export type AutoResumePolicy = 'auto' | 'confirm' | 'never';
 
 export function shouldStartFreshTask(taskStatus?: TaskStatus): boolean {
   return (
@@ -13,6 +14,43 @@ export function shouldStartFreshTask(taskStatus?: TaskStatus): boolean {
 
 export function canAutoResumePendingRun(taskStatus?: TaskStatus): boolean {
   return taskStatus === 'running';
+}
+
+export function resolveAutoResumePolicyAction(params: {
+  policy: AutoResumePolicy;
+  resumeRequired: boolean;
+  hasLiveRemoteController: boolean;
+}): 'auto_resume' | 'prompt_resume' | 'cancel_resume' | 'defer_remote_owner' | 'noop' {
+  if (!params.resumeRequired) return 'noop';
+  if (params.hasLiveRemoteController) return 'defer_remote_owner';
+  if (params.policy === 'never') return 'cancel_resume';
+  if (params.policy === 'confirm') return 'prompt_resume';
+  return 'auto_resume';
+}
+
+export function shouldAdoptProjectionRun(params: {
+  serverRunId?: string;
+  localPendingRunId?: string;
+  ignoredRunIds?: Set<string>;
+}): boolean {
+  const serverRunId = String(params.serverRunId || '').trim();
+  if (!serverRunId) return false;
+  if (params.ignoredRunIds?.has(serverRunId)) return false;
+  const localPendingRunId = String(params.localPendingRunId || '').trim();
+  return !localPendingRunId || localPendingRunId !== serverRunId;
+}
+
+export function shouldQueueCancelForIgnoredProjectionRun(params: {
+  serverRunId?: string;
+  runStatus?: string;
+  ignoredRunIds?: Set<string>;
+}): boolean {
+  const serverRunId = String(params.serverRunId || '').trim();
+  if (!serverRunId) return false;
+  if (!params.ignoredRunIds?.has(serverRunId)) return false;
+  const status = String(params.runStatus || '').trim().toLowerCase();
+  const terminal = status === 'completed' || status === 'cancelled' || status === 'failed' || status === 'ended';
+  return !terminal;
 }
 
 export function shouldAdoptSnapshotActiveRun(params: {

@@ -324,7 +324,7 @@ rover.boot(config);
 | `sessionId` | `string` | auto | Explicit session ID |
 | `sessionScope` | `'shared_site' \| 'tab'` | `'shared_site'` | Shared cross-tab session or tab-isolated session |
 | `mode` | `'full' \| 'safe'` | `'full'` | Runtime mode |
-| `apiBase` | `string` | `https://extensionrouter.rtrvr.ai` | Custom API base URL. Rover runtime uses `/v1/rover/*` under this base. |
+| `apiBase` | `string` | `https://extensionrouter.rtrvr.ai` | Custom API base URL. Rover runtime uses `/v2/rover/*` under this base. |
 | `workerUrl` | `string` | auto | Custom worker URL (self-hosting) |
 
 ### Domain Guardrails & Navigation
@@ -359,6 +359,7 @@ rover.boot(config);
 | `task.followup.mode` | `'heuristic_same_window'` | `'heuristic_same_window'` | Heuristic follow-up chat-cue carryover mode |
 | `task.followup.ttlMs` | `number` | `120000` | Max age (ms) of prior completed/ended task eligible for follow-up chat cues |
 | `task.followup.minLexicalOverlap` | `number` | `0.18` | Minimum lexical overlap ratio to attach follow-up chat cues |
+| `task.autoResumePolicy` | `'auto' \| 'confirm' \| 'never'` | `'confirm'` | Interrupted-run resume behavior (`auto` resume, `confirm` prompt Resume/Cancel, or `never` cancel pending run). |
 
 ### Checkpointing
 
@@ -418,41 +419,41 @@ When `tools.web.scrapeMode` is `on_demand`, ensure your Rover site key includes 
 | `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced) |
 | `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | — | Greeting bubble config; supports `{name}` placeholder |
 
-With site keys (or a valid `rvrsess_*` token), Rover fetches cloud site config via `POST /v1/rover/session/start` (shortcuts + greeting).  
+With site keys (or a valid `rvrsess_*` token), Rover fetches cloud site config via `POST /v2/rover/session/open` (shortcuts + greeting).  
 If boot config and cloud config define the same field, boot config takes precedence.
 
-### Rover V1 Runtime APIs
+### Rover V2 Runtime APIs
 
-Runtime base is `https://extensionrouter.rtrvr.ai/v1/rover/*`.
+Runtime base is `https://extensionrouter.rtrvr.ai/v2/rover/*`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/session/start` | Bootstrap/refresh runtime session and initial projection |
-| `POST` | `/session/refresh` | Refresh short-lived `rvrsess_*` token |
-| `POST` | `/run/input` | Create/continue authoritative run |
-| `POST` | `/run/control` | Cancel/end/new/continue run lifecycle control |
-| `POST` | `/tab/event` | Navigation policy decision and tab graph updates |
-| `GET` | `/events` | SSE projection stream |
-| `GET` | `/session/projection` | Projection polling fallback |
-| `POST` | `/session/snapshot` | Compacted snapshot/checkpoint upsert |
+| `POST` | `/session/open` | Bootstrap/refresh runtime session and initial projection |
+| `POST` | `/command` | Authoritative command uplink (`RUN_INPUT`, `RUN_CONTROL`, `TAB_EVENT`, `ASK_USER_ANSWER`) |
+| `GET` | `/stream` | SSE projection stream |
+| `GET` | `/state` | Projection polling fallback/resync |
+| `POST` | `/snapshot` | Compacted boundary snapshot/checkpoint upsert |
 | `POST` | `/context/external` | External context/action bridge |
 | `POST` | `/telemetry/ingest` | Runtime telemetry ingestion |
 
 Runtime semantics:
 
 - Server authority key is `sessionId + runId + epoch + seq`.
-- `taskRouting.mode` maps to `requestedMode` for `/run/input`.
+- `taskRouting.mode` maps to `requestedMode` in `POST /command` payloads with `type='RUN_INPUT'`.
 - `taskRouting.plannerOnActError` applies only in `auto` mode, and planner fallback is not triggered after usable ACT success.
 - Typed conflicts: `409 stale_seq`, `409 stale_epoch`, `409 active_run_exists`.
-- `POST /tab/event` stale/missing run is non-fatal via `200 decision='stale_run'`.
-- `GET /session/projection` is metadata-first by default (`includeSnapshot=false`). Use `includeSnapshot=true` only when full checkpoint payload is required.
+- `POST /command` stale/missing run is non-fatal for tab navigation decisions (`decision='stale_run'`).
+- `GET /state` is metadata-first by default (`includeSnapshot=false`). Use `includeSnapshot=true` only when full checkpoint payload is required.
 - Projection payloads expose `snapshotMeta` (`updatedAt`, `digest`) for lightweight change detection. Full `snapshot` is sent at bootstrap and selective resync points.
-- Cross-registrable navigation preflight is resilient: when `/tab/event` is unavailable, Rover falls back to local policy (in-scope targets follow `navigation.crossHostPolicy`, default `same_tab`; out-of-scope targets follow `externalNavigationPolicy`).
-- External intent routing: `/context/external` uses `read_context` (read/navigation-context prompts) or `act` (mutation prompts). Navigation-only external opens are represented by `/tab/event` + external placeholder tab handling.
+- Cross-registrable navigation preflight is resilient: when `POST /command` tab decision checks are unavailable, Rover falls back to local policy (in-scope targets follow `navigation.crossHostPolicy`, default `same_tab`; out-of-scope targets follow `externalNavigationPolicy`).
+- External intent routing: `/context/external` uses `read_context` (read/navigation-context prompts) or `act` (mutation prompts). Navigation-only external opens are represented by `POST /command` with `type='TAB_EVENT'` plus external placeholder tab handling.
 - Any normal user send starts a fresh task boundary (fresh `prevSteps`, fresh run-scoped tab order/scope).
 - `ask_user` answer submissions are the only continuation path and keep the same task boundary.
 - `task.followup` is operative heuristic carryover for chat cues only (`user` + `model` summary pair); it never carries previous task state/tab scope.
-- Auto-resume only runs for validated handoff/reload contexts with a ready `rvrsess_*` token; otherwise resume is safely blocked and cleared.
+- `task.autoResumePolicy` is enforced at runtime: `auto` resumes immediately, `confirm` shows Resume/Cancel, `never` cancels pending interrupted run.
+- Resume blocked/declined/never transitions local task state to `cancelled`, clears local running indicators, and enqueues backend run cancel repair (`RUN_CONTROL cancel`) unless a live remote controller owns the run.
+- Projection sync will not rehydrate ignored local run IDs; ignored projected active runs trigger cancel repair retry.
+- Same-domain/subdomain live-controller handoff remains seamless: observer/reopened tabs do not force-cancel runs owned by an active controller tab.
 - Browser runtime path is legacy-free: no checkpoint calls to `roverSessionCheckpointGet/Upsert`.
 
 ### Client Tools
@@ -494,7 +495,7 @@ off(); // unsubscribe
 | `checkpoint_error` | `{ action, code?, message, ... }` | Checkpoint request failure details |
 | `tab_event_conflict_retry` | `{ runId, conflict?, ... }` | A stale seq/epoch tab-event conflict was recovered by one silent retry |
 | `tab_event_conflict_exhausted` | `{ runId, conflict?, ... }` | Tab-event stale conflict retry was exhausted (non-fatal; projection sync path) |
-| `legacy_checkpoint_blocked` | `{ action, status }` | Legacy Rover checkpoint browser path was blocked (V1 only) |
+| `checkpoint_token_missing` | `{ action, status }` | Legacy checkpoint browser path was blocked |
 | `open` | — | Panel opened |
 | `close` | — | Panel closed |
 
@@ -513,7 +514,7 @@ off(); // unsubscribe
 
 ## Task Context Behavior
 
-- Every normal `send` call starts a fresh task boundary in Rover v1.
+- Every normal `send` call starts a fresh task boundary in Rover v2.
 - `ask_user` answer submission is the only case that continues the existing task boundary.
 - Follow-up continuity is chat-cue only: `task.followup.*` can attach prior task intent/output heuristically (TTL + lexical overlap), but does not carry `prevSteps` or tab scope.
 - `newTask` clears conversation/timeline and worker context, starting a fresh task boundary.

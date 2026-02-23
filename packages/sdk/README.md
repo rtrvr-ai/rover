@@ -105,7 +105,7 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `sessionToken` | `string` | — | Optional short-lived Rover session token (`rvrsess_*`). |
 | `siteKeyId` | `string` | — | Site key ID from Workspace |
 | `visitor` | `{ name?: string; email?: string }` | — | Optional visitor profile for greeting personalization. Recommended flow is async updates via `identify(...)` after login/user hydration. |
-| `apiBase` | `string` | `https://extensionrouter.rtrvr.ai` | Optional API base override. Rover uses `/v1/rover/*` under this base. |
+| `apiBase` | `string` | `https://extensionrouter.rtrvr.ai` | Optional API base override. Rover uses `/v2/rover/*` under this base. |
 | `allowedDomains` | `string[]` | `[]` | Hostnames where Rover may operate |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | Domain matching strategy |
 | `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
@@ -120,6 +120,7 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `task.followup.mode` | `'heuristic_same_window'` | `'heuristic_same_window'` | Heuristic follow-up chat-cue carryover mode |
 | `task.followup.ttlMs` | `number` | `120000` | Max age (ms) of prior completed/ended task eligible for follow-up chat cues |
 | `task.followup.minLexicalOverlap` | `number` | `0.18` | Minimum lexical overlap ratio to attach follow-up chat cues |
+| `task.autoResumePolicy` | `'auto' \| 'confirm' \| 'never'` | `'confirm'` | Pending-run resume behavior: auto-resume immediately, require Resume/Cancel confirmation, or always cancel pending interrupted run. |
 | `checkpointing.enabled` | `boolean` | `true` | Cloud checkpoint sync is enabled by default in v1. Set to `false` to disable. |
 | `checkpointing.autoVisitorId` | `boolean` | `true` | Auto-generate visitor ID when needed |
 | `checkpointing.ttlHours` | `number` | `1` | Checkpoint TTL in hours |
@@ -149,41 +150,41 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced) |
 | `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | — | Greeting bubble config (`{name}` token supported) |
 
-When a site key or session token is used, Rover fetches cloud site config via `/v1/rover/session/start` (shortcuts + greeting).  
+When a site key or session token is used, Rover fetches cloud site config via `/v2/rover/session/open` (shortcuts + greeting).  
 If the same field exists in both cloud config and boot config, boot config wins.
 
 If you enable `tools.web.scrapeMode: 'on_demand'`, use a site key capability profile that includes cloud scrape support.
 
 See [full configuration reference](https://github.com/rtrvr-ai/rover/blob/main/docs/INTEGRATION.md#configuration-reference).
 
-## Rover V1 Runtime Endpoints
+## Rover V2 Runtime Endpoints
 
-Browser runtime calls target `https://extensionrouter.rtrvr.ai/v1/rover/*`:
+Browser runtime calls target `https://extensionrouter.rtrvr.ai/v2/rover/*`:
 
-- `POST /session/start`
-- `POST /session/refresh`
-- `POST /run/input`
-- `POST /run/control`
-- `POST /tab/event`
-- `GET /events` (SSE)
-- `GET /session/projection`
-- `POST /session/snapshot`
+- `POST /session/open`
+- `POST /command` (`RUN_INPUT`, `RUN_CONTROL`, `TAB_EVENT`, `ASK_USER_ANSWER`)
+- `GET /stream` (SSE)
+- `GET /state`
+- `POST /snapshot`
 - `POST /context/external`
 - `POST /telemetry/ingest`
 
 Runtime contract notes:
 
 - Server is authoritative (`sessionId + runId + epoch + seq`).
-- `taskRouting.mode` maps to `requestedMode` in `POST /run/input`.
+- `taskRouting.mode` maps to `requestedMode` in `POST /command` payloads with `type='RUN_INPUT'`.
 - `plannerOnActError` applies only in `auto` mode and only when ACT has no usable outcome.
 - Typed conflicts: `stale_seq`, `stale_epoch`, `active_run_exists`.
-- `POST /tab/event` stale/missing run is non-fatal (`decision='stale_run'`).
-- Cross-registrable navigation preflight is resilient: if `/tab/event` is unavailable, Rover falls back to local policy (in-scope targets follow `navigation.crossHostPolicy`, default `same_tab`; out-of-scope targets follow `externalNavigationPolicy`).
-- External intent routing: `/context/external` uses `read_context` (read/navigation-context prompts) or `act` (mutation prompts). Navigation-only external opens are represented by `/tab/event` + external placeholder tab handling.
+- `POST /command` stale/missing run is non-fatal for tab navigation decisions (`decision='stale_run'`).
+- Cross-registrable navigation preflight is resilient: if command-tab decision checks are unavailable, Rover falls back to local policy (in-scope targets follow `navigation.crossHostPolicy`, default `same_tab`; out-of-scope targets follow `externalNavigationPolicy`).
+- External intent routing: `/context/external` uses `read_context` (read/navigation-context prompts) or `act` (mutation prompts). Navigation-only external opens are represented by `POST /command` with `type='TAB_EVENT'` plus external placeholder tab handling.
 - Any normal user send starts a fresh task boundary (fresh `prevSteps`, fresh run-scoped tab order/scope).
 - `ask_user` answer submissions are the only continuation path and keep the same task boundary.
 - `task.followup` is operative heuristic carryover for chat cues only (`user` + `model` summary pair); it never carries previous task state/tab scope.
-- Auto-resume only runs for validated handoff/reload contexts with a ready `rvrsess_*` token; otherwise resume is safely blocked and cleared.
+- `task.autoResumePolicy` is enforced at runtime: `auto` resumes, `confirm` shows explicit Resume/Cancel suggestion, `never` cancels pending resume.
+- Resume blocked/declined/never paths terminalize the local task to `cancelled`, clear local running indicators, and schedule backend cancel repair (`RUN_CONTROL cancel`) unless a live remote controller owns that run.
+- Server projection never re-adopts locally ignored run IDs; ignored projected active runs trigger cancel repair retry.
+- Same-domain/subdomain continuity is preserved when a live controller tab owns the active run; reopening tabs stay observer-safe and do not force-cancel that run.
 - Runtime does not use legacy browser checkpoint routes (`roverSessionCheckpointGet/Upsert`).
 
 ## API Methods
@@ -241,7 +242,7 @@ rover.on('error', (err) => console.error(err));
 | `checkpoint_error` | `{ action, code?, message, ... }` | Checkpoint request failure details |
 | `tab_event_conflict_retry` | `{ runId, conflict?, ... }` | One stale seq/epoch tab-event conflict was recovered by silent retry |
 | `tab_event_conflict_exhausted` | `{ runId, conflict?, ... }` | Tab-event stale conflict retry exhausted (non-fatal; projection sync follows) |
-| `legacy_checkpoint_blocked` | `{ action, status }` | Legacy checkpoint browser path blocked in Rover V1 |
+| `checkpoint_token_missing` | `{ action, status }` | Legacy checkpoint browser path blocked |
 
 ## Content Security Policy (CSP)
 

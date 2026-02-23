@@ -29,6 +29,7 @@ import {
   writeCrossDomainResumeCookie,
   readCrossDomainResumeCookie,
   clearCrossDomainResumeCookie,
+  matchesResumeTargetUrl,
   type CrossDomainResumeData,
 } from './crossDomainResume.js';
 import type {
@@ -44,9 +45,12 @@ import type {
 } from './runtimeTypes.js';
 import {
   canAutoResumePendingRun,
+  resolveAutoResumePolicyAction,
+  shouldAdoptProjectionRun,
   shouldAdoptSnapshotActiveRun,
   shouldClearPendingFromSharedState,
   shouldIgnoreRunScopedMessage,
+  shouldQueueCancelForIgnoredProjectionRun,
 } from './taskLifecycleGuards.js';
 import {
   normalizeTaskBoundaryId,
@@ -60,8 +64,8 @@ import {
 } from './taskKernel.js';
 import {
   RoverServerRuntimeClient,
-  resolveRoverV1Bases,
-  resolveRoverV1Base,
+  resolveRoverBase,
+  resolveRoverBases,
   type TabEventDecisionResponse,
   type RoverServerProjection,
   type RoverServerPolicy,
@@ -73,6 +77,10 @@ import {
   deriveRegistrableDomain,
   isHostInNavigationScope,
 } from './navigationScope.js';
+import {
+  ROVER_V2_PERSIST_CAPS,
+  ROVER_V2_TRANSPORT_DEFAULTS,
+} from '@rover/shared';
 import {
   buildInaccessibleTabPageData,
   buildTabAccessToolError,
@@ -140,6 +148,14 @@ export type RoverInit = {
     /** Number of sparse-tree retries when roots are too sparse. Default: 1 */
     sparseTreeRetryMaxAttempts?: number;
   };
+  transport?: {
+    activation?: 'on_demand';
+    idleCloseMs?: number;
+  };
+  stability?: {
+    maxPersistBytes?: number;
+    maxSnapshotBytes?: number;
+  };
   task?: {
     singleActiveScope?: 'host_session';
     tabScope?: 'task_touched_only';
@@ -198,7 +214,7 @@ export type RoverInit = {
   };
   telemetry?: RoverTelemetryConfig;
   features?: {
-    rover_v1_kernel_runtime?: boolean;
+    rover_v2_kernel_runtime?: boolean;
   };
   apiMode?: boolean;
   apiToolsConfig?: {
@@ -266,7 +282,7 @@ export type RoverEventName =
   | 'checkpoint_error'
   | 'tab_event_conflict_retry'
   | 'tab_event_conflict_exhausted'
-  | 'legacy_checkpoint_blocked'
+  | 'checkpoint_token_missing'
   | 'open'
   | 'close';
 
@@ -302,10 +318,11 @@ const RUNTIME_STATE_VERSION = 1;
 const RUNTIME_STATE_PREFIX = 'rover:runtime:';
 const RUNTIME_ID_PREFIX = 'rover:runtime-id:';
 const VISITOR_ID_PREFIX = 'rover:visitor-id:';
-const MAX_UI_MESSAGES = 160;
-const MAX_TIMELINE_EVENTS = 240;
-const MAX_WORKER_HISTORY = 80;
-const MAX_WORKER_STEPS = 40;
+const MAX_UI_MESSAGES = ROVER_V2_PERSIST_CAPS.uiMessages;
+const MAX_TIMELINE_EVENTS = ROVER_V2_PERSIST_CAPS.timelineEvents;
+const MAX_WORKER_HISTORY = ROVER_V2_PERSIST_CAPS.uiMessages;
+const MAX_WORKER_PLANNER_STEPS = ROVER_V2_PERSIST_CAPS.plannerHistory;
+const MAX_WORKER_AGENT_PREV_STEPS = ROVER_V2_PERSIST_CAPS.prevSteps;
 const MAX_TEXT_LEN = 8_000;
 const MAX_AUTO_RESUME_ATTEMPTS = 12;
 const DEFAULT_CRASH_RESUME_TTL_MS = 15 * 60_000;
@@ -333,6 +350,10 @@ const NAV_HANDOFF_BOOTSTRAP_TTL_MS = 30_000;
 const TASK_SCOPE_DETACHED_EXTERNAL_MAX_AGE_MS = 2 * 60_000;
 const TASK_SCOPE_NAV_HANDOFF_MAX_AGE_MS = 45_000;
 const TASK_SCOPE_PENDING_ATTACH_MAX_AGE_MS = 20_000;
+const SERVER_CANCEL_REPAIR_BASE_DELAY_MS = 400;
+const SERVER_CANCEL_REPAIR_MAX_DELAY_MS = 15_000;
+const SERVER_CANCEL_REPAIR_MAX_ATTEMPTS = 7;
+const SERVER_CANCEL_REPAIR_MAX_QUEUE = 80;
 
 type TelemetryEventRecord = {
   name: RoverEventName;
@@ -373,6 +394,14 @@ const TELEMETRY_FAST_LANE_EVENTS = new Set<RoverEventName>([
   'checkpoint_error',
   'tab_event_conflict_exhausted',
 ]);
+const TELEMETRY_BACKGROUND_ALLOWED_EVENTS = new Set<RoverEventName>([
+  'ready',
+  'error',
+  'auth_required',
+  'navigation_guardrail',
+  'checkpoint_error',
+  'tab_event_conflict_exhausted',
+]);
 let resolvedVisitorId: string | undefined = undefined;
 let resolvedVisitor: { name?: string; email?: string } | undefined = undefined;
 let greetingDismissed = false;
@@ -402,7 +431,12 @@ let currentTaskBoundaryId = '';
 let runSafetyTimer: ReturnType<typeof setTimeout> | null = null;
 let autoResumeRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let autoResumeSessionWaitAttempts = 0;
+let serverCancelRepairTimer: ReturnType<typeof setTimeout> | null = null;
+let serverCancelRepairInFlight = false;
 let unloadHandlerInstalled = false;
+let visibilitySyncInstalled = false;
+let lastObserverPauseApplied: boolean | null = null;
+let transportIdleDeadline = 0;
 type PendingTaskSuggestion =
   | { kind: 'task_reset'; text: string; reason: string; createdAt: number }
   | { kind: 'resume_run'; runId: string; text: string; createdAt: number };
@@ -459,6 +493,17 @@ type NavigationHandoffBootstrap = {
   handoffId?: string;
   ts: number;
 };
+
+type PendingServerRunCancelRepair = {
+  runId: string;
+  reason: string;
+  attempts: number;
+  nextAttemptAt: number;
+  createdAt: number;
+  lastError?: string;
+};
+
+const pendingServerRunCancelRepairs = new Map<string, PendingServerRunCancelRepair>();
 
 function emit(event: RoverEventName, payload?: any): void {
   recordTelemetryEvent(event, payload);
@@ -586,6 +631,29 @@ function getUnconsumedNavigationHandoff(maxAgeMs = 120_000): PersistedNavigation
   const ageMs = Date.now() - Number(handoff.createdAt || 0);
   if (!Number.isFinite(ageMs) || ageMs < -5_000 || ageMs > maxAgeMs) return undefined;
   return handoff;
+}
+
+function isNavigationResumeReason(reason: PersistedPendingRun['resumeReason'] | undefined): boolean {
+  return reason === 'agent_navigation'
+    || reason === 'cross_host_navigation'
+    || reason === 'handoff';
+}
+
+function canValidateResumeFromPersistedHandoff(pending: PersistedPendingRun): boolean {
+  if (!runtimeState || !isNavigationResumeReason(pending.resumeReason)) return false;
+  const handoff = sanitizeNavigationHandoff(runtimeState.lastNavigationHandoff);
+  if (!handoff?.targetUrl) return false;
+  const ageMs = Date.now() - Number(handoff.createdAt || 0);
+  if (!Number.isFinite(ageMs) || ageMs < -5_000 || ageMs > 120_000) return false;
+  return matchesResumeTargetUrl(handoff.targetUrl, window.location.href);
+}
+
+function shouldDelayResumeForPendingNavigation(pending: PersistedPendingRun): boolean {
+  if (!agentNavigationPending || !isNavigationResumeReason(pending.resumeReason)) return false;
+  const handoff = sanitizeNavigationHandoff(runtimeState?.lastNavigationHandoff);
+  if (!handoff) return false;
+  const ageMs = Date.now() - Number(handoff.createdAt || 0);
+  return Number.isFinite(ageMs) && ageMs >= -5_000 && ageMs <= NAV_HANDOFF_BOOTSTRAP_TTL_MS;
 }
 
 function syncCurrentTaskBoundaryId(options?: { rotateIfMissing?: boolean }): void {
@@ -947,6 +1015,12 @@ function normalizeCrossHostPolicy(policy?: 'open_new_tab' | 'same_tab'): 'open_n
   return 'same_tab';
 }
 
+function normalizeDomainScopeMode(
+  mode?: 'host_only' | 'registrable_domain',
+): 'host_only' | 'registrable_domain' {
+  return mode === 'host_only' ? 'host_only' : 'registrable_domain';
+}
+
 function resolveActionGateReason(mode: 'controller' | 'observer', allowActions: boolean): string {
   if (mode === 'observer') {
     return 'This tab is in observer mode because another tab currently holds Rover action control.';
@@ -1046,6 +1120,22 @@ function normalizeTimingNumber(input: unknown, min: number, max: number): number
   return Math.max(min, Math.min(max, Math.floor(parsed)));
 }
 
+function normalizeTransportActivation(_value?: 'on_demand'): 'on_demand' {
+  return 'on_demand';
+}
+
+function normalizeTransportIdleCloseMs(value?: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return ROVER_V2_TRANSPORT_DEFAULTS.idleCloseMs;
+  return Math.max(5_000, Math.min(120_000, Math.floor(parsed)));
+}
+
+function normalizeStabilityByteLimit(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(32_768, Math.min(2_097_152, Math.floor(parsed)));
+}
+
 function canUseTelemetry(cfg: RoverInit | null): boolean {
   if (!cfg) return false;
   const telemetry = normalizeTelemetryConfig(cfg);
@@ -1102,7 +1192,7 @@ function stopTelemetry(): void {
 }
 
 function getTelemetryEndpoint(cfg: RoverInit): string {
-  return `${resolveRoverV1Base(cfg.apiBase)}/telemetry/ingest`;
+  return `${resolveRoverBase(cfg.apiBase)}/telemetry/ingest`;
 }
 
 function getBootstrapRuntimeAuthToken(cfg?: RoverInit | null): string {
@@ -1142,7 +1232,7 @@ function applyServerPolicy(policy?: RoverServerPolicy): void {
   if (!policy || !currentConfig) return;
   currentConfig.externalNavigationPolicy = policy.externalNavigationPolicy || currentConfig.externalNavigationPolicy;
   if (policy.domainScopeMode) {
-    currentConfig.domainScopeMode = policy.domainScopeMode;
+    currentConfig.domainScopeMode = normalizeDomainScopeMode(policy.domainScopeMode);
   }
   if (policy.crossHostPolicy === 'open_new_tab' || policy.crossHostPolicy === 'same_tab') {
     currentConfig.navigation = {
@@ -1167,22 +1257,34 @@ function applyServerProjection(projection: RoverServerProjection): void {
   runtimeServerEpoch = Math.max(1, Number(projection.epoch || runtimeServerEpoch));
 
   const serverRunId = typeof projection.activeRunId === 'string' ? projection.activeRunId : '';
+  const projectionRunStatus = String(projection.runStatus || '').trim().toLowerCase();
+  if (shouldQueueCancelForIgnoredProjectionRun({
+    serverRunId,
+    runStatus: projectionRunStatus,
+    ignoredRunIds,
+  })) {
+    enqueueServerRunCancelRepair(serverRunId, 'projection_ignored_active_run', { attemptImmediately: true });
+  }
   setServerAcceptedRunId(serverRunId || undefined);
   const localPending = runtimeState.pendingRun;
   const localRunId = localPending?.id || '';
 
   if (!serverRunId && localRunId) {
-    const runStatus = String(projection.runStatus || '').trim().toLowerCase();
     const isProjectionTerminal =
-      runStatus === 'completed'
-      || runStatus === 'cancelled'
-      || runStatus === 'failed';
+      projectionRunStatus === 'completed'
+      || projectionRunStatus === 'cancelled'
+      || projectionRunStatus === 'failed'
+      || projectionRunStatus === 'ended';
     if (isProjectionTerminal || runtimeState.activeTask?.status !== 'running') {
       addIgnoredRunId(localRunId);
       setPendingRun(undefined);
       sessionCoordinator?.setActiveRun(undefined);
     }
-  } else if (serverRunId && (!localPending || localRunId !== serverRunId)) {
+  } else if (serverRunId && shouldAdoptProjectionRun({
+    serverRunId,
+    localPendingRunId: localRunId,
+    ignoredRunIds,
+  })) {
     setPendingRun({
       id: serverRunId,
       text: localPending?.text || '',
@@ -1193,6 +1295,12 @@ function applyServerProjection(projection: RoverServerProjection): void {
       resumeRequired: localPending?.resumeRequired === true,
       resumeReason: localPending?.resumeReason,
     });
+  } else if (serverRunId && ignoredRunIds.has(serverRunId)) {
+    if (localRunId === serverRunId) {
+      sessionCoordinator?.releaseWorkflowLock(serverRunId);
+      setPendingRun(undefined);
+      sessionCoordinator?.setActiveRun(undefined);
+    }
   }
 
   const projectionSnapshotDigest =
@@ -1208,31 +1316,39 @@ function applyServerProjection(projection: RoverServerProjection): void {
     );
   const projectionSnapshotKey = projectionSnapshotDigest ? `${projection.sessionId}:${projectionSnapshotDigest}` : '';
   if (projection.snapshot && typeof projection.snapshot === 'object') {
-    if (projectionSnapshotKey && projectionSnapshotKey === lastAppliedServerSnapshotKey) {
-      return;
-    }
-    const maybeRuntime = (projection.snapshot as any)?.runtimeState;
-    const maybeShared = (projection.snapshot as any)?.sharedState;
-    if (maybeRuntime && typeof maybeRuntime === 'object') {
-      suppressCheckpointSync = true;
-      try {
-        applyCloudCheckpointPayload({
-          version: CHECKPOINT_PAYLOAD_VERSION,
-          siteId: currentConfig?.siteId || runtimeState.sessionId,
-          visitorId: resolvedVisitorId || 'server_projection',
-          sessionId: runtimeState.sessionId,
-          updatedAt: Number((projection.snapshot as any)?.updatedAt) || Date.now(),
-          runtimeState: maybeRuntime as PersistedRuntimeState,
-          sharedState: maybeShared as SharedSessionState,
-        });
-      } finally {
-        suppressCheckpointSync = false;
-      }
-      if (projectionSnapshotKey) {
-        lastAppliedServerSnapshotKey = projectionSnapshotKey;
+    if (!projectionSnapshotKey || projectionSnapshotKey !== lastAppliedServerSnapshotKey) {
+      const maybeRuntime = (projection.snapshot as any)?.runtimeState;
+      const maybeShared = (projection.snapshot as any)?.sharedState;
+      if (maybeRuntime && typeof maybeRuntime === 'object') {
+        suppressCheckpointSync = true;
+        try {
+          applyCloudCheckpointPayload({
+            version: CHECKPOINT_PAYLOAD_VERSION,
+            siteId: currentConfig?.siteId || runtimeState.sessionId,
+            visitorId: resolvedVisitorId || 'server_projection',
+            sessionId: runtimeState.sessionId,
+            updatedAt: Number((projection.snapshot as any)?.updatedAt) || Date.now(),
+            runtimeState: maybeRuntime as PersistedRuntimeState,
+            sharedState: maybeShared as SharedSessionState,
+          });
+        } finally {
+          suppressCheckpointSync = false;
+        }
+        if (projectionSnapshotKey) {
+          lastAppliedServerSnapshotKey = projectionSnapshotKey;
+        }
       }
     }
   }
+
+  const ignoredHydratedRunId = String(runtimeState?.pendingRun?.id || '').trim();
+  if (ignoredHydratedRunId && ignoredRunIds.has(ignoredHydratedRunId)) {
+    sessionCoordinator?.releaseWorkflowLock(ignoredHydratedRunId);
+    setPendingRun(undefined);
+    sessionCoordinator?.setActiveRun(undefined);
+  }
+
+  void flushServerCancelRepairs();
 }
 
 async function ensureRoverServerRuntime(cfg: RoverInit): Promise<void> {
@@ -1251,6 +1367,7 @@ async function ensureRoverServerRuntime(cfg: RoverInit): Promise<void> {
       getHost: () => window.location.hostname,
       getPageUrl: () => window.location.href,
       getTaskBoundaryId: () => currentTaskBoundaryId,
+      shouldKeepTransportActive: () => !shouldDeferBackgroundSync(),
       onSession: session => {
         updateRuntimeSessionToken(session.sessionToken, session.sessionTokenExpiresAt);
         runtimeServerEpoch = Math.max(1, Number(session.epoch || runtimeServerEpoch));
@@ -1304,9 +1421,11 @@ async function ensureRoverServerRuntime(cfg: RoverInit): Promise<void> {
         // Session is now ready — allow auto-resume of pending runs
         sessionReady = true;
         maybeAutoResumePendingRun();
+        void flushServerCancelRepairs();
       },
       onProjection: projection => {
         applyServerProjection(projection);
+        void flushServerCancelRepairs();
         if (worker) {
           worker.postMessage({
             type: 'update_config',
@@ -1352,6 +1471,7 @@ async function flushTelemetry(force = false): Promise<void> {
     telemetryBuffer = [];
     return;
   }
+  if (!force && shouldDeferBackgroundSync()) return;
   if (!telemetryBuffer.length) return;
 
   const telemetry = normalizeTelemetryConfig(currentConfig);
@@ -1424,6 +1544,7 @@ function setupTelemetry(cfg: RoverInit): void {
 
 function recordTelemetryEvent(event: RoverEventName, payload?: any): void {
   if (!canUseTelemetry(currentConfig) || telemetryPausedAuth) return;
+  if (shouldDeferBackgroundSync() && !TELEMETRY_BACKGROUND_ALLOWED_EVENTS.has(event)) return;
   const telemetry = normalizeTelemetryConfig(currentConfig);
   if (telemetry.sampleRate < 1 && Math.random() > telemetry.sampleRate) return;
   const nowTs = Date.now();
@@ -1551,12 +1672,217 @@ function removeIgnoredRunId(runId?: string): void {
   ignoredRunIds.delete(runId);
 }
 
+function computeServerCancelRepairDelay(attempts: number): number {
+  const clampedAttempts = Math.max(0, Math.floor(attempts));
+  const delay = SERVER_CANCEL_REPAIR_BASE_DELAY_MS * (2 ** clampedAttempts);
+  return Math.max(120, Math.min(SERVER_CANCEL_REPAIR_MAX_DELAY_MS, delay));
+}
+
+function getNextServerCancelRepairDelayMs(): number | null {
+  if (!pendingServerRunCancelRepairs.size) return null;
+  let nextAt = Number.POSITIVE_INFINITY;
+  for (const entry of pendingServerRunCancelRepairs.values()) {
+    nextAt = Math.min(nextAt, Number(entry.nextAttemptAt) || Number.POSITIVE_INFINITY);
+  }
+  if (!Number.isFinite(nextAt)) return null;
+  return Math.max(120, Math.floor(nextAt - Date.now()));
+}
+
+function scheduleServerCancelRepairFlush(delayMs = SERVER_CANCEL_REPAIR_BASE_DELAY_MS): void {
+  if (serverCancelRepairTimer) {
+    clearTimeout(serverCancelRepairTimer);
+    serverCancelRepairTimer = null;
+  }
+  const delay = Math.max(80, Math.floor(delayMs));
+  serverCancelRepairTimer = setTimeout(() => {
+    serverCancelRepairTimer = null;
+    void flushServerCancelRepairs();
+  }, delay);
+}
+
+function enqueueServerRunCancelRepair(
+  runId?: string,
+  reason = 'local_run_abandoned',
+  options?: { attemptImmediately?: boolean },
+): void {
+  const normalizedRunId = String(runId || '').trim();
+  if (!normalizedRunId) return;
+
+  const now = Date.now();
+  const existing = pendingServerRunCancelRepairs.get(normalizedRunId);
+  const nextAttemptAt =
+    options?.attemptImmediately === true
+      ? now
+      : (existing?.nextAttemptAt && existing.nextAttemptAt > now
+        ? existing.nextAttemptAt
+        : now + computeServerCancelRepairDelay(existing?.attempts || 0));
+
+  pendingServerRunCancelRepairs.set(normalizedRunId, {
+    runId: normalizedRunId,
+    reason: String(reason || existing?.reason || 'local_run_abandoned').trim() || 'local_run_abandoned',
+    attempts: existing?.attempts || 0,
+    nextAttemptAt,
+    createdAt: existing?.createdAt || now,
+    lastError: existing?.lastError,
+  });
+
+  while (pendingServerRunCancelRepairs.size > SERVER_CANCEL_REPAIR_MAX_QUEUE) {
+    const oldest = Array.from(pendingServerRunCancelRepairs.values())
+      .sort((a, b) => Number(a.createdAt) - Number(b.createdAt))[0];
+    if (!oldest?.runId) break;
+    pendingServerRunCancelRepairs.delete(oldest.runId);
+  }
+
+  scheduleServerCancelRepairFlush(options?.attemptImmediately ? 50 : SERVER_CANCEL_REPAIR_BASE_DELAY_MS);
+}
+
+async function flushServerCancelRepairs(): Promise<void> {
+  if (serverCancelRepairInFlight) return;
+  if (!pendingServerRunCancelRepairs.size) return;
+
+  const canAttemptNow =
+    !!roverServerRuntime
+    && !!sessionReady
+    && !!getRuntimeSessionToken(currentConfig);
+  if (!canAttemptNow) {
+    scheduleServerCancelRepairFlush(SERVER_CANCEL_REPAIR_BASE_DELAY_MS);
+    return;
+  }
+
+  serverCancelRepairInFlight = true;
+  try {
+    const now = Date.now();
+    const due = Array.from(pendingServerRunCancelRepairs.values())
+      .sort((a, b) => Number(a.nextAttemptAt) - Number(b.nextAttemptAt));
+
+    for (const entry of due) {
+      if (entry.nextAttemptAt > now) break;
+      if (!pendingServerRunCancelRepairs.has(entry.runId)) continue;
+
+      if (hasLiveRemoteControllerForRun(entry.runId)) {
+        pendingServerRunCancelRepairs.set(entry.runId, {
+          ...entry,
+          nextAttemptAt: Date.now() + computeServerCancelRepairDelay(Math.max(1, entry.attempts)),
+        });
+        continue;
+      }
+
+      const runtime = roverServerRuntime;
+      if (!runtime) {
+        pendingServerRunCancelRepairs.set(entry.runId, {
+          ...entry,
+          nextAttemptAt: Date.now() + SERVER_CANCEL_REPAIR_BASE_DELAY_MS,
+        });
+        continue;
+      }
+
+      try {
+        const response = await runtime.controlRun({
+          action: 'cancel',
+          runId: entry.runId,
+          reason: entry.reason,
+        });
+        if (response) {
+          pendingServerRunCancelRepairs.delete(entry.runId);
+          continue;
+        }
+        throw new Error('cancel_control_no_response');
+      } catch (error: any) {
+        const attempts = Math.max(0, Number(entry.attempts || 0)) + 1;
+        if (attempts >= SERVER_CANCEL_REPAIR_MAX_ATTEMPTS) {
+          pendingServerRunCancelRepairs.delete(entry.runId);
+          emit('error', {
+            message: `Failed to cancel stale run ${entry.runId} after retries.`,
+            scope: 'run_cancel_repair',
+            code: 'RUN_CANCEL_REPAIR_FAILED',
+            runId: entry.runId,
+          });
+          continue;
+        }
+        pendingServerRunCancelRepairs.set(entry.runId, {
+          ...entry,
+          attempts,
+          lastError: String(error?.message || 'cancel_control_failed'),
+          nextAttemptAt: Date.now() + computeServerCancelRepairDelay(attempts),
+        });
+      }
+    }
+  } finally {
+    serverCancelRepairInFlight = false;
+    const nextDelay = getNextServerCancelRepairDelayMs();
+    if (nextDelay != null) {
+      scheduleServerCancelRepairFlush(nextDelay);
+    }
+  }
+}
+
 function isTaskRunning(): boolean {
   return runtimeState?.activeTask?.status === 'running';
 }
 
-function hasSharedActiveRun(): boolean {
-  return !!sessionCoordinator?.getState()?.activeRun;
+function isRuntimeTabHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
+
+function hasLocalPendingRun(): boolean {
+  return !!runtimeState?.pendingRun?.id;
+}
+
+function hasLocalActiveRunOwnership(): boolean {
+  const activeRun = sessionCoordinator?.getState()?.activeRun;
+  if (!activeRun) return false;
+  if (activeRun.runtimeId) return activeRun.runtimeId === runtimeId;
+  const pendingRunId = String(runtimeState?.pendingRun?.id || '').trim();
+  return !!(pendingRunId && activeRun.runId === pendingRunId);
+}
+
+function hasLocalWorkflowLock(): boolean {
+  const lockInfo = sessionCoordinator?.getWorkflowLockInfo();
+  return !!(lockInfo?.locked && lockInfo.holderRuntimeId === runtimeId);
+}
+
+function hasLocalExecutionOwnership(): boolean {
+  return isTaskRunning() || hasLocalPendingRun() || hasLocalActiveRunOwnership() || hasLocalWorkflowLock();
+}
+
+function hasTransportDemandSignal(): boolean {
+  const activation = normalizeTransportActivation(currentConfig?.transport?.activation);
+  if (activation !== 'on_demand') return true;
+  return !!(runtimeState?.uiOpen || hasLocalExecutionOwnership() || hasRemoteActiveRun() || hasLiveRemoteWorkflowLock());
+}
+
+function shouldDeferBackgroundSync(): boolean {
+  const demandSignal = hasTransportDemandSignal();
+  if (demandSignal) {
+    transportIdleDeadline = 0;
+  } else {
+    const idleCloseMs = normalizeTransportIdleCloseMs(currentConfig?.transport?.idleCloseMs);
+    if (transportIdleDeadline <= 0) {
+      transportIdleDeadline = Date.now() + idleCloseMs;
+    }
+    if (Date.now() < transportIdleDeadline) {
+      return false;
+    }
+    return true;
+  }
+
+  if (!isRuntimeTabHidden()) return false;
+  return !hasLocalExecutionOwnership() && !runtimeState?.uiOpen;
+}
+
+function syncMainWorldObserverPause(force = false): void {
+  if (typeof window === 'undefined') return;
+  const shouldPause = shouldDeferBackgroundSync();
+  if (!force && lastObserverPauseApplied === shouldPause) return;
+  lastObserverPauseApplied = shouldPause;
+  try {
+    const setPaused = (window as any).rtrvrAISetObserverPaused;
+    if (typeof setPaused === 'function') {
+      setPaused(shouldPause);
+    }
+  } catch {
+    // no-op
+  }
 }
 
 function hasRemoteActiveRun(): boolean {
@@ -1966,12 +2292,36 @@ function toWorkerHistoryEntry(input: unknown): { role: string; content: string }
 
 function cloneUnknownArrayTail(input: unknown, max: number): unknown[] {
   if (!Array.isArray(input)) return [];
+  const selected = input.length <= max
+    ? input
+    : [input[0], ...input.slice(-(max - 1))];
   const out: unknown[] = [];
-  for (const entry of input.slice(-max)) {
+  for (const entry of selected) {
     const cloned = cloneUnknown(entry);
     if (cloned !== undefined) out.push(cloned);
   }
   return out;
+}
+
+function enforceAccTreeRetention(steps: unknown[] | undefined): unknown[] {
+  if (!Array.isArray(steps) || steps.length === 0) return [];
+  const cloned = [...steps];
+  const withAccTree: number[] = [];
+  for (let i = 0; i < cloned.length; i += 1) {
+    const accTreeId = (cloned[i] as any)?.accTreeId;
+    if (typeof accTreeId === 'string' && accTreeId.trim()) {
+      withAccTree.push(i);
+    }
+  }
+  if (withAccTree.length <= 3) return cloned;
+  const keep = new Set<number>([withAccTree[0], ...withAccTree.slice(-2)]);
+  for (const index of withAccTree) {
+    if (keep.has(index)) continue;
+    if (cloned[index] && typeof cloned[index] === 'object') {
+      delete (cloned[index] as any).accTreeId;
+    }
+  }
+  return cloned;
 }
 
 async function loadPersistedStateFromAsyncStore(
@@ -2135,11 +2485,11 @@ function sanitizeWorkerState(input: any): PersistedWorkerState | undefined {
     .filter((message): message is { role: string; content: string } => !!message);
   const plannerHistory = cloneUnknownArrayTail(
     plannerRaw,
-    Math.max(MAX_WORKER_STEPS, plannerRaw.length),
+    MAX_WORKER_PLANNER_STEPS,
   );
   const agentPrevSteps = cloneUnknownArrayTail(
-    agentPrevStepsRaw,
-    Math.max(MAX_WORKER_STEPS * 2, agentPrevStepsRaw.length),
+    enforceAccTreeRetention(agentPrevStepsRaw),
+    MAX_WORKER_AGENT_PREV_STEPS,
   );
   const pendingQuestions = normalizeAskUserQuestions(input?.pendingAskUser?.questions);
   const pendingStepRefRaw = input?.pendingAskUser?.stepRef;
@@ -2286,11 +2636,11 @@ function toSharedWorkerContext(state: PersistedWorkerState | undefined): SharedW
       : [],
     plannerHistory: cloneUnknownArrayTail(
       state.plannerHistory,
-      Math.max(MAX_WORKER_STEPS, Array.isArray(state.plannerHistory) ? state.plannerHistory.length : 0),
+      MAX_WORKER_PLANNER_STEPS,
     ),
     agentPrevSteps: cloneUnknownArrayTail(
-      state.agentPrevSteps,
-      Math.max(MAX_WORKER_STEPS * 2, Array.isArray(state.agentPrevSteps) ? state.agentPrevSteps.length : 0),
+      enforceAccTreeRetention(state.agentPrevSteps),
+      MAX_WORKER_AGENT_PREV_STEPS,
     ),
     pendingAskUser: pendingQuestions.length
       ? {
@@ -2393,10 +2743,68 @@ function sanitizePendingRun(input: any): PersistedPendingRun | undefined {
   };
 }
 
+function resolveMaxPersistBytes(): number {
+  return normalizeStabilityByteLimit(
+    currentConfig?.stability?.maxPersistBytes,
+    ROVER_V2_PERSIST_CAPS.localPersistBytes,
+  );
+}
+
+function trimRuntimeStateForPersist(
+  source: PersistedRuntimeState,
+  maxPersistBytes: number,
+): PersistedRuntimeState {
+  const draft: PersistedRuntimeState = {
+    ...source,
+    uiMessages: sanitizeUiMessages(source.uiMessages).slice(-MAX_UI_MESSAGES),
+    timeline: sanitizeTimelineEvents(source.timeline).slice(-MAX_TIMELINE_EVENTS),
+    workerState: sanitizeWorkerState(source.workerState),
+  };
+
+  if (draft.workerState) {
+    draft.workerState = {
+      ...draft.workerState,
+      history: Array.isArray(draft.workerState.history)
+        ? draft.workerState.history.slice(-MAX_WORKER_HISTORY)
+        : [],
+      plannerHistory: cloneUnknownArrayTail(draft.workerState.plannerHistory, MAX_WORKER_PLANNER_STEPS),
+      agentPrevSteps: cloneUnknownArrayTail(draft.workerState.agentPrevSteps, MAX_WORKER_AGENT_PREV_STEPS),
+    };
+  }
+
+  let serialized = '';
+  try {
+    serialized = JSON.stringify(draft);
+  } catch {
+    return source;
+  }
+  if (serialized.length <= maxPersistBytes) return draft;
+
+  const fallback: PersistedRuntimeState = {
+    ...draft,
+    uiMessages: [],
+    timeline: [],
+    workerState: undefined,
+  };
+  try {
+    if (JSON.stringify(fallback).length <= maxPersistBytes) return fallback;
+  } catch {
+    return fallback;
+  }
+
+  return {
+    ...fallback,
+    pendingRun: undefined,
+    activeTask: createDefaultTaskState('persist_trim'),
+  };
+}
+
 function persistRuntimeStateImmediate(options?: { markCheckpointDirty?: boolean }): void {
   if (!runtimeState || !runtimeStorageKey) return;
   try {
     runtimeState.updatedAt = Date.now();
+    const maxPersistBytes = resolveMaxPersistBytes();
+    runtimeState = trimRuntimeStateForPersist(runtimeState, maxPersistBytes);
     runtimeStateStore?.write(runtimeStorageKey, runtimeState);
     if (runtimeStorageLegacyKey && runtimeStorageLegacyKey !== runtimeStorageKey) {
       runtimeStateStore?.remove(runtimeStorageLegacyKey);
@@ -2414,8 +2822,8 @@ let persistScheduled = false;
 let persistDirtyCheckpoint = false;
 let lastPersistTime = 0;
 let firstPersistRequestAt = 0;
-const MIN_PERSIST_INTERVAL_MS = 100;
-const MAX_PERSIST_COALESCE_DELAY_MS = 250;
+const MIN_PERSIST_INTERVAL_MS = 1_000;
+const MAX_PERSIST_COALESCE_DELAY_MS = 1_000;
 
 function flushCheckpointCritical(reason: string): void {
   persistRuntimeStateImmediate({ markCheckpointDirty: true });
@@ -2468,6 +2876,12 @@ function persistRuntimeState(options?: { markCheckpointDirty?: boolean }): void 
 function ensureUnloadHandler(): void {
   if (unloadHandlerInstalled) return;
   unloadHandlerInstalled = true;
+  if (!visibilitySyncInstalled) {
+    visibilitySyncInstalled = true;
+    document.addEventListener('visibilitychange', () => {
+      syncMainWorldObserverPause();
+    }, { passive: true });
+  }
 
   const onPageHide = () => {
     // If there's an auto-resumable pending run, clear the runtimeId from activeRun
@@ -2527,6 +2941,7 @@ function ensureUnloadHandler(): void {
     if (currentConfig) {
       setupTelemetry(currentConfig);
     }
+    syncMainWorldObserverPause(true);
   };
   window.addEventListener('pageshow', onPageShow);
 }
@@ -2599,6 +3014,7 @@ function applyTaskKernelCommand(
       persistRuntimeState();
     }
   }
+  syncMainWorldObserverPause();
 
   return transition.task;
 }
@@ -2663,6 +3079,31 @@ function hideTaskSuggestion(): void {
   ui?.setTaskSuggestion({ visible: false });
 }
 
+function showResumeTaskSuggestion(pendingRun: PersistedPendingRun): boolean {
+  const runId = String(pendingRun?.id || '').trim();
+  if (!runId) return false;
+  const runText = String(pendingRun?.text || '').trim() || 'Continue task';
+  if (
+    pendingTaskSuggestion?.kind === 'resume_run'
+    && pendingTaskSuggestion.runId === runId
+  ) {
+    return false;
+  }
+  pendingTaskSuggestion = {
+    kind: 'resume_run',
+    runId,
+    text: runText,
+    createdAt: Date.now(),
+  };
+  ui?.setTaskSuggestion({
+    visible: true,
+    text: 'Resume your interrupted task or cancel it?',
+    primaryLabel: 'Resume',
+    secondaryLabel: 'Cancel',
+  });
+  return true;
+}
+
 function clearResumeArtifacts(): void {
   crossDomainResumeActive = false;
   resumeContextValidated = false;
@@ -2679,6 +3120,77 @@ function clearTaskUiState(): void {
   ui?.clearTimeline();
   ui?.setQuestionPrompt(undefined);
   hideTaskSuggestion();
+}
+
+type LocalRunAbandonOptions = {
+  reason: string;
+  statusText: string;
+  runId?: string;
+  cancelReason?: string;
+  timelineTitle?: string;
+  timelineDetail?: string;
+  timelineStatus?: 'pending' | 'success' | 'error' | 'info';
+  emitError?: { message: string; code?: string; scope?: string };
+};
+
+function abandonPendingRunLocally(options: LocalRunAbandonOptions): void {
+  if (!runtimeState) return;
+  if (autoResumeRetryTimer) {
+    clearTimeout(autoResumeRetryTimer);
+    autoResumeRetryTimer = null;
+  }
+  autoResumeAttempted = false;
+  autoResumeSessionWaitAttempts = 0;
+  crossDomainResumeActive = false;
+  resumeContextValidated = false;
+  if (runSafetyTimer) {
+    clearTimeout(runSafetyTimer);
+    runSafetyTimer = null;
+  }
+
+  const pending = sanitizePendingRun(runtimeState.pendingRun);
+  const runId = String(options.runId || pending?.id || '').trim();
+  if (runId) {
+    addIgnoredRunId(runId);
+    sessionCoordinator?.clearActiveRunRuntimeId(runId);
+    sessionCoordinator?.releaseWorkflowLock(runId);
+    if (!hasLiveRemoteControllerForRun(runId)) {
+      enqueueServerRunCancelRepair(runId, options.cancelReason || options.reason, { attemptImmediately: true });
+    }
+  }
+
+  setPendingRun(undefined);
+  sessionCoordinator?.setActiveRun(undefined);
+  ui?.setRunning(false);
+  ui?.setQuestionPrompt(undefined);
+  hideTaskSuggestion();
+  if (runtimeState.activeTask?.status === 'running') {
+    markTaskCancelled(options.reason);
+  } else {
+    clearResumeArtifacts();
+  }
+  setUiStatus(options.statusText || options.reason);
+  recordTelemetryEvent('status', {
+    event: 'local_run_abandoned',
+    reason: options.reason,
+    runId: runId || undefined,
+  });
+  if (options.timelineTitle) {
+    appendTimelineEvent({
+      kind: options.timelineStatus === 'error' ? 'error' : 'info',
+      title: options.timelineTitle,
+      detail: options.timelineDetail,
+      status: options.timelineStatus || 'info',
+    });
+  }
+  if (options.emitError?.message) {
+    emit('error', {
+      message: options.emitError.message,
+      scope: options.emitError.scope || 'resume',
+      code: options.emitError.code,
+      runId: runId || undefined,
+    });
+  }
 }
 
 function resolveWorkerPendingBoundaryId(state: PersistedWorkerState | undefined): string | undefined {
@@ -2767,6 +3279,7 @@ function maybeClearStalePendingRun(): void {
   if (!Number.isFinite(ageMs) || ageMs < STALE_PENDING_RUN_GRACE_MS) return;
 
   addIgnoredRunId(pending.id);
+  enqueueServerRunCancelRepair(pending.id, 'stale_pending_cleanup', { attemptImmediately: true });
   setPendingRun(undefined);
   sessionCoordinator?.clearActiveRunRuntimeId(pending.id);
   sessionCoordinator?.releaseWorkflowLock(pending.id);
@@ -2928,6 +3441,7 @@ function setExecutionMode(
     runtimeState.executionMode = effectiveMode;
     persistRuntimeState();
   }
+  syncMainWorldObserverPause();
   ui?.setExecutionMode(effectiveMode, {
     controllerRuntimeId,
     localLogicalTabId,
@@ -2950,6 +3464,7 @@ function setPendingRun(next: PersistedPendingRun | undefined): void {
     runtimeState.pendingRun = undefined;
     setServerAcceptedRunId(undefined);
   }
+  syncMainWorldObserverPause();
   persistRuntimeState();
 }
 
@@ -3441,14 +3956,21 @@ function postRun(
   const safetyRunId = runId;
   runSafetyTimer = setTimeout(() => {
     if (runtimeState?.pendingRun?.id === safetyRunId) {
-      addIgnoredRunId(safetyRunId);
-      setPendingRun(undefined);
-      sessionCoordinator?.releaseWorkflowLock(safetyRunId);
-      sessionCoordinator?.setActiveRun(undefined);
-      markTaskCancelled('run_timeout_terminal');
-      setUiStatus('Task timed out.');
+      abandonPendingRunLocally({
+        reason: 'run_timeout_terminal',
+        statusText: 'Task timed out.',
+        runId: safetyRunId,
+        cancelReason: 'run_timeout_terminal',
+        timelineTitle: 'Run timed out',
+        timelineDetail: 'Task timed out after 5 minutes with no response.',
+        timelineStatus: 'error',
+        emitError: {
+          message: 'Run safety timeout',
+          scope: 'run_timeout',
+          code: 'RUN_TIMEOUT',
+        },
+      });
       appendUiMessage('system', 'Task timed out after 5 minutes with no response.', true);
-      emit('error', { message: 'Run safety timeout' });
     }
     runSafetyTimer = null;
   }, 5 * 60_000);
@@ -3647,25 +4169,19 @@ function dispatchUserPrompt(
 }
 
 function clearPendingRunForResume(reason: string, statusText: string): void {
-  if (autoResumeRetryTimer) {
-    clearTimeout(autoResumeRetryTimer);
-    autoResumeRetryTimer = null;
-  }
-  const pending = runtimeState?.pendingRun;
-  if (pending?.id) {
-    addIgnoredRunId(pending.id);
-    sessionCoordinator?.releaseWorkflowLock(pending.id);
-  }
-  setPendingRun(undefined);
-  sessionCoordinator?.setActiveRun(undefined);
-  clearResumeArtifacts();
-  setUiStatus(statusText || reason);
+  abandonPendingRunLocally({
+    reason,
+    statusText: statusText || reason,
+    cancelReason: reason,
+  });
 }
 
-function hasLiveRemoteControllerForPendingRun(pendingRunId: string): boolean {
+function hasLiveRemoteControllerForRun(runId: string): boolean {
+  const pendingRunId = String(runId || '').trim();
+  if (!pendingRunId) return false;
   const sharedActiveRun = sessionCoordinator?.getState()?.activeRun;
   if (!sharedActiveRun?.runtimeId || sharedActiveRun.runtimeId === runtimeId) return false;
-  if (sharedActiveRun.runId !== pendingRunId) return true;
+  if (sharedActiveRun.runId !== pendingRunId) return false;
   const remoteTab = sessionCoordinator
     ?.listTabs({ scope: 'all' })
     .find(tab => tab.runtimeId === sharedActiveRun.runtimeId);
@@ -3681,7 +4197,28 @@ function scheduleAutoResumeRetry(delayMs = 450): void {
   }, Math.max(120, delayMs));
 }
 
-function maybeAutoResumePendingRun(): void {
+type AutoResumePolicyActionOverride = 'auto_resume' | 'prompt_resume' | 'cancel_resume';
+
+function dispatchPendingRunResume(pendingRun: PersistedPendingRun, source: string): void {
+  autoResumeAttempted = true;
+  crossDomainResumeActive = false;
+  resumeContextValidated = false;
+  hideTaskSuggestion();
+  setUiStatus('Resuming interrupted task...');
+  recordTelemetryEvent('status', {
+    event: 'resume_dispatch',
+    source,
+    runId: pendingRun.id,
+  });
+  postRun(pendingRun.text, {
+    runId: pendingRun.id,
+    resume: true,
+    appendUserMessage: false,
+    autoResume: true,
+  });
+}
+
+function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResumePolicyActionOverride }): void {
   if (!runtimeState?.pendingRun) {
     if (autoResumeRetryTimer) {
       clearTimeout(autoResumeRetryTimer);
@@ -3703,11 +4240,12 @@ function maybeAutoResumePendingRun(): void {
   if (currentMode === 'observer') return;
 
   if (!workerReady || !worker || autoResumeAttempted) return;
-  if (!canAutoResumePendingRun(runtimeState.activeTask?.status)) return;
-  if (isTerminalTaskStatus(runtimeState.activeTask?.status)) {
+  const activeTaskStatus = runtimeState.activeTask?.status;
+  if (isTerminalTaskStatus(activeTaskStatus)) {
     clearPendingRunForResume('terminal_task', 'Previous task already ended.');
     return;
   }
+  if (!canAutoResumePendingRun(activeTaskStatus)) return;
   if (!pending.autoResume) return;
   const resumeMode = normalizeTaskResumeMode(currentConfig?.task?.resume?.mode);
   if (resumeMode !== 'crash_only') {
@@ -3720,6 +4258,44 @@ function maybeAutoResumePendingRun(): void {
       autoResumeRetryTimer = null;
     }
     autoResumeSessionWaitAttempts = 0;
+    hideTaskSuggestion();
+    return;
+  }
+
+  const autoResumePolicy = normalizeTaskAutoResumePolicy(currentConfig?.task?.autoResumePolicy);
+  const hasLiveRemoteController = hasLiveRemoteControllerForRun(pending.id);
+  let policyAction = resolveAutoResumePolicyAction({
+    policy: autoResumePolicy,
+    resumeRequired: pending.resumeRequired === true,
+    hasLiveRemoteController,
+  });
+  if (
+    options?.overridePolicyAction
+    && policyAction !== 'defer_remote_owner'
+    && policyAction !== 'noop'
+  ) {
+    policyAction = options.overridePolicyAction;
+  }
+  if (policyAction === 'defer_remote_owner') {
+    scheduleAutoResumeRetry(650);
+    return;
+  }
+  if (policyAction === 'cancel_resume') {
+    clearPendingRunForResume('resume_policy_never', 'Previous task cancelled by resume policy.');
+    appendTimelineEvent({
+      kind: 'info',
+      title: 'Resume cancelled',
+      detail: 'Auto-resume policy is set to never, so the interrupted run was cancelled.',
+      status: 'info',
+    });
+    return;
+  }
+
+  if (!resumeContextValidated && canValidateResumeFromPersistedHandoff(pending)) {
+    resumeContextValidated = true;
+  }
+  if (!resumeContextValidated && shouldDelayResumeForPendingNavigation(pending)) {
+    scheduleAutoResumeRetry(320);
     return;
   }
   if (!resumeContextValidated) {
@@ -3737,7 +4313,7 @@ function maybeAutoResumePendingRun(): void {
     });
     return;
   }
-  if (hasLiveRemoteControllerForPendingRun(pending.id)) {
+  if (hasLiveRemoteController) {
     scheduleAutoResumeRetry(650);
     return;
   }
@@ -3792,16 +4368,24 @@ function maybeAutoResumePendingRun(): void {
     return;
   }
 
-  autoResumeAttempted = true;
-  crossDomainResumeActive = false;
-  resumeContextValidated = false;
-  setUiStatus('Resuming interrupted task...');
-  postRun(pending.text, {
-    runId: pending.id,
-    resume: true,
-    appendUserMessage: false,
-    autoResume: true,
-  });
+  if (policyAction === 'prompt_resume') {
+    const shown = showResumeTaskSuggestion(pending);
+    if (shown) {
+      setUiStatus('Resume available. Choose Resume or Cancel.');
+      recordTelemetryEvent('status', {
+        event: 'resume_prompt_shown',
+        runId: pending.id,
+      });
+    }
+    return;
+  }
+
+  dispatchPendingRunResume(
+    pending,
+    options?.overridePolicyAction === 'auto_resume'
+      ? 'manual_resume_confirm'
+      : `policy_${autoResumePolicy}`,
+  );
 }
 
 function shouldAdoptIncomingRuntimeState(params: {
@@ -4118,6 +4702,7 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
   if (workerReady && worker && currentMode === 'controller') {
     postWorkerBoundaryConfig();
   }
+  syncMainWorldObserverPause();
   syncQuestionPromptFromWorkerState();
   runtimeState.activeTask = sanitizeTask(runtimeState.activeTask, createDefaultTaskState('implicit'));
   if (source === 'local') return;
@@ -4169,7 +4754,7 @@ function cloneRuntimeStateForCheckpoint(state: PersistedRuntimeState): Persisted
 
 function shouldEnableCloudCheckpointing(cfg: RoverInit): boolean {
   if (cfg.sessionScope === 'tab') return false;
-  // V1 default is enabled when token + visitor prerequisites are available.
+  // Default is enabled when token + visitor prerequisites are available.
   if (cfg.checkpointing?.enabled === false) return false;
   if (!getRuntimeSessionToken(cfg)) return false;
   if (!resolvedVisitorId) return false;
@@ -4315,7 +4900,7 @@ function setupCloudCheckpointing(cfg: RoverInit): void {
   if (!resolvedVisitorId) return;
   const checkpointToken = getRuntimeSessionToken(cfg);
   if (!checkpointToken) {
-    emit('legacy_checkpoint_blocked', {
+    emit('checkpoint_token_missing', {
       reason: 'missing_or_invalid_session_token',
       expectedPrefix: 'rvrsess_',
       action: 'disabled_cloud_checkpoint_client',
@@ -4339,13 +4924,18 @@ function setupCloudCheckpointing(cfg: RoverInit): void {
       apiBase: cfg.apiBase,
       authToken: checkpointToken,
       getSessionToken: () => getRuntimeSessionToken(currentConfig),
+      shouldSync: () => currentMode === 'controller' && !crossDomainResumeActive && !shouldDeferBackgroundSync(),
       siteId: cfg.siteId,
       visitorId: resolvedVisitorId,
       ttlHours: cfg.checkpointing?.ttlHours ?? 1,
       flushIntervalMs: cfg.checkpointing?.flushIntervalMs,
       pullIntervalMs: cfg.checkpointing?.pullIntervalMs,
       minFlushIntervalMs: cfg.checkpointing?.minFlushIntervalMs,
-      shouldWrite: () => currentMode === 'controller' && !crossDomainResumeActive,
+      maxSnapshotBytes: normalizeStabilityByteLimit(
+        cfg.stability?.maxSnapshotBytes,
+        ROVER_V2_PERSIST_CAPS.snapshotBytes,
+      ),
+      shouldWrite: () => currentMode === 'controller' && !crossDomainResumeActive && !shouldDeferBackgroundSync(),
       buildCheckpoint: () => buildCloudCheckpointPayload(),
       onCheckpoint: payload => {
         applyCloudCheckpointPayload(payload);
@@ -4881,6 +5471,7 @@ function handleWorkerMessage(msg: any): void {
         latestAssistantByRunId.delete(completedRunId);
       }
       if (completedRunId) {
+        enqueueServerRunCancelRepair(completedRunId, 'worker_run_failed', { attemptImmediately: true });
         void roverServerRuntime?.controlRun({
           action: 'cancel',
           runId: completedRunId,
@@ -4923,6 +5514,7 @@ function handleWorkerMessage(msg: any): void {
         : (needsUserInput ? pendingStateQuestions : []);
       if (terminalState === 'failed') {
         if (completedRunId) {
+          enqueueServerRunCancelRepair(completedRunId, 'worker_terminal_failed', { attemptImmediately: true });
           void roverServerRuntime?.controlRun({
             action: 'cancel',
             runId: completedRunId,
@@ -5358,8 +5950,10 @@ async function fetchBackendSiteConfig(cfg: RoverInit): Promise<RoverResolvedSite
   const startBody: Record<string, unknown> = {
     siteId: cfg.siteId,
     sessionId: runtimeState?.sessionId || cfg.sessionId,
+    requestedSessionId: runtimeState?.sessionId || cfg.sessionId,
     host: window.location.hostname,
     url: window.location.href,
+    pageUrl: window.location.href,
   };
   if (runtimeToken.startsWith('rvrsess_')) {
     startBody.sessionToken = runtimeToken;
@@ -5367,17 +5961,17 @@ async function fetchBackendSiteConfig(cfg: RoverInit): Promise<RoverResolvedSite
     startBody.bootstrapToken = runtimeToken;
   }
 
-  const baseCandidates = resolveRoverV1Bases(cfg.apiBase);
+  const baseCandidates = resolveRoverBases(cfg.apiBase);
   for (const base of baseCandidates) {
     try {
-      const v1Resp = await fetch(`${base}/session/start`, {
+      const response = await fetch(`${base}/session/open`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(startBody),
       });
-      const v1Json = await v1Resp.json().catch(() => undefined);
-      if (!v1Resp.ok || !v1Json?.success) continue;
-      payload = v1Json?.data?.siteConfig || null;
+      const json = await response.json().catch(() => undefined);
+      if (!response.ok || !json?.success) continue;
+      payload = json?.data?.siteConfig || null;
       if (payload) break;
     } catch {
       // try next candidate
@@ -5453,6 +6047,7 @@ function createRuntime(cfg: RoverInit): void {
   }
   setupCloudCheckpointing(cfg);
   setupTelemetry(cfg);
+  syncMainWorldObserverPause(true);
 
   const initialAllowActions =
     (cfg.allowActions ?? true) && (sessionCoordinator ? sessionCoordinator.isController() : true);
@@ -5513,7 +6108,7 @@ function createRuntime(cfg: RoverInit): void {
     allowActions: initialAllowActions,
     runtimeId,
     allowedDomains: cfg.allowedDomains,
-    domainScopeMode: cfg.domainScopeMode,
+    domainScopeMode: normalizeDomainScopeMode(cfg.domainScopeMode),
     externalNavigationPolicy: cfg.externalNavigationPolicy,
     crossHostPolicy: normalizeCrossHostPolicy(cfg.navigation?.crossHostPolicy),
     navigationDelayMs: cfg.timing?.navigationDelayMs,
@@ -5947,6 +6542,7 @@ function createRuntime(cfg: RoverInit): void {
     if (pendingRun) {
       addIgnoredRunId(pendingRun.id);
       worker?.postMessage({ type: 'cancel_run', runId: pendingRun.id });
+      enqueueServerRunCancelRepair(pendingRun.id, reason, { attemptImmediately: true });
       roverServerRuntime?.controlRun({
         action: 'cancel',
         runId: pendingRun.id,
@@ -5997,11 +6593,6 @@ function createRuntime(cfg: RoverInit): void {
     setPendingRun(undefined);
 
     markTaskEnded(reason);
-    roverServerRuntime?.controlRun({
-      action: 'cancel',
-      runId: runtimeState.pendingRun?.id,
-      reason,
-    }).catch(() => { /* best-effort — local state already cleared */ });
     sessionCoordinator?.endTask(reason);
     sessionCoordinator?.setActiveRun(undefined);
     sessionCoordinator?.setWorkerContext(undefined);
@@ -6060,13 +6651,13 @@ function createRuntime(cfg: RoverInit): void {
       const suggestion = pendingTaskSuggestion;
       if (!suggestion) return;
       if (suggestion.kind === 'resume_run') {
+        const currentPending = sanitizePendingRun(runtimeState?.pendingRun);
         hideTaskSuggestion();
-        postRun(suggestion.text, {
-          runId: suggestion.runId,
-          resume: true,
-          appendUserMessage: false,
-          autoResume: true,
-        });
+        if (!currentPending || currentPending.id !== suggestion.runId) {
+          setUiStatus('Previous task is no longer resumable.');
+          return;
+        }
+        maybeAutoResumePendingRun({ overridePolicyAction: 'auto_resume' });
         return;
       }
       dispatchUserPrompt(suggestion.text, {
@@ -6079,18 +6670,20 @@ function createRuntime(cfg: RoverInit): void {
       const suggestion = pendingTaskSuggestion;
       if (!suggestion) return;
       if (suggestion.kind === 'resume_run') {
-        if (runtimeState?.pendingRun?.id === suggestion.runId) {
-          addIgnoredRunId(suggestion.runId);
-          sessionCoordinator?.releaseWorkflowLock(suggestion.runId);
-          sessionCoordinator?.setActiveRun(undefined);
-          setPendingRun(undefined);
-        }
-        if (runSafetyTimer) {
-          clearTimeout(runSafetyTimer);
-          runSafetyTimer = null;
-        }
+        const currentPendingId = String(runtimeState?.pendingRun?.id || '').trim();
         hideTaskSuggestion();
-        newTask({ reason: 'resume_declined_start_fresh', clearUi: true });
+        if (!currentPendingId || currentPendingId !== suggestion.runId) {
+          return;
+        }
+        abandonPendingRunLocally({
+          reason: 'resume_declined_by_user',
+          statusText: 'Resume cancelled. Start a new task when you are ready.',
+          runId: suggestion.runId,
+          cancelReason: 'resume_declined_by_user',
+          timelineTitle: 'Resume cancelled',
+          timelineDetail: 'Interrupted run was cancelled by user action.',
+          timelineStatus: 'info',
+        });
         return;
       }
       dispatchUserPrompt(suggestion.text, {
@@ -6372,6 +6965,7 @@ export function boot(cfg: RoverInit): RoverInstance {
     ...cfg,
     visitorId: resolvedVisitorId || cfg.visitorId,
     sessionId: desiredSessionId || runtimeState.sessionId,
+    domainScopeMode: normalizeDomainScopeMode(cfg.domainScopeMode),
     taskRouting: {
       mode: cfg.taskRouting?.mode || 'act',
       actHeuristicThreshold: cfg.taskRouting?.actHeuristicThreshold,
@@ -6388,6 +6982,20 @@ export function boot(cfg: RoverInit): RoverInstance {
       domSettleRetries: normalizeTimingNumber(cfg.timing?.domSettleRetries, 0, 6),
       sparseTreeRetryDelayMs: normalizeTimingNumber(cfg.timing?.sparseTreeRetryDelayMs, 20, 1000),
       sparseTreeRetryMaxAttempts: normalizeTimingNumber(cfg.timing?.sparseTreeRetryMaxAttempts, 0, 4),
+    },
+    transport: {
+      activation: normalizeTransportActivation(cfg.transport?.activation),
+      idleCloseMs: normalizeTransportIdleCloseMs(cfg.transport?.idleCloseMs),
+    },
+    stability: {
+      maxPersistBytes: normalizeStabilityByteLimit(
+        cfg.stability?.maxPersistBytes,
+        ROVER_V2_PERSIST_CAPS.localPersistBytes,
+      ),
+      maxSnapshotBytes: normalizeStabilityByteLimit(
+        cfg.stability?.maxSnapshotBytes,
+        ROVER_V2_PERSIST_CAPS.snapshotBytes,
+      ),
     },
     task: {
       singleActiveScope: normalizeTaskSingleActiveScope(cfg.task?.singleActiveScope),
@@ -6420,7 +7028,7 @@ export function boot(cfg: RoverInit): RoverInstance {
       ...cfg.taskContext,
     },
     features: {
-      rover_v1_kernel_runtime: normalizeKernelRuntimeFeature(cfg.features?.rover_v1_kernel_runtime),
+      rover_v2_kernel_runtime: normalizeKernelRuntimeFeature(cfg.features?.rover_v2_kernel_runtime),
     },
   };
 
@@ -6455,6 +7063,7 @@ export function boot(cfg: RoverInit): RoverInstance {
   sessionReady = false;
   autoResumeAttempted = false;
   autoResumeSessionWaitAttempts = 0;
+  lastObserverPauseApplied = null;
 
   // Restore session token from sessionStorage (survives same-origin navigation/refresh)
   try {
@@ -6485,6 +7094,7 @@ export function boot(cfg: RoverInit): RoverInstance {
     );
   }
   ensureUnloadHandler();
+  syncMainWorldObserverPause(true);
 
   // Safety timeout: if cross-domain cloud checkpoint never arrives, resume anyway
   if (crossDomainResumeActive) {
@@ -6533,6 +7143,7 @@ export function update(cfg: Partial<RoverInit>): void {
   currentConfig = {
     ...currentConfig,
     ...cfg,
+    domainScopeMode: normalizeDomainScopeMode(cfg.domainScopeMode ?? currentConfig.domainScopeMode),
     taskRouting: {
       ...currentConfig.taskRouting,
       ...cfg.taskRouting,
@@ -6579,6 +7190,28 @@ export function update(cfg: Partial<RoverInit>): void {
         cfg.timing?.sparseTreeRetryMaxAttempts ?? currentConfig.timing?.sparseTreeRetryMaxAttempts,
         0,
         4,
+      ),
+    },
+    transport: {
+      ...currentConfig.transport,
+      ...cfg.transport,
+      activation: normalizeTransportActivation(
+        cfg.transport?.activation ?? currentConfig.transport?.activation,
+      ),
+      idleCloseMs: normalizeTransportIdleCloseMs(
+        cfg.transport?.idleCloseMs ?? currentConfig.transport?.idleCloseMs,
+      ),
+    },
+    stability: {
+      ...currentConfig.stability,
+      ...cfg.stability,
+      maxPersistBytes: normalizeStabilityByteLimit(
+        cfg.stability?.maxPersistBytes ?? currentConfig.stability?.maxPersistBytes,
+        ROVER_V2_PERSIST_CAPS.localPersistBytes,
+      ),
+      maxSnapshotBytes: normalizeStabilityByteLimit(
+        cfg.stability?.maxSnapshotBytes ?? currentConfig.stability?.maxSnapshotBytes,
+        ROVER_V2_PERSIST_CAPS.snapshotBytes,
       ),
     },
     task: {
@@ -6637,8 +7270,8 @@ export function update(cfg: Partial<RoverInit>): void {
     features: {
       ...currentConfig.features,
       ...cfg.features,
-      rover_v1_kernel_runtime: normalizeKernelRuntimeFeature(
-        cfg.features?.rover_v1_kernel_runtime ?? currentConfig.features?.rover_v1_kernel_runtime,
+      rover_v2_kernel_runtime: normalizeKernelRuntimeFeature(
+        cfg.features?.rover_v2_kernel_runtime ?? currentConfig.features?.rover_v2_kernel_runtime,
       ),
     },
     ui: {
@@ -6711,7 +7344,7 @@ export function update(cfg: Partial<RoverInit>): void {
     if (cfg.allowedDomains || cfg.domainScopeMode || cfg.externalNavigationPolicy || cfg.navigation?.crossHostPolicy) {
       bridge.setNavigationPolicy({
         allowedDomains: cfg.allowedDomains,
-        domainScopeMode: cfg.domainScopeMode,
+        domainScopeMode: normalizeDomainScopeMode(cfg.domainScopeMode ?? currentConfig.domainScopeMode),
         externalNavigationPolicy: cfg.externalNavigationPolicy,
         crossHostPolicy: cfg.navigation?.crossHostPolicy,
       } as any);
@@ -6748,6 +7381,7 @@ export function update(cfg: Partial<RoverInit>): void {
     if (cfg.openOnInit) open();
     else close();
   }
+  syncMainWorldObserverPause();
 }
 
 export function shutdown(): void {
@@ -6782,6 +7416,12 @@ export function shutdown(): void {
     clearTimeout(autoResumeRetryTimer);
     autoResumeRetryTimer = null;
   }
+  if (serverCancelRepairTimer) {
+    clearTimeout(serverCancelRepairTimer);
+    serverCancelRepairTimer = null;
+  }
+  serverCancelRepairInFlight = false;
+  pendingServerRunCancelRepairs.clear();
   agentNavigationPending = false;
   currentTaskBoundaryId = '';
   runtimeId = '';
@@ -6808,6 +7448,14 @@ export function shutdown(): void {
   currentMode = 'controller';
   pendingTaskSuggestion = null;
   runtimeStateStore = null;
+  lastObserverPauseApplied = null;
+  transportIdleDeadline = 0;
+  try {
+    const clearPaused = (window as any).rtrvrAIClearObserverPause;
+    if (typeof clearPaused === 'function') clearPaused();
+  } catch {
+    // no-op
+  }
   instance = null;
 }
 
@@ -6866,6 +7514,7 @@ export function newTask(options?: { reason?: string; clearUi?: boolean }): void 
   if (runtimeState.pendingRun) {
     addIgnoredRunId(runtimeState.pendingRun.id);
     worker?.postMessage({ type: 'cancel_run', runId: runtimeState.pendingRun.id });
+    enqueueServerRunCancelRepair(runtimeState.pendingRun.id, reason, { attemptImmediately: true });
     void roverServerRuntime?.controlRun({
       action: 'cancel',
       runId: runtimeState.pendingRun.id,
@@ -6950,6 +7599,7 @@ export function endTask(options?: { reason?: string }): void {
   if (pendingRunId) {
     addIgnoredRunId(pendingRunId);
     worker?.postMessage({ type: 'cancel_run', runId: pendingRunId });
+    enqueueServerRunCancelRepair(pendingRunId, reason, { attemptImmediately: true });
     void roverServerRuntime?.controlRun({
       action: 'cancel',
       runId: pendingRunId,

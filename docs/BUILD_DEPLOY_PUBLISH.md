@@ -171,8 +171,8 @@ Default `GITHUB_TOKEN` is scoped to the current repo only. The `deploy-vercel` j
 ### Cross-origin Worker error
 When embed.js is loaded from `rover.rtrvr.ai` but runs on `www.rtrvr.ai`, the Worker can't be constructed cross-origin. Fixed by creating a same-origin blob URL wrapper: `import 'https://rover.rtrvr.ai/worker/worker.js';` (module workers support cross-origin imports).
 
-### Snapshot writes in Rover v1
-Rover browser checkpoint sync now writes to `/v1/rover/session/snapshot` and reads from `/v1/rover/session/projection` using a short-lived `rvrsess_*` session token. Legacy checkpoint action routes are deprecated for Rover browser runtime.
+### Snapshot writes in Rover v2
+Rover browser checkpoint sync now writes to `/v2/rover/snapshot` and reads from `/v2/rover/state` using a short-lived `rvrsess_*` session token. Legacy checkpoint action routes are deprecated for Rover browser runtime.
 
 ---
 
