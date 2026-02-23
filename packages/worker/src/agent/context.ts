@@ -277,7 +277,7 @@ function buildExternalPlaceholderPageData(params: {
     url,
     title,
     contentType: 'text/html',
-    content: `${agentName} is running in virtual external-tab mode. Live DOM control and accessibility-tree access are unavailable here.${reasonLine}`,
+    content: `${agentName} cannot access this external page directly. To get content from this page, use 'rover_external_read_context' with a COMPLETE description of what to extract. For interactive tasks (fill forms, click buttons, navigate), use 'rover_external_act_context' with the FULL end-to-end task.${reasonLine}`,
     metadata: {
       inaccessible: true,
       external: true,
@@ -517,6 +517,7 @@ export function createAgentContext(
           url: normalizedUrl,
           source,
           message: options?.message,
+          timeoutMs: intent === 'act' ? 720_000 : 300_000,
         }),
         signal: config.signal,
       });

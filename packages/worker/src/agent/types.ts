@@ -189,7 +189,7 @@ export type ToolExecutionResult = {
 
 export type PlannerResponse = {
   response: {
-    plan?: { toolName: string; parameters: Record<string, any>; thought?: string };
+    plan?: { toolName: string; parameters: Record<string, any>; thought?: string; serverResult?: { success: boolean; data?: any; error?: string } };
     questions?: PlannerQuestion[];
     taskComplete: boolean;
     modelParts?: any[];

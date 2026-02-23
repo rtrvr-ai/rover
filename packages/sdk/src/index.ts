@@ -7006,6 +7006,14 @@ function createRuntime(cfg: RoverInit): void {
       const routeTabId = (Number.isFinite(toolTabId) && toolTabId > 0) ? toolTabId : activeTabId;
 
       if (isRoverExternalContextToolName(toolName)) {
+        // If backend already executed this tool server-side, use the pre-filled result
+        const serverResult = params?.call?.serverResult;
+        if (serverResult) {
+          return serverResult.success
+            ? { success: true, output: serverResult.data }
+            : { success: false, error: serverResult.error || 'Server-side execution failed' };
+        }
+        // Fallback: execute client-side (old backend or missed interception)
         return executeRoverExternalContextToolCall({
           call: params?.call,
           routeTabId: Number.isFinite(Number(routeTabId)) ? Number(routeTabId) : undefined,

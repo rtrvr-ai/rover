@@ -405,6 +405,13 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
 
     case PLANNER_FUNCTION_CALLS.ROVER_EXTERNAL_READ_CONTEXT:
     case PLANNER_FUNCTION_CALLS.ROVER_EXTERNAL_ACT_CONTEXT: {
+      // If backend already executed this tool, use the pre-filled result
+      if (toolArgs?.serverResult) {
+        return toolArgs.serverResult.success
+          ? { output: toolArgs.serverResult.data }
+          : { error: toolArgs.serverResult.error || 'Server-side execution failed' };
+      }
+      // Fallback: execute client-side (old backend or missed interception)
       return executeRoverExternalContextPlannerTool({
         toolName,
         toolArgs: toolArgs || {},

@@ -1,5 +1,5 @@
 import { SUB_AGENTS } from '@rover/shared';
-import type { PlannerOptions, PlannerResponse, PlannerPreviousStep, FunctionDeclaration, PreviousSteps } from './types.js';
+import type { PlannerOptions, PlannerResponse, PlannerPreviousStep, FunctionDeclaration, PreviousSteps, ToolExecutionResult } from './types.js';
 import type { AgentContext } from './context.js';
 import { executeToolFromPlan } from './toolExecutor.js';
 import { resolveRuntimeTabs } from './runtimeTabs.js';
@@ -219,25 +219,33 @@ export async function executePlannerWithTools(
       plan.thought ?? plannerResponse.overallThought,
       'execute',
     );
-    const toolResult = await executeToolFromPlan({
-      ...options,
-      toolName: plan.toolName,
-      toolArgs: plan.parameters,
-      plannerPrevSteps: currentPreviousSteps,
-      agentLog: {
-        prevSteps: lastToolPreviousSteps || options.agentLog?.prevSteps,
-        chatLog: options.agentLog?.chatLog,
-      },
-      ctx: options.ctx,
-      bridgeRpc: options.bridgeRpc,
-      functionDeclarations: options.functionDeclarations,
-      onPrevStepsUpdate: options.onPrevStepsUpdate,
-    });
+
+    // If backend already executed this tool server-side, use the pre-filled result
+    const serverResult = plan.serverResult;
+    const toolResult: ToolExecutionResult = serverResult
+      ? {
+          output: serverResult.success ? serverResult.data : undefined,
+          error: serverResult.success ? undefined : (serverResult.error || 'Server-side execution failed'),
+        }
+      : await executeToolFromPlan({
+        ...options,
+        toolName: plan.toolName,
+        toolArgs: plan.parameters,
+        plannerPrevSteps: currentPreviousSteps,
+        agentLog: {
+          prevSteps: lastToolPreviousSteps || options.agentLog?.prevSteps,
+          chatLog: options.agentLog?.chatLog,
+        },
+        ctx: options.ctx,
+        bridgeRpc: options.bridgeRpc,
+        functionDeclarations: options.functionDeclarations,
+        onPrevStepsUpdate: options.onPrevStepsUpdate,
+      });
 
     accumulatedToolResults.push(toolResult);
     if (toolResult.prevSteps?.length) {
       lastToolPreviousSteps = toolResult.prevSteps;
-      options.onPrevStepsUpdate?.(lastToolPreviousSteps);
+      options.onPrevStepsUpdate?.(toolResult.prevSteps);
     }
 
     const completedStep: PlannerPreviousStep = {
