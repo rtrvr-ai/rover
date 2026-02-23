@@ -198,13 +198,16 @@ function selectExternalIntent(
   if (!normalized.trim()) return 'read_context';
 
   const mutationSignals = /\b(fill|submit|book|buy|purchase|apply|sign up|signup|log in|login|register|delete|update|create|post|send|checkout|pay)\b/i;
+  const interactionSignals = /\b(search|search for|look up|lookup|browse|filter|sort|select|choose|pick|add to cart|compare prices|find reviews|pull reviews)\b/i;
   const navigationSignals = /\b(open|navigate|go to|visit|take me to|bring me to)\b/i;
   const readSignals = /\b(read|summarize|extract|inspect|analyze|check|find|lookup|list|show|compare|review)\b/i;
   if (mutationSignals.test(normalized) && !/\b(do not|don't)\b/i.test(normalized)) {
     return 'act';
   }
+  if (interactionSignals.test(normalized)) {
+    return 'act';
+  }
   if (navigationSignals.test(normalized) && !readSignals.test(normalized)) {
-    // Keep auto-routed navigation prompts in context-read mode; explicit open_only remains supported by override.
     return 'read_context';
   }
   if (readSignals.test(normalized)) {
@@ -277,7 +280,7 @@ function buildExternalPlaceholderPageData(params: {
     url,
     title,
     contentType: 'text/html',
-    content: `${agentName} cannot access this external page directly. To get content from this page, use 'rover_external_read_context' with a COMPLETE description of what to extract. For interactive tasks (fill forms, click buttons, navigate), use 'rover_external_act_context' with the FULL end-to-end task.${reasonLine}`,
+    content: `${agentName} cannot access this external page directly. To read this page's content when you know its exact URL, use 'rover_external_read_context' with the URL (supports multiple URLs via 'urls' param). For tasks requiring search, navigation, or interaction (e.g. searching Google, browsing results, filtering), use 'rover_external_act_context' with the FULL task description in 'message'.${reasonLine}`,
     metadata: {
       inaccessible: true,
       external: true,

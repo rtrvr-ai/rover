@@ -4697,9 +4697,13 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
     resumeContextValidated = true;
   }
   // Same-scope navigation resume: if the pending run was loaded from
-  // localStorage (same origin) or promoted from worker_interrupted, no
-  // cross-domain handoff context is needed — validate immediately.
-  if (!resumeContextValidated && pending.resumeReason === 'worker_interrupted') {
+  // localStorage (same origin) or promoted from worker_interrupted /
+  // agent_navigation (same-host only), no cross-domain handoff context
+  // is needed — validate immediately.
+  if (!resumeContextValidated && (
+    pending.resumeReason === 'worker_interrupted'
+    || pending.resumeReason === 'agent_navigation'
+  )) {
     resumeContextValidated = true;
   }
   if (!resumeContextValidated && shouldDelayResumeForPendingNavigation(pending)) {
