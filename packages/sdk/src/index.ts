@@ -362,7 +362,7 @@ const DEFAULT_CRASH_RESUME_TTL_MS = 15 * 60_000;
 const DEFAULT_CHAT_RESUME_MAX_TURNS = 2;
 const DEFAULT_FOLLOWUP_TTL_MS = 120_000;
 const DEFAULT_FOLLOWUP_MIN_LEXICAL_OVERLAP = 0.18;
-const MAX_AUTO_RESUME_SESSION_WAIT_ATTEMPTS = 10;
+const MAX_AUTO_RESUME_SESSION_WAIT_ATTEMPTS = 30;
 const VISITOR_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 const CHECKPOINT_PAYLOAD_VERSION = 1;
 const ACTIVE_PENDING_RUN_GRACE_MS = 3_000;
@@ -456,6 +456,7 @@ let lastQuestionPromptFlushSignature = '';
 let currentMode: RoverExecutionMode = 'controller';
 let workerReady = false;
 let sessionReady = false;
+let isTransportController = true; // default to true for single-tab mode
 let autoResumeAttempted = false;
 let crossDomainResumeActive = false;
 let resumeContextValidated = false;
@@ -468,6 +469,21 @@ let serverCancelRepairTimer: ReturnType<typeof setTimeout> | null = null;
 let serverCancelRepairInFlight = false;
 let unloadHandlerInstalled = false;
 let visibilitySyncInstalled = false;
+let _booted = false;
+const _registeredListeners: Array<{ target: EventTarget; event: string; handler: EventListenerOrEventListenerObject; options?: boolean | AddEventListenerOptions }> = [];
+let _origPushState: typeof History.prototype.pushState | null = null;
+let _origReplaceState: typeof History.prototype.replaceState | null = null;
+
+function addTrackedListener(
+  target: EventTarget,
+  event: string,
+  handler: EventListenerOrEventListenerObject,
+  options?: boolean | AddEventListenerOptions,
+): void {
+  target.addEventListener(event, handler, options);
+  _registeredListeners.push({ target, event, handler, options });
+}
+
 let lastObserverPauseApplied: boolean | null = null;
 let transportIdleDeadline = 0;
 type PendingTaskSuggestion =
@@ -482,6 +498,28 @@ let titleObserver: MutationObserver | null = null;
 let lastCompletedTaskInput: string | undefined;
 let lastCompletedTaskSummary: string | undefined;
 let lastCompletedTaskAt = 0;
+const MAX_ASSISTANT_BY_RUN_ENTRIES = 50;
+const MAX_IGNORED_RUN_ENTRIES = 100;
+const MAX_EXTERNAL_CONTEXT_CACHE_ENTRIES = 20;
+const EXTERNAL_CONTEXT_CACHE_MAX_TTL = 300_000; // 5 minutes
+
+function evictOldestMapEntry<K, V>(map: Map<K, V>, maxSize: number): void {
+  while (map.size > maxSize) {
+    const oldest = map.keys().next();
+    if (oldest.done) break;
+    map.delete(oldest.value);
+  }
+}
+
+function evictOldestSetEntry(set: Set<string>, maxSize: number): void {
+  const iter = set.values();
+  while (set.size > maxSize) {
+    const oldest = iter.next();
+    if (oldest.done) break;
+    set.delete(oldest.value);
+  }
+}
+
 const latestAssistantByRunId = new Map<string, string>();
 const ignoredRunIds = new Set<string>();
 let roverServerRuntime: RoverServerRuntimeClient | null = null;
@@ -1246,9 +1284,26 @@ function getBootstrapRuntimeAuthToken(cfg?: RoverInit | null): string {
 }
 
 function getRuntimeSessionToken(cfg?: RoverInit | null): string {
-  if (runtimeSessionToken && runtimeSessionTokenExpiresAt > Date.now() + 10_000) {
+  // Reduced headroom from 10s to 2s — token has 10min TTL so 2s is sufficient
+  if (runtimeSessionToken && runtimeSessionTokenExpiresAt > Date.now() + 2_000) {
     return runtimeSessionToken;
   }
+  // Fallback: re-read from sessionStorage (may have been updated by onSession callback)
+  try {
+    const siteId = currentConfig?.siteId || cfg?.siteId || '';
+    if (siteId) {
+      const cached = sessionStorage.getItem(`rover:sess:${siteId}`);
+      if (cached) {
+        const { t, e } = JSON.parse(cached);
+        if (t && typeof t === 'string' && t.startsWith('rvrsess_') && Number(e) > Date.now() + 2_000) {
+          // Restore in-memory token from sessionStorage
+          runtimeSessionToken = t;
+          runtimeSessionTokenExpiresAt = Number(e);
+          return t;
+        }
+      }
+    }
+  } catch { /* ignore */ }
   const source = cfg || currentConfig;
   const fallbackToken = String(source?.sessionToken || source?.authToken || '').trim();
   return fallbackToken.startsWith('rvrsess_') ? fallbackToken : '';
@@ -1411,6 +1466,13 @@ async function ensureRoverServerRuntime(cfg: RoverInit): Promise<void> {
       shouldKeepTransportActive: () => !shouldDeferBackgroundSync(),
       onSession: session => {
         updateRuntimeSessionToken(session.sessionToken, session.sessionTokenExpiresAt);
+        // Broadcast token to observer tabs
+        if (isTransportController) {
+          sessionCoordinator?.broadcastSessionToken(
+            session.sessionToken || '',
+            session.sessionTokenExpiresAt || 0,
+          );
+        }
         runtimeServerEpoch = Math.max(1, Number(session.epoch || runtimeServerEpoch));
         if (runtimeState && session.sessionId && runtimeState.sessionId !== session.sessionId) {
           runtimeState.sessionId = session.sessionId;
@@ -1466,6 +1528,10 @@ async function ensureRoverServerRuntime(cfg: RoverInit): Promise<void> {
       },
       onProjection: projection => {
         applyServerProjection(projection);
+        // Broadcast projection to observer tabs
+        if (isTransportController) {
+          sessionCoordinator?.broadcastProjection(projection);
+        }
         void flushServerCancelRepairs();
         if (worker) {
           worker.postMessage({
@@ -1701,11 +1767,7 @@ function getServerRunIdForDispatch(): string | undefined {
 function addIgnoredRunId(runId?: string): void {
   if (!runId) return;
   ignoredRunIds.add(runId);
-  while (ignoredRunIds.size > 80) {
-    const oldest = ignoredRunIds.values().next().value;
-    if (!oldest) break;
-    ignoredRunIds.delete(oldest);
-  }
+  evictOldestSetEntry(ignoredRunIds, MAX_IGNORED_RUN_ENTRIES);
 }
 
 function removeIgnoredRunId(runId?: string): void {
@@ -1861,6 +1923,15 @@ function isTaskRunning(): boolean {
   return runtimeState?.activeTask?.status === 'running';
 }
 
+function syncCheckpointIdleMode(): void {
+  if (!cloudCheckpointClient) return;
+  if (isTaskRunning() || hasLocalPendingRun()) {
+    cloudCheckpointClient.enterActiveMode();
+  } else {
+    cloudCheckpointClient.enterIdleMode();
+  }
+}
+
 function isRuntimeTabHidden(): boolean {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden';
 }
@@ -1893,6 +1964,8 @@ function hasTransportDemandSignal(): boolean {
 }
 
 function shouldDeferBackgroundSync(): boolean {
+  // Observer tabs defer all backend transport — controller handles SSE/checkpoint
+  if (!isTransportController) return true;
   const demandSignal = hasTransportDemandSignal();
   if (demandSignal) {
     transportIdleDeadline = 0;
@@ -2867,9 +2940,25 @@ function persistRuntimeStateImmediate(options?: { markCheckpointDirty?: boolean 
       runtimeState.activeTaskId = activeTaskId;
       runtimeState.taskOrder = taskOrder;
     }
-    runtimeState.updatedAt = Date.now();
     const maxPersistBytes = resolveMaxPersistBytes();
     runtimeState = trimRuntimeStateForPersist(runtimeState, maxPersistBytes);
+    // Compute a lightweight signature to skip redundant writes
+    const sig = JSON.stringify({
+      s: runtimeState.sessionId,
+      p: runtimeState.pendingRun?.id,
+      pa: runtimeState.pendingRun?.autoResume,
+      t: runtimeState.activeTask?.status,
+      te: runtimeState.taskEpoch,
+      m: runtimeState.uiMessages?.length,
+      tl: runtimeState.timeline?.length,
+      o: runtimeState.uiOpen,
+      h: runtimeState.uiHidden,
+      e: runtimeState.executionMode,
+      at: runtimeState.activeTaskId,
+    });
+    if (sig === lastPersistSignature && !options?.markCheckpointDirty) return;
+    lastPersistSignature = sig;
+    runtimeState.updatedAt = Date.now();
     runtimeStateStore?.write(runtimeStorageKey, runtimeState);
     if (runtimeStorageLegacyKey && runtimeStorageLegacyKey !== runtimeStorageKey) {
       runtimeStateStore?.remove(runtimeStorageLegacyKey);
@@ -2885,10 +2974,11 @@ function persistRuntimeStateImmediate(options?: { markCheckpointDirty?: boolean 
 
 let persistScheduled = false;
 let persistDirtyCheckpoint = false;
+let lastPersistSignature = '';
 let lastPersistTime = 0;
 let firstPersistRequestAt = 0;
-const MIN_PERSIST_INTERVAL_MS = 1_000;
-const MAX_PERSIST_COALESCE_DELAY_MS = 1_000;
+const MIN_PERSIST_INTERVAL_MS = 2_000;
+const MAX_PERSIST_COALESCE_DELAY_MS = 2_000;
 
 function flushCheckpointCritical(reason: string): void {
   persistRuntimeStateImmediate({ markCheckpointDirty: true });
@@ -2943,7 +3033,7 @@ function ensureUnloadHandler(): void {
   unloadHandlerInstalled = true;
   if (!visibilitySyncInstalled) {
     visibilitySyncInstalled = true;
-    document.addEventListener('visibilitychange', () => {
+    addTrackedListener(document, 'visibilitychange', () => {
       syncMainWorldObserverPause();
     }, { passive: true });
   }
@@ -2990,9 +3080,10 @@ function ensureUnloadHandler(): void {
     sessionCoordinator?.stop();
   };
 
-  window.addEventListener('pagehide', onPageHide, { capture: true });
+  addTrackedListener(window, 'pagehide', onPageHide, { capture: true });
 
-  const onPageShow = (event: PageTransitionEvent) => {
+  const onPageShow = (evt: Event) => {
+    const event = evt as PageTransitionEvent;
     if (!event.persisted) return; // Only handle bfcache restores
     // Re-read shared state from localStorage after bfcache restore
     if (sessionCoordinator) {
@@ -3008,7 +3099,7 @@ function ensureUnloadHandler(): void {
     }
     syncMainWorldObserverPause(true);
   };
-  window.addEventListener('pageshow', onPageShow);
+  addTrackedListener(window, 'pageshow', onPageShow);
 }
 
 function ensureActiveTask(reason = 'implicit'): PersistedTaskState | undefined {
@@ -3080,6 +3171,7 @@ function applyTaskKernelCommand(
     }
   }
   syncMainWorldObserverPause();
+  syncCheckpointIdleMode();
 
   // Lightweight consistency sync: orchestrator is now dispatched first (FSM-primary),
   // so we only need to persist orchestrator state to runtimeState here.
@@ -3881,13 +3973,18 @@ function buildFollowupChatLogForFreshPrompt(prompt: string, previousTaskStatus?:
 
 // On-demand external context prefetch cache
 const externalContextCache = new Map<string, { data: any; ts: number }>();
-const EXTERNAL_CONTEXT_CACHE_TTL = 120_000; // 2 minutes
+const EXTERNAL_CONTEXT_CACHE_TTL = EXTERNAL_CONTEXT_CACHE_MAX_TTL;
 
 async function fetchAndCacheExternalContext(targetUrl: string): Promise<void> {
   if (externalContextCache.has(targetUrl)) {
     const cached = externalContextCache.get(targetUrl)!;
     if (Date.now() - cached.ts < EXTERNAL_CONTEXT_CACHE_TTL) return;
     externalContextCache.delete(targetUrl);
+  }
+  // Evict expired entries
+  const now = Date.now();
+  for (const [key, entry] of externalContextCache) {
+    if (now - entry.ts >= EXTERNAL_CONTEXT_CACHE_TTL) externalContextCache.delete(key);
   }
   const runId = runtimeState?.pendingRun?.id;
   if (!runId || !roverServerRuntime) return;
@@ -3898,6 +3995,7 @@ async function fetchAndCacheExternalContext(targetUrl: string): Promise<void> {
   });
   if (result) {
     externalContextCache.set(targetUrl, { data: result, ts: Date.now() });
+    evictOldestMapEntry(externalContextCache, MAX_EXTERNAL_CONTEXT_CACHE_ENTRIES);
   }
 }
 
@@ -5270,6 +5368,7 @@ function setupCloudCheckpointing(cfg: RoverInit): void {
     });
     cloudCheckpointClient.start();
     cloudCheckpointClient.markDirty();
+    syncCheckpointIdleMode();
   } catch {
     cloudCheckpointClient = null;
   }
@@ -5294,6 +5393,21 @@ function setupSessionCoordinator(cfg: RoverInit): void {
     onRoleChange: (role, info) => {
       const effectiveRole = resolveEffectiveExecutionMode(role);
       setExecutionMode(effectiveRole, info);
+      // Gate backend transport on controller role
+      const wasController = isTransportController;
+      isTransportController = effectiveRole === 'controller';
+      if (wasController !== isTransportController) {
+        if (isTransportController) {
+          // Promoted to controller — activate transport
+          syncMainWorldObserverPause(true);
+          if (currentConfig) {
+            void ensureRoverServerRuntime(currentConfig);
+          }
+        } else {
+          // Demoted to observer — deactivate transport
+          syncMainWorldObserverPause(true);
+        }
+      }
       const allowActions = effectiveRole === 'controller' && (currentConfig?.allowActions ?? true);
       bridge?.setAllowActions(allowActions);
       (bridge as any)?.setActionGateContext?.({
@@ -5364,6 +5478,18 @@ function setupSessionCoordinator(cfg: RoverInit): void {
     },
   });
 
+  sessionCoordinator.onSessionTokenReceived = (token, expiresAt) => {
+    if (!isTransportController) {
+      updateRuntimeSessionToken(token, expiresAt);
+    }
+  };
+
+  sessionCoordinator.onProjectionReceived = (projection) => {
+    if (!isTransportController && projection) {
+      applyServerProjection(projection);
+    }
+  };
+
   const startupHandoff = getUnconsumedNavigationHandoff();
   sessionCoordinator.start(toSharedNavigationHandoff(startupHandoff));
   ensureTaskTabScopeSeed({ persist: true, appendSeed: false });
@@ -5424,10 +5550,7 @@ function handleWorkerMessage(msg: any): void {
     const text = String(msg.text || deriveTextFromMessageBlocks(blocks) || '');
     if (typeof msg.runId === 'string' && msg.runId) {
       latestAssistantByRunId.set(msg.runId, text);
-      if (latestAssistantByRunId.size > 80) {
-        const oldestKey = latestAssistantByRunId.keys().next().value;
-        if (oldestKey) latestAssistantByRunId.delete(oldestKey);
-      }
+      evictOldestMapEntry(latestAssistantByRunId, MAX_ASSISTANT_BY_RUN_ENTRIES);
     }
     appendUiMessage('assistant', text, true, { blocks });
     appendTimelineEvent({
@@ -6389,6 +6512,7 @@ function createRuntime(cfg: RoverInit): void {
   if (sessionCoordinator) {
     const initialRole = resolveEffectiveExecutionMode(sessionCoordinator.getRole());
     currentMode = initialRole;
+    isTransportController = !sessionCoordinator || sessionCoordinator.getRole() === 'controller';
     if (runtimeState) {
       runtimeState.executionMode = initialRole;
     }
@@ -7189,19 +7313,21 @@ function createRuntime(cfg: RoverInit): void {
       sessionCoordinator?.broadcastNavigation(window.location.href, document.title);
     };
 
-    const origPushState = history.pushState.bind(history);
-    const origReplaceState = history.replaceState.bind(history);
-    history.pushState = function (...args: Parameters<typeof origPushState>) {
-      const result = origPushState(...args);
+    if (!_origPushState) _origPushState = History.prototype.pushState;
+    if (!_origReplaceState) _origReplaceState = History.prototype.replaceState;
+    const boundPush = _origPushState.bind(history);
+    const boundReplace = _origReplaceState.bind(history);
+    history.pushState = function (...args: Parameters<typeof History.prototype.pushState>) {
+      const result = boundPush(...args);
       setTimeout(navigationHandler, 0);
       return result;
     };
-    history.replaceState = function (...args: Parameters<typeof origReplaceState>) {
-      const result = origReplaceState(...args);
+    history.replaceState = function (...args: Parameters<typeof History.prototype.replaceState>) {
+      const result = boundReplace(...args);
       setTimeout(navigationHandler, 0);
       return result;
     };
-    window.addEventListener('popstate', navigationHandler);
+    addTrackedListener(window, 'popstate', navigationHandler);
   }
 
   if (runtimeState?.uiHidden) {
@@ -7236,6 +7362,10 @@ export function boot(cfg: RoverInit): RoverInstance {
     update(cfg);
     return instance;
   }
+  if (_booted) {
+    shutdown();
+  }
+  _booted = true;
 
   runtimeStateStore = createRuntimeStateStore<PersistedRuntimeState>();
   runtimeId = getOrCreateRuntimeId(cfg.siteId);
@@ -7527,7 +7657,7 @@ export function boot(cfg: RoverInit): RoverInstance {
     const cached = sessionStorage.getItem(`rover:sess:${cfg.siteId}`);
     if (cached) {
       const { t, e } = JSON.parse(cached);
-      if (t && typeof t === 'string' && t.startsWith('rvrsess_') && Number(e) > Date.now() + 10_000) {
+      if (t && typeof t === 'string' && t.startsWith('rvrsess_') && Number(e) > Date.now() + 2_000) {
         updateRuntimeSessionToken(t, Number(e));
       }
     }
@@ -7539,7 +7669,7 @@ export function boot(cfg: RoverInit): RoverInstance {
   // If no server runtime needed (no auth config), or if we already have a valid
   // session token (from sessionStorage/cross-domain cookie), mark session ready
   // immediately. onSession callback will re-confirm when the server responds.
-  if (!roverServerRuntime || (runtimeSessionToken && runtimeSessionTokenExpiresAt > Date.now() + 10_000)) {
+  if (!roverServerRuntime || (runtimeSessionToken && runtimeSessionTokenExpiresAt > Date.now() + 2_000)) {
     sessionReady = true;
   }
   if (runtimeStorageKey) {
@@ -7882,6 +8012,9 @@ export function shutdown(): void {
   }
   serverCancelRepairInFlight = false;
   pendingServerRunCancelRepairs.clear();
+  latestAssistantByRunId.clear();
+  ignoredRunIds.clear();
+  externalContextCache.clear();
   agentNavigationPending = false;
   currentTaskBoundaryId = '';
   runtimeId = '';
@@ -7904,8 +8037,10 @@ export function shutdown(): void {
     clearTimeout(telemetryFastLaneTimer);
     telemetryFastLaneTimer = null;
   }
+  lastPersistSignature = '';
   lastQuestionPromptFlushSignature = '';
   currentMode = 'controller';
+  isTransportController = true;
   pendingTaskSuggestion = null;
   runtimeStateStore = null;
   lastObserverPauseApplied = null;
@@ -7917,6 +8052,29 @@ export function shutdown(): void {
     // no-op
   }
   instance = null;
+
+  // Remove all tracked event listeners
+  for (const entry of _registeredListeners) {
+    try {
+      entry.target.removeEventListener(entry.event, entry.handler, entry.options);
+    } catch { /* ignore */ }
+  }
+  _registeredListeners.length = 0;
+
+  // Unwrap history monkey-patches
+  if (_origPushState) {
+    try { History.prototype.pushState = _origPushState; } catch { /* ignore */ }
+    _origPushState = null;
+  }
+  if (_origReplaceState) {
+    try { History.prototype.replaceState = _origReplaceState; } catch { /* ignore */ }
+    _origReplaceState = null;
+  }
+
+  // Reset boot guards so ensureUnloadHandler() can re-register on next boot
+  unloadHandlerInstalled = false;
+  visibilitySyncInstalled = false;
+  _booted = false;
 }
 
 export function open(): void {

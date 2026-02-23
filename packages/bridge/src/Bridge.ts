@@ -1504,7 +1504,7 @@ async function ensureListenerScan(root: Element): Promise<void> {
     const internal = (win as any)[internalKey];
     const flushScan = internal?.flushScan;
     if (typeof flushScan === 'function') {
-      await flushScan({ mode: 'priority', includeShadow: true, includeSameOriginIframes: true, budgetMs: 1500 });
+      await flushScan({ mode: 'priority', includeShadow: true, includeSameOriginIframes: true, budgetMs: 400 });
       return;
     }
     (win as any).rtrvrAIMarkInteractiveElements?.();

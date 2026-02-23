@@ -46,8 +46,8 @@ const pdfTextCache = new Map<string, string>();
 const DEFAULT_ADAPTIVE_SETTLE_DEBOUNCE_MS = 24;
 const DEFAULT_ADAPTIVE_SETTLE_MAX_WAIT_MS = 220;
 const DEFAULT_ADAPTIVE_SETTLE_RETRIES = 0;
-const DEFAULT_SPARSE_TREE_RETRY_DELAY_MS = 35;
-const DEFAULT_SPARSE_TREE_RETRY_MAX_ATTEMPTS = 1;
+const DEFAULT_SPARSE_TREE_RETRY_DELAY_MS = 250;
+const DEFAULT_SPARSE_TREE_RETRY_MAX_ATTEMPTS = 2;
 
 type AdaptiveDomSettleConfig = {
   debounceMs: number;
@@ -129,12 +129,12 @@ export async function buildPageData(
     };
   }
 
-  const prepBudgetMs = Math.max(0, Math.min(3000, timeLeftMs(globalDeadline)));
+  const prepBudgetMs = Math.max(0, Math.min(1000, timeLeftMs(globalDeadline)));
   const prepStart = performance.now();
   let didScroll = false;
 
   if (!pageConfig?.disableAutoScroll && prepBudgetMs > 80) {
-    const scrollCap = doc.hidden ? 900 : 1500;
+    const scrollCap = doc.hidden ? 200 : 400;
     const scrollBudgetMs = Math.min(scrollCap, prepBudgetMs);
     if (scrollBudgetMs > 80) {
       didScroll = await scrollForDataCollection(doc, {
@@ -159,8 +159,8 @@ export async function buildPageData(
   if (prepRemaining > 80) {
     await flushListenerScan(doc, {
       mode: 'full',
-      totalBudgetMs: Math.min(doc.hidden ? 1400 : 1200, prepRemaining),
-      budgetMs: Math.min(doc.hidden ? 650 : 850, prepRemaining),
+      totalBudgetMs: Math.min(doc.hidden ? 300 : 400, prepRemaining),
+      budgetMs: Math.min(doc.hidden ? 200 : 300, prepRemaining),
       maxPasses: doc.hidden ? 1 : 2,
     });
   }
@@ -190,12 +190,30 @@ export async function buildPageData(
     retryCount += 1;
   }
 
+  // If tree is completely empty, do one final retry with a longer stabilization wait
+  if (isTreeEmpty(snapshot.rootNodes, snapshot.semanticNodes) && timeLeftMs(globalDeadline) > 250) {
+    await sleepBgSafe(250, doc);
+    const emptyRetryBudget = Math.max(20, Math.min(180, timeLeftMs(globalDeadline)));
+    if (emptyRetryBudget > 20) {
+      await waitForAdaptiveDomSettle(doc, {
+        ...adaptiveSettle,
+        deadlineEpochMs: globalDeadline,
+        totalBudgetMs: emptyRetryBudget,
+      });
+    }
+    snapshot = buildSnapshot(root, instrumentation, {
+      includeFrames: opts.includeFrames ?? true,
+      disableDomAnnotations: opts.disableDomAnnotations ?? true,
+    });
+  }
+
+  // If STILL empty after retry, fall back to text content — agent can decide to wait and retry
   if (isTreeEmpty(snapshot.rootNodes, snapshot.semanticNodes)) {
     return {
       ...pageMetadata,
       contentType: HTML_MIME_TYPE,
       content: getDocumentTextFallback(doc),
-      metadata: { scrollingPerformed: didScroll, extractionMethod: retryCount > 0 ? 'sparse_tree_fallback' : undefined },
+      metadata: { scrollingPerformed: didScroll, extractionMethod: 'empty_tree_fallback' },
     };
   }
 
@@ -1080,7 +1098,7 @@ function querySelectorDeep(doc: Document, selector: string): Element | null {
     }
   }
 
-  const maxNodes = 25000;
+  const maxNodes = 100000;
   let visited = 0;
 
   const pushChildren = (nodes: Element[], root: ParentNode | null | undefined) => {

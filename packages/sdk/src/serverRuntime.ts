@@ -292,6 +292,11 @@ export class RoverServerRuntimeClient {
   private eventSource: EventSource | null = null;
   private pollTimer: number | null = null;
   private reconnectTimer: number | null = null;
+  private sseReconnectAttempts = 0;
+  private static readonly SSE_BASE_DELAY_MS = 2_000;
+  private static readonly SSE_MAX_DELAY_MS = 60_000;
+  private static readonly SSE_MAX_JITTER_MS = 3_000;
+  private static readonly SSE_MAX_RECONNECT_ATTEMPTS = 10;
   private started = false;
   private lastSeq = 0;
   private lastRunId = '';
@@ -342,6 +347,7 @@ export class RoverServerRuntimeClient {
       document.removeEventListener('visibilitychange', this.visibilityListener);
       this.visibilityListener = null;
     }
+    this.sseReconnectAttempts = 0;
     this.lastSeq = 0;
     this.lastRunId = '';
     this.lastSnapshotDigest = '';
@@ -1077,10 +1083,23 @@ export class RoverServerRuntimeClient {
     if (!this.started) return;
     if (!this.shouldKeepTransportActive()) return;
     if (this.reconnectTimer != null) return;
+    if (this.sseReconnectAttempts >= RoverServerRuntimeClient.SSE_MAX_RECONNECT_ATTEMPTS) {
+      // Stop retrying — let polling handle it
+      this.sseReconnectAttempts = 0;
+      return;
+    }
+    const base = RoverServerRuntimeClient.SSE_BASE_DELAY_MS;
+    const exp = Math.min(
+      base * Math.pow(2, this.sseReconnectAttempts),
+      RoverServerRuntimeClient.SSE_MAX_DELAY_MS,
+    );
+    const jitter = Math.random() * RoverServerRuntimeClient.SSE_MAX_JITTER_MS;
+    const delay = Math.round(exp + jitter);
+    this.sseReconnectAttempts++;
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
       this.startProjectionStream();
-    }, 8_000);
+    }, delay);
   }
 
   private startProjectionStream(): void {
@@ -1154,6 +1173,7 @@ export class RoverServerRuntimeClient {
         this.pauseBackgroundTransport();
         return;
       }
+      this.sseReconnectAttempts = 0;
       if (this.pollTimer != null) {
         window.clearTimeout(this.pollTimer);
         this.pollTimer = null;

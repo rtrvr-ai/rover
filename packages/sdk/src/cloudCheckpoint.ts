@@ -234,7 +234,10 @@ export class RoverCloudCheckpointClient {
   private readonly onStateChange?: RoverCloudCheckpointClientOptions['onStateChange'];
   private readonly onError?: RoverCloudCheckpointClientOptions['onError'];
 
+  private readonly idlePullIntervalMs: number;
+
   private started = false;
+  private idleMode = false;
   private dirty = false;
   private flushTimer: number | null = null;
   private pullTimer: number | null = null;
@@ -270,6 +273,7 @@ export class RoverCloudCheckpointClient {
     this.ttlHours = Math.max(1, Math.min(24 * 7, Math.floor(toFiniteNumber(options.ttlHours, 1))));
     this.flushIntervalMs = Math.max(2_000, Math.floor(toFiniteNumber(options.flushIntervalMs, 12_000)));
     this.pullIntervalMs = Math.max(2_000, Math.floor(toFiniteNumber(options.pullIntervalMs, 15_000)));
+    this.idlePullIntervalMs = 60_000; // Pull every 60s when idle (vs 15s active)
     this.minFlushIntervalMs = Math.max(1_000, Math.floor(toFiniteNumber(options.minFlushIntervalMs, 2_500)));
     this.maxSnapshotBytes = Math.max(64_000, Math.min(2_097_152, Math.floor(toFiniteNumber(options.maxSnapshotBytes, 524_288))));
     this.shouldSync = options.shouldSync || (() => true);
@@ -311,6 +315,7 @@ export class RoverCloudCheckpointClient {
   stop(): void {
     if (!this.started) return;
     this.started = false;
+    this.idleMode = false;
 
     if (this.flushTimer != null) {
       window.clearInterval(this.flushTimer);
@@ -348,6 +353,47 @@ export class RoverCloudCheckpointClient {
 
   pullNow(force = true): void {
     void this.pull(!!force);
+  }
+
+  enterIdleMode(): void {
+    if (this.idleMode) return;
+    this.idleMode = true;
+    // Stop push cycle — no active task to push
+    if (this.flushTimer != null) {
+      window.clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
+    // Restart pull cycle with slower interval
+    if (this.pullTimer != null) {
+      window.clearInterval(this.pullTimer);
+      this.pullTimer = null;
+    }
+    if (this.started) {
+      this.pullTimer = window.setInterval(() => {
+        if (!this.shouldSync()) return;
+        void this.pull(false);
+      }, this.idlePullIntervalMs);
+    }
+  }
+
+  enterActiveMode(): void {
+    if (!this.idleMode) return;
+    this.idleMode = false;
+    // Restart normal push/pull cycles
+    if (this.started) {
+      if (this.flushTimer == null) {
+        this.flushTimer = window.setInterval(() => {
+          if (!this.shouldSync()) return;
+          void this.flush(false);
+        }, this.flushIntervalMs);
+      }
+      if (this.pullTimer == null) {
+        this.pullTimer = window.setInterval(() => {
+          if (!this.shouldSync()) return;
+          void this.pull(false);
+        }, this.pullIntervalMs);
+      }
+    }
   }
 
   private getActiveEndpoint(): string {
@@ -390,6 +436,7 @@ export class RoverCloudCheckpointClient {
 
   private async flush(force: boolean): Promise<void> {
     if (this.pushInFlight) return;
+    if (this.idleMode) return;
     if (this.state === 'paused_auth') return;
     if (!force && !this.shouldSync()) return;
     if (!this.dirty && !force) return;
