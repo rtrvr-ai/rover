@@ -4579,11 +4579,11 @@ function hasLiveRemoteControllerForRun(runId: string): boolean {
   return Number(remoteTab.updatedAt) > Date.now() - 5_000;
 }
 
-function scheduleAutoResumeRetry(delayMs = 450): void {
+function scheduleAutoResumeRetry(delayMs = 450, options?: { overridePolicyAction?: AutoResumePolicyActionOverride }): void {
   if (autoResumeRetryTimer) return;
   autoResumeRetryTimer = setTimeout(() => {
     autoResumeRetryTimer = null;
-    maybeAutoResumePendingRun();
+    maybeAutoResumePendingRun(options);
   }, Math.max(120, delayMs));
 }
 
@@ -4632,7 +4632,7 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
 
   if (autoResumeAttempted) return;
   if (!workerReady || !worker) {
-    scheduleAutoResumeRetry(250);
+    scheduleAutoResumeRetry(250, options);
     return;
   }
   const activeTaskStatus = runtimeState.activeTask?.status;
@@ -4677,6 +4677,18 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
     resumeRequired: pending.resumeRequired === true,
     hasLiveRemoteController,
   });
+  // Navigation-triggered resumes: the user already initiated navigation through
+  // the agent (goto_url same-origin), so skip the confirm prompt and auto-resume.
+  if (
+    policyAction === 'prompt_resume'
+    && (
+      pending.resumeReason === 'agent_navigation'
+      || pending.resumeReason === 'worker_interrupted'
+      || pending.resumeReason === 'page_reload'
+    )
+  ) {
+    policyAction = 'auto_resume';
+  }
   if (
     options?.overridePolicyAction
     && policyAction !== 'defer_remote_owner'
@@ -4685,7 +4697,7 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
     policyAction = options.overridePolicyAction;
   }
   if (policyAction === 'defer_remote_owner') {
-    scheduleAutoResumeRetry(650);
+    scheduleAutoResumeRetry(650, options);
     return;
   }
   if (policyAction === 'cancel_resume') {
@@ -4714,7 +4726,7 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
     resumeContextValidated = true;
   }
   if (!resumeContextValidated && shouldDelayResumeForPendingNavigation(pending)) {
-    scheduleAutoResumeRetry(320);
+    scheduleAutoResumeRetry(320, options);
     return;
   }
   if (!resumeContextValidated) {
@@ -4723,7 +4735,7 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
     resumeContextValidated = true;
   }
   if (hasLiveRemoteController) {
-    scheduleAutoResumeRetry(650);
+    scheduleAutoResumeRetry(650, options);
     return;
   }
   if (autoResumeRetryTimer) {
@@ -4744,7 +4756,7 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
     if (autoResumeSessionWaitAttempts < MAX_AUTO_RESUME_SESSION_WAIT_ATTEMPTS) {
       setUiStatus('Preparing secure resume...');
       const retryDelay = Math.min(2_000, 240 + (autoResumeSessionWaitAttempts * 160));
-      scheduleAutoResumeRetry(retryDelay);
+      scheduleAutoResumeRetry(retryDelay, options);
       return;
     }
     autoResumeSessionWaitAttempts = 0;
