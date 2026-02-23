@@ -24,7 +24,10 @@ export function normalizeAllowedDomains(
   const out = new Set<string>();
 
   for (const raw of candidates) {
-    const cleaned = normalizeDomainPatternToken(String(raw || ''));
+    const cleaned = normalizeScopeAwareDomainPattern(
+      normalizeDomainPatternToken(String(raw || '')),
+      scopeMode,
+    );
     if (cleaned) out.add(cleaned);
   }
 
@@ -34,6 +37,16 @@ export function normalizeAllowedDomains(
   }
 
   return Array.from(out);
+}
+
+function normalizeScopeAwareDomainPattern(
+  pattern: string,
+  scopeMode: DomainScopeMode,
+): string {
+  if (!pattern) return '';
+  if (scopeMode !== 'host_only') return pattern;
+  if (pattern === '*' || pattern.startsWith('=') || pattern.startsWith('*.')) return pattern;
+  return `=${pattern}`;
 }
 
 export function normalizeHostToken(input: string): string {

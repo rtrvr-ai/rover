@@ -4595,12 +4595,13 @@ function dispatchPendingRunResume(pendingRun: PersistedPendingRun, source: strin
   resumeContextValidated = false;
   hideTaskSuggestion();
   setUiStatus('Resuming interrupted task...');
+  const resumeText = pendingRun.text?.trim() || runtimeState?.workerState?.rootUserInput?.trim() || lastUserInputText?.trim() || 'Continue the current task on this page';
   recordTelemetryEvent('status', {
     event: 'resume_dispatch',
     source,
     runId: pendingRun.id,
   });
-  postRun(pendingRun.text, {
+  postRun(resumeText, {
     runId: pendingRun.id,
     resume: true,
     appendUserMessage: false,
@@ -4629,7 +4630,11 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
   }
   if (currentMode === 'observer') return;
 
-  if (!workerReady || !worker || autoResumeAttempted) return;
+  if (autoResumeAttempted) return;
+  if (!workerReady || !worker) {
+    scheduleAutoResumeRetry(250);
+    return;
+  }
   const activeTaskStatus = runtimeState.activeTask?.status;
   if (isTerminalTaskStatus(activeTaskStatus)) {
     clearPendingRunForResume('terminal_task', 'Previous task already ended.');
@@ -4713,19 +4718,9 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
     return;
   }
   if (!resumeContextValidated) {
-    clearPendingRunForResume('resume_context_unvalidated', 'Resume context is no longer valid.');
-    appendTimelineEvent({
-      kind: 'error',
-      title: 'Resume blocked',
-      detail: 'Automatic resume was skipped because no valid handoff/reload context was found.',
-      status: 'error',
-    });
-    emit('error', {
-      message: 'Resume blocked: missing validated handoff context',
-      scope: 'resume',
-      code: 'RESUME_CONTEXT_INVALID',
-    });
-    return;
+    // Force-resume: better to continue with stale/empty context than to stall.
+    // The agent will re-analyze the current page with fresh getPageData().
+    resumeContextValidated = true;
   }
   if (hasLiveRemoteController) {
     scheduleAutoResumeRetry(650);
@@ -4754,19 +4749,10 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
     }
     autoResumeSessionWaitAttempts = 0;
     crossDomainResumeActive = false;
-    clearPendingRunForResume('resume_blocked_no_session', 'Could not safely resume previous task.');
-    appendTimelineEvent({
-      kind: 'error',
-      title: 'Resume blocked',
-      detail: 'Session credentials were not ready in time, so automatic resume was skipped.',
-      status: 'error',
-    });
-    emit('error', {
-      message: 'Resume blocked: session credentials not ready',
-      scope: 'resume',
-      code: 'RESUME_BLOCKED_NO_SESSION',
-    });
-    return;
+    // Force-resume without server session. The worker will get a session error
+    // on the first extensionRouter call and can retry then. Better than stalling.
+    sessionReady = true;
+    // Fall through to dispatch resume below
   }
   autoResumeSessionWaitAttempts = 0;
 
@@ -6194,6 +6180,11 @@ function handleWorkerMessage(msg: any): void {
     if (stateToHydrate) {
       worker?.postMessage({ type: 'hydrate_state', state: stateToHydrate });
       emit('context_restored', { source: 'runtime_start', ts: Date.now() });
+      // Schedule a fallback resume check in case hydrated message is delayed
+      // (the hydrated handler will also call it, but this covers race conditions)
+      setTimeout(() => {
+        if (!autoResumeAttempted) maybeAutoResumePendingRun();
+      }, 500);
     } else if (crossDomainResumeActive && cloudCheckpointClient) {
       // Cross-domain resume: worker has no local state. Trigger cloud checkpoint pull
       // before any push so lean bootstrap state cannot overwrite richer checkpoint data.
@@ -6794,6 +6785,15 @@ function createRuntime(cfg: RoverInit): void {
         ensureNavigationPendingRun(
           intent.isCrossHost ? 'cross_host_navigation' : 'agent_navigation',
         );
+        // Force session token cache refresh before navigation destroys runtime
+        if (runtimeSessionToken && currentConfig?.siteId) {
+          try {
+            sessionStorage.setItem(`rover:sess:${currentConfig.siteId}`, JSON.stringify({
+              t: runtimeSessionToken,
+              e: runtimeSessionTokenExpiresAt,
+            }));
+          } catch { /* ignore */ }
+        }
         // Dispatch NAVIGATION_STARTED to FSM so state stays consistent
         if (taskOrchestrator) {
           const activeTask = taskOrchestrator.getActiveTask();
@@ -7786,7 +7786,8 @@ export function boot(cfg: RoverInit): RoverInstance {
   // If no server runtime needed (no auth config), or if we already have a valid
   // session token (from sessionStorage/cross-domain cookie), mark session ready
   // immediately. onSession callback will re-confirm when the server responds.
-  if (!roverServerRuntime || (runtimeSessionToken && runtimeSessionTokenExpiresAt > Date.now() + 2_000)) {
+  const hasCachedToken = !!(runtimeSessionToken && runtimeSessionTokenExpiresAt > Date.now() + 2_000);
+  if (!roverServerRuntime || hasCachedToken) {
     sessionReady = true;
   }
   if (runtimeStorageKey) {
