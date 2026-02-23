@@ -21,6 +21,8 @@ type BridgeToolResponse = {
 
 export type SystemNavigationOutcome =
   | 'same_tab_scheduled'
+  | 'same_host_navigated'
+  | 'subdomain_navigated'
   | 'new_tab_opened'
   | 'blocked'
   | 'switch_tab';
@@ -59,6 +61,8 @@ const VIEWPORT_SENSITIVE_TOOLS = new Set<SystemToolNames>([
 const ACTION_DELAY_MS = 600;
 const NAVIGATION_OUTCOMES = new Set<SystemNavigationOutcome>([
   'same_tab_scheduled',
+  'same_host_navigated',
+  'subdomain_navigated',
   'new_tab_opened',
   'blocked',
   'switch_tab',
