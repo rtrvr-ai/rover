@@ -55,10 +55,10 @@ function inferErrorCode(message: string): RoverErrorCode {
 
 function defaultNextActionForCode(code: RoverErrorCode): string | undefined {
   if (code === 'MISSING_AUTH' || code === 'MISSING_AUTH_TOKEN') {
-    return 'Provide a valid rvrsess_* sessionToken from /v1/rover/session/start in rover.boot(...).';
+    return 'Provide a valid rvrsess_* sessionToken from /v2/rover/session/open in rover.boot(...).';
   }
   if (code === 'MISSING_API_KEY') {
-    return 'Use a Rover session token (rvrsess_*) from /v1/rover/session/start.';
+    return 'Use a Rover session token (rvrsess_*) from /v2/rover/session/open.';
   }
   if (code === 'INVALID_API_KEY') {
     return 'Use a valid active Rover session token or rotate your site public key.';
@@ -70,10 +70,10 @@ function defaultNextActionForCode(code: RoverErrorCode): string | undefined {
     return 'Refresh session token/projection and retry with latest epoch.';
   }
   if (code === 'SESSION_TOKEN_EXPIRED') {
-    return 'Refresh session via /v1/rover/session/start using bootstrap public key (pk_site_*), then retry.';
+    return 'Refresh session via /v2/rover/session/open using bootstrap public key (pk_site_*), then retry.';
   }
   if (code === 'SESSION_TOKEN_INVALID') {
-    return 'Initialize a fresh session token via /v1/rover/session/start and retry.';
+    return 'Initialize a fresh session token via /v2/rover/session/open and retry.';
   }
   if (code === 'BOOTSTRAP_REQUIRED') {
     return 'Provide a valid pk_site_* key in bootstrapToken/publicKey and retry session start.';

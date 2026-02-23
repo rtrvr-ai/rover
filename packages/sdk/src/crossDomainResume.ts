@@ -115,7 +115,7 @@ function hasQuerySubset(target: URLSearchParams, current: URLSearchParams): bool
   return true;
 }
 
-function matchesTargetUrl(targetUrl: string, currentUrl: string): boolean {
+export function matchesResumeTargetUrl(targetUrl: string, currentUrl: string): boolean {
   const normalizedTarget = normalizeUrlForMatch(targetUrl);
   const normalizedCurrent = normalizeUrlForMatch(currentUrl);
   if (!normalizedTarget || !normalizedCurrent) return false;
@@ -195,7 +195,7 @@ export function readCrossDomainResumeCookie(
 
         if (requireTargetMatch) {
           const targetUrl = normalizeUrlForMatch(data.targetUrl || data.handoff?.targetUrl || '');
-          if (!targetUrl || !currentUrl || !matchesTargetUrl(targetUrl, currentUrl)) {
+          if (!targetUrl || !currentUrl || !matchesResumeTargetUrl(targetUrl, currentUrl)) {
             continue;
           }
         }

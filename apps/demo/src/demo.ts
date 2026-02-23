@@ -1,4 +1,4 @@
-import { init } from '@rover/sdk';
+import { init } from '@rtrvr-ai/rover';
 import './demo.css';
 
 type ShippingMethod = 'standard' | 'express' | 'overnight';

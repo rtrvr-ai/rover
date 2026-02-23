@@ -3,9 +3,12 @@ import assert from 'node:assert/strict';
 
 import {
   canAutoResumePendingRun,
+  resolveAutoResumePolicyAction,
+  shouldAdoptProjectionRun,
   shouldAdoptSnapshotActiveRun,
   shouldClearPendingFromSharedState,
   shouldIgnoreRunScopedMessage,
+  shouldQueueCancelForIgnoredProjectionRun,
   shouldStartFreshTask,
 } from '../dist/taskLifecycleGuards.js';
 
@@ -105,4 +108,91 @@ test('pending completion is accepted even if boundary metadata is missing', () =
     ignoredRunIds: new Set(),
   });
   assert.equal(acceptPendingCompletion, false);
+});
+
+test('auto-resume policy branching honors auto, confirm, never, and remote owner defer', () => {
+  assert.equal(
+    resolveAutoResumePolicyAction({
+      policy: 'auto',
+      resumeRequired: true,
+      hasLiveRemoteController: false,
+    }),
+    'auto_resume',
+  );
+  assert.equal(
+    resolveAutoResumePolicyAction({
+      policy: 'confirm',
+      resumeRequired: true,
+      hasLiveRemoteController: false,
+    }),
+    'prompt_resume',
+  );
+  assert.equal(
+    resolveAutoResumePolicyAction({
+      policy: 'never',
+      resumeRequired: true,
+      hasLiveRemoteController: false,
+    }),
+    'cancel_resume',
+  );
+  assert.equal(
+    resolveAutoResumePolicyAction({
+      policy: 'auto',
+      resumeRequired: true,
+      hasLiveRemoteController: true,
+    }),
+    'defer_remote_owner',
+  );
+  assert.equal(
+    resolveAutoResumePolicyAction({
+      policy: 'confirm',
+      resumeRequired: false,
+      hasLiveRemoteController: false,
+    }),
+    'noop',
+  );
+});
+
+test('projection adoption skips ignored run ids and queues cancel only for non-terminal ignored runs', () => {
+  const ignored = new Set(['run_ignored']);
+  assert.equal(
+    shouldAdoptProjectionRun({
+      serverRunId: 'run_ignored',
+      localPendingRunId: '',
+      ignoredRunIds: ignored,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldAdoptProjectionRun({
+      serverRunId: 'run_new',
+      localPendingRunId: 'run_old',
+      ignoredRunIds: ignored,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldAdoptProjectionRun({
+      serverRunId: 'run_same',
+      localPendingRunId: 'run_same',
+      ignoredRunIds: ignored,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldQueueCancelForIgnoredProjectionRun({
+      serverRunId: 'run_ignored',
+      runStatus: 'running',
+      ignoredRunIds: ignored,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldQueueCancelForIgnoredProjectionRun({
+      serverRunId: 'run_ignored',
+      runStatus: 'cancelled',
+      ignoredRunIds: ignored,
+    }),
+    false,
+  );
 });

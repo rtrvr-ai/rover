@@ -8,7 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@rover/sdk": "workspace:*",
+    "@rtrvr-ai/rover": "workspace:*",
     "@rover/worker": "workspace:*"
   },
   "devDependencies": {

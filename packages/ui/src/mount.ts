@@ -137,9 +137,9 @@ const DEFAULT_AGENT_NAME = 'Rover';
 const DEFAULT_MASCOT_MP4 = 'https://www.rtrvr.ai/rover/mascot.mp4';
 const DEFAULT_MASCOT_WEBM = 'https://www.rtrvr.ai/rover/mascot.webm';
 
-const EXPAND_THRESHOLD_OUTPUT = 280;
-const EXPAND_THRESHOLD_THOUGHT = 150;
-const EXPAND_THRESHOLD_TOOL = 100;
+const EXPAND_THRESHOLD_OUTPUT = 1200;
+const EXPAND_THRESHOLD_THOUGHT = 1200;
+const EXPAND_THRESHOLD_TOOL = 1200;
 const STRUCTURED_PAGE_SIZE = 25;
 const STRUCTURED_MAX_DEPTH = 4;
 const SHORTCUTS_RENDER_LIMIT = 12;
@@ -251,13 +251,13 @@ function createExpandableContent(text: string, threshold: number): HTMLDivElemen
   const toggle = document.createElement('button');
   toggle.type = 'button';
   toggle.className = 'expandToggle';
-  toggle.textContent = '...Show more';
+  toggle.textContent = 'See more';
 
   toggle.addEventListener('click', (e) => {
     e.stopPropagation();
     const hidden = rest.style.display === 'none';
     rest.style.display = hidden ? 'inline' : 'none';
-    toggle.textContent = hidden ? ' Show less' : '...Show more';
+    toggle.textContent = hidden ? 'See less' : 'See more';
   });
 
   wrapper.appendChild(preview);
@@ -411,12 +411,12 @@ function createExpandableRichContent(text: string, threshold: number): HTMLDivEl
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'expandToggle';
-    toggle.textContent = '...Show more';
+    toggle.textContent = 'See more';
     toggle.addEventListener('click', (e) => {
       e.stopPropagation();
       const hidden = rest.style.display === 'none';
       rest.style.display = hidden ? 'block' : 'none';
-      toggle.textContent = hidden ? ' Show less' : '...Show more';
+      toggle.textContent = hidden ? 'See less' : 'See more';
     });
     wrapper.appendChild(toggle);
   }

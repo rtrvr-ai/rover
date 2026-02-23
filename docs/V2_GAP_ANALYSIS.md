@@ -1,4 +1,4 @@
-# Rover v1 Gap Analysis
+# Rover v2 Gap Analysis
 
 ## Parity Matrix (Relay/Backend -> Rover)
 

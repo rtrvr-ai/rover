@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { readCrossDomainResumeCookie } from '../dist/crossDomainResume.js';
+import { matchesResumeTargetUrl, readCrossDomainResumeCookie } from '../dist/crossDomainResume.js';
 
 function cookieKey(siteId) {
   return `rover_xdr_${String(siteId || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40)}`;
@@ -89,5 +89,29 @@ test('cross-domain cookie rejects target mismatch', () => {
       requireTargetMatch: true,
     });
     assert.equal(result, null);
+  });
+});
+
+test('target url matcher accepts same path with trailing slash and extra query params', () => {
+  withDom('https://rover.rtrvr.ai/workspace/?sessionId=abc&mode=full', '', () => {
+    assert.equal(
+      matchesResumeTargetUrl(
+        'https://rover.rtrvr.ai/workspace?sessionId=abc',
+        globalThis.window.location.href,
+      ),
+      true,
+    );
+  });
+});
+
+test('target url matcher rejects different origin', () => {
+  withDom('https://rover.rtrvr.ai/workspace?sessionId=abc', '', () => {
+    assert.equal(
+      matchesResumeTargetUrl(
+        'https://www.rtrvr.ai/workspace?sessionId=abc',
+        globalThis.window.location.href,
+      ),
+      false,
+    );
   });
 });

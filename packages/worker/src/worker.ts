@@ -21,6 +21,7 @@ import { PLANNER_FUNCTION_CALLS } from '@rover/shared/lib/utils/constants.js';
 import { isApiKeyRequiredError, toRoverErrorEnvelope } from './agent/errors.js';
 import { resolveRuntimeTabs } from './agent/runtimeTabs.js';
 import { shouldBuildResumeCueChatLog, shouldClearHistoryForRun, shouldUseFollowupChatLog } from './runHistoryGuards.js';
+import { ROVER_V2_PERSIST_CAPS } from '@rover/shared';
 
 type RpcRequest = { t: 'req'; id: string; method: string; params?: unknown };
 type RpcResponse = { t: 'res'; id: string; ok: boolean; result?: unknown; error?: { message: string } };
@@ -474,23 +475,68 @@ function sanitizeHistoryForPersist(input: ChatMessage[]): ChatMessage[] {
 }
 
 function sanitizePlannerHistoryForPersist(input: unknown[]): unknown[] {
+  if (!Array.isArray(input)) return [];
+  if (input.length <= ROVER_V2_PERSIST_CAPS.plannerHistory) {
+    return input
+      .map(step => cloneUnknown(step))
+      .filter(step => step !== undefined);
+  }
+
+  const anchored = [
+    input[0],
+    ...input.slice(-(ROVER_V2_PERSIST_CAPS.plannerHistory - 1)),
+  ];
   const out: unknown[] = [];
-  for (const step of input.slice(-40)) {
+  for (const step of anchored) {
     const cloned = cloneUnknown(step);
     if (cloned !== undefined) out.push(cloned);
   }
   return out;
 }
 
+function enforceAccTreeRetention(steps: PreviousSteps[]): void {
+  if (!Array.isArray(steps) || steps.length === 0) return;
+  const withAccTree: number[] = [];
+  for (let i = 0; i < steps.length; i += 1) {
+    const accTreeId = (steps[i] as any)?.accTreeId;
+    if (typeof accTreeId === 'string' && accTreeId.trim()) {
+      withAccTree.push(i);
+    }
+  }
+  if (withAccTree.length <= 3) return;
+  const keep = new Set<number>([withAccTree[0], ...withAccTree.slice(-2)]);
+  for (const index of withAccTree) {
+    if (keep.has(index)) continue;
+    delete (steps[index] as any).accTreeId;
+  }
+}
+
 function sanitizeAgentPrevStepsForPersist(input: PreviousSteps[]): PreviousSteps[] {
   if (!Array.isArray(input)) return [];
+  if (input.length <= ROVER_V2_PERSIST_CAPS.prevSteps) {
+    const out: PreviousSteps[] = [];
+    for (const step of input) {
+      const cloned = cloneUnknown(step);
+      if (cloned && typeof cloned === 'object') {
+        out.push(cloned as PreviousSteps);
+      }
+    }
+    enforceAccTreeRetention(out);
+    return out;
+  }
+
+  const anchored = [
+    input[0],
+    ...input.slice(-(ROVER_V2_PERSIST_CAPS.prevSteps - 1)),
+  ];
   const out: PreviousSteps[] = [];
-  for (const step of input.slice(-60)) {
+  for (const step of anchored) {
     const cloned = cloneUnknown(step);
     if (cloned && typeof cloned === 'object') {
       out.push(cloned as PreviousSteps);
     }
   }
+  enforceAccTreeRetention(out);
   return out;
 }
 

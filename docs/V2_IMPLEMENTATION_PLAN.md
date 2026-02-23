@@ -1,4 +1,4 @@
-# Rover v1 Implementation Plan
+# Rover v2 Implementation Plan
 
 ## Phase 1: Runtime Contracts
 - Add `domainScopeMode` and `externalNavigationPolicy` to SDK/Bridge.

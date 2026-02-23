@@ -91,6 +91,9 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   interface ExtendedWindow extends Window {
     __RTRVR_MAIN_WORLD_INITIALIZED__?: boolean;
     rtrvrAIMarkInteractiveElements?: () => boolean;
+    rtrvrAISetObserverPaused?: (paused: boolean) => boolean;
+    rtrvrAIClearObserverPause?: () => boolean;
+    rtrvrAIIsObserverPaused?: () => boolean;
     jQuery?: any;
     ng?: { getComponent?: (element: Element) => any };
     __REACT_DEVTOOLS_GLOBAL_HOOK__?: any;
@@ -258,6 +261,8 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   // top-level in main-world
   let pendingScanCount = 0;
   const pendingElementScan = new Set<Element>();
+  let observerPauseOverride: boolean | null = null;
+  let observerPaused = false;
 
   const MAX_RUNTIME_PATH_NODES = 6;
 
@@ -291,6 +296,15 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   if (win[MAIN_WORLD_FLAG]) {
     if (typeof win.rtrvrAIMarkInteractiveElements === 'function') {
       win.rtrvrAIMarkInteractiveElements();
+    }
+    if (typeof win.rtrvrAISetObserverPaused !== 'function') {
+      win.rtrvrAISetObserverPaused = () => false;
+    }
+    if (typeof win.rtrvrAIClearObserverPause !== 'function') {
+      win.rtrvrAIClearObserverPause = () => false;
+    }
+    if (typeof win.rtrvrAIIsObserverPaused !== 'function') {
+      win.rtrvrAIIsObserverPaused = () => !!globalDocumentSafe()?.hidden;
     }
     return;
   }
@@ -533,6 +547,14 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   }
 
   workChan.port1.onmessage = () => {
+    if (isBackgroundWorkPaused()) {
+      pendingElementScan.clear();
+      pendingAttributeUpdate.clear();
+      pendingScanCount = 0;
+      setBusyFlag();
+      workScheduled = false;
+      return;
+    }
     workScheduled = false;
     pruneDisconnected(500);
 
@@ -589,11 +611,13 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   }
 
   function scheduleAttributeUpdate(el: Element): void {
+    if (isBackgroundWorkPaused()) return;
     pendingAttributeUpdate.add(el);
     scheduleWorkFlush();
   }
 
   function scheduleElementScan(el: Element): void {
+    if (isBackgroundWorkPaused()) return;
     if (pendingElementScan.has(el)) return; // ✅ de-dupe
     pendingElementScan.add(el);
     pendingScanCount++;
@@ -694,6 +718,7 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   }
 
   function drainQueuesFor(ms: number): void {
+    if (isBackgroundWorkPaused()) return;
     const start = performance.now();
     while (pendingElementScan.size && performance.now() - start < ms) {
       const n = takeOne(pendingElementScan);
@@ -715,6 +740,19 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   }
 
   async function doFlushScan(opts: FlushScanOptions = {}): Promise<FlushScanResult> {
+    if (isBackgroundWorkPaused()) {
+      pendingElementScan.clear();
+      pendingAttributeUpdate.clear();
+      pendingScanCount = 0;
+      setBusyFlag();
+      return {
+        revision: ++flushRevision,
+        scanned: 0,
+        durationMs: 0,
+        done: true,
+        remaining: 0,
+      };
+    }
     pruneDisconnected(3000);
     maybeInstallJQueryHooks();
     detectFrameworksFromGlobals();
@@ -1836,6 +1874,7 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   // ---------- runtime observation ----------
   function addRuntimeObserver(type: string): void {
     const handler = (evt: Event) => {
+      if (isBackgroundWorkPaused()) return;
       const anyEvt = evt as any;
       const path: EventTarget[] =
         (anyEvt.composedPath && anyEvt.composedPath()) || buildFallbackPath(evt.target as EventTarget | null);
@@ -1859,7 +1898,11 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   }
 
   let tier2Enabled = false;
+  let runtimeObserversInstalled = false;
+  let tier2GateObserver: MutationObserver | null = null;
   function installRuntimeObserversAdaptive(): void {
+    if (runtimeObserversInstalled) return;
+    runtimeObserversInstalled = true;
     RUNTIME_TIER1.forEach(addRuntimeObserver);
 
     const html = globalDocumentSafe()?.documentElement;
@@ -1888,18 +1931,10 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
     maybeEnableTier2();
 
     try {
-      const mo = new MutationObserver(() => maybeEnableTier2());
-      mo.observe(html, {
+      tier2GateObserver = new MutationObserver(() => maybeEnableTier2());
+      tier2GateObserver.observe(html, {
         attributes: true,
-        attributeFilter: [
-          'rtrvr-react',
-          'rtrvr-vue',
-          'rtrvr-angular',
-          'rtrvr-svelte',
-          'rtrvr-gl-click',
-          'rtrvr-gl-input',
-          'rtrvr-gl-keydown',
-        ],
+        attributeFilter: tier2ObserverAttrs,
       });
     } catch {}
   }
@@ -1926,6 +1961,7 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   }
 
   function initialPriorityScan(): void {
+    if (isBackgroundWorkPaused()) return;
     const prioritySelectors = [
       'a[href]',
       'button',
@@ -1975,6 +2011,7 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   }
 
   function handleMutations(records: MutationRecord[]): void {
+    if (isBackgroundWorkPaused()) return;
     for (const record of records) {
       for (const added of Array.from(record.addedNodes)) {
         if (added.nodeType !== 1) continue;
@@ -1998,6 +2035,7 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   }
 
   async function secondaryScanIfNeeded(opts: { budgetMs?: number; deadlineEpochMs?: number } = {}): Promise<void> {
+    if (isBackgroundWorkPaused()) return;
     const doc = globalDocumentSafe();
     const html = doc?.documentElement;
     if (!html) return;
@@ -2049,26 +2087,62 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   const mutationObserver = new MutationObserver(handleMutations);
 
   const shadowObserverMap = new WeakMap<ShadowRoot, MutationObserver>();
+  const shadowObservers = new Set<MutationObserver>();
   function observeShadowRoot(sr: ShadowRoot): void {
-    if (shadowObserverMap.has(sr)) return;
+    const existing = shadowObserverMap.get(sr);
+    if (existing) {
+      shadowObservers.add(existing);
+      if (!observerPaused) {
+        try {
+          existing.observe(sr, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: [...OBSERVED_ATTRS, 'class'],
+          });
+        } catch {}
+      }
+      return;
+    }
     if (observedShadowRootCount >= MAX_OBSERVED_SHADOW_ROOTS) return;
     try {
       const MO = (winOfDoc(sr.ownerDocument) as any).MutationObserver || MutationObserver;
       const mo = new MO(handleMutations);
       shadowObserverMap.set(sr, mo);
+      shadowObservers.add(mo);
       observedShadowRootCount++;
-      mo.observe(sr, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: [...OBSERVED_ATTRS, 'class'],
-      });
+      if (!observerPaused) {
+        mo.observe(sr, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: [...OBSERVED_ATTRS, 'class'],
+        });
+      }
     } catch {}
   }
 
   const iframeDocObserverMap = new WeakMap<Document, MutationObserver>();
+  const iframeDocObservers = new Set<MutationObserver>();
   function observeFrameDocument(doc: Document): void {
-    if (iframeDocObserverMap.has(doc)) return;
+    const existing = iframeDocObserverMap.get(doc);
+    if (existing) {
+      iframeDocObservers.add(existing);
+      if (!observerPaused) {
+        try {
+          const root = doc.documentElement;
+          if (root) {
+            existing.observe(root, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              attributeFilter: [...OBSERVED_ATTRS, 'class'],
+            });
+          }
+        } catch {}
+      }
+      return;
+    }
     if (observedIframeDocCount >= MAX_OBSERVED_IFRAME_DOCS) return;
     try {
       // Ensure realm hooks exist for this iframe window
@@ -2078,13 +2152,16 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
       const MO = (winOfDoc(doc) as any).MutationObserver || MutationObserver;
       const mo = new MO(handleMutations);
       iframeDocObserverMap.set(doc, mo);
+      iframeDocObservers.add(mo);
       observedIframeDocCount++;
-      mo.observe(root, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: [...OBSERVED_ATTRS, 'class'],
-      });
+      if (!observerPaused) {
+        mo.observe(root, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: [...OBSERVED_ATTRS, 'class'],
+        });
+      }
     } catch {}
   }
 
@@ -2097,6 +2174,67 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
       attributes: true,
       attributeFilter: [...OBSERVED_ATTRS, 'class'],
     });
+  }
+
+  const tier2ObserverAttrs = [
+    'rtrvr-react',
+    'rtrvr-vue',
+    'rtrvr-angular',
+    'rtrvr-svelte',
+    'rtrvr-gl-click',
+    'rtrvr-gl-input',
+    'rtrvr-gl-keydown',
+  ];
+
+  function resolveObserverPauseState(): boolean {
+    if (observerPauseOverride != null) return observerPauseOverride;
+    return !!globalDocumentSafe()?.hidden;
+  }
+
+  function isBackgroundWorkPaused(): boolean {
+    return observerPaused;
+  }
+
+  function setObserverPauseState(nextPaused: boolean): void {
+    const paused = !!nextPaused;
+    if (observerPaused === paused) return;
+    observerPaused = paused;
+
+    if (observerPaused) {
+      try { mutationObserver.disconnect(); } catch {}
+      try { tier2GateObserver?.disconnect(); } catch {}
+      for (const observer of shadowObservers) {
+        try { observer.disconnect(); } catch {}
+      }
+      for (const observer of iframeDocObservers) {
+        try { observer.disconnect(); } catch {}
+      }
+      shadowObservers.clear();
+      iframeDocObservers.clear();
+      pendingElementScan.clear();
+      pendingAttributeUpdate.clear();
+      pendingScanCount = 0;
+      setBusyFlag();
+      return;
+    }
+
+    initMutationObserver();
+    const html = globalDocumentSafe()?.documentElement;
+    if (html && tier2GateObserver) {
+      try {
+        tier2GateObserver.observe(html, {
+          attributes: true,
+          attributeFilter: tier2ObserverAttrs,
+        });
+      } catch {}
+    }
+    initialPriorityScan();
+  }
+
+  function applyObserverPauseOverride(paused: boolean | null): boolean {
+    observerPauseOverride = typeof paused === 'boolean' ? paused : null;
+    setObserverPauseState(resolveObserverPauseState());
+    return true;
   }
 
   const capturedShadowRoots = new WeakMap<Element, ShadowRoot>();
@@ -2128,6 +2266,18 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
     } catch {}
   }
 
+  win.rtrvrAISetObserverPaused = function (paused: boolean): boolean {
+    return applyObserverPauseOverride(!!paused);
+  };
+
+  win.rtrvrAIClearObserverPause = function (): boolean {
+    return applyObserverPauseOverride(null);
+  };
+
+  win.rtrvrAIIsObserverPaused = function (): boolean {
+    return isBackgroundWorkPaused();
+  };
+
   win.rtrvrAIMarkInteractiveElements = function (): boolean {
     if (!globalDocumentSafe()?.body) return false;
     initialPriorityScan();
@@ -2139,14 +2289,22 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
     maybeInstallJQueryHooks();
     detectFrameworksFromGlobals();
     installRuntimeObserversAdaptive();
+    const onVisibilityChange = () => {
+      if (observerPauseOverride != null) return;
+      setObserverPauseState(resolveObserverPauseState());
+    };
+    doc?.addEventListener('visibilitychange', onVisibilityChange, { passive: true });
+    setObserverPauseState(resolveObserverPauseState());
 
     const onReady = () => {
       maybeInstallJQueryHooks();
       detectFrameworksFromGlobals(); // catch late globals on DOM ready
-      initMutationObserver();
-      win.rtrvrAIMarkInteractiveElements?.();
-      // run secondary sweep once we actually know framework flags
-      void secondaryScanIfNeeded({ budgetMs: 20 }); // see next patch section
+      if (!isBackgroundWorkPaused()) {
+        initMutationObserver();
+        win.rtrvrAIMarkInteractiveElements?.();
+        // run secondary sweep once we actually know framework flags
+        void secondaryScanIfNeeded({ budgetMs: 20 }); // see next patch section
+      }
 
       doc?.documentElement.setAttribute(RTRVR_MAIN_WORLD_READY_ATTRIBUTE, '1');
     };

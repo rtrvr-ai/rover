@@ -1,11 +1,11 @@
 # rover
 Embedded Fully Autonomous Agent - For Websites
 
-## Rover v1 contract
+## Rover v2 contract
 
-- Server-authoritative runtime contract: `/v1/rover/*` on `extensionrouter.rtrvr.ai`.
+- Server-authoritative runtime contract: `/v2/rover/*` on `extensionrouter.rtrvr.ai`.
 - Bootstrap with `publicKey` (`pk_site_*`), then runtime uses short-lived `sessionToken` (`rvrsess_*`).
-- In API mode, failed `/run/input` is terminal for that turn (no silent local fallback run).
+- In API mode, failed `POST /v2/rover/command` (`type='RUN_INPUT'`) is terminal for that turn (no silent local fallback run).
 - Authoritative backend + infra runbook:  
   `/Users/bhavanikalisetty/work/act_2/rtrvr-cloud-backend/README.md`
 
