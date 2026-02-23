@@ -13,6 +13,8 @@ import type { TaskState, TaskRecord, PersistedTaskTabScope } from './runtimeType
 export type TaskEvent =
   | { type: 'START'; reason?: string; taskId?: string }
   | { type: 'AGENT_PROGRESS'; ts?: number }
+  | { type: 'NAVIGATION_STARTED'; targetUrl: string; isCrossHost: boolean }
+  | { type: 'NAVIGATION_COMPLETED'; url: string }
   | { type: 'ASK_USER'; questions?: unknown[] }
   | { type: 'PAUSE'; reason?: string }
   | { type: 'RESUME' }
@@ -42,7 +44,9 @@ export type TaskSideEffect =
   | { kind: 'record_block_reason'; reason?: string }
   | { kind: 'notify_agent_blocked' }
   | { kind: 'resume_from_block' }
-  | { kind: 'update_timestamps'; ts: number };
+  | { kind: 'update_timestamps'; ts: number }
+  | { kind: 'record_navigation'; targetUrl: string; isCrossHost: boolean }
+  | { kind: 'clear_navigation' };
 
 // ── Transition result ────────────────────────────────────────────────
 
@@ -109,6 +113,20 @@ const TRANSITION_TABLE: FullTransitionTable = {
     AGENT_PROGRESS: {
       to: 'running',
       sideEffects: () => [{ kind: 'update_timestamps', ts: Date.now() }],
+    },
+    NAVIGATION_STARTED: {
+      to: 'running',
+      sideEffects: (event) => [
+        { kind: 'record_navigation', targetUrl: (event as any).targetUrl, isCrossHost: (event as any).isCrossHost },
+        { kind: 'update_timestamps', ts: Date.now() },
+      ],
+    },
+    NAVIGATION_COMPLETED: {
+      to: 'running',
+      sideEffects: () => [
+        { kind: 'clear_navigation' },
+        { kind: 'update_timestamps', ts: Date.now() },
+      ],
     },
     ASK_USER: {
       to: 'awaiting_user',
@@ -304,6 +322,25 @@ export function statusFromState(state: TaskState): string {
     case 'failed': return 'failed';
     case 'cancelled': return 'cancelled';
     default: return 'running';
+  }
+}
+
+/**
+ * Human-readable display status for UI-facing code.
+ * Unlike `statusFromState` (which maps to legacy server strings), this returns
+ * the actual state so the UI never contradicts what the user sees.
+ */
+export function displayStatus(state: TaskState): string {
+  switch (state) {
+    case 'idle': return 'idle';
+    case 'running': return 'running';
+    case 'awaiting_user': return 'awaiting_input';
+    case 'paused': return 'paused';
+    case 'blocked': return 'blocked';
+    case 'completed': return 'completed';
+    case 'failed': return 'failed';
+    case 'cancelled': return 'cancelled';
+    default: return 'unknown';
   }
 }
 

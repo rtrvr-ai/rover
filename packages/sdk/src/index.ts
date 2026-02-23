@@ -461,6 +461,9 @@ let autoResumeAttempted = false;
 let crossDomainResumeActive = false;
 let resumeContextValidated = false;
 let agentNavigationPending = false;
+const crossOriginNavTimestamps: number[] = [];
+const CROSS_ORIGIN_NAV_MAX = 3;
+const CROSS_ORIGIN_NAV_WINDOW_MS = 10_000;
 let currentTaskBoundaryId = '';
 let runSafetyTimer: ReturnType<typeof setTimeout> | null = null;
 let autoResumeRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -726,7 +729,8 @@ function getUnconsumedNavigationHandoff(maxAgeMs = 120_000): PersistedNavigation
 function isNavigationResumeReason(reason: PersistedPendingRun['resumeReason'] | undefined): boolean {
   return reason === 'agent_navigation'
     || reason === 'cross_host_navigation'
-    || reason === 'handoff';
+    || reason === 'handoff'
+    || reason === 'worker_interrupted';
 }
 
 function canValidateResumeFromPersistedHandoff(pending: PersistedPendingRun): boolean {
@@ -2950,6 +2954,7 @@ function persistRuntimeStateImmediate(options?: { markCheckpointDirty?: boolean 
   try {
     // Sync multi-task state from orchestrator
     if (taskOrchestrator) {
+      taskOrchestrator.enforceMemoryCaps();
       const { tasks, activeTaskId, taskOrder } = taskOrchestrator.toPersistedState();
       runtimeState.tasks = tasks;
       runtimeState.activeTaskId = activeTaskId;
@@ -3228,22 +3233,35 @@ function markTaskActivity(role: UiRole, timestamp = Date.now()): void {
   if (role === 'assistant') task.lastAssistantAt = timestamp;
 }
 
-function applyTitlePrefix(): void {
-  if (titlePrefixActive) return;
+let titlePrefixLabel = '[Rover]';
+
+function applyTitlePrefix(label?: string): void {
   const enableTitlePrefix = (currentConfig?.ui as any)?.tabIndicator?.titlePrefix !== false;
   if (!enableTitlePrefix) return;
-  originalDocumentTitle = document.title;
-  titlePrefixActive = true;
-  if (!document.title.startsWith('[Rover] ')) {
-    document.title = `[Rover] ${document.title}`;
+
+  const newLabel = label || '[Rover: Running]';
+  const wasActive = titlePrefixActive;
+
+  if (!wasActive) {
+    originalDocumentTitle = document.title;
   }
+  titlePrefixActive = true;
+  titlePrefixLabel = newLabel;
+
+  // Strip any existing Rover prefix before applying the new one
+  const baseTitle = wasActive
+    ? (document.title.replace(/^\[Rover[^\]]*\]\s*/, '') || originalDocumentTitle || '')
+    : document.title;
+  document.title = `${newLabel} ${baseTitle}`;
+
   // Observe title changes to re-apply prefix
   if (!titleObserver) {
     const titleEl = document.querySelector('title');
     if (titleEl) {
       titleObserver = new MutationObserver(() => {
-        if (titlePrefixActive && !document.title.startsWith('[Rover] ')) {
-          document.title = `[Rover] ${document.title}`;
+        if (titlePrefixActive && !document.title.startsWith(titlePrefixLabel)) {
+          const clean = document.title.replace(/^\[Rover[^\]]*\]\s*/, '');
+          document.title = `${titlePrefixLabel} ${clean}`;
         }
       });
       titleObserver.observe(titleEl, { childList: true, characterData: true, subtree: true });
@@ -4624,13 +4642,26 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
     return;
   }
   if (pending.resumeRequired !== true) {
-    if (autoResumeRetryTimer) {
-      clearTimeout(autoResumeRetryTimer);
-      autoResumeRetryTimer = null;
+    // If the run is recent (within TTL) the worker was likely killed by
+    // same-scope navigation (page reload). Promote to resumeRequired so the
+    // normal resume flow picks it up immediately — no handoff cookie needed
+    // because localStorage is available on same-origin, and the cross-domain
+    // cookie handles subdomain reloads.
+    const pendingAgeMs = Date.now() - Number(pending.startedAt || 0);
+    const ttlMs = normalizeTaskResumeTtlMs(currentConfig?.task?.resume?.ttlMs);
+    if (Number.isFinite(pendingAgeMs) && pendingAgeMs >= 0 && pendingAgeMs < ttlMs) {
+      pending.resumeRequired = true;
+      pending.resumeReason = pending.resumeReason || 'worker_interrupted';
+      setPendingRun(pending);
+    } else {
+      if (autoResumeRetryTimer) {
+        clearTimeout(autoResumeRetryTimer);
+        autoResumeRetryTimer = null;
+      }
+      autoResumeSessionWaitAttempts = 0;
+      hideTaskSuggestion();
+      return;
     }
-    autoResumeSessionWaitAttempts = 0;
-    hideTaskSuggestion();
-    return;
   }
 
   const autoResumePolicy = normalizeTaskAutoResumePolicy(currentConfig?.task?.autoResumePolicy);
@@ -4663,6 +4694,12 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
   }
 
   if (!resumeContextValidated && canValidateResumeFromPersistedHandoff(pending)) {
+    resumeContextValidated = true;
+  }
+  // Same-scope navigation resume: if the pending run was loaded from
+  // localStorage (same origin) or promoted from worker_interrupted, no
+  // cross-domain handoff context is needed — validate immediately.
+  if (!resumeContextValidated && pending.resumeReason === 'worker_interrupted') {
     resumeContextValidated = true;
   }
   if (!resumeContextValidated && shouldDelayResumeForPendingNavigation(pending)) {
@@ -6688,6 +6725,28 @@ function createRuntime(cfg: RoverInit): void {
         };
       }
 
+      // Rate-limit rapid cross-origin navigations (> 3 in 10s = adversarial)
+      if (intent?.isCrossHost) {
+        const now = Date.now();
+        crossOriginNavTimestamps.push(now);
+        // Prune old entries
+        while (crossOriginNavTimestamps.length > 0 && crossOriginNavTimestamps[0]! < now - CROSS_ORIGIN_NAV_WINDOW_MS) {
+          crossOriginNavTimestamps.shift();
+        }
+        if (crossOriginNavTimestamps.length > CROSS_ORIGIN_NAV_MAX) {
+          recordTelemetryEvent('navigation_guardrail', {
+            event: 'rapid_cross_origin_blocked',
+            targetUrl: intent.targetUrl,
+            count: crossOriginNavTimestamps.length,
+          });
+          return {
+            decision: 'block',
+            reason: `Navigation blocked: too many cross-origin navigations (${crossOriginNavTimestamps.length} in ${CROSS_ORIGIN_NAV_WINDOW_MS / 1000}s).`,
+            decisionReason: 'rapid_cross_origin_block',
+          };
+        }
+      }
+
       const targetHost = (() => {
         try {
           return new URL(String(intent?.targetUrl || '')).hostname.toLowerCase();
@@ -6729,6 +6788,17 @@ function createRuntime(cfg: RoverInit): void {
         ensureNavigationPendingRun(
           intent.isCrossHost ? 'cross_host_navigation' : 'agent_navigation',
         );
+        // Dispatch NAVIGATION_STARTED to FSM so state stays consistent
+        if (taskOrchestrator) {
+          const activeTask = taskOrchestrator.getActiveTask();
+          if (activeTask) {
+            taskOrchestrator.dispatch(activeTask.taskId, {
+              type: 'NAVIGATION_STARTED',
+              targetUrl: intent.targetUrl,
+              isCrossHost: intent.isCrossHost,
+            });
+          }
+        }
         flushCheckpointCritical('same_tab_navigation_handoff_early');
       }
 
