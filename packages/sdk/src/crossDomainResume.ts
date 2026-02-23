@@ -9,7 +9,7 @@
  */
 
 const COOKIE_PREFIX = 'rover_xdr_';
-const MAX_COOKIE_AGE_S = 120; // 2 minutes — cookie is short-lived
+const MAX_COOKIE_AGE_S = 300; // 5 minutes — enough time for cross-subdomain resume
 const MULTI_LABEL_TLDS = new Set([
   'co.uk',
   'org.uk',

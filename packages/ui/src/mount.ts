@@ -2520,62 +2520,41 @@ export function mountWidget(opts: MountOptions): RoverUi {
       }
     }
 
-    /* ── Tab Bar ── */
-    .roverTabBar {
-      display: none;
-      overflow-x: auto;
-      gap: 4px;
-      padding: 4px 14px;
-      border-bottom: 1px solid var(--c-border, rgba(255,255,255,.08));
-      max-height: 36px;
-      scrollbar-width: none;
-    }
-    .roverTabBar::-webkit-scrollbar { display: none; }
-    .roverTabBar.visible {
+    /* ── Conversation Pill (replaces tab bar) ── */
+    .roverConversationPill {
       display: flex;
-    }
-    .roverTabChip {
-      display: inline-flex;
       align-items: center;
       gap: 4px;
-      padding: 3px 8px;
-      border-radius: 12px;
+      padding: 4px 12px;
+      margin: 4px 14px;
+      border-radius: 14px;
       background: rgba(255,255,255,.06);
       border: 1px solid rgba(255,255,255,.08);
-      font-size: 11px;
-      color: var(--c-text-secondary, rgba(255,255,255,.55));
-      white-space: nowrap;
+      font-size: 12px;
+      color: var(--c-text-secondary, rgba(255,255,255,.65));
       cursor: pointer;
       transition: background .15s, border-color .15s;
-      max-width: 140px;
+      max-width: fit-content;
+      user-select: none;
     }
-    .roverTabChip:hover {
+    .roverConversationPill:hover {
       background: rgba(255,255,255,.1);
       border-color: rgba(255,255,255,.14);
     }
-    .roverTabChip.active {
-      border-color: var(--c-accent, #6b6bff);
-      color: var(--c-text-primary, #fff);
-    }
-    .roverTabChip.current {
-      background: rgba(255,255,255,.12);
-    }
-    .roverTabChipFavicon {
-      width: 14px;
-      height: 14px;
-      border-radius: 2px;
-    }
-    .roverTabChipLabel {
+    .roverConversationPillLabel {
       overflow: hidden;
       text-overflow: ellipsis;
-      max-width: 100px;
+      white-space: nowrap;
+      max-width: 200px;
     }
-    .roverTabChipDot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--c-accent, #6b6bff);
-      animation: launcherPulse 1.5s infinite;
+    .roverConversationPillArrow {
+      font-size: 10px;
+      opacity: .6;
+    }
+
+    /* ── Tab Bar (hidden, kept for backward compat) ── */
+    .roverTabBar {
+      display: none !important;
     }
 
     /* ── Conversation Drawer ── */
@@ -3095,7 +3074,24 @@ export function mountWidget(opts: MountOptions): RoverUi {
   resizeHandle.className = 'resizeHandle';
   resizeHandle.setAttribute('aria-hidden', 'true');
 
-  /* ── Tab Bar ── */
+  /* ── Conversation Pill (replaces tab bar) ── */
+  const conversationPill = document.createElement('div');
+  conversationPill.className = 'roverConversationPill';
+  conversationPill.setAttribute('role', 'button');
+  conversationPill.setAttribute('tabindex', '0');
+  const conversationPillLabel = document.createElement('span');
+  conversationPillLabel.className = 'roverConversationPillLabel';
+  conversationPillLabel.textContent = 'Current task';
+  const conversationPillArrow = document.createElement('span');
+  conversationPillArrow.className = 'roverConversationPillArrow';
+  conversationPillArrow.textContent = '\u25BE'; // ▾
+  conversationPill.appendChild(conversationPillLabel);
+  conversationPill.appendChild(conversationPillArrow);
+  conversationPill.addEventListener('click', () => {
+    conversationDrawer.classList.toggle('open');
+  });
+
+  /* ── Tab Bar (hidden — kept for backward compat, not appended to DOM) ── */
   const tabBar = document.createElement('div');
   tabBar.className = 'roverTabBar';
 
@@ -3133,7 +3129,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   conversationDrawer.appendChild(conversationNewBtn);
 
   panel.appendChild(header);
-  panel.appendChild(tabBar);
+  panel.appendChild(conversationPill);
   panel.appendChild(pausedTaskBanner);
   panel.appendChild(feedWrapper);
   panel.appendChild(taskSuggestion);
@@ -4113,55 +4109,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let lastTabsKey = '';
   const faviconCache = new Map<string, string>();
 
-  function setTabs(tabs: RoverTabInfo[]): void {
-    const key = tabs.map(t => `${t.logicalTabId}|${t.url}|${t.title || ''}|${t.isActive}|${t.isCurrent}`).join(';;');
-    if (key === lastTabsKey) return;
-    lastTabsKey = key;
-
-    tabBar.innerHTML = '';
-    if (!tabs.length) {
-      tabBar.classList.remove('visible');
-      return;
-    }
-    tabBar.classList.add('visible');
-    for (const tab of tabs) {
-      const chip = document.createElement('div');
-      chip.className = `roverTabChip${tab.isActive ? ' active' : ''}${tab.isCurrent ? ' current' : ''}`;
-      chip.title = tab.url;
-
-      const favicon = document.createElement('img');
-      favicon.className = 'roverTabChipFavicon';
-      try {
-        const host = new URL(tab.url).hostname;
-        const cached = faviconCache.get(host);
-        if (cached) {
-          favicon.src = cached;
-        } else {
-          const url = `https://www.google.com/s2/favicons?domain=${host}&sz=28`;
-          faviconCache.set(host, url);
-          favicon.src = url;
-        }
-      } catch { favicon.style.display = 'none'; }
-      favicon.onerror = () => { favicon.style.display = 'none'; };
-
-      const label = document.createElement('span');
-      label.className = 'roverTabChipLabel';
-      try {
-        label.textContent = tab.title || new URL(tab.url).hostname;
-      } catch { label.textContent = tab.url; }
-
-      chip.appendChild(favicon);
-      chip.appendChild(label);
-
-      if (tab.isActive) {
-        const dot = document.createElement('span');
-        dot.className = 'roverTabChipDot';
-        chip.appendChild(dot);
-      }
-
-      chip.addEventListener('click', () => opts.onTabClick?.(tab.logicalTabId));
-      tabBar.appendChild(chip);
-    }
+  function setTabs(_tabs: RoverTabInfo[]): void {
+    // Tab bar removed — tabs are no longer rendered in the widget.
+    // This function is kept as a no-op for backward compatibility.
   }
 
   /* ── Conversation Drawer Logic ── */
@@ -4196,6 +4146,18 @@ export function mountWidget(opts: MountOptions): RoverUi {
     const key = conversations.map(c => `${c.id}|${c.summary}|${c.status}|${c.updatedAt}|${c.isActive}`).join(';;');
     if (key === lastConversationsKey) return;
     lastConversationsKey = key;
+
+    // Update conversation pill label with active task summary
+    const active = conversations.find(c => c.isActive);
+    if (active) {
+      const pillText = active.summary.length > 40 ? active.summary.slice(0, 40) + '...' : active.summary;
+      conversationPillLabel.textContent = pillText || 'Current task';
+    } else {
+      conversationPillLabel.textContent = 'Current task';
+    }
+    // Hide pill if only one conversation
+    conversationPill.style.display = conversations.length > 1 ? 'flex' : 'none';
+
     conversationList.innerHTML = '';
     for (const conv of conversations) {
       const item = document.createElement('div');

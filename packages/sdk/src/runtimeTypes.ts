@@ -127,7 +127,7 @@ export type PersistedPendingRun = {
   autoResume: boolean;
   taskBoundaryId?: string;
   resumeRequired?: boolean;
-  resumeReason?: 'cross_host_navigation' | 'page_reload' | 'handoff' | 'agent_navigation';
+  resumeReason?: 'cross_host_navigation' | 'page_reload' | 'handoff' | 'agent_navigation' | 'worker_interrupted';
 };
 
 export type RoverRuntimeEventType =
@@ -176,7 +176,8 @@ export type PersistedNavigationHandoff = {
 // ── v2 PersistedRuntimeState ─────────────────────────────────────────
 
 export type PersistedRuntimeState = {
-  version: number; // 1 = legacy, 2 = multi-task
+  version: number; // 1 = legacy, 2 = multi-task, 3 = navigation-fix
+  stateVersion?: number; // explicit schema version for migration detection
   sessionId: string;
   runtimeId: string;
   uiOpen: boolean;

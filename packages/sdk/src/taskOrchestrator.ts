@@ -37,6 +37,10 @@ export type TaskOrchestratorOptions = {
 
 const DEFAULT_MAX_ARCHIVED_TASKS = 10;
 const ARCHIVED_MAX_MESSAGES = 20;
+const MAX_ACTIVE_TASK_MESSAGES = 50;
+const MAX_ACTIVE_TASK_TIMELINE = 30;
+const WORKER_INACTIVITY_TIMEOUT_MS = 5 * 60_000; // 5 minutes
+const MAX_TABS_FOR_NEW_TASKS = 5;
 
 export type TaskDispatchResult = {
   accepted: boolean;
@@ -415,6 +419,64 @@ export class TaskOrchestrator {
     }
 
     return orchestrator;
+  }
+
+  // ── Crash prevention guardrails ──────────────────────────────────
+
+  /**
+   * Enforce per-task memory caps to prevent accumulation from crashing browser.
+   * Should be called periodically (e.g. after each state persist).
+   */
+  enforceMemoryCaps(): void {
+    for (const [, task] of this.tasks) {
+      if (isTerminalState(task.state)) continue;
+      if (task.uiMessages.length > MAX_ACTIVE_TASK_MESSAGES) {
+        task.uiMessages = task.uiMessages.slice(-MAX_ACTIVE_TASK_MESSAGES);
+      }
+      if (task.timeline.length > MAX_ACTIVE_TASK_TIMELINE) {
+        task.timeline = task.timeline.slice(-MAX_ACTIVE_TASK_TIMELINE);
+      }
+    }
+  }
+
+  /**
+   * Terminate workers for tasks paused longer than the inactivity timeout.
+   * Snapshots worker state before termination to allow later resume.
+   */
+  terminateInactiveWorkers(): string[] {
+    const now = Date.now();
+    const terminated: string[] = [];
+    for (const [taskId, task] of this.tasks) {
+      if (task.state !== 'paused') continue;
+      const pausedDuration = now - (task.pausedAt || now);
+      if (pausedDuration > WORKER_INACTIVITY_TIMEOUT_MS && this.workerPool.getWorker(taskId)) {
+        this.workerPool.release(taskId);
+        terminated.push(taskId);
+      }
+    }
+    return terminated;
+  }
+
+  /**
+   * Check if new tasks can be created based on total tab count.
+   * With > MAX_TABS_FOR_NEW_TASKS Rover tabs, new tabs default to observer-only.
+   */
+  canCreateNewTask(totalRoverTabCount: number): { allowed: boolean; reason?: string } {
+    if (totalRoverTabCount > MAX_TABS_FOR_NEW_TASKS) {
+      return {
+        allowed: false,
+        reason: `Too many Rover tabs open (${totalRoverTabCount}). Close some tabs to create new tasks.`,
+      };
+    }
+    const activeCount = this.workerPool.getActiveCount();
+    const queuedCount = this.workerPool.getQueuedTasks().length;
+    if (activeCount >= 2 && queuedCount >= 3) {
+      return {
+        allowed: false,
+        reason: 'Maximum parallel tasks reached. Complete or cancel a task first.',
+      };
+    }
+    return { allowed: true };
   }
 
   /** Shutdown — terminate all workers and clean up. */

@@ -699,8 +699,8 @@ export class Bridge {
           success: true,
           output: {
             navigation: 'same_tab',
-            navigationOutcome: 'same_tab_scheduled',
-            navigationPending: true,
+            navigationOutcome: 'same_host_navigated',
+            navigationPending: false,
             decisionReason: 'allow_same_tab',
           },
         };
@@ -713,8 +713,8 @@ export class Bridge {
           success: true,
           output: {
             navigation: 'same_tab',
-            navigationOutcome: 'same_tab_scheduled',
-            navigationPending: true,
+            navigationOutcome: 'same_host_navigated',
+            navigationPending: false,
             decisionReason: 'allow_same_tab',
           },
         };
@@ -727,8 +727,8 @@ export class Bridge {
           success: true,
           output: {
             navigation: 'same_tab',
-            navigationOutcome: 'same_tab_scheduled',
-            navigationPending: true,
+            navigationOutcome: 'same_host_navigated',
+            navigationPending: false,
             decisionReason: 'allow_same_tab',
           },
         };
@@ -936,17 +936,48 @@ export class Bridge {
     intent: NavigationIntentEvent,
     options?: { convertedFrom?: string; decisionReason?: string; reason?: string },
   ): any {
-    this.notifyCrossHostNavigation(intent);
-    // Use increased delay for cross-host navigations (200ms) to ensure state persists
     const isCrossHost = intent.isCrossHost === true;
-    const delay = isCrossHost ? Math.max(this.navigationDelayMs, 200) : this.navigationDelayMs;
+    const withinScope = isUrlAllowedByDomains(targetUrl, this.allowedDomains);
+
+    if (isCrossHost) {
+      this.notifyCrossHostNavigation(intent);
+    }
+
+    // Within-scope navigation (same host, or same registrable domain / allowed
+    // domains list). Navigate and return navigationPending: false so the worker
+    // loop does NOT exit. On page reload the SDK fast-resumes; the next
+    // getPageData call (with its existing DOM-settle + sparse-tree retry) picks
+    // up the new page content — no extra delay needed.
+    if (withinScope) {
+      window.setTimeout(() => {
+        try {
+          window.location.href = targetUrl;
+        } catch {
+          window.location.assign(targetUrl);
+        }
+      }, this.navigationDelayMs);
+      return {
+        success: true,
+        output: {
+          url: targetUrl,
+          navigation: 'same_tab',
+          navigationOutcome: isCrossHost ? 'subdomain_navigated' : 'same_host_navigated',
+          navigationPending: false,
+          decisionReason: options?.decisionReason || 'allow_same_tab',
+          reason: options?.reason,
+          ...(options?.convertedFrom ? { convertedFrom: options.convertedFrom } : {}),
+        },
+      };
+    }
+
+    // Out-of-scope cross-origin: handoff with cookie-based resume.
     window.setTimeout(() => {
       try {
         window.location.href = targetUrl;
       } catch {
         window.location.assign(targetUrl);
       }
-    }, delay);
+    }, Math.max(this.navigationDelayMs, 200));
     return {
       success: true,
       output: {
@@ -1047,19 +1078,26 @@ export class Bridge {
           missing: [],
           next_action:
             policyAction === 'block'
-              ? 'Stay on the configured domain or update allowedDomains/domainScopeMode.'
+              ? 'This domain is blocked. Do NOT retry. Acknowledge and proceed with the task using available resources.'
               : 'Use open_new_tab to access external pages without losing context.',
           retryable: false,
         },
         blocked_url: targetUrl,
         current_url: window.location.href,
         policy_action: policyAction,
+        blockedDomainStatus: 'blocked',
         navigationOutcome: 'blocked',
         decisionReason: options?.decisionReason || 'policy_blocked',
         from_current_context: !!options?.fromCurrentContext,
-        // Enhanced agent-facing metadata
-        agentInstruction: `Navigation to ${targetUrl} was blocked by domain policy. Acknowledge to user and proceed with next step. Do NOT retry blocked URLs.`,
+        agentInstruction: `Navigation to ${blockedDomain || targetUrl} is blocked by domain policy. Do NOT retry this URL. Acknowledge to user and proceed with the next step.`,
         blockedDomain: blockedDomain || targetUrl,
+        // Dummy page context for blocked domain so agent has something to work with
+        pageContext: {
+          url: targetUrl,
+          title: `[Blocked] ${blockedDomain || targetUrl}`,
+          contentText: `Access to ${blockedDomain || targetUrl} is restricted by navigation policy. The page content is not available. Continue the task without this resource or use /scrape endpoint if external context is needed.`,
+          accessible: false,
+        },
       },
       errorDetails: {
         code: 'DOMAIN_SCOPE_BLOCKED',
