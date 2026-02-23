@@ -1157,22 +1157,15 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
     return false;
   }
 
-  function hasInteractiveDescendant(root: HTMLElement, maxDepth = 10, maxNodes = 600): boolean {
+  function hasInteractiveDescendant(root: HTMLElement, maxDepth = 10): boolean {
     // seed with children, not the root itself
     const stack: Array<{ node: HTMLElement; depth: number }> = [];
     for (let i = 0; i < root.children.length; i++) {
       stack.push({ node: root.children[i] as HTMLElement, depth: 1 });
     }
 
-    let visited = 0;
-
     while (stack.length) {
       const { node, depth } = stack.pop()!;
-
-      if (++visited > maxNodes) {
-        // Conservative: assume there *is* an interactive descendant to avoid wrong promotion
-        return true;
-      }
 
       // Skip aria-hidden subtrees
       // We represent aria-hidden so we consider it
@@ -2058,14 +2051,13 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
     setBusyFlag();
     try {
       let scanned = 0;
-      const SCAN_CAP = 4000; // higher, but budget stops it
       const secondaryTags = ['div', 'span', 'li', 'section', 'article', 'p'];
 
       for (const tag of secondaryTags) {
         const nodes = doc.getElementsByTagName(tag) ?? [];
         for (let i = 0; i < nodes.length; i++) {
-          if (scanned++ >= SCAN_CAP) return;
           if (deadlineEpochMs && timeLeftMs(deadlineEpochMs) <= 0) return;
+          scanned++;
 
           const node = nodes[i] as Element;
           const e = node as FrameworkEnhancedElement;

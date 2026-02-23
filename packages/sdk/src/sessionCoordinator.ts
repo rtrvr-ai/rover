@@ -593,6 +593,8 @@ export class SessionCoordinator {
   private localLogicalTabId: number | undefined;
   private closing = false;
   private started = false;
+  private heartbeatCount = 0;
+  private static readonly LS_HEARTBEAT_DIVISOR = 5; // localStorage write every 5th heartbeat
   private pendingRpcRequests = new Map<string, {
     resolve: (result: any) => void;
     reject: (error: Error) => void;
@@ -603,6 +605,11 @@ export class SessionCoordinator {
   private roleChangeTimer: number | null = null;
   private probeTimers: ReturnType<typeof setTimeout>[] = [];
   private static readonly ROLE_CHANGE_DEBOUNCE_MS = 200;
+
+  /** Called when a remote tab broadcasts a session token via BroadcastChannel. */
+  public onSessionTokenReceived?: (token: string, expiresAt: number) => void;
+  /** Called when a remote tab broadcasts a projection via BroadcastChannel. */
+  public onProjectionReceived?: (projection: any) => void;
 
   private tabFreshnessTs(tab: SharedTabEntry): number {
     return Math.max(
@@ -899,6 +906,12 @@ export class SessionCoordinator {
         if (payload.type === 'tab_closing' && payload.runtimeId && payload.runtimeId !== this.runtimeId) {
           this.handleRemoteTabClosing(payload);
         }
+        if (payload.type === 'session_token' && payload.runtimeId !== this.runtimeId) {
+          this.onSessionTokenReceived?.(payload.token, payload.expiresAt);
+        }
+        if (payload.type === 'projection' && payload.runtimeId !== this.runtimeId) {
+          this.onProjectionReceived?.(payload.projection);
+        }
       };
     }
 
@@ -924,6 +937,7 @@ export class SessionCoordinator {
   stop(): void {
     if (!this.started) return;
     this.started = false;
+    this.heartbeatCount = 0;
 
     if (this.heartbeatTimer != null) {
       window.clearInterval(this.heartbeatTimer);
@@ -1551,6 +1565,29 @@ export class SessionCoordinator {
     return tab.updatedAt > now() - 2 * this.heartbeatMs;
   }
 
+  // ---- Transport Relay (controller → observer) ----
+
+  broadcastSessionToken(token: string, expiresAt: number): void {
+    if (this.channel) {
+      this.channel.postMessage({
+        type: 'session_token',
+        runtimeId: this.runtimeId,
+        token,
+        expiresAt,
+      });
+    }
+  }
+
+  broadcastProjection(projection: any): void {
+    if (this.channel) {
+      this.channel.postMessage({
+        type: 'projection',
+        runtimeId: this.runtimeId,
+        projection,
+      });
+    }
+  }
+
   // ---- Workflow Lock ----
 
   acquireWorkflowLock(runId: string): boolean {
@@ -1725,6 +1762,7 @@ export class SessionCoordinator {
 
   private heartbeat(): void {
     if (this.closing) return;
+    this.heartbeatCount++;
 
     const currentUrl = normalizeUrl(window.location.href);
     const currentTitle = document.title || undefined;
@@ -1753,6 +1791,9 @@ export class SessionCoordinator {
     }
 
     this.lastFullHeartbeatAt = nowMs;
+
+    // Only persist to localStorage every Nth full heartbeat; BroadcastChannel still fires every time
+    const skipLsPersist = this.heartbeatCount % SessionCoordinator.LS_HEARTBEAT_DIVISOR !== 0;
 
     this.mutate('local', draft => {
       const currentTab = draft.tabs.find(tab => tab.runtimeId === this.runtimeId);
@@ -1842,7 +1883,7 @@ export class SessionCoordinator {
       }
 
       this.pruneDetachedTabs(draft);
-    });
+    }, { skipPersist: skipLsPersist });
 
     this.notifyRoleChange();
   }
@@ -1911,7 +1952,7 @@ export class SessionCoordinator {
     this.localLogicalTabId = tab?.logicalTabId;
   }
 
-  private mutate(source: 'local' | 'remote', updater: (draft: SharedSessionState) => void): void {
+  private mutate(source: 'local' | 'remote', updater: (draft: SharedSessionState) => void, options?: { skipPersist?: boolean }): void {
     // Re-read from localStorage before local mutations (optimistic locking)
     if (source === 'local') {
       try {
@@ -1936,7 +1977,9 @@ export class SessionCoordinator {
     this.syncLocalLogicalTabId();
 
     if (source === 'local') {
-      this.persistState();
+      if (!options?.skipPersist) {
+        this.persistState();
+      }
       if (this.channel) {
         this.channel.postMessage({ type: 'state', sourceRuntimeId: this.runtimeId, state: this.state });
       }

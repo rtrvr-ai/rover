@@ -91,7 +91,7 @@ function normalizeUrlForMatch(url: string): string {
 function normalizePathname(pathname: string): string {
   const value = String(pathname || '').trim();
   if (!value || value === '/') return '/';
-  return value.replace(/\/+$/, '') || '/';
+  return value.replace(/\/\/+/g, '/').replace(/\/+$/, '') || '/';
 }
 
 function hasQuerySubset(target: URLSearchParams, current: URLSearchParams): boolean {
@@ -202,7 +202,9 @@ export function readCrossDomainResumeCookie(
 
         if (data.sourceHost) {
           const sourceHost = String(data.sourceHost || '').trim().toLowerCase();
-          if (sourceHost && currentHost && sourceHost === currentHost) {
+          // Allow same-host reads when an explicit handoffId was matched (intentional handoff)
+          const isSameHost = sourceHost && currentHost && sourceHost === currentHost;
+          if (isSameHost && !expectedHandoffId) {
             continue;
           }
         }
