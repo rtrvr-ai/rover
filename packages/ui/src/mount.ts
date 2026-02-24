@@ -1285,20 +1285,6 @@ export function mountWidget(opts: MountOptions): RoverUi {
       100% { left: 100%; }
     }
 
-    /* ── Step Counter ── */
-    .statusStepCount {
-      font-size: 10px;
-      color: var(--rv-accent);
-      font-weight: 600;
-      font-variant-numeric: tabular-nums;
-      margin-left: 4px;
-      opacity: 0;
-      transition: opacity 200ms;
-    }
-    .statusStepCount.visible {
-      opacity: 1;
-    }
-
     /* ── Trace Toggle Bar ── */
     .traceToggleBar {
       display: none;
@@ -2928,12 +2914,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
   const modeLabel = document.createElement('span');
   modeLabel.className = 'modeLabel controller';
   modeLabel.textContent = 'active';
-  const statusStepCount = document.createElement('span');
-  statusStepCount.className = 'statusStepCount';
   statusEl.appendChild(statusDot);
   statusEl.appendChild(statusText);
   statusEl.appendChild(modeLabel);
-  statusEl.appendChild(statusStepCount);
   meta.appendChild(titleEl);
   meta.appendChild(statusEl);
 
@@ -3861,14 +3844,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
       setTraceExpanded(false);
     }
 
-    // Update step counter
-    const stepCount = traceOrder.length;
-    statusStepCount.textContent = `Step ${stepCount}`;
-    if (isRunning) {
-      statusStepCount.classList.add('visible');
-    }
-
     // Update trace toggle bar
+    const stepCount = traceOrder.length;
     traceToggleCount.textContent = `${stepCount} step${stepCount !== 1 ? 's' : ''}`;
     traceToggleBar.classList.toggle('visible', stepCount > 0);
     if (!traceExpanded) {
@@ -3893,8 +3870,6 @@ export function mountWidget(opts: MountOptions): RoverUi {
     }
     traceToggleBar.classList.remove('visible');
     traceToggleCount.textContent = '0 steps';
-    statusStepCount.classList.remove('visible');
-    statusStepCount.textContent = '';
   }
 
   function setTaskSuggestion(suggestion: RoverTaskSuggestion): void {
@@ -3924,7 +3899,6 @@ export function mountWidget(opts: MountOptions): RoverUi {
       waitingForFirstModelSignal = true;
     } else {
       waitingForFirstModelSignal = false;
-      statusStepCount.classList.remove('visible');
     }
     syncProcessingIndicator();
     cancelPill.classList.toggle('visible', running);
