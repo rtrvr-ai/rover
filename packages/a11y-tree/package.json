@@ -1,6 +1,6 @@
 {
   "name": "@rover/a11y-tree",
-  "version": "1.3.3",
+  "version": "2.0.0",
   "description": "rover embed - a11y tree",
   "type": "module",
   "private": true,
