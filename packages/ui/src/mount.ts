@@ -1174,65 +1174,57 @@ export function mountWidget(opts: MountOptions): RoverUi {
       margin-left: auto;
     }
 
-    .modeBadge {
+    .modeLabel {
       font-size: 10px;
       font-weight: 700;
-      letter-spacing: 0.02em;
       text-transform: uppercase;
+      padding: 1px 6px;
       border-radius: 999px;
-      padding: 3px 8px;
+      margin-left: 4px;
       border: 1px solid transparent;
-      flex: 0 0 auto;
     }
 
-    .modeBadge.controller {
+    .modeLabel.controller {
       color: #9a3412;
       background: rgba(255, 76, 0, 0.08);
       border-color: var(--rv-accent-border);
     }
 
-    .modeBadge.observer {
+    .modeLabel.observer {
       color: var(--rv-text-secondary);
       background: rgba(0, 0, 0, 0.04);
       border-color: var(--rv-border-strong);
     }
 
-    .stopBtn {
-      width: 32px; height: 32px;
-      border-radius: var(--rv-radius-sm);
-      border: 1px solid rgba(220, 38, 38, 0.25);
-      background: rgba(220, 38, 38, 0.06);
+    .cancelPill {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      border: 1.5px solid rgba(220, 38, 38, 0.3);
+      background: rgba(220, 38, 38, 0.08);
       color: var(--rv-error);
-      cursor: pointer;
-      display: none; place-items: center;
-      font-size: 10px;
+      font-size: 12px;
       font-weight: 700;
-      transition: background 120ms ease, border-color 120ms ease;
-      flex: 0 0 auto; padding: 0;
-    }
-    .stopBtn:hover {
-      background: rgba(220, 38, 38, 0.12);
-      border-color: rgba(220, 38, 38, 0.35);
-    }
-    .stopBtn.visible {
-      display: grid;
-    }
-
-    .muteBtn {
-      width: 32px; height: 32px;
-      border-radius: var(--rv-radius-sm);
-      border: 1px solid var(--rv-border);
-      background: var(--rv-surface);
+      font-family: inherit;
       cursor: pointer;
-      display: grid; place-items: center;
-      color: var(--rv-text-secondary);
-      transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
-      flex: 0 0 auto; padding: 0;
+      flex: 0 0 auto;
+      transition: background 120ms ease, border-color 120ms ease;
     }
-    .muteBtn:hover {
-      background: var(--rv-bg-alt);
-      border-color: var(--rv-border-strong);
-      color: var(--rv-text);
+    .cancelPill:hover {
+      background: rgba(220, 38, 38, 0.14);
+      border-color: rgba(220, 38, 38, 0.45);
+    }
+    .cancelPill.visible {
+      display: flex;
+    }
+    .cancelIcon {
+      display: block;
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      background: var(--rv-error);
     }
 
     .overflowBtn,
@@ -1261,6 +1253,90 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
     .closeBtn {
       font-size: 18px;
+    }
+
+    /* ── Execution Progress Bar ── */
+    .executionBar {
+      position: absolute;
+      bottom: -1px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      overflow: hidden;
+    }
+    .executionBar::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -40%;
+      width: 40%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, var(--rv-accent), transparent);
+      border-radius: 999px;
+      opacity: 0;
+      transition: opacity 200ms ease;
+    }
+    .executionBar.active::after {
+      opacity: 1;
+      animation: executionSlide 1.5s ease-in-out infinite;
+    }
+    @keyframes executionSlide {
+      0% { left: -40%; }
+      100% { left: 100%; }
+    }
+
+    /* ── Step Counter ── */
+    .statusStepCount {
+      font-size: 10px;
+      color: var(--rv-accent);
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      margin-left: 4px;
+      opacity: 0;
+      transition: opacity 200ms;
+    }
+    .statusStepCount.visible {
+      opacity: 1;
+    }
+
+    /* ── Trace Toggle Bar ── */
+    .traceToggleBar {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: var(--rv-radius-sm);
+      background: var(--rv-bg-alt);
+      border: 1px solid var(--rv-border);
+    }
+    .traceToggleBar.visible {
+      display: flex;
+    }
+    .traceToggleLabel {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--rv-text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .traceToggleCount {
+      font-size: 11px;
+      color: var(--rv-text-tertiary);
+      flex: 1;
+    }
+    .traceToggleBtn {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--rv-accent);
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: inherit;
+    }
+    .traceToggleBtn:hover {
+      background: var(--rv-accent-soft);
     }
 
     /* ── Overflow Menu ── */
@@ -2441,9 +2517,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
         height: 36px;
       }
 
-      .modeBadge {
+      .modeLabel {
         font-size: 9px;
-        padding: 2px 6px;
+        padding: 1px 4px;
       }
 
       .bubble {
@@ -2520,26 +2596,13 @@ export function mountWidget(opts: MountOptions): RoverUi {
       }
     }
 
-    /* ── Conversation Pill (replaces tab bar) ── */
+    /* ── Conversation Pill (hidden — not useful) ── */
     .roverConversationPill {
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      padding: 4px 12px;
-      margin: 4px 14px;
-      border-radius: 14px;
-      background: rgba(255,255,255,.06);
-      border: 1px solid rgba(255,255,255,.08);
-      font-size: 12px;
-      color: var(--c-text-secondary, rgba(255,255,255,.65));
-      cursor: pointer;
-      transition: background .15s, border-color .15s;
-      max-width: fit-content;
-      user-select: none;
+      display: none !important;
     }
     .roverConversationPill:hover {
-      background: rgba(255,255,255,.1);
-      border-color: rgba(255,255,255,.14);
+      background: rgba(0,0,0,0.03);
+      border-color: var(--rv-border-strong);
     }
     .roverConversationPillLabel {
       overflow: hidden;
@@ -2564,12 +2627,13 @@ export function mountWidget(opts: MountOptions): RoverUi {
       left: 0;
       right: 0;
       bottom: 0;
-      background: var(--c-surface, #1a1a2e);
+      background: var(--rv-bg);
+      border-right: 1px solid var(--rv-border);
       z-index: 100;
       display: flex;
       flex-direction: column;
       transform: translateX(-100%);
-      transition: transform .25s var(--ease-out, cubic-bezier(.215,.61,.355,1));
+      transition: transform .25s var(--rv-ease-spring);
     }
     .conversationDrawer.open {
       transform: translateX(0);
@@ -2579,24 +2643,31 @@ export function mountWidget(opts: MountOptions): RoverUi {
       align-items: center;
       justify-content: space-between;
       padding: 14px 16px;
-      border-bottom: 1px solid var(--c-border, rgba(255,255,255,.08));
+      border-bottom: 1px solid var(--rv-border);
     }
     .conversationDrawerTitle {
       font-size: 14px;
-      font-weight: 600;
-      color: var(--c-text-primary, #fff);
+      font-weight: 700;
+      color: var(--rv-text);
     }
     .conversationDrawerClose {
-      background: none;
-      border: none;
-      color: var(--c-text-secondary, rgba(255,255,255,.55));
+      width: 32px;
+      height: 32px;
+      border-radius: var(--rv-radius-sm);
+      border: 1px solid var(--rv-border);
+      background: var(--rv-surface);
+      color: var(--rv-text-secondary);
       cursor: pointer;
       font-size: 18px;
-      padding: 2px 6px;
-      border-radius: 4px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
     }
     .conversationDrawerClose:hover {
-      background: rgba(255,255,255,.08);
+      background: var(--rv-bg-alt);
+      border-color: var(--rv-border-strong);
+      color: var(--rv-text);
     }
     .conversationList {
       flex: 1;
@@ -2610,40 +2681,43 @@ export function mountWidget(opts: MountOptions): RoverUi {
       padding: 10px 12px;
       border-radius: 8px;
       cursor: pointer;
-      transition: background .15s;
+      border: 1px solid transparent;
+      transition: background .15s, border-color .15s;
     }
     .conversationItem:hover {
-      background: rgba(255,255,255,.06);
+      background: rgba(0,0,0,0.03);
     }
     .conversationItem.active {
-      background: rgba(255,255,255,.1);
+      background: var(--rv-accent-soft);
+      border: 1px solid var(--rv-accent-border);
     }
     .conversationDot {
       width: 8px;
       height: 8px;
       border-radius: 50%;
       flex-shrink: 0;
-      background: var(--c-text-secondary, rgba(255,255,255,.3));
+      background: var(--rv-text-tertiary);
     }
-    .conversationItem.running .conversationDot { background: #4ade80; }
-    .conversationItem.paused .conversationDot { background: #fbbf24; }
-    .conversationItem.completed .conversationDot { background: rgba(255,255,255,.3); }
-    .conversationItem.failed .conversationDot { background: #f87171; }
-    .conversationItem.awaiting_user .conversationDot { background: #60a5fa; }
+    .conversationItem.running .conversationDot { background: var(--rv-success); }
+    .conversationItem.paused .conversationDot { background: #D97706; }
+    .conversationItem.completed .conversationDot { background: var(--rv-text-tertiary); }
+    .conversationItem.failed .conversationDot { background: var(--rv-error); }
+    .conversationItem.awaiting_user .conversationDot { background: var(--rv-info); }
     .conversationContent {
       flex: 1;
       min-width: 0;
     }
     .conversationSummary {
       font-size: 13px;
-      color: var(--c-text-primary, #fff);
+      color: var(--rv-text);
+      font-weight: 500;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
     .conversationMeta {
       font-size: 11px;
-      color: var(--c-text-secondary, rgba(255,255,255,.45));
+      color: var(--rv-text-tertiary);
       margin-top: 2px;
     }
     .conversationActions {
@@ -2654,35 +2728,38 @@ export function mountWidget(opts: MountOptions): RoverUi {
       opacity: 1;
     }
     .conversationDeleteBtn {
-      background: none;
-      border: none;
-      color: var(--c-text-secondary, rgba(255,255,255,.4));
+      background: var(--rv-surface);
+      border: 1px solid var(--rv-border);
+      color: var(--rv-text-tertiary);
       cursor: pointer;
       font-size: 14px;
       padding: 2px 4px;
       border-radius: 4px;
+      transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
     }
     .conversationDeleteBtn:hover {
-      color: #f87171;
-      background: rgba(248,113,113,.1);
+      color: var(--rv-error);
+      background: rgba(220,38,38,0.06);
+      border-color: rgba(220,38,38,0.25);
     }
     .conversationNewBtn {
       display: block;
       width: calc(100% - 16px);
       margin: 8px;
       padding: 10px;
-      background: rgba(255,255,255,.06);
-      border: 1px dashed rgba(255,255,255,.12);
+      background: var(--rv-surface);
+      border: 1px dashed var(--rv-border-strong);
       border-radius: 8px;
-      color: var(--c-text-secondary, rgba(255,255,255,.55));
+      color: var(--rv-text-secondary);
       font-size: 13px;
       cursor: pointer;
       text-align: center;
-      transition: background .15s, border-color .15s;
+      transition: background .15s, border-color .15s, color .15s;
     }
     .conversationNewBtn:hover {
-      background: rgba(255,255,255,.1);
-      border-color: rgba(255,255,255,.2);
+      background: var(--rv-accent-soft);
+      border-color: var(--rv-accent-border);
+      color: var(--rv-accent);
     }
 
     /* ── Paused Task Banner ── */
@@ -2723,26 +2800,32 @@ export function mountWidget(opts: MountOptions): RoverUi {
       background: #f59e0b;
     }
     .pausedTaskCancelBtn {
-      background: rgba(255,255,255,.08);
-      color: var(--c-text-secondary, rgba(255,255,255,.55));
+      background: rgba(0,0,0,0.04);
+      color: var(--rv-text-secondary);
     }
     .pausedTaskCancelBtn:hover {
-      background: rgba(255,255,255,.12);
+      background: rgba(0,0,0,0.08);
     }
 
     /* ── Conversation List Button ── */
     .conversationListBtn {
-      background: none;
-      border: none;
-      color: var(--c-text-secondary, rgba(255,255,255,.55));
+      width: 32px;
+      height: 32px;
+      border-radius: var(--rv-radius-sm);
+      border: 1px solid var(--rv-border);
+      background: var(--rv-surface);
+      color: var(--rv-text-secondary);
       cursor: pointer;
-      padding: 4px;
-      border-radius: 4px;
-      display: flex;
-      align-items: center;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      flex: 0 0 auto;
+      transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
     }
     .conversationListBtn:hover {
-      background: rgba(255,255,255,.08);
+      background: var(--rv-bg-alt);
+      border-color: var(--rv-border-strong);
+      color: var(--rv-text);
     }
   `;
 
@@ -2842,18 +2925,21 @@ export function mountWidget(opts: MountOptions): RoverUi {
   statusDot.className = 'statusDot';
   const statusText = document.createElement('span');
   statusText.textContent = 'ready';
+  const modeLabel = document.createElement('span');
+  modeLabel.className = 'modeLabel controller';
+  modeLabel.textContent = 'active';
+  const statusStepCount = document.createElement('span');
+  statusStepCount.className = 'statusStepCount';
   statusEl.appendChild(statusDot);
   statusEl.appendChild(statusText);
+  statusEl.appendChild(modeLabel);
+  statusEl.appendChild(statusStepCount);
   meta.appendChild(titleEl);
   meta.appendChild(statusEl);
 
   /* ── Header Actions ── */
   const headerActions = document.createElement('div');
   headerActions.className = 'headerActions';
-
-  const modeBadge = document.createElement('span');
-  modeBadge.className = 'modeBadge controller';
-  modeBadge.textContent = 'active';
 
   const overflowBtn = document.createElement('button');
   overflowBtn.type = 'button';
@@ -2867,41 +2953,32 @@ export function mountWidget(opts: MountOptions): RoverUi {
   closeBtn.setAttribute('aria-label', 'Close Rover panel');
   closeBtn.textContent = '\u00D7';
 
-  /* ── Mute Button ── */
-  const muteBtn = document.createElement('button');
-  muteBtn.type = 'button';
-  muteBtn.className = 'muteBtn';
-  muteBtn.setAttribute('aria-label', 'Toggle sound');
-
+  /* ── Mute state (moved to overflow menu) ── */
   let isMuted = opts.muted ?? false;
   try {
     const stored = localStorage.getItem('rover:muted');
     if (stored !== null) isMuted = stored !== 'false';
   } catch { /* ignore */ }
 
-  const ICON_MUTED = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>';
-  const ICON_UNMUTED = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
-
   function syncMuteState(): void {
-    muteBtn.innerHTML = isMuted ? ICON_MUTED : ICON_UNMUTED;
-    muteBtn.setAttribute('aria-label', isMuted ? 'Unmute' : 'Mute');
     if (launcherVideo) launcherVideo.muted = isMuted;
     if (avatarVideo) avatarVideo.muted = isMuted;
   }
   syncMuteState();
 
-  muteBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    isMuted = !isMuted;
-    try { localStorage.setItem('rover:muted', String(isMuted)); } catch { /* ignore */ }
-    syncMuteState();
-  });
+  /* ── Cancel Pill ── */
+  const cancelPill = document.createElement('button');
+  cancelPill.type = 'button';
+  cancelPill.className = 'cancelPill';
+  cancelPill.setAttribute('aria-label', 'Cancel task');
+  const cancelIcon = document.createElement('span');
+  cancelIcon.className = 'cancelIcon';
+  cancelPill.appendChild(cancelIcon);
+  cancelPill.appendChild(document.createTextNode(' Cancel'));
 
-  const stopBtn = document.createElement('button');
-  stopBtn.type = 'button';
-  stopBtn.className = 'stopBtn';
-  stopBtn.setAttribute('aria-label', 'Cancel task');
-  stopBtn.textContent = '\u25A0';
+  /* ── Execution Progress Bar ── */
+  const executionBar = document.createElement('div');
+  executionBar.className = 'executionBar';
 
   /* ── Conversation List Button (in header) ── */
   const conversationListBtn = document.createElement('button');
@@ -2910,11 +2987,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
   conversationListBtn.setAttribute('aria-label', 'Conversations');
   conversationListBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>';
 
-  headerActions.appendChild(stopBtn);
   headerActions.appendChild(conversationListBtn);
-  headerActions.appendChild(modeBadge);
-  headerActions.appendChild(muteBtn);
   headerActions.appendChild(overflowBtn);
+  headerActions.appendChild(cancelPill);
   headerActions.appendChild(closeBtn);
 
   /* ── Overflow Menu ── */
@@ -2934,10 +3009,18 @@ export function mountWidget(opts: MountOptions): RoverUi {
   const menuDivider = document.createElement('div');
   menuDivider.className = 'menuDivider';
 
-  const menuToggleDetails = document.createElement('button');
-  menuToggleDetails.type = 'button';
-  menuToggleDetails.className = 'menuItem';
-  menuToggleDetails.textContent = 'Show details';
+  const menuMuteToggle = document.createElement('button');
+  menuMuteToggle.type = 'button';
+  menuMuteToggle.className = 'menuItem';
+  menuMuteToggle.textContent = isMuted ? 'Unmute sounds' : 'Mute sounds';
+
+  menuMuteToggle.addEventListener('click', () => {
+    closeOverflow();
+    isMuted = !isMuted;
+    try { localStorage.setItem('rover:muted', String(isMuted)); } catch { /* ignore */ }
+    syncMuteState();
+    menuMuteToggle.textContent = isMuted ? 'Unmute sounds' : 'Mute sounds';
+  });
 
   const menuTakeControl = document.createElement('button');
   menuTakeControl.type = 'button';
@@ -2948,7 +3031,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   overflowMenu.appendChild(menuNewTask);
   overflowMenu.appendChild(menuEndTask);
   overflowMenu.appendChild(menuDivider);
-  overflowMenu.appendChild(menuToggleDetails);
+  overflowMenu.appendChild(menuMuteToggle);
   overflowMenu.appendChild(menuTakeControl);
 
   if (opts.showTaskControls === false) {
@@ -2960,6 +3043,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   header.appendChild(meta);
   header.appendChild(headerActions);
   header.appendChild(overflowMenu);
+  header.appendChild(executionBar);
 
   /* ── Feed ── */
   const feedWrapper = document.createElement('div');
@@ -2967,6 +3051,24 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   const feed = document.createElement('div');
   feed.className = 'feed';
+
+  /* ── Trace Toggle Bar ── */
+  const traceToggleBar = document.createElement('div');
+  traceToggleBar.className = 'traceToggleBar';
+  const traceToggleLabel = document.createElement('span');
+  traceToggleLabel.className = 'traceToggleLabel';
+  traceToggleLabel.textContent = 'Execution Log';
+  const traceToggleCount = document.createElement('span');
+  traceToggleCount.className = 'traceToggleCount';
+  traceToggleCount.textContent = '0 steps';
+  const traceToggleBtn = document.createElement('button');
+  traceToggleBtn.type = 'button';
+  traceToggleBtn.className = 'traceToggleBtn';
+  traceToggleBtn.textContent = 'Show all';
+  traceToggleBar.appendChild(traceToggleLabel);
+  traceToggleBar.appendChild(traceToggleCount);
+  traceToggleBar.appendChild(traceToggleBtn);
+  feed.appendChild(traceToggleBar);
 
   /* ── Typing Indicator ── */
   const typingIndicator = document.createElement('div');
@@ -3527,11 +3629,25 @@ export function mountWidget(opts: MountOptions): RoverUi {
   function setTraceExpanded(next: boolean): void {
     traceExpanded = next;
     wrapper.dataset.showDetails = next ? 'true' : 'false';
-    menuToggleDetails.textContent = traceExpanded ? 'Hide details' : 'Show details';
-    for (const item of traceOrder) {
-      const status = item.dataset.status;
-      const done = status === 'success' || status === 'error' || status === 'info';
-      item.classList.toggle('compact', !traceExpanded && done);
+    traceToggleBtn.textContent = traceExpanded ? 'Collapse' : `Show all (${traceOrder.length})`;
+    if (traceExpanded) {
+      // Show all trace entries
+      for (const item of traceOrder) {
+        item.style.display = '';
+        const status = item.dataset.status;
+        const done = status === 'success' || status === 'error' || status === 'info';
+        item.classList.toggle('compact', false);
+      }
+    } else {
+      // Show only latest 2 trace entries, hide older ones
+      for (let i = 0; i < traceOrder.length; i++) {
+        const item = traceOrder[i];
+        const isRecent = i >= traceOrder.length - 2;
+        item.style.display = isRecent ? '' : 'none';
+        const status = item.dataset.status;
+        const done = status === 'success' || status === 'error' || status === 'info';
+        item.classList.toggle('compact', done);
+      }
     }
   }
 
@@ -3744,6 +3860,27 @@ export function mountWidget(opts: MountOptions): RoverUi {
     if (title.toLowerCase() === 'run completed') {
       setTraceExpanded(false);
     }
+
+    // Update step counter
+    const stepCount = traceOrder.length;
+    statusStepCount.textContent = `Step ${stepCount}`;
+    if (isRunning) {
+      statusStepCount.classList.add('visible');
+    }
+
+    // Update trace toggle bar
+    traceToggleCount.textContent = `${stepCount} step${stepCount !== 1 ? 's' : ''}`;
+    traceToggleBar.classList.toggle('visible', stepCount > 0);
+    if (!traceExpanded) {
+      traceToggleBtn.textContent = `Show all (${stepCount})`;
+      // Keep only latest 2 visible when collapsed
+      for (let i = 0; i < traceOrder.length; i++) {
+        const item = traceOrder[i];
+        const isRecent = i >= traceOrder.length - 2;
+        item.style.display = isRecent ? '' : 'none';
+      }
+    }
+
     smartScrollToBottom();
   }
 
@@ -3754,6 +3891,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
     for (const node of Array.from(feed.querySelectorAll('.entry.trace'))) {
       node.remove();
     }
+    traceToggleBar.classList.remove('visible');
+    traceToggleCount.textContent = '0 steps';
+    statusStepCount.classList.remove('visible');
+    statusStepCount.textContent = '';
   }
 
   function setTaskSuggestion(suggestion: RoverTaskSuggestion): void {
@@ -3783,10 +3924,13 @@ export function mountWidget(opts: MountOptions): RoverUi {
       waitingForFirstModelSignal = true;
     } else {
       waitingForFirstModelSignal = false;
+      statusStepCount.classList.remove('visible');
     }
     syncProcessingIndicator();
-    stopBtn.classList.toggle('visible', running);
-    modeBadge.style.display = running ? 'none' : '';
+    cancelPill.classList.toggle('visible', running);
+    conversationListBtn.style.display = running ? 'none' : '';
+    overflowBtn.style.display = running ? 'none' : '';
+    executionBar.classList.toggle('active', running);
     syncShortcutsVisibility();
   }
 
@@ -3805,15 +3949,15 @@ export function mountWidget(opts: MountOptions): RoverUi {
     canComposeInObserver = mode === 'observer' ? executionMeta?.canComposeInObserver === true : true;
     syncComposerDisabledState();
 
-    modeBadge.classList.remove('controller', 'observer');
-    modeBadge.classList.add(mode);
+    modeLabel.classList.remove('controller', 'observer');
+    modeLabel.classList.add(mode);
 
     if (mode === 'controller') {
-      modeBadge.textContent = 'active';
+      modeLabel.textContent = 'active';
       menuTakeControl.style.display = 'none';
       inputEl.placeholder = `Ask ${agentName} to act on this website...`;
     } else {
-      modeBadge.textContent = 'observer';
+      modeLabel.textContent = 'observer';
       if (executionMeta?.canTakeControl !== false) {
         menuTakeControl.style.display = '';
       } else {
@@ -3910,18 +4054,17 @@ export function mountWidget(opts: MountOptions): RoverUi {
     }
   });
 
-  menuToggleDetails.addEventListener('click', () => {
-    closeOverflow();
-    setTraceExpanded(!traceExpanded);
-  });
-
   menuTakeControl.addEventListener('click', () => {
     closeOverflow();
     opts.onRequestControl?.();
   });
 
-  stopBtn.addEventListener('click', () => {
+  cancelPill.addEventListener('click', () => {
     opts.onCancelRun?.();
+  });
+
+  traceToggleBtn.addEventListener('click', () => {
+    setTraceExpanded(!traceExpanded);
   });
 
   taskSuggestionPrimaryBtn.addEventListener('click', () => {

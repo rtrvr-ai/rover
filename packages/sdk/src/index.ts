@@ -3060,6 +3060,15 @@ function ensureUnloadHandler(): void {
   }
 
   const onPageHide = () => {
+    // Persist session token for same-origin navigation resume
+    if (runtimeSessionToken && currentConfig?.siteId) {
+      try {
+        sessionStorage.setItem(`rover:sess:${currentConfig.siteId}`, JSON.stringify({
+          t: runtimeSessionToken,
+          e: runtimeSessionTokenExpiresAt,
+        }));
+      } catch { /* ignore */ }
+    }
     // If there's an auto-resumable pending run, clear the runtimeId from activeRun
     // so the new runtime (after page reload) isn't blocked by stale runtimeId check
     if (runtimeState?.pendingRun?.autoResume) {
@@ -4628,9 +4637,13 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
       holderRuntimeId: sessionCoordinator?.getCurrentHolderRuntimeId(),
     });
   }
-  if (currentMode === 'observer') return;
+  if (currentMode === 'observer') {
+    return;
+  }
 
-  if (autoResumeAttempted) return;
+  if (autoResumeAttempted) {
+    return;
+  }
   if (!workerReady || !worker) {
     scheduleAutoResumeRetry(250, options);
     return;
@@ -4640,8 +4653,12 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
     clearPendingRunForResume('terminal_task', 'Previous task already ended.');
     return;
   }
-  if (!canAutoResumePendingRun(activeTaskStatus)) return;
-  if (!pending.autoResume) return;
+  if (!canAutoResumePendingRun(activeTaskStatus)) {
+    return;
+  }
+  if (!pending.autoResume) {
+    return;
+  }
   const resumeMode = normalizeTaskResumeMode(currentConfig?.task?.resume?.mode);
   if (resumeMode !== 'crash_only') {
     clearPendingRunForResume('unsupported_resume_mode', 'Previous task dismissed.');
@@ -4677,12 +4694,13 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
     resumeRequired: pending.resumeRequired === true,
     hasLiveRemoteController,
   });
-  // Navigation-triggered resumes: the user already initiated navigation through
-  // the agent (goto_url same-origin), so skip the confirm prompt and auto-resume.
+  // Navigation-triggered resumes: the user initiated navigation through the agent
+  // (goto_url), so skip the confirm prompt and auto-resume.
   if (
     policyAction === 'prompt_resume'
     && (
       pending.resumeReason === 'agent_navigation'
+      || pending.resumeReason === 'cross_host_navigation'
       || pending.resumeReason === 'worker_interrupted'
       || pending.resumeReason === 'page_reload'
     )
@@ -4743,13 +4761,16 @@ function maybeAutoResumePendingRun(options?: { overridePolicyAction?: AutoResume
     autoResumeRetryTimer = null;
   }
 
-  const sessionTokenReady = !!getRuntimeSessionToken(currentConfig);
-  if (!sessionReady || !sessionTokenReady) {
+  // Only block until the server session is established (!sessionReady).
+  // Once sessionReady=true, onSession has fired and sent update_config with the
+  // token to the worker. The worker-side callExtensionRouter has its own 2.4s
+  // token wait — no need to stall the SDK-side resume for up to 60s.
+  // For manual resume (Resume button click), skip the wait entirely.
+  if (!sessionReady && !options?.overridePolicyAction) {
     autoResumeSessionWaitAttempts += 1;
-    const blockedReason = !sessionReady ? 'session_not_ready' : 'missing_session_token';
     recordTelemetryEvent('status', {
       event: 'resume_blocked_no_session',
-      reason: blockedReason,
+      reason: 'session_not_ready',
       attempt: autoResumeSessionWaitAttempts,
       runId: pending.id,
     });
@@ -5929,6 +5950,7 @@ function handleWorkerMessage(msg: any): void {
       setPendingRun(undefined);
       setServerAcceptedRunId(undefined);
       sessionCoordinator?.setActiveRun(undefined);
+      hideTaskSuggestion();
       if (completedRunId) {
         addIgnoredRunId(completedRunId);
       }

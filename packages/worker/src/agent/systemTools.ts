@@ -180,7 +180,7 @@ export async function executeSystemToolCallsSequentially({
       }
     }
 
-    if (ACTION_DELAY_MS > 0 && !navigationOccurred) {
+    if (ACTION_DELAY_MS > 0) {
       await new Promise(resolve => setTimeout(resolve, ACTION_DELAY_MS));
       throwIfCancelled(isCancelled);
     }
