@@ -81,12 +81,35 @@ jobs:
         env:
           ROVER_COMMIT: ${{ github.sha }}
           ROVER_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-      - run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
+      - name: Create artifact update PR
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_PAT }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add public/embed.js public/rover.js public/worker/ public/rover-artifacts-manifest.json
-          git diff --cached --quiet || git commit -m "chore: update Rover SDK artifacts"
-          git push
+
+          if git diff --cached --quiet; then
+            echo "No artifact changes — skipping."
+            exit 0
+          fi
+
+          BRANCH="chore/rover-sdk-update-$(date +%s)"
+          git checkout -b "$BRANCH"
+          git commit -m "chore: update Rover SDK artifacts"
+          git push -u origin "$BRANCH"
+
+          PR_URL=$(gh pr create \
+            --title "chore: update Rover SDK artifacts" \
+            --body "Automated PR from Rover CI.
+
+          Source commit: ${{ github.sha }}
+          Triggered by: ${{ github.event_name }}" \
+            --head "$BRANCH" \
+            --base main)
+
+          echo "Created PR: $PR_URL"
+          gh pr merge "$PR_URL" --auto --squash
 
   # npm publishing moved to .github/workflows/release.yml
   # Use manual workflow trigger or push git tags to publish
