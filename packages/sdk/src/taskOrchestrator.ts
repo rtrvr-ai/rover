@@ -36,9 +36,10 @@ export type TaskOrchestratorOptions = {
 };
 
 const DEFAULT_MAX_ARCHIVED_TASKS = 10;
-const ARCHIVED_MAX_MESSAGES = 20;
-const MAX_ACTIVE_TASK_MESSAGES = 50;
-const MAX_ACTIVE_TASK_TIMELINE = 30;
+const ARCHIVED_MAX_MESSAGES = 8;
+const ARCHIVED_MAX_TIMELINE = 12;
+const MAX_ACTIVE_TASK_MESSAGES = 40;
+const MAX_ACTIVE_TASK_TIMELINE = 60;
 const WORKER_INACTIVITY_TIMEOUT_MS = 5 * 60_000; // 5 minutes
 const MAX_TABS_FOR_NEW_TASKS = 5;
 
@@ -266,7 +267,8 @@ export class TaskOrchestrator {
     const archived: TaskRecord = {
       ...task,
       uiMessages: task.uiMessages.slice(-ARCHIVED_MAX_MESSAGES),
-      timeline: task.timeline.slice(-ARCHIVED_MAX_MESSAGES),
+      timeline: task.timeline.slice(-ARCHIVED_MAX_TIMELINE),
+      transientStatus: undefined,
       workerState: undefined, // Don't keep worker state for archived tasks
       pendingRun: undefined,
     };
@@ -405,6 +407,8 @@ export class TaskOrchestrator {
         pendingRun: state.pendingRun ? { ...state.pendingRun } : undefined,
         tabScope: state.taskTabScope ? { ...state.taskTabScope } : undefined,
         rootUserInput: state.workerState?.rootUserInput,
+        seedChatLog: state.workerState?.seedChatLog ? [...state.workerState.seedChatLog] : [],
+        transientStatus: state.transientStatus ? { ...state.transientStatus } : undefined,
         tabIds: state.taskTabScope?.touchedTabIds ? [...state.taskTabScope.touchedTabIds] : [],
       };
 

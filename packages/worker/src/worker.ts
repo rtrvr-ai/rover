@@ -20,7 +20,7 @@ import { TabularStore } from './tabular-memory/tabular-store.js';
 import { PLANNER_FUNCTION_CALLS } from '@rover/shared/lib/utils/constants.js';
 import { isApiKeyRequiredError, toRoverErrorEnvelope } from './agent/errors.js';
 import { resolveRuntimeTabs } from './agent/runtimeTabs.js';
-import { shouldBuildResumeCueChatLog, shouldClearHistoryForRun, shouldUseFollowupChatLog } from './runHistoryGuards.js';
+import { shouldClearHistoryForRun } from './runHistoryGuards.js';
 import { classifyNavigationContinuation } from './navigationContinuation.js';
 import { ROVER_V2_PERSIST_CAPS } from '@rover/shared';
 
@@ -78,6 +78,7 @@ type PersistedWorkerState = {
   trajectoryId: string;
   taskBoundaryId?: string;
   rootUserInput?: string;
+  seedChatLog?: FollowupChatLogEntry[];
   history: ChatMessage[];
   plannerHistory: unknown[];
   agentPrevSteps: PreviousSteps[];
@@ -157,6 +158,7 @@ let plannerHistory: any[] = [];
 let agentPrevSteps: PreviousSteps[] = [];
 let pendingAskUser: PendingAskUserPrompt | undefined;
 let rootUserInput = '';
+let taskSeedChatLog: FollowupChatLogEntry[] = [];
 let workerSessionId = '';
 let taskTrajectoryId: string = crypto.randomUUID();
 let taskBoundaryId: string = crypto.randomUUID();
@@ -175,8 +177,6 @@ const terminalRuns = new Map<string, TerminalRunResult>();
 let RPC_TIMEOUT_MS = 30_000;
 const DETACHED_EXTERNAL_TAB_MAX_AGE_MS = 90_000;
 const PENDING_ATTACH_TAB_MAX_AGE_MS = 20_000;
-const MAX_RESUME_CUE_TURNS = 2;
-
 function resolveAgentName(config: RoverWorkerConfig | null): string {
   const raw = String(config?.ui?.agent?.name || '').trim();
   if (!raw) return 'Rover';
@@ -958,6 +958,7 @@ function buildPersistedState(): PersistedWorkerState {
     trajectoryId: taskTrajectoryId,
     taskBoundaryId,
     ...(normalizedRootUserInput ? { rootUserInput: normalizedRootUserInput } : {}),
+    ...(taskSeedChatLog.length ? { seedChatLog: normalizeFollowupChatLog(taskSeedChatLog) } : {}),
     history: sanitizeHistoryForPersist(history),
     plannerHistory: sanitizePlannerHistoryForPersist(Array.isArray(plannerHistory) ? plannerHistory : []),
     agentPrevSteps: safePrevSteps,
@@ -994,6 +995,8 @@ function postStateSnapshot(): void {
 function hydrateState(raw: any): void {
   const snapshot = raw as Partial<PersistedWorkerState> | undefined;
   if (!snapshot) return;
+
+  taskSeedChatLog = normalizeFollowupChatLog((snapshot as any).seedChatLog);
 
   if (Array.isArray(snapshot.history)) {
     history.length = 0;
@@ -1410,57 +1413,6 @@ function assessAdversarialInput(rawText: string): { blocked: boolean; score: num
   }
   const blocked = score >= 3;
   return { blocked, score, reasons };
-}
-
-function buildChatLogFromHistory(
-  input: ChatMessage[],
-  currentUserInput?: string,
-  maxTurns = MAX_RESUME_CUE_TURNS,
-): Array<{ role: 'user' | 'model'; message: string }> {
-  const normalize = (value: string): string => String(value || '').replace(/\s+/g, ' ').trim();
-  const normalizedCurrent = normalize(String(currentUserInput || ''));
-  if (!normalizedCurrent) return [];
-
-  const entries = input
-    .filter(message => message.role === 'user' || message.role === 'assistant')
-    .map(message => ({
-      role: message.role as 'user' | 'assistant',
-      content: normalize(String(message.content || '')),
-    }))
-    .filter(message => !!message.content)
-    .filter(message => {
-      const lowered = message.content.toLowerCase();
-      if (lowered.includes('[ask_user_answers]')) return false;
-      if (lowered.includes('[raw_user_reply]')) return false;
-      if (lowered.includes('[continue_planning]')) return false;
-      return true;
-    });
-
-  const turns: Array<{ user?: string; assistant?: string }> = [];
-  for (const entry of entries) {
-    if (entry.role === 'user') {
-      turns.push({ user: entry.content });
-      continue;
-    }
-    if (!turns.length) continue;
-    const latest = turns[turns.length - 1];
-    if (!latest.assistant) {
-      latest.assistant = entry.content;
-    }
-  }
-
-  if (!turns.length) return [];
-  const cappedTurns = turns.slice(-Math.max(1, Math.min(4, Math.floor(maxTurns))));
-  const messages: Array<{ role: 'user' | 'model'; message: string }> = [];
-  for (const turn of cappedTurns) {
-    if (turn.user && turn.user !== normalizedCurrent) {
-      messages.push({ role: 'user', message: turn.user });
-    }
-    if (turn.assistant) {
-      messages.push({ role: 'model', message: turn.assistant });
-    }
-  }
-  return messages;
 }
 
 function applyAgentPrevSteps(next?: any[], options?: { snapshot?: boolean }): void {
@@ -1944,6 +1896,7 @@ function clearTaskScopedContextAfterBoundary(_reason: 'cancel' | 'end' | 'new_ta
   agentPrevSteps = [];
   pendingAskUser = undefined;
   rootUserInput = '';
+  taskSeedChatLog = [];
 }
 
 async function maybeWaitForNewTab(
@@ -1963,7 +1916,7 @@ async function handleUserMessage(
   options?: {
     resume?: boolean;
     preserveHistory?: boolean;
-    followupChatLog?: FollowupChatLogEntry[];
+    seedChatLog?: FollowupChatLogEntry[];
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: AskUserAnswerMeta;
   },
@@ -2016,7 +1969,6 @@ async function handleUserMessage(
   }
 
   let effectiveUserInput = text;
-  let chatLogCurrentInputForDedupe = text;
   let consumedAsAskUserAnswer = false;
   if (pendingAskUserSnapshot?.questions?.length) {
     const normalizedAnswers = normalizeAskUserAnswerMeta(options?.askUserAnswers, pendingAskUserSnapshot.questions, text);
@@ -2026,7 +1978,6 @@ async function handleUserMessage(
       const focusInput = normalizeRootUserInput(rootUserInput) || normalizedIncomingText || fallbackRootInput || '';
       if (focusInput) rootUserInput = focusInput;
       effectiveUserInput = buildContinuePlanningInput(focusInput, 'ask_user', answerContext);
-      chatLogCurrentInputForDedupe = focusInput || text;
 
       if (pendingAskUserSnapshot.source === 'planner') {
         plannerHistory = mergeAskUserAnswersIntoPlannerHistory(
@@ -2130,25 +2081,10 @@ async function handleUserMessage(
     removePlannerNameCollisions(toolRegistry.getFunctionDeclarations()),
   );
   const toolFunctions = toolRegistry.getToolFunctions();
-  const resumeFollowupTurns = Math.max(
-    1,
-    Math.min(4, Math.floor(Number(config.chat?.resumeFollowup?.maxTurns) || MAX_RESUME_CUE_TURNS)),
-  );
-  const normalizedFollowupChatLog = normalizeFollowupChatLog(options?.followupChatLog);
-  const chatLog = shouldBuildResumeCueChatLog({
-    resume: options?.resume,
-    preserveHistory: options?.preserveHistory,
-    resumeFollowupMode: config.chat?.resumeFollowup?.mode,
-  })
-    ? buildChatLogFromHistory(history, chatLogCurrentInputForDedupe, resumeFollowupTurns)
-    : (
-      shouldUseFollowupChatLog({
-        resume: options?.resume,
-        followupChatLogLength: normalizedFollowupChatLog.length,
-      })
-        ? normalizedFollowupChatLog
-        : []
-    );
+  if (Array.isArray(options?.seedChatLog)) {
+    taskSeedChatLog = normalizeFollowupChatLog(options.seedChatLog);
+  }
+  const chatLog = taskSeedChatLog;
   const onPrevStepsUpdate = (steps: PreviousSteps[]) => {
     applyAgentPrevSteps(steps, { snapshot: true });
   };
@@ -2586,7 +2522,7 @@ async function runUserMessage(
     runId?: string;
     resume?: boolean;
     preserveHistory?: boolean;
-    followupChatLog?: FollowupChatLogEntry[];
+    seedChatLog?: FollowupChatLogEntry[];
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: AskUserAnswerMeta;
   },
@@ -2649,7 +2585,7 @@ async function runUserMessage(
     const outcome = normalizeRunOutcome(await handleUserMessage(text, {
       resume,
       preserveHistory,
-      followupChatLog: normalizeFollowupChatLog(meta?.followupChatLog),
+      seedChatLog: Array.isArray(meta?.seedChatLog) ? normalizeFollowupChatLog(meta.seedChatLog) : undefined,
       routing: meta?.routing,
       askUserAnswers: meta?.askUserAnswers,
     }));
@@ -2851,11 +2787,14 @@ async function runUserMessage(
 
     if (data.type === 'run') {
       applyScopedTabConfig(data as Partial<RoverWorkerConfig>);
+      const seedChatLogInput = Array.isArray(data.seedChatLog)
+        ? data.seedChatLog
+        : (Array.isArray(data.followupChatLog) ? data.followupChatLog : undefined);
       await runUserMessage(String(data.text || ''), {
         runId: data.runId,
         resume: !!data.resume,
         preserveHistory: !!data.preserveHistory,
-        followupChatLog: normalizeFollowupChatLog(data.followupChatLog),
+        seedChatLog: Array.isArray(seedChatLogInput) ? normalizeFollowupChatLog(seedChatLogInput) : undefined,
         routing: data.routing,
         askUserAnswers: data.askUserAnswers,
       });
@@ -2863,11 +2802,14 @@ async function runUserMessage(
     }
 
     if (data.type === 'user') {
+      const seedChatLogInput = Array.isArray(data.seedChatLog)
+        ? data.seedChatLog
+        : (Array.isArray(data.followupChatLog) ? data.followupChatLog : undefined);
       await runUserMessage(String(data.text || ''), {
         runId: data.runId,
         resume: !!data.resume,
         preserveHistory: !!data.preserveHistory,
-        followupChatLog: normalizeFollowupChatLog(data.followupChatLog),
+        seedChatLog: Array.isArray(seedChatLogInput) ? normalizeFollowupChatLog(seedChatLogInput) : undefined,
         askUserAnswers: data.askUserAnswers,
       });
       return;

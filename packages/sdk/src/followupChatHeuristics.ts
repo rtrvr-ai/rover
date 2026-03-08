@@ -5,6 +5,12 @@ export type FollowupChatEntry = {
   message: string;
 };
 
+export type FollowupSourceMessage = {
+  role: 'user' | 'assistant' | 'system';
+  text?: string;
+  ts?: number;
+};
+
 export type FollowupChatDecision = {
   chatLog?: FollowupChatEntry[];
   reason:
@@ -56,6 +62,34 @@ function normalizeMessage(input: string | undefined): string {
   return String(input || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
 }
 
+function buildTranscriptTurns(messages?: FollowupSourceMessage[]): Array<{ user: string; assistant?: string; ts: number }> {
+  if (!Array.isArray(messages) || messages.length === 0) return [];
+  const turns: Array<{ user: string; assistant?: string; ts: number }> = [];
+
+  for (const raw of messages) {
+    if (!raw || (raw.role !== 'user' && raw.role !== 'assistant')) continue;
+    const text = normalizeMessage(raw.text);
+    if (!text) continue;
+
+    if (raw.role === 'user') {
+      turns.push({
+        user: text,
+        ts: Number(raw.ts) || 0,
+      });
+      continue;
+    }
+
+    if (!turns.length) continue;
+    const latest = turns[turns.length - 1];
+    if (!latest.assistant) {
+      latest.assistant = text;
+      latest.ts = Math.max(latest.ts, Number(raw.ts) || 0);
+    }
+  }
+
+  return turns;
+}
+
 function lexicalTokens(input: string): Set<string> {
   const tokens = String(input || '')
     .toLowerCase()
@@ -81,6 +115,7 @@ export function computeNormalizedLexicalOverlap(previousIntent: string, currentP
 export function buildHeuristicFollowupChatLog(params: {
   mode?: 'heuristic_same_window';
   previousTaskStatus?: PersistedTaskState['status'] | TaskState;
+  previousTaskMessages?: FollowupSourceMessage[];
   previousTaskUserInput?: string;
   previousTaskAssistantOutput?: string;
   previousTaskCompletedAt?: number;
@@ -99,13 +134,22 @@ export function buildHeuristicFollowupChatLog(params: {
     return { reason: 'status_ineligible', overlap: 0 };
   }
 
-  const previousIntent = normalizeMessage(params.previousTaskUserInput);
-  if (!previousIntent) {
+  const transcriptTurns = buildTranscriptTurns(params.previousTaskMessages);
+  const fallbackIntent = normalizeMessage(params.previousTaskUserInput);
+  const fallbackOutput = normalizeMessage(params.previousTaskAssistantOutput);
+  const turns = transcriptTurns.length
+    ? transcriptTurns
+    : (
+      fallbackIntent && fallbackOutput
+        ? [{ user: fallbackIntent, assistant: fallbackOutput, ts: Number(params.previousTaskCompletedAt) || 0 }]
+        : []
+    );
+
+  if (!turns.some(turn => turn.user)) {
     return { reason: 'missing_previous_intent', overlap: 0 };
   }
 
-  const previousOutput = normalizeMessage(params.previousTaskAssistantOutput);
-  if (!previousOutput) {
+  if (!turns.some(turn => turn.assistant)) {
     return { reason: 'missing_previous_output', overlap: 0 };
   }
 
@@ -116,18 +160,45 @@ export function buildHeuristicFollowupChatLog(params: {
     return { reason: 'ttl_expired', overlap: 0 };
   }
 
-  const overlap = computeNormalizedLexicalOverlap(previousIntent, params.currentPrompt);
   const minOverlap = Math.max(0, Math.min(1, Number(params.minLexicalOverlap) || 0));
-  if (overlap < minOverlap) {
-    return { reason: 'low_lexical_overlap', overlap };
+
+  const scoredTurns = turns
+    .map((turn, index) => {
+      const overlap = computeNormalizedLexicalOverlap(turn.user, params.currentPrompt);
+      const recencyBoost = turns.length > 1 ? (index / (turns.length - 1)) * 0.05 : 0.05;
+      return {
+        ...turn,
+        overlap,
+        score: overlap + recencyBoost,
+        index,
+      };
+    })
+    .filter(turn => !!turn.assistant);
+
+  if (!scoredTurns.length) {
+    return { reason: 'missing_previous_output', overlap: 0 };
+  }
+
+  const attachedTurns = scoredTurns
+    .filter(turn => turn.overlap >= minOverlap)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return b.index - a.index;
+    })
+    .slice(0, 2)
+    .sort((a, b) => a.index - b.index);
+
+  const bestOverlap = scoredTurns.reduce((max, turn) => Math.max(max, turn.overlap), 0);
+  if (!attachedTurns.length) {
+    return { reason: 'low_lexical_overlap', overlap: bestOverlap };
   }
 
   return {
     reason: 'attached',
-    overlap,
-    chatLog: [
-      { role: 'user', message: previousIntent },
-      { role: 'model', message: previousOutput },
-    ],
+    overlap: bestOverlap,
+    chatLog: attachedTurns.flatMap(turn => [
+      { role: 'user' as const, message: turn.user },
+      { role: 'model' as const, message: turn.assistant || '' },
+    ]),
   };
 }

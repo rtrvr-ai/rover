@@ -2937,7 +2937,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   closeBtn.textContent = '\u00D7';
 
   /* ── Mute state (moved to overflow menu) ── */
-  let isMuted = opts.muted ?? false;
+  let isMuted = opts.muted ?? true;
   try {
     const stored = localStorage.getItem('rover:muted');
     if (stored !== null) isMuted = stored !== 'false';

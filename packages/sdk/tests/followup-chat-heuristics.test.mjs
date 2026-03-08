@@ -66,3 +66,28 @@ test('followup chat is skipped when lexical overlap is low', () => {
   assert.equal(decision.reason, 'low_lexical_overlap');
   assert.equal(decision.chatLog, undefined);
 });
+
+test('followup chat prefers relevant transcript turns and ignores system chatter', () => {
+  const decision = buildHeuristicFollowupChatLog({
+    mode: 'heuristic_same_window',
+    previousTaskStatus: 'completed',
+    previousTaskMessages: [
+      { role: 'user', text: 'book a flight from SFO to JFK', ts: 1_000 },
+      { role: 'assistant', text: 'I found a few flight options.', ts: 1_500 },
+      { role: 'system', text: 'Analyzing request...', ts: 1_600 },
+      { role: 'user', text: 'summarize pricing plans by monthly cost', ts: 2_000 },
+      { role: 'assistant', text: 'Basic is $10 and Pro is $30.', ts: 2_500 },
+    ],
+    previousTaskCompletedAt: 3_000,
+    currentPrompt: 'compare the monthly cost of those pricing plans',
+    ttlMs: 120_000,
+    minLexicalOverlap: 0.1,
+    now: 4_000,
+  });
+
+  assert.equal(decision.reason, 'attached');
+  assert.deepEqual(decision.chatLog, [
+    { role: 'user', message: 'summarize pricing plans by monthly cost' },
+    { role: 'model', message: 'Basic is $10 and Pro is $30.' },
+  ]);
+});

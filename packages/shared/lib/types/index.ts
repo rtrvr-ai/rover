@@ -94,6 +94,14 @@ export interface PageDataMetadata {
 
   /** Extraction method used */
   extractionMethod?: string;
+
+  /** Accessibility-tree capture quality diagnostics */
+  treeCapture?: {
+    status?: 'normal' | 'suspicious_recovered' | 'suspicious_unrecovered';
+    attempts?: number;
+    waitedMs?: number;
+    reasons?: string[];
+  };
 }
 
 // Update ExtensionCommand type:
@@ -205,6 +213,20 @@ export type PageConfig = ExtractionConfig & {
   sparseTreeRetryDelayMs?: number;
   sparseTreeRetryMaxAttempts?: number;
 };
+
+export type RoverPageCaptureConfig = Pick<
+  PageConfig,
+  | 'disableAutoScroll'
+  | 'onlyTextContent'
+  | 'totalBudgetMs'
+  | 'pageDataTimeoutMs'
+  | 'pdfTextSelectionTimeoutMs'
+  | 'adaptiveSettleDebounceMs'
+  | 'adaptiveSettleMaxWaitMs'
+  | 'adaptiveSettleRetries'
+  | 'sparseTreeRetryDelayMs'
+  | 'sparseTreeRetryMaxAttempts'
+>;
 
 export interface TabConfig {
   url: string;

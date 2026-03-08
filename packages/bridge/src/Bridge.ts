@@ -3,7 +3,7 @@ import type { FrameworkElementMetadata, FrameworkName } from '@rover/shared/lib/
 import type { PageConfig } from '@rover/shared';
 import { SYSTEM_TOOLS_ELEMENT_ID_KEYS, SystemToolNames, normalizeDescribeImageIds } from '@rover/shared/lib/system-tools/tools.js';
 import { FrameworkNameToCode, ToolNameToOpcode } from '@rover/shared/lib/system-tools/wire.js';
-import { getDocumentContext, resolveInteractiveElementById } from '@rover/shared/lib/page/index.js';
+import { getDocumentContext, resolveInteractiveElementById, sanitizeRoverPageCaptureConfig } from '@rover/shared/lib/page/index.js';
 import { EventHandlerReverseMap, parseNumericListenerAttribute } from '@rover/a11y-tree';
 import type { UploadFilePayload } from '@rover/shared/lib/system-tools/wire.js';
 import { fetchFileForUploadSmart } from '@rover/shared/lib/page/file-upload-utils.js';
@@ -213,27 +213,28 @@ export class Bridge {
 
   async getPageData(params?: { pageConfig?: PageConfig }) {
     await ensureListenerScan(this.root);
+    const requestedPageConfig = sanitizeRoverPageCaptureConfig(params?.pageConfig);
     const pageConfig: PageConfig = {
-      ...(params?.pageConfig || {}),
+      ...(requestedPageConfig || {}),
       adaptiveSettleDebounceMs:
-        Number((params?.pageConfig as any)?.adaptiveSettleDebounceMs) > 0
-          ? Number((params?.pageConfig as any)?.adaptiveSettleDebounceMs)
+        typeof requestedPageConfig?.adaptiveSettleDebounceMs === 'number'
+          ? requestedPageConfig.adaptiveSettleDebounceMs
           : this.domSettleDebounceMs,
       adaptiveSettleMaxWaitMs:
-        Number((params?.pageConfig as any)?.adaptiveSettleMaxWaitMs) > 0
-          ? Number((params?.pageConfig as any)?.adaptiveSettleMaxWaitMs)
+        typeof requestedPageConfig?.adaptiveSettleMaxWaitMs === 'number'
+          ? requestedPageConfig.adaptiveSettleMaxWaitMs
           : this.domSettleMaxWaitMs,
       adaptiveSettleRetries:
-        Number.isFinite(Number((params?.pageConfig as any)?.adaptiveSettleRetries))
-          ? Number((params?.pageConfig as any)?.adaptiveSettleRetries)
+        typeof requestedPageConfig?.adaptiveSettleRetries === 'number'
+          ? requestedPageConfig.adaptiveSettleRetries
           : this.domSettleRetries,
       sparseTreeRetryDelayMs:
-        Number((params?.pageConfig as any)?.sparseTreeRetryDelayMs) > 0
-          ? Number((params?.pageConfig as any)?.sparseTreeRetryDelayMs)
+        typeof requestedPageConfig?.sparseTreeRetryDelayMs === 'number'
+          ? requestedPageConfig.sparseTreeRetryDelayMs
           : this.sparseTreeRetryDelayMs,
       sparseTreeRetryMaxAttempts:
-        Number.isFinite(Number((params?.pageConfig as any)?.sparseTreeRetryMaxAttempts))
-          ? Number((params?.pageConfig as any)?.sparseTreeRetryMaxAttempts)
+        typeof requestedPageConfig?.sparseTreeRetryMaxAttempts === 'number'
+          ? requestedPageConfig.sparseTreeRetryMaxAttempts
           : this.sparseTreeRetryMaxAttempts,
     };
     return await buildPageData(this.root, this.instrumentation, {

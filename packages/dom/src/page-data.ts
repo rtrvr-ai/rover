@@ -6,7 +6,6 @@ import {
   PDF_MIME_TYPE,
   getEmbeddedPdfEl,
   isCurrentDocumentPdf,
-  normalizePdfSelectionTimeoutMs,
   GOOGLE_DOC_MIME_TYPE,
   HTML_MIME_TYPE,
   PLAIN_TEXT_MIME_TYPE,
@@ -58,6 +57,28 @@ const DEFAULT_ADAPTIVE_SETTLE_MAX_WAIT_MS = 220;
 const DEFAULT_ADAPTIVE_SETTLE_RETRIES = 0;
 const DEFAULT_SPARSE_TREE_RETRY_DELAY_MS = 250;
 const DEFAULT_SPARSE_TREE_RETRY_MAX_ATTEMPTS = 2;
+const TREE_STABILIZATION_EXTRA_WAIT_MS = 300;
+const GENERIC_TREE_ELEMENT_NAMES = new Set(['BODY', 'DIV', 'SPAN', 'IMG', 'PICTURE', 'SVG']);
+const MEANINGFUL_TREE_ELEMENT_NAMES = new Set([
+  'A',
+  'BUTTON',
+  'INPUT',
+  'SELECT',
+  'TEXTAREA',
+  'H1',
+  'H2',
+  'H3',
+  'H4',
+  'H5',
+  'H6',
+  'MAIN',
+  'NAV',
+  'HEADER',
+  'FOOTER',
+  'ARTICLE',
+  'SECTION',
+  'ASIDE',
+]);
 
 type AdaptiveDomSettleConfig = {
   debounceMs: number;
@@ -65,6 +86,25 @@ type AdaptiveDomSettleConfig = {
   retries: number;
   sparseTreeRetryDelayMs: number;
   sparseTreeRetryMaxAttempts: number;
+};
+
+type TreeCaptureReason = 'empty_tree' | 'generic_shell' | 'text_semantic_mismatch' | 'dom_not_ready';
+
+type HtmlTreeCaptureSignals = {
+  rootsCount: number;
+  semanticCount: number;
+  meaningfulNodeCount: number;
+  genericNodeRatio: number;
+  visibleTextLength: number;
+  isDocumentComplete: boolean;
+  busy: boolean;
+};
+
+type HtmlTreeStabilizationAssessment = {
+  proceedImmediately: boolean;
+  needsStabilization: boolean;
+  reasons: TreeCaptureReason[];
+  signals: HtmlTreeCaptureSignals;
 };
 
 function buildElementLinkRecord(nodes: Record<number, SemanticNode>): Record<number, string> {
@@ -179,42 +219,45 @@ export async function buildPageData(
     includeFrames: opts.includeFrames ?? true,
     disableDomAnnotations: opts.disableDomAnnotations ?? true,
   });
+  let treeCaptureStatus: 'normal' | 'suspicious_recovered' | 'suspicious_unrecovered' = 'normal';
+  let treeCaptureAttempts = 0;
+  let treeCaptureWaitedMs = 0;
+  let treeCaptureReasons: TreeCaptureReason[] = [];
+  const stabilizationRetryEnabled = Math.max(0, adaptiveSettle.sparseTreeRetryMaxAttempts) > 0;
 
-  const retryAttempts = Math.max(0, adaptiveSettle.sparseTreeRetryMaxAttempts);
-  let retryCount = 0;
-  while (retryCount < retryAttempts && isTreeSparse(snapshot.rootNodes, snapshot.semanticNodes)) {
-    const waitMs = Math.max(10, Math.min(600, adaptiveSettle.sparseTreeRetryDelayMs));
-    await sleepBgSafe(waitMs, doc);
-    const retryBudget = Math.max(20, Math.min(180, timeLeftMs(globalDeadline)));
-    if (retryBudget > 20) {
+  const initialAssessment = assessHtmlTreeStabilization(doc, snapshot.rootNodes, snapshot.semanticNodes);
+  if (initialAssessment.needsStabilization) {
+    treeCaptureReasons = [...initialAssessment.reasons];
+    treeCaptureStatus = 'suspicious_unrecovered';
+
+    const retryBudgetMs = stabilizationRetryEnabled
+      ? Math.max(0, Math.min(TREE_STABILIZATION_EXTRA_WAIT_MS, timeLeftMs(globalDeadline) - 20))
+      : 0;
+
+    if (retryBudgetMs > 20) {
+      const waitStart = Date.now();
       await waitForAdaptiveDomSettle(doc, {
         ...adaptiveSettle,
+        retries: 0,
         deadlineEpochMs: globalDeadline,
-        totalBudgetMs: retryBudget,
+        totalBudgetMs: retryBudgetMs,
       });
-    }
-    snapshot = buildSnapshot(root, instrumentation, {
-      includeFrames: opts.includeFrames ?? true,
-      disableDomAnnotations: opts.disableDomAnnotations ?? true,
-    });
-    retryCount += 1;
-  }
+      treeCaptureWaitedMs = Date.now() - waitStart;
+      treeCaptureAttempts = 1;
 
-  // If tree is completely empty, do one final retry with a longer stabilization wait
-  if (isTreeEmpty(snapshot.rootNodes, snapshot.semanticNodes) && timeLeftMs(globalDeadline) > 250) {
-    await sleepBgSafe(250, doc);
-    const emptyRetryBudget = Math.max(20, Math.min(180, timeLeftMs(globalDeadline)));
-    if (emptyRetryBudget > 20) {
-      await waitForAdaptiveDomSettle(doc, {
-        ...adaptiveSettle,
-        deadlineEpochMs: globalDeadline,
-        totalBudgetMs: emptyRetryBudget,
+      snapshot = buildSnapshot(root, instrumentation, {
+        includeFrames: opts.includeFrames ?? true,
+        disableDomAnnotations: opts.disableDomAnnotations ?? true,
       });
+
+      const retriedAssessment = assessHtmlTreeStabilization(doc, snapshot.rootNodes, snapshot.semanticNodes);
+      if (retriedAssessment.reasons.length > 0) {
+        treeCaptureReasons = [...retriedAssessment.reasons];
+      }
+      if (!retriedAssessment.needsStabilization && !isTreeEmpty(snapshot.rootNodes, snapshot.semanticNodes)) {
+        treeCaptureStatus = 'suspicious_recovered';
+      }
     }
-    snapshot = buildSnapshot(root, instrumentation, {
-      includeFrames: opts.includeFrames ?? true,
-      disableDomAnnotations: opts.disableDomAnnotations ?? true,
-    });
   }
 
   // If STILL empty after retry, fall back to text content — agent can decide to wait and retry
@@ -223,7 +266,16 @@ export async function buildPageData(
       ...pageMetadata,
       contentType: HTML_MIME_TYPE,
       content: getDocumentTextFallback(doc),
-      metadata: { scrollingPerformed: didScroll, extractionMethod: 'empty_tree_fallback' },
+      metadata: {
+        scrollingPerformed: didScroll,
+        extractionMethod: 'empty_tree_fallback',
+        treeCapture: {
+          status: treeCaptureStatus,
+          attempts: treeCaptureAttempts,
+          waitedMs: treeCaptureWaitedMs,
+          reasons: treeCaptureReasons,
+        },
+      },
     };
   }
 
@@ -233,7 +285,16 @@ export async function buildPageData(
     roots: snapshot.rootNodes,
     nodes: snapshot.semanticNodes,
     elementLinkRecord: buildElementLinkRecord(snapshot.semanticNodes),
-    metadata: { scrollingPerformed: didScroll, extractionMethod: retryCount > 0 ? 'sparse_tree_retry' : undefined },
+    metadata: {
+      scrollingPerformed: didScroll,
+      extractionMethod: treeCaptureStatus !== 'normal' ? treeCaptureStatus : undefined,
+      treeCapture: {
+        status: treeCaptureStatus,
+        attempts: treeCaptureAttempts,
+        waitedMs: treeCaptureWaitedMs,
+        reasons: treeCaptureReasons,
+      },
+    },
   };
 }
 
@@ -485,14 +546,113 @@ function isTreeEmpty(roots: number[], nodes: Record<number, any>): boolean {
   return false;
 }
 
-function isTreeSparse(roots: number[], nodes: Record<number, any>): boolean {
-  if (!Array.isArray(roots) || roots.length === 0) return true;
+function hasDomBusySignal(doc: Document): boolean {
+  return !!(
+    doc.documentElement?.hasAttribute(RTRVR_MAIN_WORLD_BUSY_ATTRIBUTE)
+    || doc.body?.hasAttribute(RTRVR_MAIN_WORLD_BUSY_ATTRIBUTE)
+    || doc.body?.getAttribute?.('aria-busy') === 'true'
+  );
+}
+
+function computeHtmlTreeCaptureSignals(
+  doc: Document,
+  roots: number[],
+  nodes: Record<number, SemanticNode>,
+): HtmlTreeCaptureSignals {
+  const rootsCount = Array.isArray(roots) ? roots.length : 0;
   const semanticCount = nodes && typeof nodes === 'object' ? Object.keys(nodes).length : 0;
-  if (semanticCount === 0) return true;
-  if (roots.length === 1 && semanticCount <= 4) return true;
-  const semanticDensity = semanticCount / Math.max(1, roots.length);
-  if (roots.length <= 2 && semanticDensity <= 2) return true;
-  return false;
+  const nodeList = semanticCount ? Object.values(nodes) : [];
+  let genericNodeCount = 0;
+  let meaningfulNodeCount = 0;
+
+  for (const node of nodeList) {
+    const elementName = String(node?.elementName || node?.elementTag || '').trim().toUpperCase();
+    const text = String(node?.textContent || node?.computedName || node?.computedDescription || '').trim();
+    if (text.length >= 2 || MEANINGFUL_TREE_ELEMENT_NAMES.has(elementName)) meaningfulNodeCount += 1;
+    if (GENERIC_TREE_ELEMENT_NAMES.has(elementName)) genericNodeCount += 1;
+  }
+
+  return {
+    rootsCount,
+    semanticCount,
+    meaningfulNodeCount,
+    genericNodeRatio: semanticCount > 0 ? (genericNodeCount / semanticCount) : 1,
+    visibleTextLength: 0,
+    isDocumentComplete: doc.readyState === 'complete',
+    busy: hasDomBusySignal(doc),
+  };
+}
+
+export function assessHtmlTreeStabilization(
+  doc: Document,
+  roots: number[],
+  nodes: Record<number, SemanticNode>,
+): HtmlTreeStabilizationAssessment {
+  const baseSignals = computeHtmlTreeCaptureSignals(doc, roots, nodes);
+  let visibleTextLength = 0;
+
+  const clearlyReady =
+    baseSignals.rootsCount > 0
+    && baseSignals.semanticCount > 0
+    && baseSignals.isDocumentComplete
+    && !baseSignals.busy
+    && baseSignals.meaningfulNodeCount >= 2;
+
+  const shouldMeasureVisibleText =
+    !clearlyReady
+    && baseSignals.semanticCount > 0
+    && baseSignals.semanticCount <= 6
+    && (baseSignals.meaningfulNodeCount >= 1 || baseSignals.genericNodeRatio >= 0.8);
+
+  if (shouldMeasureVisibleText) {
+    visibleTextLength = getDocumentTextFallback(doc).trim().length;
+  }
+
+  const signals: HtmlTreeCaptureSignals = {
+    ...baseSignals,
+    visibleTextLength,
+  };
+
+  const proceedImmediately =
+    signals.rootsCount > 0
+    && signals.semanticCount > 0
+    && signals.isDocumentComplete
+    && !signals.busy
+    && (
+      signals.meaningfulNodeCount >= 2
+      || (signals.semanticCount <= 6 && signals.meaningfulNodeCount >= 1 && signals.visibleTextLength < 160)
+    );
+
+  const reasons: TreeCaptureReason[] = [];
+  if (signals.rootsCount === 0 || signals.semanticCount === 0) {
+    reasons.push('empty_tree');
+  }
+  if (signals.semanticCount > 0 && signals.semanticCount <= 4 && signals.meaningfulNodeCount === 0) {
+    reasons.push('generic_shell');
+  }
+  if (
+    signals.semanticCount <= 6
+    && signals.meaningfulNodeCount <= 1
+    && signals.genericNodeRatio >= 0.8
+    && signals.visibleTextLength >= 80
+  ) {
+    if (!reasons.includes('generic_shell')) reasons.push('generic_shell');
+    reasons.push('text_semantic_mismatch');
+  }
+  if (
+    (!signals.isDocumentComplete || signals.busy)
+    && signals.semanticCount <= 8
+    && signals.meaningfulNodeCount <= 1
+  ) {
+    reasons.push('dom_not_ready');
+  }
+
+  return {
+    proceedImmediately,
+    needsStabilization: !proceedImmediately && reasons.length > 0,
+    reasons,
+    signals,
+  };
 }
 
 function getDocumentTextFallback(doc: Document): string {

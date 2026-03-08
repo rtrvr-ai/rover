@@ -33,6 +33,7 @@ Add this snippet before `</body>` on your website:
     siteId: 'YOUR_SITE_ID',
     publicKey: 'pk_site_YOUR_PUBLIC_KEY',
     allowedDomains: ['yourdomain.com'],
+    domainScopeMode: 'registrable_domain',
   });
 </script>
 <script src="https://rover.rtrvr.ai/embed.js" async></script>
@@ -48,11 +49,14 @@ For the simplest integration, use data attributes — no inline JavaScript neede
 <script src="https://rover.rtrvr.ai/embed.js"
   data-site-id="YOUR_SITE_ID"
   data-public-key="pk_site_YOUR_PUBLIC_KEY"
-  data-allowed-domains="yourdomain.com,app.yourdomain.com">
+  data-allowed-domains="yourdomain.com,app.yourdomain.com"
+  data-domain-scope-mode="registrable_domain">
 </script>
 ```
 
-Supported data attributes: `data-site-id`, `data-public-key`, `data-allowed-domains` (comma-separated), `data-site-key-id`, `data-worker-url`.
+Supported data attributes: `data-site-id`, `data-public-key`, `data-allowed-domains` (comma-separated), `data-domain-scope-mode`, `data-site-key-id`, `data-worker-url`.
+
+Use `data-domain-scope-mode="host_only"` when the key should only run on the exact host that booted Rover. In `host_only` mode, plain entries like `example.com` are normalized as exact-host rules instead of suffix matches.
 
 For advanced configuration (task routing, checkpointing, UI options), use the JS boot call.
 
@@ -82,6 +86,7 @@ boot({
   siteId: 'YOUR_SITE_ID',
   publicKey: 'pk_site_YOUR_PUBLIC_KEY',
   allowedDomains: ['yourdomain.com'],
+  domainScopeMode: 'registrable_domain',
 });
 ```
 
@@ -107,6 +112,7 @@ export function RoverWidget() {
       siteId: 'YOUR_SITE_ID',
       publicKey: 'pk_site_YOUR_PUBLIC_KEY',
       allowedDomains: ['yourdomain.com'],
+      domainScopeMode: 'registrable_domain',
     });
 
     return () => {
@@ -148,6 +154,7 @@ onMounted(async () => {
     siteId: 'YOUR_SITE_ID',
     publicKey: 'pk_site_YOUR_PUBLIC_KEY',
     allowedDomains: ['yourdomain.com'],
+    domainScopeMode: 'registrable_domain',
   });
 });
 
@@ -169,6 +176,7 @@ export default defineNuxtPlugin(() => {
     siteId: 'YOUR_SITE_ID',
     publicKey: 'pk_site_YOUR_PUBLIC_KEY',
     allowedDomains: ['yourdomain.com'],
+    domainScopeMode: 'registrable_domain',
   });
 });
 ```
@@ -193,6 +201,7 @@ add_action('wp_footer', function() {
       siteId: 'YOUR_SITE_ID',
       publicKey: 'pk_site_YOUR_PUBLIC_KEY',
       allowedDomains: ['<?php echo esc_js($_SERVER["HTTP_HOST"]); ?>'],
+      domainScopeMode: 'host_only',
     });
   </script>
   <script src="https://rover.rtrvr.ai/embed.js" async></script>
@@ -412,14 +421,15 @@ When `tools.web.scrapeMode` is `on_demand`, ensure your Rover site key includes 
 | `ui.mascot.disabled` | `boolean` | `false` | Disable mascot video |
 | `ui.mascot.mp4Url` | `string` | default | Custom mascot MP4 URL |
 | `ui.mascot.webmUrl` | `string` | default | Custom mascot WebM URL |
-| `ui.muted` | `boolean` | `false` | Start with media muted |
+| `ui.muted` | `boolean` | `true` | Start with media muted on first load; stored browser preference wins after the user toggles sound |
 | `ui.thoughtStyle` | `'concise_cards' \| 'minimal'` | `'concise_cards'` | Thought rendering preference |
 | `ui.panel.resizable` | `boolean` | `true` | Panel resize preference |
 | `ui.showTaskControls` | `boolean` | `true` | Show new/end task controls |
 | `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced) |
 | `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | — | Greeting bubble config; supports `{name}` placeholder |
+| `pageConfig` | `RoverPageCaptureConfig` | — | Optional per-site page-capture overrides such as `disableAutoScroll`, settle timing, and sparse-tree retry settings |
 
-With site keys (or a valid `rvrsess_*` token), Rover fetches cloud site config via `POST /v2/rover/session/open` (shortcuts + greeting).  
+With site keys (or a valid `rvrsess_*` token), Rover fetches cloud site config via `POST /v2/rover/session/open` (shortcuts + greeting + pageConfig).  
 If boot config and cloud config define the same field, boot config takes precedence.
 
 ### Rover V2 Runtime APIs
