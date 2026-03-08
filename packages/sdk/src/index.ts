@@ -2321,6 +2321,27 @@ function buildAskUserDispatchText(
   return String(askUserAnswers.rawText || '').trim();
 }
 
+function resolveCanonicalTaskInputForRun(runId?: string): string | undefined {
+  const activeTaskInput = String(taskOrchestrator?.getActiveTask()?.rootUserInput || '').trim();
+  if (activeTaskInput) return activeTaskInput;
+
+  const workerRootInput = String(runtimeState?.workerState?.rootUserInput || '').trim();
+  if (workerRootInput) return workerRootInput;
+  const pendingRun = runtimeState?.pendingRun;
+
+  const matchingPendingRunText =
+    pendingRun && pendingRun.id === runId
+      ? String(pendingRun.text || '').trim()
+      : '';
+  if (matchingPendingRunText) return matchingPendingRunText;
+
+  const activePendingRunText = String(pendingRun?.text || '').trim();
+  if (activePendingRunText) return activePendingRunText;
+
+  const previousTaskInput = String(lastUserInputText || '').trim();
+  return previousTaskInput || undefined;
+}
+
 function normalizeRunCompletionState(msg: any): {
   taskComplete: boolean;
   needsUserInput: boolean;
@@ -4822,6 +4843,11 @@ function postRun(
   const runId = options?.runId || crypto.randomUUID();
   const resume = !!options?.resume;
   const appendUserMessageFlag = options?.appendUserMessage !== false;
+  const canonicalTaskInput =
+    options?.askUserAnswers
+      ? resolveCanonicalTaskInputForRun(runId)
+      : undefined;
+  const persistedRunText = canonicalTaskInput || trimmed;
   removeIgnoredRunId(runId);
 
   if (appendUserMessageFlag) {
@@ -4842,7 +4868,7 @@ function postRun(
   agentNavigationPending = false;
   setPendingRun({
     id: runId,
-    text: trimmed,
+    text: persistedRunText,
     startedAt: Date.now(),
     attempts: resume ? previousAttempts + 1 : 0,
     autoResume: options?.autoResume !== false,
@@ -4852,12 +4878,12 @@ function postRun(
   });
   markTaskRunning(resume ? 'worker_task_resumed' : 'worker_task_active');
 
-  lastUserInputText = trimmed;
+  lastUserInputText = persistedRunText;
   if (runtimeState) {
     runtimeState.workerState = sanitizeWorkerState({
       ...(runtimeState.workerState || {}),
       taskBoundaryId: boundaryForRun,
-      rootUserInput: runtimeState.workerState?.rootUserInput || trimmed,
+      rootUserInput: runtimeState.workerState?.rootUserInput || persistedRunText,
       seedChatLog,
       history: runtimeState.workerState?.history || [],
       plannerHistory: runtimeState.workerState?.plannerHistory || [],
@@ -4868,11 +4894,12 @@ function postRun(
   }
   setActiveTaskSeedChatLog(seedChatLog);
   sessionCoordinator?.acquireWorkflowLock(runId);
-  sessionCoordinator?.setActiveRun({ runId, text: trimmed });
+  sessionCoordinator?.setActiveRun({ runId, text: persistedRunText });
   worker.postMessage({
     type: 'run',
     text: trimmed,
     runId,
+    trajectoryId: runtimeState?.workerState?.trajectoryId,
     resume,
     preserveHistory: !!options?.preserveHistory,
     seedChatLog,

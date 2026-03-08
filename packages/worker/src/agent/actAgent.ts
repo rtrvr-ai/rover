@@ -11,6 +11,7 @@ import type { SystemNavigationOutcome } from './systemTools.js';
 import type { FunctionCall, PreviousSteps, FunctionDeclaration, StatusStage } from './types.js';
 import type { AgentContext } from './context.js';
 import { resolveRuntimeTabs } from './runtimeTabs.js';
+import { resolveActLoopUserInput } from './taskInput.js';
 
 export type AgenticSeekOptions = {
   tabOrder: number[];
@@ -83,6 +84,7 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
     ctx,
     onPrevStepsUpdate,
   } = options;
+  const requestUserInput = resolveActLoopUserInput(userInput, ctx.rootUserInput);
 
   if (!tabOrder?.length) {
     return { error: 'No tabs available for processing', warnings: ['No active tab found'] };
@@ -137,7 +139,7 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
           ...(pageDataOptions || {}),
           __roverAllowExternalFetch: true,
           __roverExternalIntent: 'auto',
-          __roverExternalMessage: userInput,
+          __roverExternalMessage: requestUserInput || userInput,
         });
       } catch {
         retry++;
@@ -178,7 +180,7 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
         webPageMap,
         tabOrder: scopedTabOrder,
         activeTabId,
-        userInput,
+        userInput: requestUserInput || userInput,
         dataJsonSchema: schema,
         files,
         recordingContext,
