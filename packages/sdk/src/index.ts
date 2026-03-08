@@ -67,6 +67,7 @@ import {
   reduceTaskState,
   isTerminalState,
   statusFromState,
+  stateFromLegacyStatus,
   applyTaskEvent,
   createTaskRecord,
   type TaskEvent,
@@ -88,7 +89,15 @@ import {
   type RoverServerPolicy,
   type RoverServerSiteConfig,
 } from './serverRuntime.js';
-import { shouldAdoptCheckpointState } from './checkpointAdoptionGuards.js';
+import {
+  describeCheckpointContinuity,
+  shouldAdoptCheckpointState,
+} from './checkpointAdoptionGuards.js';
+import {
+  findMatchingTaskRecord,
+  resolveRenderableStatusRunId,
+  shouldPreserveWidgetOpenOnResume,
+} from './continuityAdoption.js';
 import { TaskOrchestrator, type TaskOrchestratorOptions } from './taskOrchestrator.js';
 import { WorkerPool, type WorkerConfig } from './workerPool.js';
 import { shouldBlockNavigation, computeAdversarialScore } from './adversarialGuard.js';
@@ -386,6 +395,8 @@ const SHORTCUT_ICON_MAX_CHARS = 8;
 const GREETING_TEXT_MAX_CHARS = 240;
 const NAV_HANDOFF_BOOTSTRAP_PREFIX = 'rover:handoff-bootstrap:';
 const NAV_HANDOFF_BOOTSTRAP_TTL_MS = 30_000;
+const PRESERVED_WIDGET_OPEN_GUARD_TTL_MS = 120_000;
+const CROSS_DOMAIN_PULL_FIRST_TIMEOUT_MS = 2_500;
 const TASK_SCOPE_DETACHED_EXTERNAL_MAX_AGE_MS = 2 * 60_000;
 const TASK_SCOPE_NAV_HANDOFF_MAX_AGE_MS = 45_000;
 const TASK_SCOPE_PENDING_ATTACH_MAX_AGE_MS = 20_000;
@@ -510,6 +521,12 @@ type PendingTaskSuggestion =
   | { kind: 'task_reset'; text: string; reason: string; createdAt: number }
   | { kind: 'resume_run'; runId: string; text: string; createdAt: number };
 let pendingTaskSuggestion: PendingTaskSuggestion | null = null;
+type PreservedWidgetOpenGuard = {
+  runId?: string;
+  taskId?: string;
+  expiresAt: number;
+};
+let preservedWidgetOpenGuard: PreservedWidgetOpenGuard | undefined;
 let lastStatusSignature = '';
 let lastUserInputText: string | undefined;
 let originalDocumentTitle: string | undefined;
@@ -586,6 +603,7 @@ type NavigationHandoffBootstrap = {
   taskBoundaryId?: string;
   resumeReason?: PersistedPendingRun['resumeReason'];
   handoffId?: string;
+  openIntent?: 'preserve_if_running';
   ts: number;
 };
 
@@ -1008,6 +1026,7 @@ function consumeNavigationHandoffBootstrap(siteId: string): NavigationHandoffBoo
           ? parsed.resumeReason
           : undefined,
       handoffId: typeof parsed.handoffId === 'string' ? parsed.handoffId : undefined,
+      openIntent: parsed.openIntent === 'preserve_if_running' ? 'preserve_if_running' : undefined,
       ts,
     };
   } catch {
@@ -1022,6 +1041,64 @@ function clearNavigationHandoffBootstrap(siteId?: string): void {
   } catch {
     // ignore
   }
+}
+
+function setPreservedWidgetOpenGuard(params?: { runId?: string; taskId?: string; ttlMs?: number }): void {
+  const runId = typeof params?.runId === 'string' && params.runId.trim() ? params.runId.trim() : undefined;
+  const taskId = typeof params?.taskId === 'string' && params.taskId.trim() ? params.taskId.trim() : undefined;
+  if (!runId && !taskId) {
+    preservedWidgetOpenGuard = undefined;
+    return;
+  }
+  preservedWidgetOpenGuard = {
+    runId,
+    taskId,
+    expiresAt: Date.now() + Math.max(1_000, Number(params?.ttlMs) || PRESERVED_WIDGET_OPEN_GUARD_TTL_MS),
+  };
+}
+
+function clearPreservedWidgetOpenGuard(): void {
+  preservedWidgetOpenGuard = undefined;
+}
+
+function shouldPreserveWidgetOpenForState(state: {
+  pendingRun?: { id?: string } | undefined;
+  activeTask?: { taskId?: string; status?: string } | undefined;
+} | null | undefined): boolean {
+  const guard = preservedWidgetOpenGuard;
+  if (!guard) return false;
+  if (guard.expiresAt <= Date.now()) {
+    preservedWidgetOpenGuard = undefined;
+    return false;
+  }
+
+  const taskStatus = String(state?.activeTask?.status || '').trim();
+  if (taskStatus && taskStatus !== 'running') {
+    preservedWidgetOpenGuard = undefined;
+    return false;
+  }
+
+  const guardRunId = String(guard.runId || '').trim();
+  const guardTaskId = String(guard.taskId || '').trim();
+  const stateRunId = String(state?.pendingRun?.id || '').trim();
+  const stateTaskId = String(state?.activeTask?.taskId || '').trim();
+
+  if (guardRunId && stateRunId && guardRunId !== stateRunId) {
+    if (!guardTaskId || !stateTaskId || guardTaskId !== stateTaskId) {
+      return false;
+    }
+  }
+  if (guardTaskId && stateTaskId && guardTaskId !== stateTaskId) {
+    return false;
+  }
+  return true;
+}
+
+function applyPreservedWidgetOpenState(state: PersistedRuntimeState | null | undefined): void {
+  if (!state) return;
+  if (!shouldPreserveWidgetOpenForState(state)) return;
+  state.uiHidden = false;
+  state.uiOpen = true;
 }
 
 function createDefaultTaskState(reason = 'session_start', startedAt = Date.now(), taskId?: string): PersistedTaskState {
@@ -1399,11 +1476,16 @@ function applyServerProjection(projection: RoverServerProjection): void {
       setPendingRun(undefined);
       sessionCoordinator?.setActiveRun(undefined);
     }
-  } else if (serverRunId && shouldAdoptProjectionRun({
+  } else if (
+    serverRunId
+    && !hasRemoteExecutionOwner()
+    && resolveEffectiveExecutionMode(currentMode) !== 'observer'
+    && shouldAdoptProjectionRun({
     serverRunId,
     localPendingRunId: localRunId,
     ignoredRunIds,
-  })) {
+  })
+  ) {
     setPendingRun({
       id: serverRunId,
       text: localPending?.text || '',
@@ -1980,7 +2062,13 @@ function hasLocalWorkflowLock(): boolean {
 }
 
 function hasLocalExecutionOwnership(): boolean {
-  return isTaskRunning() || hasLocalPendingRun() || hasLocalActiveRunOwnership() || hasLocalWorkflowLock();
+  if (!sessionCoordinator) {
+    return isTaskRunning() || hasLocalPendingRun();
+  }
+  if (hasLocalWorkflowLock() || hasLocalActiveRunOwnership()) {
+    return true;
+  }
+  return hasLocalPendingRun() && !hasRemoteExecutionOwner();
 }
 
 function hasTransportDemandSignal(): boolean {
@@ -2034,22 +2122,21 @@ function hasLiveRemoteWorkflowLock(): boolean {
   const coordinator = sessionCoordinator;
   if (!coordinator?.isWorkflowLocked()) return false;
   const lockInfo = coordinator.getWorkflowLockInfo();
-  const activeRun = coordinator.getState()?.activeRun;
-  if (!lockInfo.locked || !activeRun?.runId) return false;
-  if (lockInfo.holderRuntimeId && activeRun.runtimeId && lockInfo.holderRuntimeId !== activeRun.runtimeId) {
-    return false;
-  }
-  if (lockInfo.runId && lockInfo.runId !== activeRun.runId) return false;
-  return true;
+  if (!lockInfo.locked || !lockInfo.holderRuntimeId || lockInfo.holderRuntimeId === runtimeId) return false;
+  const remoteTab = coordinator
+    .listTabs({ scope: 'all' })
+    .find(tab => tab.runtimeId === lockInfo.holderRuntimeId);
+  if (!remoteTab) return false;
+  return Number(remoteTab.updatedAt) > Date.now() - 5_000;
 }
 
 function hasRemoteExecutionOwner(): boolean {
-  return hasRemoteActiveRun() || hasLiveRemoteWorkflowLock();
+  return hasLiveRemoteWorkflowLock();
 }
 
 function resolveEffectiveExecutionMode(mode: RoverExecutionMode): RoverExecutionMode {
-  if (mode !== 'observer') return mode;
-  return hasRemoteExecutionOwner() ? 'observer' : 'controller';
+  if (hasRemoteExecutionOwner()) return 'observer';
+  return mode === 'observer' ? 'controller' : mode;
 }
 
 function canComposeInObserverMode(): boolean {
@@ -2066,6 +2153,69 @@ function resolveExecutionModeNote(mode: RoverExecutionMode): string | undefined 
     return 'Observing active run in another tab...';
   }
   return 'Send to take control and run here.';
+}
+
+function takeControlOfActiveRun(): boolean {
+  if (!sessionCoordinator) return false;
+
+  const sharedState = sessionCoordinator.getState();
+  const sharedActiveRun = sharedState?.activeRun;
+  const sharedRunId = String(sharedActiveRun?.runId || '').trim();
+  const sharedRunText = String(sharedActiveRun?.text || '').trim();
+
+  const claimedLease = sessionCoordinator.requestControl();
+  if (!claimedLease) return false;
+
+  if (!sharedRunId) {
+    return true;
+  }
+
+  const claimedWorkflowLock = sessionCoordinator.acquireWorkflowLock(sharedRunId, { force: true });
+  if (!claimedWorkflowLock) return false;
+
+  if (!runtimeState) return true;
+
+  const sharedWorkerContext = dropMismatchedPendingAskUserForBoundary(
+    sanitizeWorkerState(sharedState?.workerContext),
+    resolveCurrentTaskBoundaryCandidate(),
+  );
+  if (sharedWorkerContext) {
+    runtimeState.workerState = sharedWorkerContext;
+    syncCurrentTaskBoundaryId();
+    sessionCoordinator.setWorkerContext(toSharedWorkerContext(runtimeState.workerState));
+    if (workerReady && worker) {
+      postWorkerBoundaryConfig();
+      worker.postMessage({ type: 'hydrate_state', state: runtimeState.workerState });
+      emit('context_restored', { source: 'controller_handoff', ts: Date.now() });
+    }
+  }
+
+  if (sharedState?.task) {
+    runtimeState.activeTask = toPersistedTask(sharedState.task, runtimeState.activeTask || createDefaultTaskState('handoff'));
+  }
+  runtimeState.uiHidden = false;
+  runtimeState.uiOpen = true;
+  if (sharedRunText || sharedRunId) {
+    setPendingRun(
+      sanitizePendingRun({
+        id: sharedRunId,
+        text: sharedRunText || runtimeState.pendingRun?.text || lastUserInputText || 'Continue task',
+        startedAt: sharedActiveRun?.startedAt || runtimeState.pendingRun?.startedAt || Date.now(),
+        attempts: runtimeState.pendingRun?.id === sharedRunId ? runtimeState.pendingRun.attempts || 0 : 0,
+        autoResume: true,
+        taskBoundaryId:
+          runtimeState.pendingRun?.taskBoundaryId
+          || runtimeState.workerState?.taskBoundaryId
+          || currentTaskBoundaryId,
+        resumeRequired: true,
+        resumeReason: 'handoff',
+      }),
+    );
+    sessionCoordinator.setActiveRun({ runId: sharedRunId, text: sharedRunText || runtimeState.pendingRun?.text || 'Continue task' });
+  }
+  persistRuntimeState();
+  maybeAutoResumePendingRun({ overridePolicyAction: 'auto_resume' });
+  return true;
 }
 
 function shouldIgnoreRunScopedWorkerMessage(msg: any): boolean {
@@ -3127,8 +3277,8 @@ function ensureUnloadHandler(): void {
         }));
       } catch { /* ignore */ }
     }
-    // If there's an auto-resumable pending run, clear the runtimeId from activeRun
-    // so the new runtime (after page reload) isn't blocked by stale runtimeId check
+    // If there's an auto-resumable pending run, persist handoff metadata so the
+    // next runtime can resume with the same task boundary and widget-open intent.
     if (runtimeState?.pendingRun?.autoResume) {
       const effectiveReason =
         runtimeState.pendingRun.resumeReason
@@ -3140,7 +3290,6 @@ function ensureUnloadHandler(): void {
       });
       runtimeState.pendingRun = markedPending;
       if (markedPending) {
-        sessionCoordinator?.clearActiveRunRuntimeId(markedPending.id);
         if (currentConfig?.siteId) {
           const handoffForBootstrap = sanitizeNavigationHandoff(runtimeState?.lastNavigationHandoff);
           writeNavigationHandoffBootstrap(currentConfig.siteId, {
@@ -3149,6 +3298,7 @@ function ensureUnloadHandler(): void {
             taskBoundaryId: markedPending.taskBoundaryId || currentTaskBoundaryId,
             resumeReason: effectiveReason,
             handoffId: handoffForBootstrap?.handoffId,
+            openIntent: runtimeState.uiOpen ? 'preserve_if_running' : undefined,
             ts: Date.now(),
           });
         }
@@ -3296,6 +3446,18 @@ function getActiveTaskRecord(): TaskRecord | undefined {
   return taskOrchestrator.getActiveTask();
 }
 
+function resolveRuntimeContinuationIdentity(
+  state: PersistedRuntimeState | null | undefined = runtimeState,
+  preferredTaskId?: string,
+): { taskId?: string; boundaryId?: string; runId?: string } {
+  const taskId =
+    String(preferredTaskId || state?.activeTaskId || state?.activeTask?.taskId || '').trim()
+    || undefined;
+  const boundaryId = normalizeTaskBoundaryId(resolveExistingTaskBoundaryIdFromState(state));
+  const runId = String(sanitizePendingRun(state?.pendingRun)?.id || '').trim() || undefined;
+  return { taskId, boundaryId, runId };
+}
+
 function getActiveTaskSeedChatLog(): PersistedChatLogEntry[] {
   const taskSeed = sanitizeChatLogEntries(getActiveTaskRecord()?.seedChatLog);
   if (taskSeed.length) return taskSeed;
@@ -3407,6 +3569,10 @@ function syncActiveTaskRecordFromRuntimeState(): void {
   if (!runtimeState || !taskOrchestrator) return;
   const activeTask = taskOrchestrator.getActiveTask();
   if (!activeTask) return;
+  const activeTaskState = stateFromLegacyStatus(
+    runtimeState.activeTask?.status || 'running',
+    runtimeState.activeTask?.boundaryReason,
+  );
   const runtimeMessages = sanitizeUiMessages(runtimeState.uiMessages);
   const runtimeTimeline = sanitizeTimelineEvents(runtimeState.timeline);
   const latestAssistant = [...runtimeMessages].reverse().find(message => message.role === 'assistant');
@@ -3429,7 +3595,12 @@ function syncActiveTaskRecordFromRuntimeState(): void {
 
   taskOrchestrator.updateTask(activeTask.taskId, task => ({
     ...task,
+    state: activeTaskState,
     boundaryId: normalizedBoundaryId,
+    startedAt: Number(runtimeState?.activeTask?.startedAt) || task.startedAt,
+    endedAt: Number(runtimeState?.activeTask?.endedAt) || undefined,
+    lastUserAt: Number(runtimeState?.activeTask?.lastUserAt) || task.lastUserAt,
+    lastAssistantAt: Number(runtimeState?.activeTask?.lastAssistantAt) || task.lastAssistantAt,
     uiMessages: runtimeMessages,
     timeline: runtimeTimeline,
     workerState: normalizedWorkerState,
@@ -3444,6 +3615,63 @@ function syncActiveTaskRecordFromRuntimeState(): void {
     seedChatLog: normalizedSeedChatLog,
     transientStatus: normalizedTransientStatus,
   }));
+}
+
+function syncRuntimeContinuationToMatchedTaskRecord(
+  options?: { preferredTaskId?: string; allowCreate?: boolean; makeActive?: boolean },
+): TaskRecord | undefined {
+  if (!runtimeState || !taskOrchestrator) return undefined;
+
+  const identity = resolveRuntimeContinuationIdentity(runtimeState, options?.preferredTaskId);
+  let targetTask = findMatchingTaskRecord(taskOrchestrator.listTasks(), identity);
+
+  if (!targetTask && options?.allowCreate !== false) {
+    const boundaryId = identity.boundaryId || createTaskBoundaryId();
+    const taskState = stateFromLegacyStatus(
+      runtimeState.activeTask?.status || 'running',
+      runtimeState.activeTask?.boundaryReason,
+    );
+    const created = taskOrchestrator.createTask('adopted_continuation', {
+      taskId: identity.taskId,
+      state: taskState,
+      boundaryId,
+      startedAt: Number(runtimeState.activeTask?.startedAt) || Date.now(),
+      endedAt: Number(runtimeState.activeTask?.endedAt) || undefined,
+      lastUserAt: Number(runtimeState.activeTask?.lastUserAt) || undefined,
+      lastAssistantAt: Number(runtimeState.activeTask?.lastAssistantAt) || undefined,
+      rootUserInput:
+        sanitizeWorkerState(runtimeState.workerState)?.rootUserInput
+        || sanitizePendingRun(runtimeState.pendingRun)?.text
+        || lastUserInputText,
+      seedChatLog: sanitizeChatLogEntries(runtimeState.workerState?.seedChatLog),
+      tabIds: sanitizeTaskTabScope(runtimeState.taskTabScope, boundaryId)?.touchedTabIds || [],
+    });
+    targetTask = created;
+  }
+
+  if (!targetTask) return undefined;
+
+  if (options?.makeActive !== false && taskOrchestrator.getActiveTaskId() !== targetTask.taskId) {
+    taskOrchestrator.switchActiveTask(targetTask.taskId);
+  }
+
+  runtimeState.activeTaskId = taskOrchestrator.getActiveTaskId() || targetTask.taskId;
+  runtimeState.activeTask = sanitizeTask(
+    {
+      ...(runtimeState.activeTask || createDefaultTaskState('adopted_continuation')),
+      taskId: runtimeState.activeTaskId,
+    },
+    createDefaultTaskState('adopted_continuation', Date.now(), runtimeState.activeTaskId),
+  );
+  syncActiveTaskRecordFromRuntimeState();
+
+  const persisted = taskOrchestrator.toPersistedState();
+  runtimeState.tasks = persisted.tasks;
+  runtimeState.activeTaskId = persisted.activeTaskId;
+  runtimeState.taskOrder = persisted.taskOrder;
+  syncOrchestratorConversationList();
+
+  return taskOrchestrator.getTask(runtimeState.activeTaskId || targetTask.taskId);
 }
 
 function markTaskActivity(role: UiRole, timestamp = Date.now()): void {
@@ -3636,6 +3864,7 @@ function showResumeTaskSuggestion(pendingRun: PersistedPendingRun): boolean {
 function clearResumeArtifacts(): void {
   crossDomainResumeActive = false;
   resumeContextValidated = false;
+  clearPreservedWidgetOpenGuard();
   if (currentConfig?.siteId) {
     clearCrossDomainResumeCookie(currentConfig.siteId);
     clearNavigationHandoffBootstrap(currentConfig.siteId);
@@ -3681,7 +3910,6 @@ function abandonPendingRunLocally(options: LocalRunAbandonOptions): void {
   const runId = String(options.runId || pending?.id || '').trim();
   if (runId) {
     addIgnoredRunId(runId);
-    sessionCoordinator?.clearActiveRunRuntimeId(runId);
     sessionCoordinator?.releaseWorkflowLock(runId);
     if (!hasLiveRemoteControllerForRun(runId)) {
       enqueueServerRunCancelRepair(runId, options.cancelReason || options.reason, { attemptImmediately: true });
@@ -3810,7 +4038,6 @@ function maybeClearStalePendingRun(): void {
   addIgnoredRunId(pending.id);
   enqueueServerRunCancelRepair(pending.id, 'stale_pending_cleanup', { attemptImmediately: true });
   setPendingRun(undefined);
-  sessionCoordinator?.clearActiveRunRuntimeId(pending.id);
   sessionCoordinator?.releaseWorkflowLock(pending.id);
   sessionCoordinator?.setActiveRun(undefined);
   if (autoResumeRetryTimer) {
@@ -3938,14 +4165,30 @@ function replayTimeline(events: PersistedTimelineEvent[]): void {
 
 function getRenderableTransientStatusText(
   status: PersistedTransientStatus | undefined,
-  params?: { activeRunId?: string; taskStatus?: string },
+  params?: { activeRunId?: string; activeTaskId?: string; taskStatus?: string },
 ): string | undefined {
   if (!status?.text) return undefined;
   if (params?.taskStatus && params.taskStatus !== 'running') return undefined;
   const activeRunId = String(params?.activeRunId || '').trim();
   const statusRunId = String(status.runId || '').trim();
+  const activeTaskId = String(params?.activeTaskId || '').trim();
+  const statusTaskId = String(status.taskId || '').trim();
+  if (statusRunId && !activeRunId) return undefined;
   if (statusRunId && activeRunId && statusRunId !== activeRunId) return undefined;
+  if (statusTaskId && activeTaskId && statusTaskId !== activeTaskId) return undefined;
   return status.text;
+}
+
+function getDisplayedStatusRunId(
+  state: PersistedRuntimeState | null | undefined = runtimeState,
+): string | undefined {
+  const sharedState = sessionCoordinator?.getState();
+  return resolveRenderableStatusRunId({
+    localPendingRunId: state?.pendingRun?.id,
+    sharedActiveRunId: sharedState?.activeRun?.runId,
+    sharedTaskId: sharedState?.task?.taskId || sharedState?.activeTaskId,
+    activeTaskId: state?.activeTask?.taskId || state?.activeTaskId,
+  });
 }
 
 function setUiStatus(
@@ -3968,7 +4211,8 @@ function setUiStatus(
     },
   );
   const renderable = getRenderableTransientStatusText(nextStatus, {
-    activeRunId: runtimeState?.pendingRun?.id,
+    activeRunId: getDisplayedStatusRunId(runtimeState),
+    activeTaskId: runtimeState?.activeTask?.taskId,
     taskStatus: runtimeState?.activeTask?.status,
   });
   if (renderable) {
@@ -3990,7 +4234,8 @@ function setUiStatus(
 
 function replayTransientStatusFromRuntime(state: PersistedRuntimeState | null | undefined = runtimeState): void {
   const renderable = getRenderableTransientStatusText(state?.transientStatus, {
-    activeRunId: state?.pendingRun?.id,
+    activeRunId: getDisplayedStatusRunId(state),
+    activeTaskId: state?.activeTask?.taskId,
     taskStatus: state?.activeTask?.status,
   });
   if (renderable) {
@@ -4046,7 +4291,11 @@ function setPendingRun(next: PersistedPendingRun | undefined): void {
     runtimeState.uiStatus = undefined;
     runtimeState.transientStatus = undefined;
     setServerAcceptedRunId(undefined);
+    if (!shouldPreserveWidgetOpenForState(runtimeState)) {
+      clearPreservedWidgetOpenGuard();
+    }
   }
+  applyPreservedWidgetOpenState(runtimeState);
   syncMainWorldObserverPause();
   persistRuntimeState();
 }
@@ -4883,12 +5132,12 @@ function clearPendingRunForResume(reason: string, statusText: string): void {
 function hasLiveRemoteControllerForRun(runId: string): boolean {
   const pendingRunId = String(runId || '').trim();
   if (!pendingRunId) return false;
-  const sharedActiveRun = sessionCoordinator?.getState()?.activeRun;
-  if (!sharedActiveRun?.runtimeId || sharedActiveRun.runtimeId === runtimeId) return false;
-  if (sharedActiveRun.runId !== pendingRunId) return false;
+  const lockInfo = sessionCoordinator?.getWorkflowLockInfo();
+  if (!lockInfo?.locked || !lockInfo.holderRuntimeId || lockInfo.holderRuntimeId === runtimeId) return false;
+  if (lockInfo.runId !== pendingRunId) return false;
   const remoteTab = sessionCoordinator
     ?.listTabs({ scope: 'all' })
-    .find(tab => tab.runtimeId === sharedActiveRun.runtimeId);
+    .find(tab => tab.runtimeId === lockInfo.holderRuntimeId);
   if (!remoteTab) return false;
   return Number(remoteTab.updatedAt) > Date.now() - 5_000;
 }
@@ -5131,11 +5380,86 @@ function shouldAdoptIncomingRuntimeState(params: {
   incomingState: PersistedRuntimeState;
   allowRicherIncomingOnResume?: boolean;
 }): boolean {
-  return shouldAdoptCheckpointState({
+  const adopt = shouldAdoptCheckpointState({
     localUpdatedAt: Number(params.localState.updatedAt) || 0,
     incomingUpdatedAt: Number(params.incomingState.updatedAt) || 0,
     localState: params.localState,
     incomingState: params.incomingState,
+    crossDomainResumeActive: !!params.allowRicherIncomingOnResume && crossDomainResumeActive,
+  });
+  if (!adopt) return false;
+
+  if (!params.allowRicherIncomingOnResume || !crossDomainResumeActive) {
+    return true;
+  }
+
+  const summary = describeCheckpointContinuity({
+    localState: params.localState,
+    incomingState: params.incomingState,
+  });
+  if (summary.exactRunMatch || summary.exactBoundaryMatch) {
+    return true;
+  }
+
+  const localHasIdentity = !!(summary.localRunId || summary.localBoundaryId);
+  if (localHasIdentity) {
+    return false;
+  }
+
+  return true;
+}
+
+function buildWorkerContinuityState(
+  workerState: PersistedWorkerState | undefined,
+  fallbackPendingRun?: PersistedPendingRun,
+  taskStatus?: string,
+  taskEpoch?: number,
+  options?: { includePendingIdentity?: boolean },
+): Parameters<typeof describeCheckpointContinuity>[0]['localState'] {
+  const includePendingIdentity = options?.includePendingIdentity !== false;
+  return {
+    pendingRun: includePendingIdentity && fallbackPendingRun
+      ? {
+          id: fallbackPendingRun.id,
+          resumeRequired: fallbackPendingRun.resumeRequired,
+          taskBoundaryId: fallbackPendingRun.taskBoundaryId,
+        }
+      : undefined,
+    activeTask: taskStatus ? { status: taskStatus } : undefined,
+    workerState,
+    taskEpoch,
+  };
+}
+
+function shouldAdoptIncomingWorkerState(params: {
+  localWorkerState: PersistedWorkerState | undefined;
+  incomingWorkerState: PersistedWorkerState | undefined;
+  fallbackPendingRun?: PersistedPendingRun;
+  taskStatus?: string;
+  taskEpoch?: number;
+  localUpdatedAt?: number;
+  incomingUpdatedAt?: number;
+  allowRicherIncomingOnResume?: boolean;
+}): boolean {
+  if (!params.incomingWorkerState) return false;
+  if (!params.localWorkerState) return true;
+  return shouldAdoptCheckpointState({
+    localUpdatedAt: Number(params.localUpdatedAt) || Number(params.localWorkerState.updatedAt) || 0,
+    incomingUpdatedAt: Number(params.incomingUpdatedAt) || Number(params.incomingWorkerState.updatedAt) || 0,
+    localState: buildWorkerContinuityState(
+      params.localWorkerState,
+      params.fallbackPendingRun,
+      params.taskStatus,
+      params.taskEpoch,
+      { includePendingIdentity: true },
+    ),
+    incomingState: buildWorkerContinuityState(
+      params.incomingWorkerState,
+      undefined,
+      params.taskStatus,
+      params.taskEpoch,
+      { includePendingIdentity: false },
+    ),
     crossDomainResumeActive: !!params.allowRicherIncomingOnResume && crossDomainResumeActive,
   });
 }
@@ -5209,8 +5533,12 @@ async function applyAsyncRuntimeStateHydration(key: string, fallbackKeys?: strin
     runtimeState.sessionId,
     runtimeId,
   );
+  applyPreservedWidgetOpenState(runtimeState);
   syncCurrentTaskBoundaryId({ rotateIfMissing: !currentTaskBoundaryId });
   reconcileTaskTabScopeWithSessionTabs({ persist: false });
+  syncRuntimeContinuationToMatchedTaskRecord({
+    preferredTaskId: normalized.activeTaskId || normalized.activeTask?.taskId,
+  });
   persistRuntimeState();
 
   if (ui) {
@@ -5347,7 +5675,11 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
       })
     ) {
       const remoteOwnsRun = String(state.activeRun.runtimeId || '').trim() !== '';
-      if (remoteOwnsRun) {
+      const shouldStayObserverOnly =
+        remoteOwnsRun
+        || hasRemoteExecutionOwner()
+        || resolveEffectiveExecutionMode(currentMode) === 'observer';
+      if (shouldStayObserverOnly) {
         setPendingRun(undefined);
       } else {
       const existingPending = sanitizePendingRun(runtimeState.pendingRun);
@@ -5418,7 +5750,16 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
       const incomingUpdatedAt = Number(incomingWorker?.updatedAt) || 0;
       if (
         incomingWorker
-        && incomingUpdatedAt > localUpdatedAt + 100
+        && shouldAdoptIncomingWorkerState({
+          localWorkerState: runtimeState.workerState,
+          incomingWorkerState: incomingWorker,
+          fallbackPendingRun: sanitizePendingRun(runtimeState.pendingRun),
+          taskStatus: runtimeState.activeTask?.status,
+          taskEpoch: runtimeState.taskEpoch,
+          localUpdatedAt,
+          incomingUpdatedAt,
+          allowRicherIncomingOnResume: true,
+        })
         && shouldAcceptIncomingWorkerBoundary({
           source: 'shared_worker_context',
           incomingBoundaryId: incomingWorker.taskBoundaryId,
@@ -5446,6 +5787,7 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
     sanitizeWorkerState(runtimeState.workerState),
     resolveCurrentTaskBoundaryCandidate(),
   );
+  applyPreservedWidgetOpenState(runtimeState);
   syncCurrentTaskBoundaryId();
   reconcileTaskTabScopeWithSessionTabs({ persist: false });
   if (workerReady && worker && currentMode === 'controller') {
@@ -5454,6 +5796,7 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
   syncMainWorldObserverPause();
   syncQuestionPromptFromWorkerState();
   runtimeState.activeTask = sanitizeTask(runtimeState.activeTask, createDefaultTaskState('implicit'));
+  syncRuntimeContinuationToMatchedTaskRecord();
 
   // Sync task-tab mapping to session coordinator for task-aware tab pruning
   if (sessionCoordinator && taskOrchestrator) {
@@ -5648,12 +5991,16 @@ function applyCloudCheckpointPayload(payload: RoverCloudCheckpointPayload): void
           remoteSessionId,
           runtimeId,
         );
+        applyPreservedWidgetOpenState(runtimeState);
         syncCurrentTaskBoundaryId();
         runtimeState.workerState = dropMismatchedPendingAskUserForBoundary(
           runtimeState.workerState,
           resolveCurrentTaskBoundaryCandidate(),
         );
         reconcileTaskTabScopeWithSessionTabs({ persist: false });
+        syncRuntimeContinuationToMatchedTaskRecord({
+          preferredTaskId: incomingState.activeTaskId || incomingState.activeTask?.taskId,
+        });
         persistRuntimeState();
 
         replayTransientStatusFromRuntime(runtimeState);
@@ -6516,7 +6863,17 @@ function handleWorkerMessage(msg: any): void {
     const localUpdatedAt = Number(localWorkerState?.updatedAt) || 0;
     const sharedUpdatedAt = Number(sharedWorkerState?.updatedAt) || 0;
     const stateToHydrate =
-      sharedWorkerState && sharedUpdatedAt > localUpdatedAt + 100
+      sharedWorkerState
+      && shouldAdoptIncomingWorkerState({
+        localWorkerState,
+        incomingWorkerState: sharedWorkerState,
+        fallbackPendingRun: sanitizePendingRun(runtimeState?.pendingRun),
+        taskStatus: runtimeState?.activeTask?.status,
+        taskEpoch: runtimeState?.taskEpoch,
+        localUpdatedAt,
+        incomingUpdatedAt: sharedUpdatedAt,
+        allowRicherIncomingOnResume: true,
+      })
         ? sharedWorkerState
         : localWorkerState;
 
@@ -6955,7 +7312,7 @@ function createRuntime(cfg: RoverInit): void {
   if (sessionCoordinator) {
     const initialRole = resolveEffectiveExecutionMode(sessionCoordinator.getRole());
     currentMode = initialRole;
-    isTransportController = !sessionCoordinator || sessionCoordinator.getRole() === 'controller';
+    isTransportController = initialRole === 'controller';
     if (runtimeState) {
       runtimeState.executionMode = initialRole;
     }
@@ -7308,6 +7665,7 @@ function createRuntime(cfg: RoverInit): void {
         sessionId: runtimeState.sessionId,
         sessionToken: runtimeSessionToken,
         sessionTokenExpiresAt: runtimeSessionTokenExpiresAt,
+        openIntent: runtimeState.uiOpen ? 'preserve_if_running' : undefined,
         targetUrl: String(intent?.targetUrl || '').trim() || undefined,
         sourceHost: String(window.location.hostname || '').trim().toLowerCase() || undefined,
         handoffId: handoffForCookie?.handoffId || intent?.handoffId,
@@ -7626,14 +7984,14 @@ function createRuntime(cfg: RoverInit): void {
       });
     },
     onRequestControl: () => {
-      const claimed = sessionCoordinator?.requestControl() ?? false;
+      const claimed = takeControlOfActiveRun();
       if (!claimed) {
         appendUiMessage('system', 'Unable to acquire control right now. Try again in a moment.', true);
       } else {
         appendTimelineEvent({
           kind: 'status',
           title: 'Control requested',
-          detail: 'This tab is now the active Rover controller.',
+          detail: 'This tab is now the active Rover controller for the current task.',
           status: 'info',
         });
       }
@@ -7875,6 +8233,7 @@ export function boot(cfg: RoverInit): RoverInstance {
   greetingDismissed = false;
   greetingShownInSession = false;
   clearGreetingTimers();
+  clearPreservedWidgetOpenGuard();
   backendSiteConfig = null;
   resumeContextValidated = false;
   const explicitSessionId = cfg.sessionId?.trim();
@@ -7935,6 +8294,12 @@ export function boot(cfg: RoverInit): RoverInstance {
     clearCrossDomainResumeCookie(cfg.siteId);
     crossDomainResumeActive = true;
     resumeContextValidated = true;
+    if (crossDomainResume.openIntent === 'preserve_if_running') {
+      setPreservedWidgetOpenGuard({
+        runId: crossDomainResume.pendingRun?.id,
+        taskId: crossDomainResume.activeTask?.taskId,
+      });
+    }
     // Restore session token from cross-domain cookie so the worker can authenticate immediately
     if (crossDomainResume.sessionToken) {
       updateRuntimeSessionToken(crossDomainResume.sessionToken, crossDomainResume.sessionTokenExpiresAt);
@@ -7977,8 +8342,10 @@ export function boot(cfg: RoverInit): RoverInstance {
       };
     }
     seeded.taskEpoch = crossDomainResume.taskEpoch || 1;
-    // Widget was open (task was running) — preserve that across subdomain navigation
-    seeded.uiOpen = true;
+    if (shouldPreserveWidgetOpenOnResume(crossDomainResume.openIntent)) {
+      seeded.uiHidden = false;
+      seeded.uiOpen = true;
+    }
     effectiveLoaded = seeded;
   }
 
@@ -7992,8 +8359,14 @@ export function boot(cfg: RoverInit): RoverInstance {
   currentTaskBoundaryId = resolveTaskBoundaryIdFromState(runtimeState);
   if (handoffBootstrap && runtimeState.activeTask?.status === 'running') {
     resumeContextValidated = true;
-    runtimeState.uiHidden = false;
-    runtimeState.uiOpen = true;
+    if (shouldPreserveWidgetOpenOnResume(handoffBootstrap.openIntent)) {
+      runtimeState.uiHidden = false;
+      runtimeState.uiOpen = true;
+      setPreservedWidgetOpenGuard({
+        runId: handoffBootstrap.runId,
+        taskId: runtimeState.activeTask?.taskId,
+      });
+    }
     runtimeState.pendingRun = sanitizePendingRun({
       ...(runtimeState.pendingRun || {}),
       id: runtimeState.pendingRun?.id || handoffBootstrap.runId,
@@ -8027,6 +8400,7 @@ export function boot(cfg: RoverInit): RoverInstance {
       currentTaskBoundaryId,
     );
   }
+  applyPreservedWidgetOpenState(runtimeState);
 
   currentConfig = {
     ...cfg,
@@ -8116,6 +8490,7 @@ export function boot(cfg: RoverInit): RoverInstance {
     runtimeState.workerState = undefined;
     crossDomainResumeActive = false;
     resumeContextValidated = false;
+    clearPreservedWidgetOpenGuard();
     clearCrossDomainResumeCookie(cfg.siteId);
     clearNavigationHandoffBootstrap(cfg.siteId);
   }
@@ -8197,7 +8572,7 @@ export function boot(cfg: RoverInit): RoverInstance {
         crossDomainResumeActive = false;
         maybeAutoResumePendingRun();
       }
-    }, 8_000);
+    }, CROSS_DOMAIN_PULL_FIRST_TIMEOUT_MS);
   }
 
   instance = {
@@ -8477,13 +8852,14 @@ export function update(cfg: Partial<RoverInit>): void {
   }
 
   if (typeof cfg.openOnInit === 'boolean') {
-    if (cfg.openOnInit) open();
+    if (cfg.openOnInit || shouldPreserveWidgetOpenForState(runtimeState)) open();
     else close();
   }
   syncMainWorldObserverPause();
 }
 
 export function shutdown(): void {
+  clearPreservedWidgetOpenGuard();
   hideTaskSuggestion();
   persistRuntimeStateImmediate();
   void flushTelemetry(true);
@@ -8604,6 +8980,7 @@ export function open(): void {
 
 export function close(): void {
   ui?.close();
+  clearPreservedWidgetOpenGuard();
   if (runtimeState) {
     runtimeState.uiOpen = false;
     persistRuntimeState();
@@ -8620,6 +8997,7 @@ export function show(): void {
 
 export function hide(): void {
   ui?.hide();
+  clearPreservedWidgetOpenGuard();
   if (runtimeState) {
     runtimeState.uiHidden = true;
     runtimeState.uiOpen = false;
