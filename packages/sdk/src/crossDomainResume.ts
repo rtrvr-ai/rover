@@ -29,6 +29,7 @@ export interface CrossDomainResumeData {
   sessionId: string;
   sessionToken?: string;
   sessionTokenExpiresAt?: number;
+  openIntent?: 'preserve_if_running';
   targetUrl?: string;
   sourceHost?: string;
   handoffId?: string;

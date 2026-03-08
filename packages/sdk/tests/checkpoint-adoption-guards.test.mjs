@@ -77,3 +77,31 @@ test('boundary mismatch with lower incoming epoch is rejected', () => {
   });
   assert.equal(adopted, false);
 });
+
+test('cross-domain resume rejects richer unrelated checkpoint when local continuation identity exists', () => {
+  const adopted = shouldAdoptCheckpointState({
+    localUpdatedAt: 2_000,
+    incomingUpdatedAt: 1_950,
+    localState: {
+      taskEpoch: 5,
+      activeTask: { status: 'running' },
+      pendingRun: { id: 'run_local', taskBoundaryId: 'boundary-local', resumeRequired: true },
+      workerState: {
+        rootUserInput: 'continue local task',
+      },
+    },
+    incomingState: {
+      taskEpoch: 5,
+      activeTask: { status: 'running' },
+      pendingRun: { id: 'run_remote', taskBoundaryId: 'boundary-remote', resumeRequired: true },
+      workerState: {
+        rootUserInput: 'remote task',
+        history: [{ role: 'user', content: 'remote' }],
+        plannerHistory: [{ step: 'plan' }],
+        agentPrevSteps: [{ tool: 'click' }, { tool: 'type' }],
+      },
+    },
+    crossDomainResumeActive: true,
+  });
+  assert.equal(adopted, false);
+});

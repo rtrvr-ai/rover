@@ -224,6 +224,32 @@ test('setActiveRun does not synthesize task lifecycle state', () => {
   }
 });
 
+test('remote workflow lock keeps active logical tab pinned to the remote owner tab', () => {
+  const env = installBrowserEnv();
+  try {
+    const runtimeA = new SessionCoordinator({
+      siteId: 'site-g',
+      sessionId: 'session-g',
+      runtimeId: 'runtime-a',
+    });
+    const runtimeATabId = runtimeA.registerCurrentTab('https://example.com/start', 'Start');
+    runtimeA.setActiveRun({ runId: 'run-1', text: 'continue task' });
+    assert.equal(runtimeA.acquireWorkflowLock('run-1'), true);
+
+    const runtimeB = new SessionCoordinator({
+      siteId: 'site-g',
+      sessionId: 'session-g',
+      runtimeId: 'runtime-b',
+    });
+    const runtimeBTabId = runtimeB.registerCurrentTab('https://example.com/other', 'Other');
+
+    assert.equal(runtimeATabId !== runtimeBTabId, true);
+    assert.equal(runtimeB.getActiveLogicalTabId(), runtimeATabId);
+  } finally {
+    env.restore();
+  }
+});
+
 test('start remains transport-only and does not synthesize task lifecycle state', () => {
   const env = installBrowserEnv();
   try {

@@ -23,11 +23,27 @@ export type CheckpointContinuityState = {
   taskEpoch?: number;
 };
 
+export type CheckpointContinuitySummary = {
+  localRunId?: string;
+  incomingRunId?: string;
+  exactRunMatch: boolean;
+  localBoundaryId?: string;
+  incomingBoundaryId?: string;
+  exactBoundaryMatch: boolean;
+  localScore: number;
+  incomingScore: number;
+};
+
 function toArrayLength(input: unknown): number {
   return Array.isArray(input) ? input.length : 0;
 }
 
 function normalizeBoundaryId(input?: string): string | undefined {
+  const normalized = String(input || '').trim();
+  return normalized || undefined;
+}
+
+function normalizeRunId(input?: string): string | undefined {
   const normalized = String(input || '').trim();
   return normalized || undefined;
 }
@@ -64,6 +80,31 @@ export function computeCheckpointContinuityScore(state: CheckpointContinuityStat
   return score;
 }
 
+export function describeCheckpointContinuity(params: {
+  localState: CheckpointContinuityState;
+  incomingState: CheckpointContinuityState;
+}): CheckpointContinuitySummary {
+  const localRunId = normalizeRunId(params.localState.pendingRun?.id);
+  const incomingRunId = normalizeRunId(params.incomingState.pendingRun?.id);
+  const localBoundaryId = normalizeBoundaryId(
+    params.localState.pendingRun?.taskBoundaryId || params.localState.workerState?.taskBoundaryId,
+  );
+  const incomingBoundaryId = normalizeBoundaryId(
+    params.incomingState.pendingRun?.taskBoundaryId || params.incomingState.workerState?.taskBoundaryId,
+  );
+
+  return {
+    localRunId,
+    incomingRunId,
+    exactRunMatch: !!(localRunId && incomingRunId && localRunId === incomingRunId),
+    localBoundaryId,
+    incomingBoundaryId,
+    exactBoundaryMatch: !!(localBoundaryId && incomingBoundaryId && localBoundaryId === incomingBoundaryId),
+    localScore: computeCheckpointContinuityScore(params.localState),
+    incomingScore: computeCheckpointContinuityScore(params.incomingState),
+  };
+}
+
 export function shouldAdoptCheckpointState(params: {
   localUpdatedAt: number;
   incomingUpdatedAt: number;
@@ -81,19 +122,20 @@ export function shouldAdoptCheckpointState(params: {
     return false;
   }
 
-  const incomingScore = computeCheckpointContinuityScore(params.incomingState);
-  const localScore = computeCheckpointContinuityScore(params.localState);
-  if (incomingScore <= localScore) {
+  const summary = describeCheckpointContinuity({
+    localState: params.localState,
+    incomingState: params.incomingState,
+  });
+
+  if (summary.incomingScore <= summary.localScore) {
     return false;
   }
 
-  const localBoundary = normalizeBoundaryId(
-    params.localState.pendingRun?.taskBoundaryId || params.localState.workerState?.taskBoundaryId,
-  );
-  const incomingBoundary = normalizeBoundaryId(
-    params.incomingState.pendingRun?.taskBoundaryId || params.incomingState.workerState?.taskBoundaryId,
-  );
-  if (localBoundary && incomingBoundary && localBoundary !== incomingBoundary) {
+  if (
+    summary.localBoundaryId
+    && summary.incomingBoundaryId
+    && summary.localBoundaryId !== summary.incomingBoundaryId
+  ) {
     const localEpoch = Math.max(1, Number(params.localState.taskEpoch) || 1);
     const incomingEpoch = Math.max(1, Number(params.incomingState.taskEpoch) || 1);
     if (incomingEpoch < localEpoch) {
@@ -101,5 +143,14 @@ export function shouldAdoptCheckpointState(params: {
     }
   }
 
-  return true;
+  if (summary.exactRunMatch || summary.exactBoundaryMatch) {
+    return true;
+  }
+
+  const localHasIdentity = !!(summary.localRunId || summary.localBoundaryId);
+  if (!localHasIdentity) {
+    return true;
+  }
+
+  return false;
 }

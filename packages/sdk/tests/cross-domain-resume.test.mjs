@@ -92,6 +92,28 @@ test('cross-domain cookie rejects target mismatch', () => {
   });
 });
 
+test('cross-domain cookie preserves widget-open handoff intent', () => {
+  const siteId = 'site_a';
+  const payload = {
+    sessionId: 'visitor-abc',
+    handoffId: 'handoff-open',
+    sourceHost: 'www.rtrvr.ai',
+    targetUrl: 'https://rover.rtrvr.ai/workspace',
+    openIntent: 'preserve_if_running',
+    timestamp: Date.now(),
+  };
+  const cookie = `${cookieKey(siteId)}=${encodeURIComponent(JSON.stringify(payload))}`;
+
+  withDom('https://rover.rtrvr.ai/workspace', cookie, () => {
+    const result = readCrossDomainResumeCookie(siteId, {
+      currentUrl: globalThis.window.location.href,
+      currentHost: globalThis.window.location.hostname,
+      requireTargetMatch: true,
+    });
+    assert.equal(result?.openIntent, 'preserve_if_running');
+  });
+});
+
 test('target url matcher accepts same path with trailing slash and extra query params', () => {
   withDom('https://rover.rtrvr.ai/workspace/?sessionId=abc&mode=full', '', () => {
     assert.equal(

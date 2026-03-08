@@ -165,6 +165,7 @@ export type SessionCoordinatorOptions = {
   runtimeId: string;
   leaseMs?: number;
   heartbeatMs?: number;
+  workflowLockMs?: number;
   maxMessages?: number;
   maxTimeline?: number;
   onRoleChange?: (role: SharedRole, info: { localLogicalTabId?: number; activeLogicalTabId?: number; holderRuntimeId?: string }) => void;
@@ -709,6 +710,7 @@ export class SessionCoordinator {
   private readonly sessionId: string;
   private readonly runtimeId: string;
   private readonly leaseMs: number;
+  private readonly workflowLockMs: number;
   private readonly heartbeatMs: number;
   private readonly maxMessages: number;
   private readonly maxTimeline: number;
@@ -991,6 +993,7 @@ export class SessionCoordinator {
     this.sessionId = options.sessionId;
     this.runtimeId = options.runtimeId;
     this.leaseMs = Math.max(4000, Number(options.leaseMs) || 12000);
+    this.workflowLockMs = Math.max(30_000, Number(options.workflowLockMs) || 180_000);
     this.heartbeatMs = Math.max(800, Number(options.heartbeatMs) || 2000);
     this.maxMessages = Math.max(20, Number(options.maxMessages) || ROVER_V2_PERSIST_CAPS.uiMessages);
     this.maxTimeline = Math.max(20, Number(options.maxTimeline) || ROVER_V2_PERSIST_CAPS.timelineEvents);
@@ -1432,7 +1435,21 @@ export class SessionCoordinator {
       const nowTs = now();
       const leaseValid = !!(draft.lease && draft.lease.expiresAt > nowTs);
       const controllerRuntimeId = leaseValid ? draft.lease?.holderRuntimeId : undefined;
-      const shouldPreferLocalAsActive = !controllerRuntimeId || controllerRuntimeId === this.runtimeId;
+      const remoteWorkflowLock =
+        draft.workflowLock
+        && draft.workflowLock.runtimeId
+        && draft.workflowLock.runtimeId !== this.runtimeId
+        && draft.workflowLock.expiresAt > nowTs
+          ? draft.workflowLock
+          : undefined;
+      const remoteWorkflowOwnerTab = remoteWorkflowLock
+        ? draft.tabs.find(tab =>
+          tab.runtimeId === remoteWorkflowLock.runtimeId
+          && tab.updatedAt > nowTs - 2 * this.heartbeatMs,
+        )
+        : undefined;
+      const shouldPreferLocalAsActive =
+        !remoteWorkflowOwnerTab && (!controllerRuntimeId || controllerRuntimeId === this.runtimeId);
 
       const existing = draft.tabs.find(tab => tab.runtimeId === this.runtimeId);
       if (existing) {
@@ -1512,7 +1529,9 @@ export class SessionCoordinator {
       const activeEntry = draft.activeLogicalTabId
         ? draft.tabs.find(tab => tab.logicalTabId === draft.activeLogicalTabId)
         : undefined;
-      if (
+      if (remoteWorkflowOwnerTab) {
+        draft.activeLogicalTabId = remoteWorkflowOwnerTab.logicalTabId;
+      } else if (
         !activeEntry
         || !activeEntry.runtimeId
         || activeEntry.logicalTabId === nextLocalTabId
@@ -1759,11 +1778,11 @@ export class SessionCoordinator {
 
   // ---- Workflow Lock ----
 
-  acquireWorkflowLock(runId: string): boolean {
+  acquireWorkflowLock(runId: string, options?: { force?: boolean }): boolean {
     let acquired = false;
     this.mutate('local', draft => {
       const existing = draft.workflowLock;
-      if (existing && existing.runtimeId !== this.runtimeId && existing.expiresAt > now()) {
+      if (!options?.force && existing && existing.runtimeId !== this.runtimeId && existing.expiresAt > now()) {
         // Check if the holder tab is still alive before respecting the lock
         const holderTab = draft.tabs.find(t => t.runtimeId === existing.runtimeId);
         const holderAlive = holderTab && holderTab.updatedAt > now() - 2 * this.heartbeatMs;
@@ -1777,19 +1796,11 @@ export class SessionCoordinator {
         runtimeId: this.runtimeId,
         runId,
         lockedAt: now(),
-        expiresAt: now() + this.leaseMs * 5,
+        expiresAt: now() + this.workflowLockMs,
       };
       acquired = true;
     });
     return acquired;
-  }
-
-  clearActiveRunRuntimeId(runId: string): void {
-    this.mutate('local', draft => {
-      if (draft.activeRun && draft.activeRun.runId === runId) {
-        draft.activeRun.runtimeId = '';
-      }
-    });
   }
 
   releaseWorkflowLock(runId: string): void {
@@ -2015,6 +2026,9 @@ export class SessionCoordinator {
       ) {
         draft.workflowLock = undefined;
       }
+      if (draft.workflowLock && draft.workflowLock.runtimeId !== this.runtimeId && lockHolderAlive && lockHolderTab) {
+        draft.activeLogicalTabId = lockHolderTab.logicalTabId;
+      }
       if (draft.activeRun?.runtimeId && draft.activeRun.runtimeId !== this.runtimeId) {
         const runHolderTab = draft.tabs.find(tab => tab.runtimeId === draft.activeRun?.runtimeId);
         const runHolderAlive = !!(runHolderTab && runHolderTab.updatedAt > now() - 2 * this.heartbeatMs);
@@ -2048,7 +2062,7 @@ export class SessionCoordinator {
 
       // Refresh workflow lock expiration if this runtime holds it
       if (draft.workflowLock?.runtimeId === this.runtimeId) {
-        draft.workflowLock.expiresAt = now() + this.leaseMs * 5;
+        draft.workflowLock.expiresAt = now() + this.workflowLockMs;
       }
 
       this.pruneDetachedTabs(draft);
