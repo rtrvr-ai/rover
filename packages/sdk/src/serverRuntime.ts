@@ -1,3 +1,5 @@
+import type { RoverPageCaptureConfig } from '@rover/shared/lib/types/index.js';
+
 export type RoverServerPolicy = {
   domainScopeMode?: 'host_only' | 'registrable_domain';
   externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
@@ -11,6 +13,22 @@ export type RoverServerPolicy = {
 export type RoverSnapshotMeta = {
   updatedAt?: number;
   digest?: string;
+};
+
+export type RoverServerSiteConfig = {
+  shortcuts?: Array<Record<string, unknown>>;
+  greeting?: {
+    text?: string;
+    delay?: number;
+    duration?: number;
+    disabled?: boolean;
+  };
+  limits?: {
+    shortcutMaxStored?: number;
+    shortcutMaxRendered?: number;
+  };
+  pageConfig?: RoverPageCaptureConfig | null;
+  version?: string | number;
 };
 
 export type RoverServerProjection = {
@@ -34,7 +52,7 @@ type SessionStartResponse = {
   epoch?: number;
   policy?: RoverServerPolicy;
   capabilities?: Record<string, boolean>;
-  siteConfig?: Record<string, unknown>;
+  siteConfig?: RoverServerSiteConfig;
   projection?: RoverServerProjection | null;
   sseUrl?: string;
 };

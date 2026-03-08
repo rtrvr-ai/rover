@@ -23,6 +23,7 @@ Add this snippet before `</body>` on any page:
     siteId: 'YOUR_SITE_ID',
     publicKey: 'pk_site_YOUR_PUBLIC_KEY',
     allowedDomains: ['yourdomain.com'],
+    domainScopeMode: 'registrable_domain',
   });
 </script>
 <script src="https://rover.rtrvr.ai/embed.js" async></script>
@@ -34,9 +35,12 @@ Or use the single-tag shorthand with data attributes:
 <script src="https://rover.rtrvr.ai/embed.js"
   data-site-id="YOUR_SITE_ID"
   data-public-key="pk_site_YOUR_PUBLIC_KEY"
-  data-allowed-domains="yourdomain.com">
+  data-allowed-domains="yourdomain.com"
+  data-domain-scope-mode="registrable_domain">
 </script>
 ```
+
+Use `data-domain-scope-mode="host_only"` to require exact host matches. Plain entries such as `example.com` become exact-host rules in `host_only` mode, while `registrable_domain` continues to allow subdomains.
 
 ## npm Install
 
@@ -51,6 +55,7 @@ boot({
   siteId: 'YOUR_SITE_ID',
   publicKey: 'pk_site_YOUR_PUBLIC_KEY',
   allowedDomains: ['yourdomain.com'],
+  domainScopeMode: 'registrable_domain',
 });
 ```
 
@@ -66,6 +71,7 @@ export function RoverWidget() {
       siteId: 'YOUR_SITE_ID',
       publicKey: 'pk_site_YOUR_PUBLIC_KEY',
       allowedDomains: ['yourdomain.com'],
+      domainScopeMode: 'registrable_domain',
     });
 
     return () => {
@@ -143,14 +149,15 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `ui.mascot.disabled` | `boolean` | `false` | Disable mascot video |
 | `ui.mascot.mp4Url` | `string` | default | Custom mascot MP4 URL |
 | `ui.mascot.webmUrl` | `string` | default | Custom mascot WebM URL |
-| `ui.muted` | `boolean` | `false` | Start with audio muted |
+| `ui.muted` | `boolean` | `true` | Start with audio muted on first load; stored browser preference wins after the user toggles sound |
 | `ui.thoughtStyle` | `'concise_cards' \| 'minimal'` | `'concise_cards'` | Thought rendering style |
 | `ui.panel.resizable` | `boolean` | `true` | Panel resizable preference |
 | `ui.showTaskControls` | `boolean` | `true` | Show new/end task controls |
 | `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced) |
 | `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | — | Greeting bubble config (`{name}` token supported) |
+| `pageConfig` | `RoverPageCaptureConfig` | — | Optional per-site page-capture overrides such as `disableAutoScroll`, settle timing, and sparse-tree retry settings |
 
-When a site key or session token is used, Rover fetches cloud site config via `/v2/rover/session/open` (shortcuts + greeting).  
+When a site key or session token is used, Rover fetches cloud site config via `/v2/rover/session/open` (shortcuts + greeting + pageConfig).  
 If the same field exists in both cloud config and boot config, boot config wins.
 
 If you enable `tools.web.scrapeMode: 'on_demand'`, use a site key capability profile that includes cloud scrape support.

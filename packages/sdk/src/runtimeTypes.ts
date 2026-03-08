@@ -22,6 +22,19 @@ export type PersistedTimelineEvent = {
   sourceRuntimeId?: string;
 };
 
+export type PersistedChatLogEntry = {
+  role: 'user' | 'model';
+  message: string;
+};
+
+export type PersistedTransientStatus = {
+  text: string;
+  ts: number;
+  runId?: string;
+  taskId?: string;
+  stage?: string;
+};
+
 export type PersistedWorkerHistoryMessage = {
   role: string;
   content: string;
@@ -51,6 +64,7 @@ export type PersistedWorkerState = {
   trajectoryId?: string;
   taskBoundaryId?: string;
   rootUserInput?: string;
+  seedChatLog?: PersistedChatLogEntry[];
   history?: PersistedWorkerHistoryMessage[];
   plannerHistory?: unknown[];
   agentPrevSteps?: unknown[];
@@ -98,6 +112,8 @@ export type TaskRecord = {
   // Per-task isolated data (previously global singletons)
   uiMessages: PersistedUiMessage[];
   timeline: PersistedTimelineEvent[];
+  seedChatLog?: PersistedChatLogEntry[];
+  transientStatus?: PersistedTransientStatus;
   workerState?: PersistedWorkerState;
   pendingRun?: PersistedPendingRun;
   tabScope?: PersistedTaskTabScope;
@@ -192,6 +208,7 @@ export type PersistedRuntimeState = {
 
   // Legacy v1 fields — kept for backward compat during migration
   uiStatus?: string;
+  transientStatus?: PersistedTransientStatus;
   uiMessages: PersistedUiMessage[];
   timeline: PersistedTimelineEvent[];
   workerState?: PersistedWorkerState;

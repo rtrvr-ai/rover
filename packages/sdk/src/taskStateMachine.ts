@@ -454,6 +454,7 @@ export function createTaskRecord(overrides?: Partial<TaskRecord>): TaskRecord {
     startedAt: now,
     uiMessages: [],
     timeline: [],
+    seedChatLog: [],
     tabIds: [],
     ...overrides,
   };

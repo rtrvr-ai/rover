@@ -1,5 +1,6 @@
 import { DEFAULT_GEMINI_MODEL } from '@rover/shared/lib/utils/constants.js';
-import type { LLMIntegration, UserProfile } from '@rover/shared/lib/types/index.js';
+import { sanitizeRoverPageCaptureConfig } from '@rover/shared/lib/page/index.js';
+import type { LLMIntegration, PageConfig, RoverPageCaptureConfig, UserProfile } from '@rover/shared/lib/types/index.js';
 import type {
   ApiAdditionalToolName,
   ApiToolsConfig,
@@ -32,6 +33,7 @@ export type RoverAgentConfig = {
   userContext?: string;
   recordingContext?: string;
   allowActions?: boolean;
+  pageConfig?: RoverPageCaptureConfig;
   apiMode?: boolean;
   apiToolsConfig?: ApiToolsConfig;
   tools?: {
@@ -590,7 +592,7 @@ export function createAgentContext(
       ? String(rawOptions.__roverExternalMessage)
       : undefined;
     const externalIntent = selectExternalIntent(requestedExternalIntent, externalMessage);
-    const pageConfig =
+    const requestPageConfig =
       rawOptions && typeof rawOptions === 'object'
         ? Object.fromEntries(
             Object.entries(rawOptions).filter(([key]) =>
@@ -600,6 +602,10 @@ export function createAgentContext(
             ),
           )
         : undefined;
+    const pageConfig = sanitizeRoverPageCaptureConfig({
+      ...(config.pageConfig || {}),
+      ...((requestPageConfig as PageConfig | undefined) || {}),
+    });
     const hasPageConfig = !!pageConfig && Object.keys(pageConfig).length > 0;
     const localPageData = rawOptions
       ? await bridgeRpc('getPageData', hasPageConfig ? { pageConfig, tabId: numericTabId } : { tabId: numericTabId })

@@ -4,7 +4,7 @@ import {
   iframeDoc,
   extractPrimaryInteractiveIdFromLabel,
 } from '@rover/a11y-tree';
-import { PageConfig } from '../types/index.js';
+import { PageConfig, type RoverPageCaptureConfig } from '../types/index.js';
 import { DEFAULT_PAGE_CONFIG } from '../utils/constants.js';
 
 // ---- Realm-safe node type checks (avoid instanceof across iframes) ----
@@ -353,4 +353,59 @@ export function normalizePageConfig(cfg?: PageConfig): PageConfig {
   }
 
   return merged;
+}
+
+const ROVER_PAGE_CAPTURE_CONFIG_KEYS = [
+  'disableAutoScroll',
+  'onlyTextContent',
+  'totalBudgetMs',
+  'pageDataTimeoutMs',
+  'pdfTextSelectionTimeoutMs',
+  'adaptiveSettleDebounceMs',
+  'adaptiveSettleMaxWaitMs',
+  'adaptiveSettleRetries',
+  'sparseTreeRetryDelayMs',
+  'sparseTreeRetryMaxAttempts',
+] as const satisfies ReadonlyArray<keyof RoverPageCaptureConfig>;
+
+export function sanitizeRoverPageCaptureConfig(input: unknown): RoverPageCaptureConfig | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const raw = input as Record<string, unknown>;
+  const candidate: PageConfig = {};
+
+  if (typeof raw.disableAutoScroll === 'boolean') {
+    candidate.disableAutoScroll = raw.disableAutoScroll;
+  }
+  if (typeof raw.onlyTextContent === 'boolean') {
+    candidate.onlyTextContent = raw.onlyTextContent;
+  }
+
+  const numericKeys = [
+    'totalBudgetMs',
+    'pageDataTimeoutMs',
+    'pdfTextSelectionTimeoutMs',
+    'adaptiveSettleDebounceMs',
+    'adaptiveSettleMaxWaitMs',
+    'adaptiveSettleRetries',
+    'sparseTreeRetryDelayMs',
+    'sparseTreeRetryMaxAttempts',
+  ] as const satisfies ReadonlyArray<Exclude<keyof RoverPageCaptureConfig, 'disableAutoScroll' | 'onlyTextContent'>>;
+
+  for (const key of numericKeys) {
+    const value = Number(raw[key]);
+    if (Number.isFinite(value)) {
+      candidate[key] = Math.trunc(value) as never;
+    }
+  }
+
+  if (!Object.keys(candidate).length) return undefined;
+
+  const normalized = normalizePageConfig(candidate);
+  const next: RoverPageCaptureConfig = {};
+  for (const key of ROVER_PAGE_CAPTURE_CONFIG_KEYS) {
+    if (candidate[key] !== undefined && normalized[key] !== undefined) {
+      (next as Record<string, unknown>)[key] = normalized[key];
+    }
+  }
+  return Object.keys(next).length ? next : undefined;
 }

@@ -12,6 +12,19 @@ export type SharedUiMessage = {
   sourceRuntimeId?: string;
 };
 
+export type SharedChatLogEntry = {
+  role: 'user' | 'model';
+  message: string;
+};
+
+export type SharedTransientStatus = {
+  text: string;
+  ts: number;
+  runId?: string;
+  taskId?: string;
+  stage?: string;
+};
+
 export type SharedTimelineEvent = {
   id: string;
   kind: string;
@@ -86,12 +99,15 @@ export type SharedTaskRecord = {
   timeline: SharedTimelineEvent[];
   rootUserInput?: string;
   summary?: string;
+  seedChatLog?: SharedChatLogEntry[];
+  transientStatus?: SharedTransientStatus;
 };
 
 export type SharedWorkerContext = {
   trajectoryId?: string;
   taskBoundaryId?: string;
   rootUserInput?: string;
+  seedChatLog?: SharedChatLogEntry[];
   history?: Array<{ role: string; content: string }>;
   plannerHistory?: unknown[];
   agentPrevSteps?: unknown[];
@@ -137,6 +153,7 @@ export type SharedSessionState = {
   uiMessages: SharedUiMessage[];
   timeline: SharedTimelineEvent[];
   uiStatus?: string;
+  transientStatus?: SharedTransientStatus;
   activeRun?: SharedActiveRun;
   task?: SharedTaskState;
   workerContext?: SharedWorkerContext;
@@ -221,6 +238,88 @@ function sanitizeSharedTask(raw: any): SharedTaskState | undefined {
   };
 }
 
+function sharedRecordStateFromTaskStatus(status?: SharedTaskState['status']): import('./runtimeTypes.js').TaskState {
+  if (status === 'completed') return 'completed';
+  if (status === 'cancelled' || status === 'ended') return 'cancelled';
+  if (status === 'failed') return 'failed';
+  return 'running';
+}
+
+function sanitizeSharedChatLog(input: unknown): SharedChatLogEntry[] {
+  if (!Array.isArray(input)) return [];
+  const out: SharedChatLogEntry[] = [];
+  for (const raw of input.slice(-4)) {
+    const role = raw?.role === 'user' ? 'user' : (raw?.role === 'model' ? 'model' : undefined);
+    if (!role) continue;
+    const message = String(raw?.message || '').replace(/\s+/g, ' ').trim();
+    if (!message) continue;
+    const previous = out[out.length - 1];
+    if (previous && previous.role === role && previous.message === message) continue;
+    out.push({ role, message });
+  }
+  return out;
+}
+
+function sanitizeSharedTransientStatus(
+  input: any,
+  fallback?: { runId?: string; taskId?: string },
+): SharedTransientStatus | undefined {
+  if (!input) return undefined;
+  const textCandidate = typeof input === 'string' ? input : input?.text;
+  const text = String(textCandidate || '').trim();
+  if (!text) return undefined;
+  const runId =
+    typeof input?.runId === 'string' && input.runId.trim()
+      ? input.runId.trim()
+      : (typeof fallback?.runId === 'string' && fallback.runId.trim() ? fallback.runId.trim() : undefined);
+  const taskId =
+    typeof input?.taskId === 'string' && input.taskId.trim()
+      ? input.taskId.trim()
+      : (typeof fallback?.taskId === 'string' && fallback.taskId.trim() ? fallback.taskId.trim() : undefined);
+  return {
+    text,
+    ts: Number(input?.ts) || now(),
+    runId,
+    taskId,
+    stage: typeof input?.stage === 'string' && input.stage.trim() ? input.stage.trim() : undefined,
+  };
+}
+
+function sanitizeSharedUiMessages(input: unknown): SharedUiMessage[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .slice(-ROVER_V2_PERSIST_CAPS.uiMessages)
+    .map((message: any) => ({
+      id: String(message?.id || randomId('msg')),
+      role:
+        message?.role === 'user' || message?.role === 'assistant' || message?.role === 'system'
+          ? message.role
+          : 'system',
+      text: String(message?.text || ''),
+      blocks: sanitizeMessageBlocks(message?.blocks),
+      ts: Number(message?.ts) || now(),
+      sourceRuntimeId: typeof message?.sourceRuntimeId === 'string' ? message.sourceRuntimeId : undefined,
+    }))
+    .filter((message: SharedUiMessage) => !!message.text || !!message.blocks?.length);
+}
+
+function sanitizeSharedTimeline(input: unknown): SharedTimelineEvent[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .slice(-ROVER_V2_PERSIST_CAPS.timelineEvents)
+    .map((event: any) => ({
+      id: String(event?.id || randomId('timeline')),
+      kind: String(event?.kind || 'status'),
+      title: String(event?.title || 'Step'),
+      detail: typeof event?.detail === 'string' ? event.detail : undefined,
+      detailBlocks: sanitizeMessageBlocks(event?.detailBlocks),
+      status: event?.status === 'pending' || event?.status === 'success' || event?.status === 'error' || event?.status === 'info' ? event.status : undefined,
+      ts: Number(event?.ts) || now(),
+      sourceRuntimeId: typeof event?.sourceRuntimeId === 'string' ? event.sourceRuntimeId : undefined,
+    }))
+    .filter((event: SharedTimelineEvent) => !!event.title);
+}
+
 const VALID_TASK_STATES = new Set(['idle', 'running', 'awaiting_user', 'paused', 'blocked', 'completed', 'failed', 'cancelled']);
 
 function sanitizeSharedTaskRecord(raw: any): SharedTaskRecord | undefined {
@@ -245,7 +344,7 @@ function sanitizeSharedTaskRecord(raw: any): SharedTaskRecord | undefined {
         : undefined,
     workerContext: sanitizeSharedWorkerContext(raw.workerContext),
     uiMessages: Array.isArray(raw.uiMessages)
-      ? raw.uiMessages.slice(-5).map((m: any) => ({
+      ? raw.uiMessages.slice(-ROVER_V2_PERSIST_CAPS.uiMessages).map((m: any) => ({
           id: String(m?.id || randomId('msg')),
           role: m?.role === 'user' || m?.role === 'assistant' || m?.role === 'system' ? m.role : 'system',
           text: String(m?.text || ''),
@@ -255,7 +354,7 @@ function sanitizeSharedTaskRecord(raw: any): SharedTaskRecord | undefined {
         })).filter((m: SharedUiMessage) => !!m.text || !!m.blocks?.length)
       : [],
     timeline: Array.isArray(raw.timeline)
-      ? raw.timeline.slice(-5).map((e: any) => ({
+      ? raw.timeline.slice(-ROVER_V2_PERSIST_CAPS.timelineEvents).map((e: any) => ({
           id: String(e?.id || randomId('timeline')),
           kind: String(e?.kind || 'status'),
           title: String(e?.title || 'Step'),
@@ -268,6 +367,11 @@ function sanitizeSharedTaskRecord(raw: any): SharedTaskRecord | undefined {
       : [],
     rootUserInput: typeof raw.rootUserInput === 'string' ? raw.rootUserInput : undefined,
     summary: typeof raw.summary === 'string' ? raw.summary : undefined,
+    seedChatLog: sanitizeSharedChatLog(raw.seedChatLog),
+    transientStatus: sanitizeSharedTransientStatus(raw.transientStatus, {
+      runId: raw.activeRun?.runId,
+      taskId,
+    }),
   };
 }
 
@@ -398,6 +502,7 @@ function sanitizeSharedWorkerContext(raw: any): SharedWorkerContext | undefined 
       ? raw.taskBoundaryId.trim()
       : undefined,
     rootUserInput: rootUserInput || undefined,
+    seedChatLog: sanitizeSharedChatLog(raw.seedChatLog),
     history,
     plannerHistory,
     agentPrevSteps,
@@ -431,6 +536,7 @@ function createDefaultSharedState(siteId: string, sessionId: string): SharedSess
     uiMessages: [],
     timeline: [],
     uiStatus: undefined,
+    transientStatus: undefined,
     activeRun: undefined,
     taskEpoch: 1,
     task: undefined,
@@ -481,41 +587,16 @@ function sanitizeSharedState(raw: any, siteId: string, sessionId: string): Share
       : [],
     nextLogicalTabId: Math.max(1, Number(raw.nextLogicalTabId) || 1),
     activeLogicalTabId: Number(raw.activeLogicalTabId) || undefined,
-    uiMessages: Array.isArray(raw.uiMessages)
-      ? raw.uiMessages
-          .slice(-ROVER_V2_PERSIST_CAPS.uiMessages)
-          .map((message: any) => ({
-            id: String(message?.id || randomId('msg')),
-            role:
-              message?.role === 'user' || message?.role === 'assistant' || message?.role === 'system'
-                ? message.role
-                : 'system',
-            text: String(message?.text || ''),
-            blocks: sanitizeMessageBlocks(message?.blocks),
-            ts: Number(message?.ts) || now(),
-            sourceRuntimeId: typeof message?.sourceRuntimeId === 'string' ? message.sourceRuntimeId : undefined,
-          }))
-          .filter((message: SharedUiMessage) => !!message.text || !!message.blocks?.length)
-      : [],
-    timeline: Array.isArray(raw.timeline)
-      ? raw.timeline
-          .slice(-ROVER_V2_PERSIST_CAPS.timelineEvents)
-          .map((event: any) => ({
-            id: String(event?.id || randomId('timeline')),
-            kind: String(event?.kind || 'status'),
-            title: String(event?.title || 'Step'),
-            detail: typeof event?.detail === 'string' ? event.detail : undefined,
-            detailBlocks: sanitizeMessageBlocks(event?.detailBlocks),
-            status: event?.status === 'pending' || event?.status === 'success' || event?.status === 'error' || event?.status === 'info' ? event.status : undefined,
-            ts: Number(event?.ts) || now(),
-            sourceRuntimeId: typeof event?.sourceRuntimeId === 'string' ? event.sourceRuntimeId : undefined,
-          }))
-          .filter((event: SharedTimelineEvent) => !!event.title)
-      : [],
+    uiMessages: sanitizeSharedUiMessages(raw.uiMessages),
+    timeline: sanitizeSharedTimeline(raw.timeline),
     taskEpoch: Math.max(1, Number(raw.taskEpoch) || 1),
     task: sanitizeSharedTask(raw.task),
     workerContext: sanitizeSharedWorkerContext(raw.workerContext),
     uiStatus: typeof raw.uiStatus === 'string' ? raw.uiStatus : undefined,
+    transientStatus: sanitizeSharedTransientStatus(raw.transientStatus ?? raw.uiStatus, {
+      runId: raw.activeRun?.runId,
+      taskId: raw.task?.taskId,
+    }),
     activeRun:
       raw.activeRun && typeof raw.activeRun === 'object'
         ? {
@@ -566,7 +647,61 @@ function sanitizeSharedState(raw: any, siteId: string, sessionId: string): Share
     console.warn(`[rover] sanitizeSharedState: dropped ${inputTabCount - state.tabs.length} invalid/duplicate tab entries`);
   }
 
+  syncDraftTaskRecordFromLegacy(state);
+
   return state;
+}
+
+function ensureDraftTaskRecord(draft: SharedSessionState): SharedTaskRecord | undefined {
+  const taskId = String(draft.task?.taskId || draft.activeTaskId || '').trim();
+  if (!taskId) return undefined;
+  const startedAt = Number(draft.task?.startedAt) || now();
+  if (!draft.tasks) draft.tasks = {};
+  const existing = draft.tasks[taskId];
+  if (existing) {
+    draft.activeTaskId = taskId;
+    return existing;
+  }
+  const created: SharedTaskRecord = {
+    taskId,
+    state: sharedRecordStateFromTaskStatus(draft.task?.status),
+    startedAt,
+    endedAt: draft.task?.endedAt,
+    activeRun: draft.activeRun,
+    workerContext: draft.workerContext,
+    uiMessages: [...draft.uiMessages],
+    timeline: [...draft.timeline],
+    rootUserInput: draft.workerContext?.rootUserInput,
+    summary: undefined,
+    seedChatLog: sanitizeSharedChatLog(draft.workerContext?.seedChatLog),
+    transientStatus: sanitizeSharedTransientStatus(draft.transientStatus ?? draft.uiStatus, {
+      runId: draft.activeRun?.runId,
+      taskId,
+    }),
+  };
+  draft.tasks[taskId] = created;
+  draft.activeTaskId = taskId;
+  return created;
+}
+
+function syncDraftTaskRecordFromLegacy(draft: SharedSessionState): void {
+  const record = ensureDraftTaskRecord(draft);
+  if (!record) return;
+  record.state = sharedRecordStateFromTaskStatus(draft.task?.status);
+  record.startedAt = Number(draft.task?.startedAt) || record.startedAt || now();
+  record.endedAt = Number(draft.task?.endedAt) || undefined;
+  record.activeRun = draft.activeRun;
+  record.workerContext = sanitizeSharedWorkerContext(draft.workerContext);
+  record.uiMessages = sanitizeSharedUiMessages(draft.uiMessages);
+  record.timeline = sanitizeSharedTimeline(draft.timeline);
+  record.rootUserInput = draft.workerContext?.rootUserInput || record.rootUserInput;
+  const latestAssistant = [...record.uiMessages].reverse().find(message => message.role === 'assistant');
+  record.summary = latestAssistant?.text || record.summary;
+  record.seedChatLog = sanitizeSharedChatLog(draft.workerContext?.seedChatLog);
+  record.transientStatus = sanitizeSharedTransientStatus(draft.transientStatus ?? draft.uiStatus, {
+    runId: draft.activeRun?.runId,
+    taskId: record.taskId,
+  });
 }
 
 export class SessionCoordinator {
@@ -930,14 +1065,15 @@ export class SessionCoordinator {
     this.heartbeatTimer = window.setInterval(() => {
       this.heartbeat();
     }, this.heartbeatMs);
+    if (typeof (this.heartbeatTimer as any)?.unref === 'function') {
+      (this.heartbeatTimer as any).unref();
+    }
 
     this.notifyRoleChange();
     this.onStateChange?.(this.state, 'local');
   }
 
   stop(): void {
-    if (!this.started) return;
-    this.started = false;
     this.heartbeatCount = 0;
 
     if (this.heartbeatTimer != null) {
@@ -971,6 +1107,9 @@ export class SessionCoordinator {
       clearTimeout(timer);
     }
     this.probeTimers = [];
+
+    if (!this.started) return;
+    this.started = false;
 
     this.mutate('local', draft => {
       draft.tabs = draft.tabs.filter(tab => tab.runtimeId !== this.runtimeId);
@@ -1029,6 +1168,7 @@ export class SessionCoordinator {
       }
       if (!task) return;
       draft.task = sanitizeSharedTask(task) || draft.task;
+      syncDraftTaskRecordFromLegacy(draft);
     });
   }
 
@@ -1111,9 +1251,11 @@ export class SessionCoordinator {
       draft.uiMessages = [];
       draft.timeline = [];
       draft.uiStatus = undefined;
+      draft.transientStatus = undefined;
       draft.activeRun = undefined;
       draft.workerContext = undefined;
       this.resetDraftToSingleCurrentTab(draft, window.location.href, document.title || undefined);
+      syncDraftTaskRecordFromLegacy(draft);
     });
 
     return nextTask;
@@ -1130,6 +1272,9 @@ export class SessionCoordinator {
         endedAt: now(),
       };
       draft.activeRun = undefined;
+      draft.transientStatus = undefined;
+      draft.uiStatus = undefined;
+      syncDraftTaskRecordFromLegacy(draft);
       endedTask = draft.task;
     });
     return endedTask;
@@ -1152,6 +1297,7 @@ export class SessionCoordinator {
       if (draft.task.status !== 'running') return;
       if (role === 'user') draft.task.lastUserAt = timestamp;
       if (role === 'assistant') draft.task.lastAssistantAt = timestamp;
+      syncDraftTaskRecordFromLegacy(draft);
     });
   }
 
@@ -1159,15 +1305,23 @@ export class SessionCoordinator {
     this.mutate('local', draft => {
       if (!context) {
         draft.workerContext = undefined;
+        syncDraftTaskRecordFromLegacy(draft);
         return;
       }
       draft.workerContext = sanitizeSharedWorkerContext(context);
+      syncDraftTaskRecordFromLegacy(draft);
     });
   }
 
-  setStatus(status: string | undefined): void {
+  setStatus(status: string | SharedTransientStatus | undefined): void {
     this.mutate('local', draft => {
-      draft.uiStatus = status || undefined;
+      const normalized = sanitizeSharedTransientStatus(status, {
+        runId: draft.activeRun?.runId,
+        taskId: draft.task?.taskId,
+      });
+      draft.uiStatus = normalized?.text;
+      draft.transientStatus = normalized;
+      syncDraftTaskRecordFromLegacy(draft);
     });
   }
 
@@ -1201,6 +1355,7 @@ export class SessionCoordinator {
       } else if (next.role === 'assistant') {
         draft.task.lastAssistantAt = next.ts;
       }
+      syncDraftTaskRecordFromLegacy(draft);
     });
 
     return next;
@@ -1225,6 +1380,7 @@ export class SessionCoordinator {
       if (draft.timeline.length > this.maxTimeline) {
         draft.timeline = draft.timeline.slice(-this.maxTimeline);
       }
+      syncDraftTaskRecordFromLegacy(draft);
     });
 
     return next;
@@ -1233,6 +1389,7 @@ export class SessionCoordinator {
   clearTimeline(): void {
     this.mutate('local', draft => {
       draft.timeline = [];
+      syncDraftTaskRecordFromLegacy(draft);
     });
   }
 
@@ -1240,10 +1397,14 @@ export class SessionCoordinator {
     this.mutate('local', draft => {
       if (!activeRun) {
         draft.activeRun = undefined;
+        draft.transientStatus = undefined;
+        draft.uiStatus = undefined;
+        syncDraftTaskRecordFromLegacy(draft);
         return;
       }
       if (draft.task && draft.task.status !== 'running') {
         draft.activeRun = undefined;
+        syncDraftTaskRecordFromLegacy(draft);
         return;
       }
       draft.activeRun = {
@@ -1253,6 +1414,7 @@ export class SessionCoordinator {
         startedAt: draft.activeRun?.runId === activeRun.runId ? draft.activeRun.startedAt : now(),
         updatedAt: now(),
       };
+      syncDraftTaskRecordFromLegacy(draft);
     });
   }
 
@@ -1430,6 +1592,9 @@ export class SessionCoordinator {
         });
       }
     }, PROBE_TIMEOUT_MS);
+    if (typeof (timer as any)?.unref === 'function') {
+      (timer as any).unref();
+    }
     // Allow cleanup if coordinator is stopped
     this.probeTimers.push(timer);
   }
@@ -1498,6 +1663,9 @@ export class SessionCoordinator {
         this.pendingRpcRequests.delete(requestId);
         reject(new Error(`Cross-tab RPC timed out after ${timeoutMs}ms (method=${method}, target=${targetRuntimeId})`));
       }, timeoutMs);
+      if (typeof (timer as any)?.unref === 'function') {
+        (timer as any).unref();
+      }
 
       this.pendingRpcRequests.set(requestId, { resolve, reject, timer });
 
@@ -1946,6 +2114,9 @@ export class SessionCoordinator {
         holderRuntimeId: this.state.lease?.holderRuntimeId,
       });
     }, SessionCoordinator.ROLE_CHANGE_DEBOUNCE_MS);
+    if (typeof (this.roleChangeTimer as any)?.unref === 'function') {
+      (this.roleChangeTimer as any).unref();
+    }
   }
 
   private syncLocalLogicalTabId(): void {
@@ -1997,7 +2168,7 @@ export class SessionCoordinator {
     const tabs = state.tabs;
     return `${tabs.length}:${tabs.map(t =>
       `${t.logicalTabId}|${t.runtimeId || ''}|${t.url}|${t.title || ''}|${!!t.detachedAt}`
-    ).join(';')}:${state.activeLogicalTabId ?? ''}:${state.lease?.holderRuntimeId ?? ''}:${state.activeRun?.runId ?? ''}:${state.activeRun?.runtimeId ?? ''}:${state.workflowLock?.runtimeId ?? ''}:${state.taskEpoch ?? ''}:${(state.uiMessages as any[])?.length ?? 0}:${(state.timeline as any[])?.length ?? 0}:${state.uiStatus ?? ''}`;
+    ).join(';')}:${state.activeLogicalTabId ?? ''}:${state.lease?.holderRuntimeId ?? ''}:${state.activeRun?.runId ?? ''}:${state.activeRun?.runtimeId ?? ''}:${state.workflowLock?.runtimeId ?? ''}:${state.taskEpoch ?? ''}:${(state.uiMessages as any[])?.length ?? 0}:${(state.timeline as any[])?.length ?? 0}:${state.transientStatus?.text ?? state.uiStatus ?? ''}`;
   }
 
   private applyIncomingState(incoming: SharedSessionState): void {
