@@ -31,6 +31,7 @@ export type RoverAgentConfig = {
   googleAiStudioApiKeys?: string[];
   userProfile?: UserProfile;
   userContext?: string;
+  rootUserInput?: string;
   recordingContext?: string;
   allowActions?: boolean;
   pageConfig?: RoverPageCaptureConfig;
@@ -48,6 +49,7 @@ export type AgentContext = {
   siteId?: string;
   llmIntegration: LLMIntegration;
   userProfile?: UserProfile;
+  rootUserInput?: string;
   getPageData: (tabId: number, options?: any) => Promise<any>;
   getExternalPageData: (
     url: string,
@@ -706,6 +708,9 @@ export function createAgentContext(
     siteId: config.siteId,
     llmIntegration,
     userProfile,
+    rootUserInput: typeof config.rootUserInput === 'string' && config.rootUserInput.trim()
+      ? config.rootUserInput.trim()
+      : undefined,
     getPageData,
     getExternalPageData,
     callExtensionRouter,

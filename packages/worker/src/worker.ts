@@ -1961,10 +1961,11 @@ async function handleUserMessage(
   }
   const fallbackRootInput = normalizeRootUserInput(getRootUserInputFallbackFromHistory());
   const existingRootInput = normalizeRootUserInput(rootUserInput) || fallbackRootInput;
+  const hasStructuredAskUserAnswers = !!(options?.askUserAnswers && typeof options.askUserAnswers === 'object');
   if (existingRootInput) {
     rootUserInput = existingRootInput;
   }
-  if (!pendingAskUserSnapshot?.questions?.length && normalizedIncomingText && !options?.resume) {
+  if (!pendingAskUserSnapshot?.questions?.length && normalizedIncomingText && !options?.resume && !hasStructuredAskUserAnswers) {
     rootUserInput = normalizedIncomingText;
   }
 
@@ -1994,6 +1995,19 @@ async function handleUserMessage(
 
       pendingAskUser = undefined;
       postStateSnapshot();
+    }
+  } else if (hasStructuredAskUserAnswers) {
+    const normalizedAnswers = normalizeAskUserAnswerMeta(options?.askUserAnswers, [], text);
+    const focusInput = normalizeRootUserInput(rootUserInput) || fallbackRootInput || '';
+    if (focusInput) {
+      rootUserInput = focusInput;
+      effectiveUserInput = buildContinuePlanningInput(
+        focusInput,
+        'ask_user',
+        normalizedAnswers?.rawText || normalizedIncomingText,
+      );
+    } else if (normalizedIncomingText) {
+      rootUserInput = normalizedIncomingText;
     }
   }
 
@@ -2067,6 +2081,7 @@ async function handleUserMessage(
       signal: activeAbortController?.signal,
       sessionId: workerSessionId || config.sessionId || taskTrajectoryId,
       activeRunId,
+      rootUserInput: normalizeRootUserInput(rootUserInput),
       runtimeContext,
       tools: {
         web: extractWebToolsConfig(config),
@@ -2520,6 +2535,7 @@ async function runUserMessage(
   text: string,
   meta?: {
     runId?: string;
+    trajectoryId?: string;
     resume?: boolean;
     preserveHistory?: boolean;
     seedChatLog?: FollowupChatLogEntry[];
@@ -2562,6 +2578,9 @@ async function runUserMessage(
   }
   if (activeRun && activeRun.runId === runId) {
     return;
+  }
+  if (typeof meta?.trajectoryId === 'string' && meta.trajectoryId.trim()) {
+    taskTrajectoryId = meta.trajectoryId.trim();
   }
   const resume = !!meta?.resume;
   const preserveHistory = !!meta?.preserveHistory;

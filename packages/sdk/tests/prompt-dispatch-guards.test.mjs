@@ -61,6 +61,27 @@ test('ask_user continuation is rejected when boundary mismatches', () => {
   );
 });
 
+test('ask_user answers still continue the same task when pending prompt state has not hydrated yet', () => {
+  assert.equal(
+    shouldContinueTaskForPrompt({
+      taskStatus: 'running',
+      pendingAskUserQuestionCount: 0,
+      hasAskUserAnswers: true,
+      currentTaskBoundaryId: 'boundary-1',
+    }),
+    true,
+  );
+  assert.equal(
+    shouldStartFreshTaskForPrompt({
+      taskStatus: 'running',
+      pendingAskUserQuestionCount: 0,
+      hasAskUserAnswers: true,
+      currentTaskBoundaryId: 'boundary-1',
+    }),
+    false,
+  );
+});
+
 test('explicit startNewTask override always forces a new boundary', () => {
   assert.equal(
     shouldStartFreshTaskForPrompt({
