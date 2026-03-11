@@ -37,47 +37,7 @@ jobs:
           name: rover-sdk-dist
           path: public/
       - name: Update artifact manifest
-        run: |
-          cat > /tmp/update-manifest.cjs << 'SCRIPT'
-          const crypto = require('crypto');
-          const fs = require('fs');
-
-          const ARTIFACTS = [
-            { name: 'embed.js',          target: 'public/embed.js',          source: '../rover/packages/sdk/dist/embed.js' },
-            { name: 'rover.js',          target: 'public/rover.js',          source: '../rover/packages/sdk/dist/rover.js' },
-            { name: 'worker/worker.js',  target: 'public/worker/worker.js',  source: '../rover/packages/sdk/dist/worker/rover-worker.js' },
-          ];
-
-          const files = {};
-          for (const a of ARTIFACTS) {
-            const data = fs.readFileSync(a.target);
-            files[a.name] = {
-              sha256: crypto.createHash('sha256').update(data).digest('hex'),
-              bytes: data.length,
-              target: a.target,
-              source: a.source,
-            };
-          }
-
-          const sourceCommit = process.env.ROVER_COMMIT || undefined;
-          const sourceTag    = process.env.ROVER_TAG    || undefined;
-
-          const manifest = {
-            version: 1,
-            generatedAt: new Date().toISOString(),
-            sourceRoot: '../rover/packages/sdk/dist',
-            ...(sourceCommit ? { sourceCommit } : {}),
-            ...(sourceTag    ? { sourceTag }    : {}),
-            files,
-          };
-
-          fs.writeFileSync(
-            'public/rover-artifacts-manifest.json',
-            JSON.stringify(manifest, null, 2) + '\n',
-          );
-          console.log('Updated public/rover-artifacts-manifest.json');
-          SCRIPT
-          node /tmp/update-manifest.cjs
+        run: node scripts/rover-artifacts.mjs manifest --commit "$ROVER_COMMIT" --tag "$ROVER_TAG"
         env:
           ROVER_COMMIT: ${{ github.sha }}
           ROVER_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
@@ -109,7 +69,22 @@ jobs:
             --base main)
 
           echo "Created PR: $PR_URL"
-          gh pr merge "$PR_URL" --auto --squash
+
+          for i in $(seq 1 30); do
+            STATE=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus')
+            case "$STATE" in
+              CLEAN|UNSTABLE)
+                gh pr merge "$PR_URL" --squash --delete-branch
+                exit 0 ;;
+              BLOCKED)
+                echo "PR is BLOCKED — failing."
+                exit 1 ;;
+              *) echo "Merge state: $STATE — waiting (attempt $i/30)…"
+                 sleep 10 ;;
+            esac
+          done
+          echo "Timed out waiting for PR to become mergeable."
+          exit 1
 
   # npm publishing moved to .github/workflows/release.yml
   # Use manual workflow trigger or push git tags to publish
