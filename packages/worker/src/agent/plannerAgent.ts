@@ -3,6 +3,7 @@ import type { PlannerOptions, PlannerResponse, PlannerPreviousStep, FunctionDecl
 import type { AgentContext } from './context.js';
 import { executeToolFromPlan } from './toolExecutor.js';
 import { resolveRuntimeTabs } from './runtimeTabs.js';
+import { extractLogicalFunctionCallArgs, applyLogicalTabIds } from './utils.js';
 
 const MAX_PLANNER_DEPTH = 15;
 const MAX_CHATLOG_ENTRIES = 12;
@@ -248,10 +249,18 @@ export async function executePlannerWithTools(
       options.onPrevStepsUpdate?.(toolResult.prevSteps);
     }
 
+    const logicalPlannerArgs = extractLogicalFunctionCallArgs(plannerResponse.modelParts);
+    const logicalArgs = logicalPlannerArgs[0]; // planner returns exactly 1 function call
+
     const completedStep: PlannerPreviousStep = {
       modelParts: plannerResponse.modelParts,
       thought: plan.thought ?? plannerResponse.overallThought,
-      toolCall: { name: plan.toolName, args: plan.parameters },
+      toolCall: {
+        name: plan.toolName,
+        args: logicalArgs
+          ? applyLogicalTabIds({ ...plan.parameters }, logicalArgs)
+          : plan.parameters,
+      },
       textOutput: toolResult.output,
       error: toolResult.error,
       schemaHeaderSheetInfo: toolResult.schemaHeaderSheetInfo,

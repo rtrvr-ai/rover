@@ -115,6 +115,7 @@ export async function processActionResponse({
 
   throwIfCancelled();
   const { functionCalls, modelParts, data, accTreeId } = response || {};
+  const logicalArgsList = extractLogicalFunctionCallArgs(modelParts);
   let disableAutoScroll = false;
 
   if (data && Array.isArray(data) && data.length > 0) {
@@ -205,20 +206,21 @@ export async function processActionResponse({
 
     const systemCalls: FunctionCall[] = [];
     const externalCalls: FunctionCall[] = [];
+    const systemCallOriginalIndices: number[] = [];
 
-    for (const call of functionCalls) {
+    for (let i = 0; i < functionCalls.length; i++) {
+      const call = functionCalls[i];
       const rawName = String(call?.name || '');
       const alias = SYSTEM_TOOL_ALIASES[rawName];
       if (alias) {
-        systemCalls.push({
-          ...call,
-          name: alias,
-        });
+        systemCalls.push({ ...call, name: alias });
+        systemCallOriginalIndices.push(i);
         continue;
       }
 
       if (call?.name && systemToolNamesSet.has(call.name)) {
         systemCalls.push(call);
+        systemCallOriginalIndices.push(i);
       } else {
         externalCalls.push(call);
       }
@@ -262,11 +264,14 @@ export async function processActionResponse({
         accTreeId,
         thought,
         modelParts,
-        functions: systemCalls.map(fc => ({
-          name: fc.name || 'unknown',
-          args: fc.args || {},
-          response: { status: 'Pending execution' },
-        })),
+        functions: systemCalls.map((fc, j) => {
+          const logicalArgs = logicalArgsList[systemCallOriginalIndices[j]];
+          return {
+            name: fc.name || 'unknown',
+            args: logicalArgs ? applyLogicalTabIds({ ...(fc.args || {}) }, logicalArgs) : (fc.args || {}),
+            response: { status: 'Pending execution' },
+          };
+        }),
       });
       limitPrevSteps(prevSteps);
       onPrevStepsUpdate?.(prevSteps);
@@ -288,7 +293,12 @@ export async function processActionResponse({
       throwIfCancelled();
 
       if (stepIndex >= 0 && stepIndex < prevSteps.length) {
-        prevSteps[stepIndex].functions = results as unknown as LLMFunction[];
+        prevSteps[stepIndex].functions = (results as unknown as LLMFunction[]).map((result, j) => {
+          const logicalArgs = logicalArgsList[systemCallOriginalIndices[j]];
+          return logicalArgs
+            ? { ...result, args: applyLogicalTabIds({ ...result.args }, logicalArgs) }
+            : result;
+        });
         const failedCount = results.filter(r => r.response.status === 'Failure').length;
         if (failedCount > 0) {
           prevSteps[stepIndex].fail = `${failedCount} tool(s) failed.`;
@@ -410,6 +420,42 @@ export function managePrevStepsSize(prevSteps: PreviousSteps[], maxSteps = 3) {
       }
     }
   }
+}
+
+const TAB_ID_FIELDS = ['tab_id', 'source_tab_id', 'source_tab_ids'] as const;
+
+/** Extract function call args from modelParts, preserving logical tab IDs.
+ *  Returns array in same order as functionCalls. Empty array = graceful fallback. */
+export function extractLogicalFunctionCallArgs(modelParts: any[] | undefined): Record<string, any>[] {
+  if (!Array.isArray(modelParts)) return [];
+  return modelParts
+    .filter((part: any) => part?.functionCall)
+    .map((part: any) => part.functionCall.args || {});
+}
+
+/** Override only tab-id fields in actualArgs with values from logicalArgs.
+ *  Handles top-level + nested tool_calls for EXECUTE_MULTIPLE_TOOLS. */
+export function applyLogicalTabIds(
+  actualArgs: Record<string, any>,
+  logicalArgs: Record<string, any>,
+): Record<string, any> {
+  for (const field of TAB_ID_FIELDS) {
+    if (field in logicalArgs) actualArgs[field] = logicalArgs[field];
+  }
+  delete actualArgs._tab_id_mapping_error;
+
+  if (Array.isArray(actualArgs.tool_calls) && Array.isArray(logicalArgs.tool_calls)) {
+    for (let i = 0; i < actualArgs.tool_calls.length && i < logicalArgs.tool_calls.length; i++) {
+      const dst = actualArgs.tool_calls[i]?.tool_args;
+      const src = logicalArgs.tool_calls[i]?.tool_args;
+      if (!dst || !src) continue;
+      for (const field of TAB_ID_FIELDS) {
+        if (field in src) dst[field] = src[field];
+      }
+      delete dst._tab_id_mapping_error;
+    }
+  }
+  return actualArgs;
 }
 
 export function formatFunctionResultsIntoPrevSteps(
