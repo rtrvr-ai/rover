@@ -693,3 +693,6 @@ on navigation i think prev steps are clearing up so take care of that
 
 
 1. add a tool telling its adversial or readon in answer saying adversial if requested in unrelated and seems like testing rover
+
+
+make sure in heuristcis of empty tree - you cover and handle pages like example.com that are small and also any most read only pages too
