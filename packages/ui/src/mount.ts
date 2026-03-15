@@ -188,9 +188,13 @@ const STRUCTURED_PAGE_SIZE = 25;
 const STRUCTURED_MAX_DEPTH = 4;
 const SHORTCUTS_RENDER_LIMIT = 12;
 const GREETING_REVEAL_DELAY_MS = 800;
-const VOICE_AUTO_STOP_DEFAULT_MS = 1400;
+const VOICE_AUTO_STOP_DEFAULT_MS = 2600;
 const VOICE_AUTO_STOP_MIN_MS = 800;
 const VOICE_AUTO_STOP_MAX_MS = 5000;
+const VOICE_INITIAL_SPEECH_GRACE_MS = 5000;
+const VOICE_MAX_SESSION_MS = 60000;
+const VOICE_MAX_PRE_SPEECH_RESTARTS = 3;
+const VOICE_RESTART_DELAY_MS = 160;
 
 function createId(prefix: string): string {
   try {
@@ -265,6 +269,14 @@ function sanitizeVoiceConfig(input?: RoverVoiceConfig): RoverVoiceConfig | undef
     next.autoStopMs = normalizeVoiceAutoStopMs(input.autoStopMs);
   }
   return Object.keys(next).length ? next : undefined;
+}
+
+function createNoSpeechVoiceError(): VoiceRecognitionError {
+  return {
+    code: 'no_speech',
+    message: 'No speech was detected.',
+    recoverable: true,
+  };
 }
 
 function normalizeVoiceDraftSegment(input: string): string {
@@ -929,7 +941,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   const host = document.createElement('div');
   host.id = 'rover-widget-root';
-  document.documentElement.appendChild(host);
+  (document.body || document.documentElement).appendChild(host);
 
   const shadow = host.attachShadow({ mode: 'closed' });
 
@@ -3425,8 +3437,18 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let voiceFinalTranscript = '';
   let voiceInterimTranscript = '';
   let pendingVoiceSubmit = false;
-  let voiceStopReason: 'manual' | 'submit' | 'typed' | 'silence' | 'disabled' | 'config' | null = null;
+  let voiceStopReason: 'manual' | 'submit' | 'typed' | 'silence' | 'disabled' | 'config' | 'no_speech' | 'error' | null = null;
   let voiceStopTimer: ReturnType<typeof setTimeout> | null = null;
+  let voiceGraceTimer: ReturnType<typeof setTimeout> | null = null;
+  let voiceSessionTimer: ReturnType<typeof setTimeout> | null = null;
+  let voiceRestartTimer: ReturnType<typeof setTimeout> | null = null;
+  let voiceSessionStartedAt = 0;
+  let voiceHasSpeech = false;
+  let voiceSpeechActive = false;
+  let voicePreSpeechRestartCount = 0;
+  let voiceLastError: VoiceRecognitionError | null = null;
+  let voiceErrorTelemetrySent = false;
+  let voiceStartTelemetryPending = false;
   let reportedVoiceProviderKey = '';
 
   function emitVoiceTelemetry(event: RoverVoiceTelemetryEvent, payload?: Record<string, unknown>): void {
@@ -3452,10 +3474,42 @@ export function mountWidget(opts: MountOptions): RoverUi {
     voiceStopTimer = null;
   }
 
+  function clearVoiceGraceTimer(): void {
+    if (!voiceGraceTimer) return;
+    clearTimeout(voiceGraceTimer);
+    voiceGraceTimer = null;
+  }
+
+  function clearVoiceSessionTimer(): void {
+    if (!voiceSessionTimer) return;
+    clearTimeout(voiceSessionTimer);
+    voiceSessionTimer = null;
+  }
+
+  function clearVoiceRestartTimer(): void {
+    if (!voiceRestartTimer) return;
+    clearTimeout(voiceRestartTimer);
+    voiceRestartTimer = null;
+  }
+
   function resetVoiceDraftState(): void {
     voiceDraftBase = '';
     voiceFinalTranscript = '';
     voiceInterimTranscript = '';
+  }
+
+  function resetVoiceSessionState(): void {
+    clearVoiceStopTimer();
+    clearVoiceGraceTimer();
+    clearVoiceSessionTimer();
+    clearVoiceRestartTimer();
+    voiceSessionStartedAt = 0;
+    voiceHasSpeech = false;
+    voiceSpeechActive = false;
+    voicePreSpeechRestartCount = 0;
+    voiceLastError = null;
+    voiceErrorTelemetrySent = false;
+    voiceStartTelemetryPending = false;
   }
 
   function buildVoiceDraft(): string {
@@ -3468,6 +3522,36 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   function getVoiceAutoStopMs(): number {
     return normalizeVoiceAutoStopMs(voiceConfig?.autoStopMs);
+  }
+
+  function getVoiceSessionDurationMs(): number {
+    if (!voiceSessionStartedAt) return 0;
+    return Math.max(0, Date.now() - voiceSessionStartedAt);
+  }
+
+  function buildVoiceTelemetryContext(extra?: Record<string, unknown>): Record<string, unknown> {
+    return {
+      hadSpeech: voiceHasSpeech,
+      restartCount: voicePreSpeechRestartCount,
+      durationMs: getVoiceSessionDurationMs(),
+      autoStopMs: getVoiceAutoStopMs(),
+      ...(extra || {}),
+    };
+  }
+
+  function emitVoiceErrorTelemetry(error: VoiceRecognitionError): void {
+    if (!voiceErrorTelemetrySent) {
+      emitVoiceTelemetry('voice_error', buildVoiceTelemetryContext({
+        code: error.code,
+        recoverable: error.recoverable,
+      }));
+      voiceErrorTelemetrySent = true;
+    }
+    if (error.code === 'permission_denied') {
+      emitVoiceTelemetry('voice_permission_denied', buildVoiceTelemetryContext({
+        code: error.code,
+      }));
+    }
   }
 
   function reportVoiceProviderSelection(): void {
@@ -3502,7 +3586,11 @@ export function mountWidget(opts: MountOptions): RoverUi {
       return;
     }
     if (voiceState === 'listening') {
-      setComposerStatusMessage('Listening... Rover will stop after a short pause.');
+      setComposerStatusMessage(
+        voiceHasSpeech
+          ? "Listening. Pause briefly when you're done."
+          : "Listening. Start speaking when you're ready.",
+      );
       return;
     }
     if (enabled && !supported) {
@@ -3513,16 +3601,20 @@ export function mountWidget(opts: MountOptions): RoverUi {
   }
 
   function stopVoiceDictation(
-    reason: 'manual' | 'submit' | 'typed' | 'silence' | 'disabled' | 'config',
+    reason: 'manual' | 'submit' | 'typed' | 'silence' | 'disabled' | 'config' | 'no_speech' | 'error',
     options?: { resetDraftBase?: boolean },
   ): void {
     if (voiceState !== 'listening') {
       if (options?.resetDraftBase) {
         resetVoiceDraftState();
+        resetVoiceSessionState();
       }
       return;
     }
     clearVoiceStopTimer();
+    clearVoiceGraceTimer();
+    clearVoiceSessionTimer();
+    clearVoiceRestartTimer();
     voiceStopReason = reason;
     voiceProvider.stop();
     if (options?.resetDraftBase) {
@@ -3530,8 +3622,83 @@ export function mountWidget(opts: MountOptions): RoverUi {
     }
   }
 
+  function canRestartVoiceBeforeSpeech(error?: VoiceRecognitionError | null): boolean {
+    if (voiceState !== 'listening' || voiceHasSpeech) return false;
+    if (voiceStopReason) return false;
+    if (voicePreSpeechRestartCount >= VOICE_MAX_PRE_SPEECH_RESTARTS) return false;
+    const durationMs = getVoiceSessionDurationMs();
+    if (durationMs >= VOICE_INITIAL_SPEECH_GRACE_MS || durationMs >= VOICE_MAX_SESSION_MS) return false;
+    if (!error) return true;
+    return error.code === 'no_speech' || error.code === 'aborted' || error.code === 'unknown';
+  }
+
+  function scheduleVoiceGraceTimeout(): void {
+    if (voiceState !== 'listening' || voiceHasSpeech || !voiceSessionStartedAt) return;
+    clearVoiceGraceTimer();
+    const remainingMs = VOICE_INITIAL_SPEECH_GRACE_MS - getVoiceSessionDurationMs();
+    if (remainingMs <= 0) {
+      const error = voiceLastError && voiceLastError.code === 'no_speech'
+        ? voiceLastError
+        : createNoSpeechVoiceError();
+      voiceStopReason = 'no_speech';
+      voiceState = 'error';
+      voiceErrorMessage = error.message;
+      emitVoiceErrorTelemetry(error);
+      syncVoiceUi();
+      voiceProvider.stop();
+      return;
+    }
+    voiceGraceTimer = setTimeout(() => {
+      if (voiceState !== 'listening' || voiceHasSpeech) return;
+      const error = createNoSpeechVoiceError();
+      voiceLastError = error;
+      voiceStopReason = 'no_speech';
+      voiceState = 'error';
+      voiceErrorMessage = error.message;
+      emitVoiceErrorTelemetry(error);
+      syncVoiceUi();
+      voiceProvider.stop();
+    }, remainingMs);
+  }
+
+  function scheduleVoiceSessionTimeout(): void {
+    if (voiceState !== 'listening' || !voiceSessionStartedAt) return;
+    clearVoiceSessionTimer();
+    const remainingMs = VOICE_MAX_SESSION_MS - getVoiceSessionDurationMs();
+    if (remainingMs <= 0) {
+      if (voiceHasSpeech) {
+        stopVoiceDictation('silence');
+      } else {
+        const error = createNoSpeechVoiceError();
+        voiceLastError = error;
+        voiceStopReason = 'no_speech';
+        voiceState = 'error';
+        voiceErrorMessage = error.message;
+        emitVoiceErrorTelemetry(error);
+        syncVoiceUi();
+        voiceProvider.stop();
+      }
+      return;
+    }
+    voiceSessionTimer = setTimeout(() => {
+      if (voiceState !== 'listening') return;
+      if (voiceHasSpeech) {
+        stopVoiceDictation('silence');
+        return;
+      }
+      const error = createNoSpeechVoiceError();
+      voiceLastError = error;
+      voiceStopReason = 'no_speech';
+      voiceState = 'error';
+      voiceErrorMessage = error.message;
+      emitVoiceErrorTelemetry(error);
+      syncVoiceUi();
+      voiceProvider.stop();
+    }, remainingMs);
+  }
+
   function scheduleVoiceStop(): void {
-    if (voiceState !== 'listening') return;
+    if (voiceState !== 'listening' || !voiceHasSpeech || voiceSpeechActive) return;
     clearVoiceStopTimer();
     voiceStopTimer = setTimeout(() => {
       if (voiceState !== 'listening') return;
@@ -3539,21 +3706,43 @@ export function mountWidget(opts: MountOptions): RoverUi {
     }, getVoiceAutoStopMs());
   }
 
+  function scheduleVoiceRestart(): void {
+    if (!canRestartVoiceBeforeSpeech(voiceLastError)) return;
+    clearVoiceRestartTimer();
+    voicePreSpeechRestartCount += 1;
+    voiceLastError = null;
+    scheduleVoiceGraceTimeout();
+    scheduleVoiceSessionTimeout();
+    voiceRestartTimer = setTimeout(() => {
+      voiceRestartTimer = null;
+      if (voiceState !== 'listening' || voiceHasSpeech || voiceStopReason) return;
+      voiceProvider.start({ language: voiceConfig?.language });
+    }, VOICE_RESTART_DELAY_MS);
+  }
+
   function handleVoiceError(error: VoiceRecognitionError): void {
+    voiceLastError = error;
+    if (
+      voiceStopReason
+      && (error.code === 'aborted' || error.code === 'no_speech' || error.code === 'unknown')
+    ) {
+      return;
+    }
+    if (
+      error.code === 'aborted'
+      || error.code === 'no_speech'
+      || error.code === 'unknown'
+    ) {
+      return;
+    }
     clearVoiceStopTimer();
+    clearVoiceGraceTimer();
+    clearVoiceRestartTimer();
     voiceState = 'error';
     voiceErrorMessage = error.message;
-    voiceStopReason = error.code === 'permission_denied' ? 'manual' : voiceStopReason;
+    voiceStopReason = 'error';
     syncVoiceUi();
-    emitVoiceTelemetry('voice_error', {
-      code: error.code,
-      recoverable: error.recoverable,
-    });
-    if (error.code === 'permission_denied') {
-      emitVoiceTelemetry('voice_permission_denied', {
-        code: error.code,
-      });
-    }
+    emitVoiceErrorTelemetry(error);
   }
 
   function submitComposerDraft(): void {
@@ -3566,6 +3755,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
     voiceErrorMessage = '';
     voiceState = 'idle';
     resetVoiceDraftState();
+    resetVoiceSessionState();
+    pendingVoiceSubmit = false;
+    voiceStopReason = null;
     syncVoiceUi();
   }
 
@@ -3580,12 +3772,17 @@ export function mountWidget(opts: MountOptions): RoverUi {
     }
     reportVoiceProviderSelection();
     voiceErrorMessage = '';
-    voiceState = 'idle';
+    voiceState = 'listening';
     pendingVoiceSubmit = false;
     voiceStopReason = null;
     voiceDraftBase = inputEl.value;
     voiceFinalTranscript = '';
     voiceInterimTranscript = '';
+    resetVoiceSessionState();
+    voiceSessionStartedAt = Date.now();
+    voiceStartTelemetryPending = true;
+    scheduleVoiceGraceTimeout();
+    scheduleVoiceSessionTimeout();
     syncVoiceUi();
     voiceProvider.start({ language: voiceConfig.language });
   }
@@ -3605,6 +3802,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       stopVoiceDictation('config');
     } else {
       resetVoiceDraftState();
+      resetVoiceSessionState();
       voiceState = 'idle';
     }
     reportVoiceProviderSelection();
@@ -3615,40 +3813,100 @@ export function mountWidget(opts: MountOptions): RoverUi {
     onStart: () => {
       voiceState = 'listening';
       voiceErrorMessage = '';
-      emitVoiceTelemetry('voice_started', {
-        provider: 'browser',
-      });
+      voiceLastError = null;
+      scheduleVoiceGraceTimeout();
+      scheduleVoiceSessionTimeout();
+      if (voiceStartTelemetryPending) {
+        emitVoiceTelemetry('voice_started', buildVoiceTelemetryContext({
+          provider: 'browser',
+        }));
+        voiceStartTelemetryPending = false;
+      }
       syncVoiceUi();
-      scheduleVoiceStop();
+    },
+    onSpeechStart: () => {
+      if (voiceState !== 'listening') return;
+      voiceHasSpeech = true;
+      voiceSpeechActive = true;
+      voiceLastError = null;
+      clearVoiceGraceTimer();
+      clearVoiceStopTimer();
+      syncVoiceUi();
+    },
+    onSpeechEnd: () => {
+      if (voiceState !== 'listening') return;
+      voiceSpeechActive = false;
+      if (voiceHasSpeech) {
+        scheduleVoiceStop();
+      }
+      syncVoiceUi();
     },
     onResult: ({ finalTranscript, interimTranscript }) => {
+      const hadTranscriptActivity = !!(finalTranscript || interimTranscript);
+      if (hadTranscriptActivity) {
+        voiceHasSpeech = true;
+        voiceSpeechActive = interimTranscript.length > 0;
+        voiceLastError = null;
+        clearVoiceGraceTimer();
+        clearVoiceStopTimer();
+      }
       voiceFinalTranscript = finalTranscript;
       voiceInterimTranscript = interimTranscript;
       applyVoiceDraft();
-      scheduleVoiceStop();
+      if (voiceHasSpeech && !voiceSpeechActive) {
+        scheduleVoiceStop();
+      }
+      syncVoiceUi();
     },
     onEnd: ({ requested }) => {
+      clearVoiceRestartTimer();
+      if (!requested && canRestartVoiceBeforeSpeech(voiceLastError)) {
+        scheduleVoiceRestart();
+        return;
+      }
+
       const finalDraft = sanitizeText(buildVoiceDraft());
-      const stoppedReason = voiceStopReason || (requested ? 'manual' : 'silence');
+      const hadExistingDraft = sanitizeText(voiceDraftBase).length > 0;
+      const lastError = voiceLastError;
+      let stoppedReason = voiceStopReason || (requested ? 'manual' : 'silence');
       clearVoiceStopTimer();
+      clearVoiceGraceTimer();
+      clearVoiceSessionTimer();
+      if (!voiceHasSpeech && !requested && voiceState !== 'error') {
+        const error = lastError && lastError.code === 'no_speech'
+          ? lastError
+          : createNoSpeechVoiceError();
+        voiceState = 'error';
+        voiceErrorMessage = error.message;
+        voiceStopReason = 'no_speech';
+        stoppedReason = 'no_speech';
+        emitVoiceErrorTelemetry(error);
+      } else if (!requested && !voiceStopReason && voiceHasSpeech) {
+        stoppedReason = 'silence';
+      } else if (voiceStopReason) {
+        stoppedReason = voiceStopReason;
+      }
       if (voiceState !== 'error') {
         voiceState = 'idle';
         voiceErrorMessage = '';
       }
       if (finalDraft) {
-        emitVoiceTelemetry('voice_transcript_ready', {
+        emitVoiceTelemetry('voice_transcript_ready', buildVoiceTelemetryContext({
           chars: finalDraft.length,
-          hadExistingDraft: sanitizeText(voiceDraftBase).length > 0,
-        });
+          hadExistingDraft,
+        }));
       }
-      emitVoiceTelemetry('voice_stopped', {
+      emitVoiceTelemetry('voice_stopped', buildVoiceTelemetryContext({
         reason: stoppedReason,
+        stopReason: stoppedReason,
         requested,
-      });
+        errorCode: lastError?.code,
+      }));
       const shouldSubmit = pendingVoiceSubmit;
       pendingVoiceSubmit = false;
       voiceStopReason = null;
       resetVoiceDraftState();
+      resetVoiceSessionState();
       syncVoiceUi();
       if (shouldSubmit) {
         submitComposerDraft();

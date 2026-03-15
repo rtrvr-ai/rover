@@ -38,6 +38,8 @@ export type VoiceRecognitionEndMeta = {
 
 export type VoiceTranscriberHandlers = {
   onStart?: () => void;
+  onSpeechStart?: () => void;
+  onSpeechEnd?: () => void;
   onResult?: (result: VoiceRecognitionResult) => void;
   onEnd?: (meta: VoiceRecognitionEndMeta) => void;
   onError?: (error: VoiceRecognitionError) => void;
@@ -79,6 +81,8 @@ type SpeechRecognitionLike = EventTarget & {
   onresult: ((this: SpeechRecognitionLike, ev: SpeechRecognitionEventLike) => any) | null;
   onerror: ((this: SpeechRecognitionLike, ev: SpeechRecognitionErrorEventLike) => any) | null;
   onend: ((this: SpeechRecognitionLike, ev: Event) => any) | null;
+  onspeechstart: ((this: SpeechRecognitionLike, ev: Event) => any) | null;
+  onspeechend: ((this: SpeechRecognitionLike, ev: Event) => any) | null;
 };
 
 type SpeechRecognitionConstructorLike = new () => SpeechRecognitionLike;
@@ -185,6 +189,8 @@ export function createBrowserVoiceTranscriber(handlers: VoiceTranscriberHandlers
     recognition.onresult = null;
     recognition.onerror = null;
     recognition.onend = null;
+    recognition.onspeechstart = null;
+    recognition.onspeechend = null;
     recognition = null;
   }
 
@@ -201,6 +207,12 @@ export function createBrowserVoiceTranscriber(handlers: VoiceTranscriberHandlers
     };
     next.onresult = (event) => {
       handlers.onResult?.(readTranscripts(event));
+    };
+    next.onspeechstart = () => {
+      handlers.onSpeechStart?.();
+    };
+    next.onspeechend = () => {
+      handlers.onSpeechEnd?.();
     };
     next.onerror = (event) => {
       handlers.onError?.(normalizeVoiceError(event));
@@ -237,6 +249,7 @@ export function createBrowserVoiceTranscriber(handlers: VoiceTranscriberHandlers
       } catch (error) {
         cleanupRecognition();
         handlers.onError?.(normalizeVoiceError(error));
+        handlers.onEnd?.({ requested: false });
       }
     },
     stop(): void {
