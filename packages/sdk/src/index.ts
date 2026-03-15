@@ -8069,6 +8069,9 @@ function createRuntime(cfg: RoverInit): void {
   };
 
   ui = mountWidget({
+    panel: {
+      resizable: cfg.ui?.panel?.resizable !== false,
+    },
     shortcuts: getRenderableShortcuts(sanitizeShortcutList(cfg.ui?.shortcuts || [])),
     greeting: resolveEffectiveGreetingConfig(cfg),
     voice: resolveEffectiveVoiceConfig(cfg),

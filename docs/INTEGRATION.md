@@ -423,7 +423,7 @@ When `tools.web.scrapeMode` is `on_demand`, ensure your Rover site key includes 
 | `ui.mascot.webmUrl` | `string` | default | Custom mascot WebM URL |
 | `ui.muted` | `boolean` | `true` | Start with media muted on first load; stored browser preference wins after the user toggles sound |
 | `ui.thoughtStyle` | `'concise_cards' \| 'minimal'` | `'concise_cards'` | Thought rendering preference |
-| `ui.panel.resizable` | `boolean` | `true` | Panel resize preference |
+| `ui.panel.resizable` | `boolean` | `true` | Enables desktop freeform resizing plus phone/tablet snap-height resizing with per-device memory |
 | `ui.showTaskControls` | `boolean` | `true` | Show new/end task controls |
 | `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced) |
 | `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | — | Greeting bubble config; supports `{name}` placeholder |

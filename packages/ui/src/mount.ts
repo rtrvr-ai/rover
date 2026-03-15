@@ -167,6 +167,9 @@ export type MountOptions = {
     duration?: number;
     disabled?: boolean;
   };
+  panel?: {
+    resizable?: boolean;
+  };
   voice?: RoverVoiceConfig;
   visitorName?: string;
   // Multi-conversation callbacks
@@ -195,6 +198,50 @@ const VOICE_INITIAL_SPEECH_GRACE_MS = 5000;
 const VOICE_MAX_SESSION_MS = 60000;
 const VOICE_MAX_PRE_SPEECH_RESTARTS = 3;
 const VOICE_RESTART_DELAY_MS = 160;
+const PANEL_DESKTOP_DEFAULT_WIDTH = 460;
+const PANEL_DESKTOP_DEFAULT_HEIGHT = 680;
+const PANEL_DESKTOP_MIN_WIDTH = 360;
+const PANEL_DESKTOP_MIN_HEIGHT = 520;
+const PANEL_DESKTOP_MAX_WIDTH = 720;
+const PANEL_DESKTOP_MARGIN = 16;
+const PANEL_PHONE_BOTTOM_OFFSET = 8;
+const PANEL_TABLET_BOTTOM_OFFSET = 16;
+const PANEL_PHONE_TOP_OFFSET = 16;
+const PANEL_TABLET_TOP_OFFSET = 16;
+const PANEL_PHONE_SNAP_RATIOS = [0.52, 0.72, 1] as const;
+const PANEL_TABLET_SNAP_RATIOS = [0.56, 0.72, 0.88] as const;
+const PANEL_PHONE_MIN_HEIGHT = 280;
+const PANEL_TABLET_MIN_HEIGHT = 360;
+
+type RoverPanelLayout = 'desktop' | 'tablet' | 'phone';
+type RoverPanelOrientation = 'portrait' | 'landscape';
+type RoverPanelLayoutKey =
+  | 'desktop'
+  | 'tablet-portrait'
+  | 'tablet-landscape'
+  | 'phone-portrait'
+  | 'phone-landscape';
+type RoverSheetPreset = 0 | 1 | 2;
+
+type RoverViewportMetrics = {
+  width: number;
+  height: number;
+  layout: RoverPanelLayout;
+  orientation: RoverPanelOrientation;
+  storageKey: RoverPanelLayoutKey;
+  keyboardInset: number;
+};
+
+type RoverDesktopPanelState = {
+  width: number;
+  height: number;
+};
+
+type RoverSheetPanelState = {
+  preset: RoverSheetPreset;
+};
+
+type RoverPanelStorageState = Partial<Record<RoverPanelLayoutKey, RoverDesktopPanelState | RoverSheetPanelState>>;
 
 function createId(prefix: string): string {
   try {
@@ -292,6 +339,115 @@ function composeVoiceDraft(base: string, finalTranscript: string, interimTranscr
     normalizeVoiceDraftSegment(interimTranscript),
   ].filter(Boolean);
   return chunks.join(' ');
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function buildPanelStorageKey(): string {
+  const cleanedSiteId = String(window.location.hostname || 'default')
+    .trim()
+    .replace(/[^a-zA-Z0-9:_-]/g, '')
+    .slice(0, 96);
+  return `rover:panel-layout:${cleanedSiteId || 'default'}`;
+}
+
+function readPanelStorageState(storageKey: string): RoverPanelStorageState {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    return parsed as RoverPanelStorageState;
+  } catch {
+    return {};
+  }
+}
+
+function writePanelStorageState(storageKey: string, next: RoverPanelStorageState): void {
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(next));
+  } catch {
+    // Ignore storage failures in constrained browser environments.
+  }
+}
+
+function getViewportMetrics(): RoverViewportMetrics {
+  const docEl = document.documentElement;
+  const vv = window.visualViewport;
+  const width = Math.max(320, Math.round(vv?.width ?? window.innerWidth ?? docEl.clientWidth ?? 0));
+  const height = Math.max(320, Math.round(vv?.height ?? window.innerHeight ?? docEl.clientHeight ?? 0));
+  const orientation: RoverPanelOrientation = width >= height ? 'landscape' : 'portrait';
+  const layout: RoverPanelLayout = width <= 640 ? 'phone' : width <= 1023 ? 'tablet' : 'desktop';
+  const storageKey: RoverPanelLayoutKey = layout === 'desktop' ? 'desktop' : `${layout}-${orientation}`;
+  const keyboardInset = vv
+    ? Math.max(0, Math.round((window.innerHeight || height) - (vv.height + vv.offsetTop)))
+    : 0;
+  return {
+    width,
+    height,
+    layout,
+    orientation,
+    storageKey,
+    keyboardInset,
+  };
+}
+
+function clampDesktopPanelState(input: RoverDesktopPanelState, metrics: RoverViewportMetrics): RoverDesktopPanelState {
+  const maxWidth = Math.max(PANEL_DESKTOP_MIN_WIDTH, Math.min(PANEL_DESKTOP_MAX_WIDTH, metrics.width - PANEL_DESKTOP_MARGIN));
+  const maxHeight = Math.max(PANEL_DESKTOP_MIN_HEIGHT, metrics.height - PANEL_DESKTOP_MARGIN);
+  return {
+    width: clampNumber(Math.round(input.width), PANEL_DESKTOP_MIN_WIDTH, maxWidth),
+    height: clampNumber(Math.round(input.height), PANEL_DESKTOP_MIN_HEIGHT, maxHeight),
+  };
+}
+
+function getDefaultDesktopPanelState(metrics: RoverViewportMetrics): RoverDesktopPanelState {
+  return clampDesktopPanelState({
+    width: PANEL_DESKTOP_DEFAULT_WIDTH,
+    height: PANEL_DESKTOP_DEFAULT_HEIGHT,
+  }, metrics);
+}
+
+function normalizeStoredDesktopPanelState(input: unknown, metrics: RoverViewportMetrics): RoverDesktopPanelState | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const width = Number((input as RoverDesktopPanelState).width);
+  const height = Number((input as RoverDesktopPanelState).height);
+  if (!Number.isFinite(width) || !Number.isFinite(height)) return undefined;
+  return clampDesktopPanelState({ width, height }, metrics);
+}
+
+function normalizeSheetPreset(input: unknown): RoverSheetPreset | undefined {
+  const parsed = Number(input);
+  if (!Number.isInteger(parsed)) return undefined;
+  if (parsed < 0 || parsed > 2) return undefined;
+  return parsed as RoverSheetPreset;
+}
+
+function getSheetPresetHeights(metrics: RoverViewportMetrics): [number, number, number] {
+  const ratios = metrics.layout === 'tablet' ? PANEL_TABLET_SNAP_RATIOS : PANEL_PHONE_SNAP_RATIOS;
+  const minHeight = metrics.layout === 'tablet' ? PANEL_TABLET_MIN_HEIGHT : PANEL_PHONE_MIN_HEIGHT;
+  const baseBottom = metrics.layout === 'tablet' ? PANEL_TABLET_BOTTOM_OFFSET : PANEL_PHONE_BOTTOM_OFFSET;
+  const topOffset = metrics.layout === 'tablet' ? PANEL_TABLET_TOP_OFFSET : PANEL_PHONE_TOP_OFFSET;
+  const maxHeight = Math.max(minHeight, Math.round(metrics.height - baseBottom - topOffset));
+  return ratios.map((ratio, index) => {
+    if (index === ratios.length - 1) return maxHeight;
+    return clampNumber(Math.round((metrics.height - baseBottom) * ratio), Math.min(minHeight, maxHeight), maxHeight);
+  }) as [number, number, number];
+}
+
+function findNearestSheetPreset(height: number, presets: readonly number[]): RoverSheetPreset {
+  let nearest: RoverSheetPreset = 0;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < presets.length; i += 1) {
+    const distance = Math.abs(presets[i] - height);
+    if (distance < nearestDistance) {
+      nearest = i as RoverSheetPreset;
+      nearestDistance = distance;
+    }
+  }
+  return nearest;
 }
 
 function resolveAgentName(input?: string): string {
@@ -938,6 +1094,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
   const agentInitial = deriveAgentInitial(agentName);
   const launcherToken = deriveLauncherToken(agentName);
   let visitorName: string | undefined = opts.visitorName;
+  const panelResizable = opts.panel?.resizable !== false;
+  const panelStorageKey = buildPanelStorageKey();
 
   const host = document.createElement('div');
   host.id = 'rover-widget-root';
@@ -1051,8 +1209,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
     /* ── Step 4: Launcher Enhancement ── */
     .launcher {
       position: fixed;
-      right: 20px;
-      bottom: 20px;
+      right: calc(20px + env(safe-area-inset-right));
+      bottom: calc(20px + env(safe-area-inset-bottom));
       width: 58px;
       height: 58px;
       border-radius: 18px;
@@ -1129,10 +1287,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
       position: fixed;
       right: 20px;
       bottom: 90px;
-      width: min(460px, calc(100vw - 20px));
-      height: min(680px, calc(100vh - 110px));
-      min-width: 320px;
-      min-height: 460px;
+      width: 460px;
+      height: 680px;
+      min-width: 360px;
+      min-height: 520px;
       max-width: min(720px, calc(100vw - 16px));
       max-height: calc(100vh - 16px);
       background:
@@ -1149,6 +1307,11 @@ export function mountWidget(opts: MountOptions): RoverUi {
       backdrop-filter: blur(14px);
       -webkit-backdrop-filter: blur(14px);
       transform-origin: bottom right;
+    }
+
+    .panel[data-layout="tablet"],
+    .panel[data-layout="phone"] {
+      transform-origin: bottom center;
     }
 
     .panel.open {
@@ -1244,6 +1407,25 @@ export function mountWidget(opts: MountOptions): RoverUi {
       margin-left: auto;
     }
 
+    .sizeBtn,
+    .overflowBtn,
+    .closeBtn {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--rv-radius-sm);
+      border: 1px solid var(--rv-border);
+      background: var(--rv-surface);
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      color: var(--rv-text-secondary);
+      font-size: 16px;
+      line-height: 1;
+      transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+      flex: 0 0 auto;
+      padding: 0;
+    }
+
     .modeLabel {
       font-size: 10px;
       font-weight: 700;
@@ -1297,28 +1479,28 @@ export function mountWidget(opts: MountOptions): RoverUi {
       background: var(--rv-error);
     }
 
-    .overflowBtn,
-    .closeBtn {
-      width: 32px;
-      height: 32px;
-      border-radius: var(--rv-radius-sm);
-      border: 1px solid var(--rv-border);
-      background: var(--rv-surface);
-      cursor: pointer;
-      display: grid;
-      place-items: center;
-      color: var(--rv-text-secondary);
-      font-size: 16px;
-      line-height: 1;
-      transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
-      flex: 0 0 auto;
+    .sizeBtn {
+      font-size: 14px;
     }
 
+    .sizeBtn svg {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+    }
+
+    .sizeBtn:hover,
     .overflowBtn:hover,
     .closeBtn:hover {
       background: var(--rv-bg-alt);
       border-color: var(--rv-border-strong);
       color: var(--rv-text);
+    }
+
+    .sizeBtn.hidden {
+      display: none;
     }
 
     .closeBtn {
@@ -1497,6 +1679,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
     }
 
     .entry.message { max-width: 90%; }
+    .panel[data-layout="phone"] .entry.message,
+    .panel[data-layout="tablet"] .entry.message {
+      max-width: 100%;
+    }
     .entry.message.user { align-self: flex-end; }
     .entry.message.assistant,
     .entry.message.system { align-self: flex-start; }
@@ -2274,23 +2460,62 @@ export function mountWidget(opts: MountOptions): RoverUi {
       color: #c2410c;
     }
 
+    .panelGrabber {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      height: 26px;
+      border: none;
+      padding: 0;
+      margin: 0;
+      background: transparent;
+      cursor: ns-resize;
+      touch-action: none;
+    }
+
+    .panel[data-resizable="true"][data-layout="phone"] .panelGrabber,
+    .panel[data-resizable="true"][data-layout="tablet"] .panelGrabber {
+      display: flex;
+    }
+
+    .panelGrabberHandle {
+      width: 56px;
+      height: 5px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.14);
+      transition: background 150ms ease, transform 150ms ease;
+      pointer-events: none;
+    }
+
+    .panelGrabber:hover .panelGrabberHandle,
+    .panelGrabber:focus-visible .panelGrabberHandle {
+      background: rgba(255, 76, 0, 0.38);
+      transform: scaleX(1.04);
+    }
+
+    .panelGrabber:focus-visible {
+      outline: none;
+    }
+
     /* ── Step 13: Resize Handle ── */
     .resizeHandle {
       position: absolute;
       left: 8px;
       bottom: 8px;
-      width: 14px;
-      height: 14px;
-      border-left: 2px solid var(--rv-border-strong);
-      border-bottom: 2px solid var(--rv-border-strong);
+      width: 20px;
+      height: 20px;
+      border-left: 2.5px solid var(--rv-border-strong);
+      border-bottom: 2.5px solid var(--rv-border-strong);
       border-radius: 2px;
       cursor: nwse-resize;
-      opacity: 0;
-      transition: opacity 200ms ease;
+      opacity: 0.72;
+      transition: opacity 200ms ease, border-color 200ms ease;
+      display: none;
+      touch-action: none;
     }
 
-    .panel:hover .resizeHandle {
-      opacity: 0.6;
+    .panel[data-resizable="true"][data-layout="desktop"] .resizeHandle {
+      display: block;
     }
 
     .resizeHandle:hover {
@@ -2613,20 +2838,16 @@ export function mountWidget(opts: MountOptions): RoverUi {
     /* ── Step 14: Mobile Responsive ── */
     @media (max-width: 640px) {
       .launcher {
-        right: 14px;
-        bottom: 14px;
+        right: calc(14px + env(safe-area-inset-right));
+        bottom: calc(14px + env(safe-area-inset-bottom));
         width: 52px;
         height: 52px;
         border-radius: var(--rv-radius-lg);
       }
 
       .panel {
-        right: 8px;
-        left: 8px;
-        bottom: 74px;
-        width: auto;
         min-width: 0;
-        height: min(76vh, calc(100vh - 92px));
+        min-height: 0;
         border-radius: var(--rv-radius-xl);
       }
 
@@ -2649,6 +2870,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
         font-size: 11px;
       }
 
+      .sizeBtn,
       .overflowBtn,
       .closeBtn {
         width: 36px;
@@ -2679,10 +2901,6 @@ export function mountWidget(opts: MountOptions): RoverUi {
         height: 40px;
         width: 40px;
         min-width: 40px;
-      }
-
-      .resizeHandle {
-        display: none;
       }
 
       .feed {
@@ -2719,8 +2937,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
       }
 
       .greetingBubble {
-        right: 14px;
-        bottom: 76px;
+        right: calc(14px + env(safe-area-inset-right));
+        bottom: calc(76px + env(safe-area-inset-bottom));
         max-width: 190px;
         padding: 8px 22px 8px 10px;
       }
@@ -3076,6 +3294,12 @@ export function mountWidget(opts: MountOptions): RoverUi {
   const headerActions = document.createElement('div');
   headerActions.className = 'headerActions';
 
+  const sizeBtn = document.createElement('button');
+  sizeBtn.type = 'button';
+  sizeBtn.className = 'sizeBtn';
+  sizeBtn.setAttribute('aria-label', 'Resize Rover panel');
+  sizeBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 4H4v4"></path><path d="M4 4l6 6"></path><path d="M16 20h4v-4"></path><path d="M20 20l-6-6"></path><path d="M20 8V4h-4"></path><path d="M20 4l-6 6"></path><path d="M8 20H4v-4"></path><path d="M4 20l6-6"></path></svg>';
+
   const overflowBtn = document.createElement('button');
   overflowBtn.type = 'button';
   overflowBtn.className = 'overflowBtn';
@@ -3122,6 +3346,11 @@ export function mountWidget(opts: MountOptions): RoverUi {
   conversationListBtn.setAttribute('aria-label', 'Conversations');
   conversationListBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>';
 
+  if (!panelResizable) {
+    sizeBtn.classList.add('hidden');
+  }
+
+  headerActions.appendChild(sizeBtn);
   headerActions.appendChild(conversationListBtn);
   headerActions.appendChild(overflowBtn);
   headerActions.appendChild(cancelPill);
@@ -3327,6 +3556,13 @@ export function mountWidget(opts: MountOptions): RoverUi {
   composerStatus.setAttribute('aria-live', 'polite');
   composer.appendChild(composerStatus);
 
+  const panelGrabber = document.createElement('div');
+  panelGrabber.className = 'panelGrabber';
+  panelGrabber.setAttribute('aria-hidden', 'true');
+  const panelGrabberHandle = document.createElement('span');
+  panelGrabberHandle.className = 'panelGrabberHandle';
+  panelGrabber.appendChild(panelGrabberHandle);
+
   /* ── Resize Handle ── */
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'resizeHandle';
@@ -3386,6 +3622,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   conversationDrawer.appendChild(conversationList);
   conversationDrawer.appendChild(conversationNewBtn);
 
+  panel.appendChild(panelGrabber);
   panel.appendChild(header);
   panel.appendChild(conversationPill);
   panel.appendChild(pausedTaskBanner);
@@ -3450,6 +3687,193 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let voiceErrorTelemetrySent = false;
   let voiceStartTelemetryPending = false;
   let reportedVoiceProviderKey = '';
+  let panelStorageState = panelResizable ? readPanelStorageState(panelStorageKey) : {};
+  let viewportMetrics = getViewportMetrics();
+  let activeLayoutKey: RoverPanelLayoutKey = viewportMetrics.storageKey;
+  let currentDesktopPanelState = panelResizable
+    ? normalizeStoredDesktopPanelState(panelStorageState.desktop, viewportMetrics) || getDefaultDesktopPanelState(viewportMetrics)
+    : getDefaultDesktopPanelState(viewportMetrics);
+  let currentSheetPreset: RoverSheetPreset = panelResizable
+    ? normalizeSheetPreset((panelStorageState[viewportMetrics.storageKey] as RoverSheetPanelState | undefined)?.preset) ?? 1
+    : 1;
+  let liveSheetHeight: number | null = null;
+
+  type ActiveResizeState =
+    | {
+        kind: 'desktop';
+        startX: number;
+        startY: number;
+        startW: number;
+        startH: number;
+        maxW: number;
+        maxH: number;
+      }
+    | {
+        kind: 'sheet';
+        startY: number;
+        startHeight: number;
+        presets: [number, number, number];
+      };
+
+  let resizeState: ActiveResizeState | null = null;
+
+  function rememberDesktopPanelState(next: RoverDesktopPanelState): void {
+    if (!panelResizable) return;
+    currentDesktopPanelState = clampDesktopPanelState(next, viewportMetrics);
+    panelStorageState = {
+      ...panelStorageState,
+      desktop: currentDesktopPanelState,
+    };
+    writePanelStorageState(panelStorageKey, panelStorageState);
+  }
+
+  function getStoredSheetPreset(storageKey: RoverPanelLayoutKey): RoverSheetPreset {
+    if (!panelResizable) return 1;
+    return normalizeSheetPreset((panelStorageState[storageKey] as RoverSheetPanelState | undefined)?.preset) ?? 1;
+  }
+
+  function rememberSheetPreset(storageKey: RoverPanelLayoutKey, preset: RoverSheetPreset): void {
+    if (!panelResizable) return;
+    panelStorageState = {
+      ...panelStorageState,
+      [storageKey]: { preset },
+    };
+    writePanelStorageState(panelStorageKey, panelStorageState);
+  }
+
+  function getDesktopMaxPanelState(metrics: RoverViewportMetrics): RoverDesktopPanelState {
+    return clampDesktopPanelState({
+      width: PANEL_DESKTOP_MAX_WIDTH,
+      height: metrics.height - PANEL_DESKTOP_MARGIN,
+    }, metrics);
+  }
+
+  function isSameDesktopPanelState(a: RoverDesktopPanelState, b: RoverDesktopPanelState): boolean {
+    return Math.abs(a.width - b.width) <= 6 && Math.abs(a.height - b.height) <= 6;
+  }
+
+  function getSheetPresetLabel(preset: RoverSheetPreset): string {
+    if (preset === 0) return 'compact';
+    if (preset === 2) return 'large';
+    return 'medium';
+  }
+
+  function syncPanelChrome(): void {
+    wrapper.dataset.layout = viewportMetrics.layout;
+    wrapper.dataset.orientation = viewportMetrics.orientation;
+    panel.dataset.layout = viewportMetrics.layout;
+    panel.dataset.orientation = viewportMetrics.orientation;
+    panel.dataset.resizable = panelResizable ? 'true' : 'false';
+
+    if (!panelResizable) {
+      sizeBtn.classList.add('hidden');
+      return;
+    }
+
+    sizeBtn.classList.remove('hidden');
+    if (viewportMetrics.layout === 'desktop') {
+      const maxState = getDesktopMaxPanelState(viewportMetrics);
+      const isExpanded = isSameDesktopPanelState(currentDesktopPanelState, maxState);
+      sizeBtn.setAttribute('aria-label', isExpanded ? 'Reset Rover panel size' : 'Expand Rover panel');
+      sizeBtn.title = isExpanded ? 'Reset panel size' : 'Expand panel';
+    } else {
+      const label = getSheetPresetLabel(currentSheetPreset);
+      sizeBtn.setAttribute('aria-label', `Change Rover panel size. Current ${label}.`);
+      sizeBtn.title = `Panel size: ${label}`;
+    }
+  }
+
+  function applyPanelLayout(): void {
+    const nextMetrics = getViewportMetrics();
+    const layoutChanged = nextMetrics.storageKey !== activeLayoutKey;
+    viewportMetrics = nextMetrics;
+    activeLayoutKey = nextMetrics.storageKey;
+
+    if (nextMetrics.layout === 'desktop') {
+      if (!panelResizable) {
+        currentDesktopPanelState = getDefaultDesktopPanelState(nextMetrics);
+      } else if (layoutChanged) {
+        currentDesktopPanelState = normalizeStoredDesktopPanelState(panelStorageState.desktop, nextMetrics)
+          || getDefaultDesktopPanelState(nextMetrics);
+      } else {
+        currentDesktopPanelState = clampDesktopPanelState(currentDesktopPanelState, nextMetrics);
+      }
+
+      panel.style.left = '';
+      panel.style.right = '20px';
+      panel.style.bottom = '90px';
+      panel.style.width = `${currentDesktopPanelState.width}px`;
+      panel.style.height = `${currentDesktopPanelState.height}px`;
+      panel.style.minWidth = `${PANEL_DESKTOP_MIN_WIDTH}px`;
+      panel.style.minHeight = `${PANEL_DESKTOP_MIN_HEIGHT}px`;
+      panel.style.maxWidth = `${Math.max(PANEL_DESKTOP_MIN_WIDTH, Math.min(PANEL_DESKTOP_MAX_WIDTH, nextMetrics.width - PANEL_DESKTOP_MARGIN))}px`;
+      panel.style.maxHeight = `${Math.max(PANEL_DESKTOP_MIN_HEIGHT, nextMetrics.height - PANEL_DESKTOP_MARGIN)}px`;
+      liveSheetHeight = null;
+    } else {
+      const presets = getSheetPresetHeights(nextMetrics);
+      const baseBottom = nextMetrics.layout === 'tablet' ? PANEL_TABLET_BOTTOM_OFFSET : PANEL_PHONE_BOTTOM_OFFSET;
+      const bottomOffset = baseBottom + nextMetrics.keyboardInset;
+      const storedPreset = getStoredSheetPreset(nextMetrics.storageKey);
+      currentSheetPreset = panelResizable
+        ? (layoutChanged ? storedPreset : clampNumber(currentSheetPreset, 0, 2) as RoverSheetPreset)
+        : 1;
+      const resolvedHeight = clampNumber(
+        Math.round(liveSheetHeight ?? presets[currentSheetPreset]),
+        Math.min(...presets),
+        Math.max(...presets),
+      );
+
+      if (nextMetrics.layout === 'tablet') {
+        const width = Math.max(360, Math.min(520, nextMetrics.width - 24));
+        panel.style.left = '';
+        panel.style.right = `calc(16px + env(safe-area-inset-right))`;
+        panel.style.width = `${Math.round(width)}px`;
+        panel.style.minWidth = '320px';
+      } else {
+        panel.style.left = `calc(8px + env(safe-area-inset-left))`;
+        panel.style.right = `calc(8px + env(safe-area-inset-right))`;
+        panel.style.width = 'auto';
+        panel.style.minWidth = '0px';
+      }
+      panel.style.bottom = `calc(${bottomOffset}px + env(safe-area-inset-bottom))`;
+      panel.style.height = `${resolvedHeight}px`;
+      panel.style.minHeight = '0px';
+      panel.style.maxWidth = `${Math.max(320, nextMetrics.width - 16)}px`;
+      panel.style.maxHeight = `${Math.max(...presets)}px`;
+    }
+
+    syncPanelChrome();
+  }
+
+  function resetDesktopPanelSize(): void {
+    currentDesktopPanelState = getDefaultDesktopPanelState(viewportMetrics);
+    rememberDesktopPanelState(currentDesktopPanelState);
+    applyPanelLayout();
+  }
+
+  function cyclePanelSize(): void {
+    if (!panelResizable) return;
+    if (viewportMetrics.layout === 'desktop') {
+      const maxState = getDesktopMaxPanelState(viewportMetrics);
+      currentDesktopPanelState = isSameDesktopPanelState(currentDesktopPanelState, maxState)
+        ? getDefaultDesktopPanelState(viewportMetrics)
+        : maxState;
+      rememberDesktopPanelState(currentDesktopPanelState);
+      applyPanelLayout();
+      return;
+    }
+    currentSheetPreset = ((currentSheetPreset + 1) % 3) as RoverSheetPreset;
+    liveSheetHeight = null;
+    rememberSheetPreset(viewportMetrics.storageKey, currentSheetPreset);
+    applyPanelLayout();
+  }
+
+  function handleViewportMutation(): void {
+    if (resizeState?.kind === 'sheet') {
+      liveSheetHeight = null;
+    }
+    applyPanelLayout();
+  }
 
   function emitVoiceTelemetry(event: RoverVoiceTelemetryEvent, payload?: Record<string, unknown>): void {
     opts.onVoiceTelemetry?.(event, payload);
@@ -4298,6 +4722,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   /* ── Step 5: Panel open/close with animation ── */
   function open(): void {
+    applyPanelLayout();
     wrapper.style.display = '';
     panel.classList.remove('closing');
     panel.classList.add('open');
@@ -4326,6 +4751,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   }
 
   function show(): void {
+    applyPanelLayout();
     wrapper.style.display = '';
   }
 
@@ -4627,6 +5053,11 @@ export function mountWidget(opts: MountOptions): RoverUi {
       window.clearTimeout(greetingDismissTimer);
       greetingDismissTimer = null;
     }
+    stopResize();
+    window.removeEventListener('resize', handleViewportMutation);
+    window.removeEventListener('orientationchange', handleViewportMutation);
+    window.visualViewport?.removeEventListener('resize', handleViewportMutation);
+    window.visualViewport?.removeEventListener('scroll', handleViewportMutation);
     document.removeEventListener('keydown', globalToggleHandler);
     fontStyle.remove();
     host.remove();
@@ -4649,6 +5080,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
   });
 
   closeBtn.addEventListener('click', () => close());
+  sizeBtn.addEventListener('click', () => {
+    cyclePanelSize();
+  });
 
   overflowBtn.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -4841,38 +5275,82 @@ export function mountWidget(opts: MountOptions): RoverUi {
   };
   document.addEventListener('keydown', globalToggleHandler);
 
-  let resizeState: { startX: number; startY: number; startW: number; startH: number } | null = null;
-
   const onPointerMove = (ev: PointerEvent) => {
-    if (!resizeState) return;
-    const dx = resizeState.startX - ev.clientX;
-    const dy = ev.clientY - resizeState.startY;
+    if (!resizeState || !panelResizable) return;
+    if (resizeState.kind === 'desktop') {
+      const dx = resizeState.startX - ev.clientX;
+      const dy = ev.clientY - resizeState.startY;
+      const nextW = clampNumber(Math.round(resizeState.startW + dx), PANEL_DESKTOP_MIN_WIDTH, resizeState.maxW);
+      const nextH = clampNumber(Math.round(resizeState.startH + dy), PANEL_DESKTOP_MIN_HEIGHT, resizeState.maxH);
+      currentDesktopPanelState = { width: nextW, height: nextH };
+      panel.style.width = `${nextW}px`;
+      panel.style.height = `${nextH}px`;
+      syncPanelChrome();
+      return;
+    }
 
-    const nextW = Math.max(320, Math.min(window.innerWidth - 16, resizeState.startW + dx));
-    const nextH = Math.max(460, Math.min(window.innerHeight - 16, resizeState.startH + dy));
-
-    panel.style.width = `${nextW}px`;
-    panel.style.height = `${nextH}px`;
+    const nextHeight = clampNumber(
+      Math.round(resizeState.startHeight + (resizeState.startY - ev.clientY)),
+      Math.min(...resizeState.presets),
+      Math.max(...resizeState.presets),
+    );
+    liveSheetHeight = nextHeight;
+    panel.style.height = `${nextHeight}px`;
   };
 
-  const stopResize = () => {
+  function stopResize(): void {
+    if (resizeState?.kind === 'desktop') {
+      rememberDesktopPanelState(currentDesktopPanelState);
+    } else if (resizeState?.kind === 'sheet') {
+      const settledHeight = liveSheetHeight ?? resizeState.startHeight;
+      currentSheetPreset = findNearestSheetPreset(settledHeight, resizeState.presets);
+      rememberSheetPreset(viewportMetrics.storageKey, currentSheetPreset);
+      liveSheetHeight = null;
+    }
     resizeState = null;
     window.removeEventListener('pointermove', onPointerMove);
     window.removeEventListener('pointerup', stopResize);
-  };
+    applyPanelLayout();
+  }
 
   resizeHandle.addEventListener('pointerdown', ev => {
-    if (window.matchMedia('(max-width: 640px)').matches) return;
+    if (!panelResizable || viewportMetrics.layout !== 'desktop') return;
     ev.preventDefault();
     resizeState = {
+      kind: 'desktop',
       startX: ev.clientX,
       startY: ev.clientY,
       startW: panel.getBoundingClientRect().width,
       startH: panel.getBoundingClientRect().height,
+      maxW: Math.max(PANEL_DESKTOP_MIN_WIDTH, Math.min(PANEL_DESKTOP_MAX_WIDTH, viewportMetrics.width - PANEL_DESKTOP_MARGIN)),
+      maxH: Math.max(PANEL_DESKTOP_MIN_HEIGHT, viewportMetrics.height - PANEL_DESKTOP_MARGIN),
     };
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', stopResize);
   });
+  resizeHandle.addEventListener('dblclick', (ev) => {
+    if (!panelResizable || viewportMetrics.layout !== 'desktop') return;
+    ev.preventDefault();
+    resetDesktopPanelSize();
+  });
+  panelGrabber.addEventListener('pointerdown', (ev) => {
+    if (!panelResizable || viewportMetrics.layout === 'desktop') return;
+    ev.preventDefault();
+    const presets = getSheetPresetHeights(viewportMetrics);
+    liveSheetHeight = presets[currentSheetPreset];
+    resizeState = {
+      kind: 'sheet',
+      startY: ev.clientY,
+      startHeight: liveSheetHeight,
+      presets,
+    };
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', stopResize);
+  });
+  window.addEventListener('resize', handleViewportMutation);
+  window.addEventListener('orientationchange', handleViewportMutation);
+  window.visualViewport?.addEventListener('resize', handleViewportMutation);
+  window.visualViewport?.addEventListener('scroll', handleViewportMutation);
 
   if (launcherVideo) {
     const showLauncherFallback = () => {
@@ -4892,6 +5370,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     avatarFallback.style.display = 'none';
   }
 
+  applyPanelLayout();
   setExecutionMode('controller');
   setVoiceConfig(voiceConfig);
   setTraceExpanded(false);
