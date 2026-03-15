@@ -23,6 +23,13 @@ import {
   type SharedNavigationHandoff,
 } from './sessionCoordinator.js';
 import {
+  parseDeepLinkRequest,
+  resolveDeepLinkConfig,
+  stripDeepLinkParams,
+  type ResolvedDeepLinkConfig,
+  type RoverDeepLinkRequest,
+} from './deepLink.js';
+import {
   RoverCloudCheckpointClient,
   type RoverCloudCheckpointPayload,
   type RoverCloudCheckpointState,
@@ -135,6 +142,13 @@ export type RoverTelemetryConfig = {
   includePayloads?: boolean;
 };
 
+export type RoverDeepLinkConfig = {
+  enabled?: boolean;
+  promptParam?: string;
+  shortcutParam?: string;
+  consume?: boolean;
+};
+
 export type RoverInit = {
   siteId: string;
   apiBase?: string;
@@ -148,6 +162,7 @@ export type RoverInit = {
   workerUrl?: string;
   mode?: 'safe' | 'full';
   openOnInit?: boolean;
+  deepLink?: RoverDeepLinkConfig;
   allowActions?: boolean;
   pageConfig?: RoverPageCaptureConfig;
   allowedDomains?: string[];
@@ -418,6 +433,8 @@ const SERVER_CANCEL_REPAIR_BASE_DELAY_MS = 400;
 const SERVER_CANCEL_REPAIR_MAX_DELAY_MS = 15_000;
 const SERVER_CANCEL_REPAIR_MAX_ATTEMPTS = 7;
 const SERVER_CANCEL_REPAIR_MAX_QUEUE = 80;
+const DEEP_LINK_SHORTCUT_WAIT_MS = 2_500;
+const DEEP_LINK_SHORTCUT_RETRY_MS = 250;
 
 type TelemetryEventName = RoverEventName | RoverVoiceTelemetryEventName;
 
@@ -509,6 +526,16 @@ let _booted = false;
 const _registeredListeners: Array<{ target: EventTarget; event: string; handler: EventListenerOrEventListenerObject; options?: boolean | AddEventListenerOptions }> = [];
 let _origPushState: typeof History.prototype.pushState | null = null;
 let _origReplaceState: typeof History.prototype.replaceState | null = null;
+let deepLinkLastHandledKey = '';
+let deepLinkLastIgnoredDisabledKey = '';
+let deepLinkShortcutRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let deepLinkPendingShortcut:
+  | {
+      handleKey: string;
+      request: RoverDeepLinkRequest & { kind: 'shortcut' };
+      deadlineAt: number;
+    }
+  | null = null;
 
 function addTrackedListener(
   target: EventTarget,
@@ -1785,8 +1812,12 @@ function recordTelemetryEvent(event: TelemetryEventName, payload?: any): void {
   if (telemetry.sampleRate < 1 && Math.random() > telemetry.sampleRate) return;
   const nowTs = Date.now();
   if (event === 'status') {
-    if (nowTs - telemetryLastStatusAt < TELEMETRY_STATUS_MIN_INTERVAL_MS) return;
-    telemetryLastStatusAt = nowTs;
+    const statusEventName = String(payload?.event || '').trim();
+    const bypassStatusThrottle = statusEventName.startsWith('deep_link_');
+    if (!bypassStatusThrottle) {
+      if (nowTs - telemetryLastStatusAt < TELEMETRY_STATUS_MIN_INTERVAL_MS) return;
+      telemetryLastStatusAt = nowTs;
+    }
   } else if (event === 'checkpoint_state') {
     if (nowTs - telemetryLastCheckpointStateAt < TELEMETRY_CHECKPOINT_STATE_MIN_INTERVAL_MS) return;
     telemetryLastCheckpointStateAt = nowTs;
@@ -7219,6 +7250,13 @@ function mergeShortcuts(configShortcuts: RoverShortcut[], backendShortcuts: Rove
   return sortShortcuts(Array.from(merged.values())).slice(0, SHORTCUTS_MAX_STORED);
 }
 
+function resolveEffectiveShortcuts(cfg: RoverInit | null): RoverShortcut[] {
+  if (!cfg) return [];
+  const configShortcuts = sanitizeShortcutList(cfg.ui?.shortcuts || []);
+  const backendShortcuts = sanitizeShortcutList(backendSiteConfig?.shortcuts || []);
+  return mergeShortcuts(configShortcuts, backendShortcuts);
+}
+
 function getRenderableShortcuts(shortcuts: RoverShortcut[]): RoverShortcut[] {
   const renderLimit = normalizeShortcutLimit(backendSiteConfig?.limits?.shortcutMaxRendered, {
     min: 1,
@@ -7228,6 +7266,168 @@ function getRenderableShortcuts(shortcuts: RoverShortcut[]): RoverShortcut[] {
   return shortcuts
     .filter(shortcut => shortcut.enabled !== false)
     .slice(0, renderLimit);
+}
+
+function clearPendingDeepLinkShortcut(): void {
+  if (deepLinkShortcutRetryTimer) {
+    clearTimeout(deepLinkShortcutRetryTimer);
+    deepLinkShortcutRetryTimer = null;
+  }
+  deepLinkPendingShortcut = null;
+}
+
+function buildDeepLinkHandleKey(request: RoverDeepLinkRequest): string {
+  return `${window.location.href}::${request.signature}`;
+}
+
+function canResolveDeepLinkShortcutFromRemote(cfg: RoverInit | null): boolean {
+  if (!cfg) return false;
+  return !!(getBootstrapRuntimeAuthToken(cfg) || getRuntimeSessionToken(cfg));
+}
+
+function consumeHandledDeepLink(config: ResolvedDeepLinkConfig, request: RoverDeepLinkRequest): void {
+  if (!config.consume) return;
+  const currentRelativeUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  const nextRelativeUrl = stripDeepLinkParams(window.location.href, config);
+  if (nextRelativeUrl === currentRelativeUrl) return;
+  try {
+    history.replaceState(history.state, document.title, nextRelativeUrl);
+    recordTelemetryEvent('status', {
+      event: 'deep_link_consumed',
+      kind: request.kind,
+      paramName: request.paramName,
+    });
+  } catch {
+    // no-op
+  }
+}
+
+function scheduleDeepLinkShortcutRetry(
+  handleKey: string,
+  request: RoverDeepLinkRequest & { kind: 'shortcut' },
+  deadlineAt: number,
+): void {
+  const existing = deepLinkPendingShortcut;
+  if (existing?.handleKey === handleKey && existing.deadlineAt === deadlineAt && deepLinkShortcutRetryTimer) {
+    return;
+  }
+  if (deepLinkShortcutRetryTimer) {
+    clearTimeout(deepLinkShortcutRetryTimer);
+  }
+  deepLinkPendingShortcut = { handleKey, request, deadlineAt };
+  deepLinkShortcutRetryTimer = setTimeout(() => {
+    deepLinkShortcutRetryTimer = null;
+    maybeHandleDeepLink('shortcut_retry');
+  }, DEEP_LINK_SHORTCUT_RETRY_MS);
+}
+
+function handleDeepLinkShortcutNotFound(
+  request: RoverDeepLinkRequest & { kind: 'shortcut' },
+  handleKey: string,
+  config: ResolvedDeepLinkConfig,
+): void {
+  clearPendingDeepLinkShortcut();
+  open();
+  appendUiMessage(
+    'system',
+    `Rover couldn't find shortcut "${request.value}" for this embed. Check the URL or expose that shortcut in the Rover boot config/site config.`,
+    true,
+  );
+  recordTelemetryEvent('status', {
+    event: 'deep_link_shortcut_not_found',
+    shortcutId: request.value,
+    paramName: request.paramName,
+  });
+  deepLinkLastHandledKey = handleKey;
+  consumeHandledDeepLink(config, request);
+}
+
+function maybeHandleDeepLink(source: 'boot' | 'update' | 'navigation' | 'site_config' | 'shortcut_retry'): void {
+  if (!currentConfig || typeof window === 'undefined') return;
+  const config = resolveDeepLinkConfig(currentConfig.deepLink);
+  const request = parseDeepLinkRequest(window.location.href, config);
+  if (!request) {
+    clearPendingDeepLinkShortcut();
+    deepLinkLastHandledKey = '';
+    deepLinkLastIgnoredDisabledKey = '';
+    return;
+  }
+
+  const handleKey = buildDeepLinkHandleKey(request);
+  if (!config.enabled) {
+    clearPendingDeepLinkShortcut();
+    if (deepLinkLastIgnoredDisabledKey !== handleKey) {
+      recordTelemetryEvent('status', {
+        event: 'deep_link_ignored_disabled',
+        kind: request.kind,
+        paramName: request.paramName,
+        source,
+      });
+      deepLinkLastIgnoredDisabledKey = handleKey;
+    }
+    return;
+  }
+  deepLinkLastIgnoredDisabledKey = '';
+
+  if (handleKey === deepLinkLastHandledKey) {
+    return;
+  }
+
+  const hadPendingShortcut = deepLinkPendingShortcut?.handleKey === handleKey;
+  if (!hadPendingShortcut) {
+    recordTelemetryEvent('status', {
+      event: 'deep_link_detected',
+      kind: request.kind,
+      paramName: request.paramName,
+      source,
+    });
+  }
+
+  if (request.kind === 'prompt') {
+    clearPendingDeepLinkShortcut();
+    open();
+    dispatchUserPrompt(request.value, { reason: 'deep_link_prompt' });
+    recordTelemetryEvent('status', {
+      event: 'deep_link_dispatched',
+      kind: request.kind,
+      paramName: request.paramName,
+    });
+    deepLinkLastHandledKey = handleKey;
+    consumeHandledDeepLink(config, request);
+    return;
+  }
+
+  const shortcut = resolveEffectiveShortcuts(currentConfig).find(
+    candidate => candidate.enabled !== false && candidate.id === request.value,
+  );
+  if (shortcut) {
+    clearPendingDeepLinkShortcut();
+    open();
+    dispatchUserPrompt(shortcut.prompt, {
+      reason: 'deep_link_shortcut',
+      routing: shortcut.routing,
+    });
+    recordTelemetryEvent('status', {
+      event: 'deep_link_dispatched',
+      kind: request.kind,
+      paramName: request.paramName,
+      shortcutId: shortcut.id,
+      routing: shortcut.routing,
+    });
+    deepLinkLastHandledKey = handleKey;
+    consumeHandledDeepLink(config, request);
+    return;
+  }
+
+  const deadlineAt = deepLinkPendingShortcut?.handleKey === handleKey
+    ? deepLinkPendingShortcut.deadlineAt
+    : Date.now() + DEEP_LINK_SHORTCUT_WAIT_MS;
+  if (Date.now() < deadlineAt && canResolveDeepLinkShortcutFromRemote(currentConfig)) {
+    scheduleDeepLinkShortcutRetry(handleKey, request, deadlineAt);
+    return;
+  }
+
+  handleDeepLinkShortcutNotFound(request, handleKey, config);
 }
 
 function resolveEffectiveGreetingConfig(cfg: RoverInit | null): RoverGreetingConfig | undefined {
@@ -7302,12 +7502,11 @@ function maybeShowGreeting(): void {
 }
 
 function applyEffectiveSiteConfig(cfg: RoverInit): void {
-  const configShortcuts = sanitizeShortcutList(cfg.ui?.shortcuts || []);
-  const backendShortcuts = sanitizeShortcutList(backendSiteConfig?.shortcuts || []);
-  const merged = mergeShortcuts(configShortcuts, backendShortcuts);
+  const merged = resolveEffectiveShortcuts(cfg);
   ui?.setShortcuts(getRenderableShortcuts(merged));
   ui?.setVoiceConfig(resolveEffectiveVoiceConfig(cfg));
   syncEffectivePageCaptureConfig(cfg);
+  maybeHandleDeepLink('site_config');
 }
 
 async function fetchBackendSiteConfig(cfg: RoverInit): Promise<RoverResolvedSiteConfig | null> {
@@ -8271,29 +8470,28 @@ function createRuntime(cfg: RoverInit): void {
     handleWorkerMessage(ev.data || {});
   };
 
-  // Navigation tracking: detect SPA navigations and broadcast to other tabs
-  if (sessionCoordinator) {
-    const navigationHandler = () => {
-      sessionCoordinator?.registerCurrentTab(window.location.href, document.title);
-      sessionCoordinator?.broadcastNavigation(window.location.href, document.title);
-    };
+  // Navigation tracking: detect SPA navigations for shared-tab sync and deep-link handling.
+  const navigationHandler = () => {
+    sessionCoordinator?.registerCurrentTab(window.location.href, document.title);
+    sessionCoordinator?.broadcastNavigation(window.location.href, document.title);
+    maybeHandleDeepLink('navigation');
+  };
 
-    if (!_origPushState) _origPushState = History.prototype.pushState;
-    if (!_origReplaceState) _origReplaceState = History.prototype.replaceState;
-    const boundPush = _origPushState.bind(history);
-    const boundReplace = _origReplaceState.bind(history);
-    history.pushState = function (...args: Parameters<typeof History.prototype.pushState>) {
-      const result = boundPush(...args);
-      setTimeout(navigationHandler, 0);
-      return result;
-    };
-    history.replaceState = function (...args: Parameters<typeof History.prototype.replaceState>) {
-      const result = boundReplace(...args);
-      setTimeout(navigationHandler, 0);
-      return result;
-    };
-    addTrackedListener(window, 'popstate', navigationHandler);
-  }
+  if (!_origPushState) _origPushState = History.prototype.pushState;
+  if (!_origReplaceState) _origReplaceState = History.prototype.replaceState;
+  const boundPush = _origPushState.bind(history);
+  const boundReplace = _origReplaceState.bind(history);
+  history.pushState = function (...args: Parameters<typeof History.prototype.pushState>) {
+    const result = boundPush(...args);
+    setTimeout(navigationHandler, 0);
+    return result;
+  };
+  history.replaceState = function (...args: Parameters<typeof History.prototype.replaceState>) {
+    const result = boundReplace(...args);
+    setTimeout(navigationHandler, 0);
+    return result;
+  };
+  addTrackedListener(window, 'popstate', navigationHandler);
 
   if (runtimeState?.uiHidden) {
     ui.hide();
@@ -8510,6 +8708,7 @@ export function boot(cfg: RoverInit): RoverInstance {
 
   currentConfig = {
     ...cfg,
+    deepLink: resolveDeepLinkConfig(cfg.deepLink),
     pageConfig: sanitizeResolvedPageCaptureConfig(cfg.pageConfig),
     visitorId: resolvedVisitorId || cfg.visitorId,
     sessionId: desiredSessionId || runtimeState.sessionId,
@@ -8652,6 +8851,7 @@ export function boot(cfg: RoverInit): RoverInstance {
 
   createRuntime(currentConfig);
   void ensureRoverServerRuntime(currentConfig);
+  maybeHandleDeepLink('boot');
 
   // If no server runtime needed (no auth config), or if we already have a valid
   // session token (from sessionStorage/cross-domain cookie), mark session ready
@@ -8718,6 +8918,10 @@ export function update(cfg: Partial<RoverInit>): void {
   currentConfig = {
     ...currentConfig,
     ...cfg,
+    deepLink: resolveDeepLinkConfig({
+      ...currentConfig.deepLink,
+      ...cfg.deepLink,
+    }),
     pageConfig:
       cfg.pageConfig !== undefined
         ? sanitizeResolvedPageCaptureConfig(cfg.pageConfig)
@@ -8965,6 +9169,7 @@ export function update(cfg: Partial<RoverInit>): void {
     if (cfg.openOnInit || shouldPreserveWidgetOpenForState(runtimeState)) open();
     else close();
   }
+  maybeHandleDeepLink('update');
   syncMainWorldObserverPause();
 }
 
@@ -9013,6 +9218,9 @@ export function shutdown(): void {
   latestAssistantByRunId.clear();
   ignoredRunIds.clear();
   externalContextCache.clear();
+  clearPendingDeepLinkShortcut();
+  deepLinkLastHandledKey = '';
+  deepLinkLastIgnoredDisabledKey = '';
   agentNavigationPending = false;
   currentTaskBoundaryId = '';
   runtimeId = '';

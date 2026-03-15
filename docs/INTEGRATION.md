@@ -345,6 +345,7 @@ rover.boot(config);
 | `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
 | `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | In-scope cross-host navigation policy |
 | `openOnInit` | `boolean` | `false` | Open panel after boot |
+| `deepLink` | `{ enabled?: boolean; promptParam?: string; shortcutParam?: string; consume?: boolean }` | `{ enabled: false, promptParam: 'rover', shortcutParam: 'rover_shortcut', consume: true }` | Opt-in URL-triggered Rover (`?rover=book%20a%20flight` or `?rover_shortcut=checkout_flow`) |
 | `allowActions` | `boolean` | `true` | Enable/disable action tools |
 | `tabPolicy.observerByDefault` | `boolean` | `true` | Observer preference for shared tab sessions |
 | `tabPolicy.actionLeaseMs` | `number` | coordinator default | Controller action lease duration |
@@ -432,6 +433,19 @@ When `tools.web.scrapeMode` is `on_demand`, ensure your Rover site key includes 
 
 With site keys (or a valid `rvrsess_*` token), Rover fetches cloud site config via `POST /v2/rover/session/open` (shortcuts + greeting + voice + pageConfig).
 If boot config and cloud config define the same field, boot config takes precedence.
+`deepLink` remains boot/runtime only and is not stored in cloud site config.
+
+For AI and CLI-triggered entrypoints, prefer exact shortcut IDs for repeatable flows:
+
+```text
+https://example.com?rover_shortcut=checkout_flow
+```
+
+Use raw prompt deep links for ad hoc tasks:
+
+```text
+https://example.com?rover=book%20a%20flight
+```
 
 ### Rover V2 Runtime APIs
 

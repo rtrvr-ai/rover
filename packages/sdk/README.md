@@ -119,6 +119,7 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `mode` | `'full' \| 'safe'` | `'full'` | Runtime mode |
 | `allowActions` | `boolean` | `true` | Enable or disable action tools |
 | `openOnInit` | `boolean` | `false` | Open panel immediately on boot |
+| `deepLink` | `{ enabled?: boolean; promptParam?: string; shortcutParam?: string; consume?: boolean }` | `{ enabled: false, promptParam: 'rover', shortcutParam: 'rover_shortcut', consume: true }` | Opt-in URL-triggered Rover (`?rover=book%20a%20flight` or `?rover_shortcut=checkout_flow`) |
 | `sessionScope` | `'shared_site' \| 'tab'` | `'shared_site'` | Session sharing across tabs |
 | `taskRouting.mode` | `'auto' \| 'act' \| 'planner'` | `'act'` | Task routing strategy |
 | `taskRouting.plannerOnActError` | `boolean` | `true` | In `auto` mode, retry planner only when ACT does not produce a usable outcome |
@@ -160,8 +161,21 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 
 When a site key or session token is used, Rover fetches cloud site config via `/v2/rover/session/open` (shortcuts + greeting + voice + pageConfig).
 If the same field exists in both cloud config and boot config, boot config wins.
+`deepLink` is boot/runtime only and is not persisted in cloud site config.
 
 If you enable `tools.web.scrapeMode: 'on_demand'`, use a site key capability profile that includes cloud scrape support.
+
+For AI or CLI-triggered entrypoints, prefer exact shortcut IDs for repeatable flows:
+
+```text
+https://example.com?rover_shortcut=checkout_flow
+```
+
+Use raw prompt deep links for ad hoc requests:
+
+```text
+https://example.com?rover=book%20a%20flight
+```
 
 See [full configuration reference](https://github.com/rtrvr-ai/rover/blob/main/docs/INTEGRATION.md#configuration-reference).
 
