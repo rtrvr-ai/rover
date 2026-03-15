@@ -1,4 +1,11 @@
 import type { ToolOutput } from '@rover/shared/lib/types/index.js';
+import {
+  createBrowserVoiceTranscriber,
+  type RoverVoiceConfig,
+  type RoverVoiceTelemetryEvent,
+  type VoiceRecognitionError,
+  type VoiceTranscriber,
+} from './voice.js';
 
 export type RoverShortcut = {
   id: string;
@@ -114,6 +121,7 @@ export type RoverUi = {
   showGreeting: (text: string) => void;
   dismissGreeting: () => void;
   setVisitorName: (name: string) => void;
+  setVoiceConfig: (voice?: RoverVoiceConfig) => void;
   open: () => void;
   close: () => void;
   show: () => void;
@@ -131,6 +139,7 @@ export type RoverUi = {
 
 export type MountOptions = {
   onSend: (text: string, meta?: { askUserAnswers?: RoverAskUserAnswerMeta }) => void;
+  onVoiceTelemetry?: (event: RoverVoiceTelemetryEvent, payload?: Record<string, unknown>) => void;
   onOpen?: () => void;
   onClose?: () => void;
   onRequestControl?: () => void;
@@ -158,6 +167,7 @@ export type MountOptions = {
     duration?: number;
     disabled?: boolean;
   };
+  voice?: RoverVoiceConfig;
   visitorName?: string;
   // Multi-conversation callbacks
   onSwitchConversation?: (conversationId: string) => void;
@@ -178,6 +188,9 @@ const STRUCTURED_PAGE_SIZE = 25;
 const STRUCTURED_MAX_DEPTH = 4;
 const SHORTCUTS_RENDER_LIMIT = 12;
 const GREETING_REVEAL_DELAY_MS = 800;
+const VOICE_AUTO_STOP_DEFAULT_MS = 1400;
+const VOICE_AUTO_STOP_MIN_MS = 800;
+const VOICE_AUTO_STOP_MAX_MS = 5000;
 
 function createId(prefix: string): string {
   try {
@@ -222,6 +235,51 @@ function deriveTraceKey(event: RoverTimelineEvent): string {
 
 function sanitizeText(text: string): string {
   return String(text || '').trim();
+}
+
+function normalizeVoiceLanguage(input?: string): string | undefined {
+  const cleaned = String(input || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9-]/g, '')
+    .slice(0, 48);
+  return cleaned || undefined;
+}
+
+function normalizeVoiceAutoStopMs(input: unknown): number {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed)) return VOICE_AUTO_STOP_DEFAULT_MS;
+  return Math.max(VOICE_AUTO_STOP_MIN_MS, Math.min(VOICE_AUTO_STOP_MAX_MS, Math.trunc(parsed)));
+}
+
+function sanitizeVoiceConfig(input?: RoverVoiceConfig): RoverVoiceConfig | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const next: RoverVoiceConfig = {};
+  if (typeof input.enabled === 'boolean') {
+    next.enabled = input.enabled;
+  }
+  const language = normalizeVoiceLanguage(input.language);
+  if (language) {
+    next.language = language;
+  }
+  if (input.autoStopMs !== undefined) {
+    next.autoStopMs = normalizeVoiceAutoStopMs(input.autoStopMs);
+  }
+  return Object.keys(next).length ? next : undefined;
+}
+
+function normalizeVoiceDraftSegment(input: string): string {
+  return String(input || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function composeVoiceDraft(base: string, finalTranscript: string, interimTranscript: string): string {
+  const chunks = [
+    String(base || '').trim(),
+    normalizeVoiceDraftSegment(finalTranscript),
+    normalizeVoiceDraftSegment(interimTranscript),
+  ].filter(Boolean);
+  return chunks.join(' ');
 }
 
 function resolveAgentName(input?: string): string {
@@ -2046,13 +2104,19 @@ export function mountWidget(opts: MountOptions): RoverUi {
     /* ── Step 10: Composer Enhancement ── */
     .composer {
       display: flex;
-      align-items: flex-end;
-      gap: 8px;
+      flex-direction: column;
+      gap: 6px;
       border-top: 1px solid var(--rv-border);
       padding: 12px 14px;
       background: rgba(255, 255, 255, 0.85);
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
+    }
+
+    .composerRow {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
     }
 
     .composer textarea {
@@ -2085,6 +2149,65 @@ export function mountWidget(opts: MountOptions): RoverUi {
     .composer textarea:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+    }
+
+    .composerActions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .voiceBtn {
+      border: 1.5px solid var(--rv-border-strong);
+      background: rgba(255, 255, 255, 0.9);
+      color: var(--rv-accent);
+      border-radius: var(--rv-radius-md);
+      height: 44px;
+      width: 44px;
+      min-width: 44px;
+      padding: 0;
+      cursor: pointer;
+      display: none;
+      place-items: center;
+      transition: transform 200ms var(--rv-ease-spring), box-shadow 200ms ease, border-color 150ms ease, background 150ms ease;
+      box-shadow: 0 3px 10px rgba(19, 30, 43, 0.08);
+    }
+
+    .voiceBtn.visible {
+      display: grid;
+    }
+
+    .voiceBtn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 5px 14px rgba(19, 30, 43, 0.12);
+      border-color: var(--rv-accent-border);
+    }
+
+    .voiceBtn:active {
+      transform: scale(0.96);
+    }
+
+    .voiceBtn.active {
+      background: var(--rv-accent-soft);
+      border-color: var(--rv-accent-border);
+      box-shadow: 0 0 0 3px var(--rv-accent-glow);
+    }
+
+    .voiceBtn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    .voiceBtn svg {
+      width: 18px;
+      height: 18px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
     }
 
     .sendBtn {
@@ -2120,6 +2243,23 @@ export function mountWidget(opts: MountOptions): RoverUi {
       stroke-width: 2;
       stroke-linecap: round;
       stroke-linejoin: round;
+    }
+
+    .composerStatus {
+      display: none;
+      min-height: 16px;
+      font-size: 11.5px;
+      line-height: 1.35;
+      color: var(--rv-text-secondary);
+      padding: 0 2px;
+    }
+
+    .composerStatus.visible {
+      display: block;
+    }
+
+    .composerStatus.error {
+      color: #c2410c;
     }
 
     /* ── Step 13: Resize Handle ── */
@@ -3143,16 +3283,37 @@ export function mountWidget(opts: MountOptions): RoverUi {
   const composer = document.createElement('form');
   composer.className = 'composer';
 
+  const composerRow = document.createElement('div');
+  composerRow.className = 'composerRow';
+
   const composerTextarea = document.createElement('textarea');
   composerTextarea.rows = 1;
   composerTextarea.placeholder = `Ask ${agentName} to act on this website...`;
-  composer.appendChild(composerTextarea);
+  composerRow.appendChild(composerTextarea);
+
+  const composerActions = document.createElement('div');
+  composerActions.className = 'composerActions';
+
+  const voiceButton = document.createElement('button');
+  voiceButton.type = 'button';
+  voiceButton.className = 'voiceBtn';
+  voiceButton.setAttribute('aria-label', 'Start voice dictation');
+  voiceButton.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 1 0 6 0V6a3 3 0 0 0-3-3Z"></path><path d="M19 11a7 7 0 0 1-14 0"></path><path d="M12 18v3"></path><path d="M8 21h8"></path></svg>';
+  composerActions.appendChild(voiceButton);
 
   const sendButton = document.createElement('button');
   sendButton.type = 'submit';
   sendButton.className = 'sendBtn';
   sendButton.innerHTML = '<svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>';
-  composer.appendChild(sendButton);
+  composerActions.appendChild(sendButton);
+
+  composerRow.appendChild(composerActions);
+  composer.appendChild(composerRow);
+
+  const composerStatus = document.createElement('div');
+  composerStatus.className = 'composerStatus';
+  composerStatus.setAttribute('aria-live', 'polite');
+  composer.appendChild(composerStatus);
 
   /* ── Resize Handle ── */
   const resizeHandle = document.createElement('div');
@@ -3257,6 +3418,244 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let currentQuestionPrompt: { questions: RoverAskUserQuestion[] } | null = null;
   let questionPromptSignature: string | null = null;
   let questionDraftAnswers: Record<string, string> = {};
+  let voiceConfig = sanitizeVoiceConfig(opts.voice);
+  let voiceState: 'idle' | 'listening' | 'error' = 'idle';
+  let voiceErrorMessage = '';
+  let voiceDraftBase = '';
+  let voiceFinalTranscript = '';
+  let voiceInterimTranscript = '';
+  let pendingVoiceSubmit = false;
+  let voiceStopReason: 'manual' | 'submit' | 'typed' | 'silence' | 'disabled' | 'config' | null = null;
+  let voiceStopTimer: ReturnType<typeof setTimeout> | null = null;
+  let reportedVoiceProviderKey = '';
+
+  function emitVoiceTelemetry(event: RoverVoiceTelemetryEvent, payload?: Record<string, unknown>): void {
+    opts.onVoiceTelemetry?.(event, payload);
+  }
+
+  function setComposerText(value: string): void {
+    inputEl.value = value;
+    inputEl.style.height = 'auto';
+    inputEl.style.height = `${Math.min(96, Math.max(44, inputEl.scrollHeight))}px`;
+  }
+
+  function setComposerStatusMessage(message = '', tone: 'info' | 'error' = 'info'): void {
+    const clean = sanitizeText(message);
+    composerStatus.textContent = clean;
+    composerStatus.classList.toggle('visible', !!clean);
+    composerStatus.classList.toggle('error', tone === 'error' && !!clean);
+  }
+
+  function clearVoiceStopTimer(): void {
+    if (!voiceStopTimer) return;
+    clearTimeout(voiceStopTimer);
+    voiceStopTimer = null;
+  }
+
+  function resetVoiceDraftState(): void {
+    voiceDraftBase = '';
+    voiceFinalTranscript = '';
+    voiceInterimTranscript = '';
+  }
+
+  function buildVoiceDraft(): string {
+    return composeVoiceDraft(voiceDraftBase, voiceFinalTranscript, voiceInterimTranscript);
+  }
+
+  function applyVoiceDraft(): void {
+    setComposerText(buildVoiceDraft());
+  }
+
+  function getVoiceAutoStopMs(): number {
+    return normalizeVoiceAutoStopMs(voiceConfig?.autoStopMs);
+  }
+
+  function reportVoiceProviderSelection(): void {
+    if (voiceConfig?.enabled !== true) {
+      reportedVoiceProviderKey = '';
+      return;
+    }
+    const supported = voiceProvider.isSupported();
+    const nextKey = `${supported ? 'browser' : 'unsupported'}|${voiceConfig.language || ''}|${getVoiceAutoStopMs()}`;
+    if (reportedVoiceProviderKey === nextKey) return;
+    reportedVoiceProviderKey = nextKey;
+    emitVoiceTelemetry('voice_provider_selected', {
+      provider: supported ? 'browser' : 'unsupported',
+      supported,
+    });
+  }
+
+  function syncVoiceUi(): void {
+    const enabled = voiceConfig?.enabled === true;
+    const supported = voiceProvider.isSupported();
+    voiceButton.classList.toggle('visible', enabled && supported);
+    voiceButton.classList.toggle('active', voiceState === 'listening');
+    voiceButton.disabled = inputEl.disabled;
+    voiceButton.setAttribute('aria-pressed', voiceState === 'listening' ? 'true' : 'false');
+    voiceButton.setAttribute(
+      'aria-label',
+      voiceState === 'listening' ? 'Stop voice dictation' : 'Start voice dictation',
+    );
+
+    if (voiceState === 'error' && voiceErrorMessage) {
+      setComposerStatusMessage(voiceErrorMessage, 'error');
+      return;
+    }
+    if (voiceState === 'listening') {
+      setComposerStatusMessage('Listening... Rover will stop after a short pause.');
+      return;
+    }
+    if (enabled && !supported) {
+      setComposerStatusMessage('Voice dictation is not available in this browser.');
+      return;
+    }
+    setComposerStatusMessage('');
+  }
+
+  function stopVoiceDictation(
+    reason: 'manual' | 'submit' | 'typed' | 'silence' | 'disabled' | 'config',
+    options?: { resetDraftBase?: boolean },
+  ): void {
+    if (voiceState !== 'listening') {
+      if (options?.resetDraftBase) {
+        resetVoiceDraftState();
+      }
+      return;
+    }
+    clearVoiceStopTimer();
+    voiceStopReason = reason;
+    voiceProvider.stop();
+    if (options?.resetDraftBase) {
+      resetVoiceDraftState();
+    }
+  }
+
+  function scheduleVoiceStop(): void {
+    if (voiceState !== 'listening') return;
+    clearVoiceStopTimer();
+    voiceStopTimer = setTimeout(() => {
+      if (voiceState !== 'listening') return;
+      stopVoiceDictation('silence');
+    }, getVoiceAutoStopMs());
+  }
+
+  function handleVoiceError(error: VoiceRecognitionError): void {
+    clearVoiceStopTimer();
+    voiceState = 'error';
+    voiceErrorMessage = error.message;
+    voiceStopReason = error.code === 'permission_denied' ? 'manual' : voiceStopReason;
+    syncVoiceUi();
+    emitVoiceTelemetry('voice_error', {
+      code: error.code,
+      recoverable: error.recoverable,
+    });
+    if (error.code === 'permission_denied') {
+      emitVoiceTelemetry('voice_permission_denied', {
+        code: error.code,
+      });
+    }
+  }
+
+  function submitComposerDraft(): void {
+    if (inputEl.disabled) return;
+    const text = sanitizeText(inputEl.value);
+    if (!text) return;
+    setTaskSuggestion({ visible: false });
+    opts.onSend(text);
+    setComposerText('');
+    voiceErrorMessage = '';
+    voiceState = 'idle';
+    resetVoiceDraftState();
+    syncVoiceUi();
+  }
+
+  function startVoiceDictation(): void {
+    if (inputEl.disabled) return;
+    if (!voiceConfig?.enabled) return;
+    if (!voiceProvider.isSupported()) {
+      voiceState = 'error';
+      voiceErrorMessage = 'Voice dictation is not available in this browser.';
+      syncVoiceUi();
+      return;
+    }
+    reportVoiceProviderSelection();
+    voiceErrorMessage = '';
+    voiceState = 'idle';
+    pendingVoiceSubmit = false;
+    voiceStopReason = null;
+    voiceDraftBase = inputEl.value;
+    voiceFinalTranscript = '';
+    voiceInterimTranscript = '';
+    syncVoiceUi();
+    voiceProvider.start({ language: voiceConfig.language });
+  }
+
+  function setVoiceConfig(nextVoice?: RoverVoiceConfig): void {
+    const nextConfig = sanitizeVoiceConfig(nextVoice);
+    const previousSignature = JSON.stringify(voiceConfig || null);
+    const nextSignature = JSON.stringify(nextConfig || null);
+    if (previousSignature === nextSignature) {
+      syncVoiceUi();
+      return;
+    }
+    voiceConfig = nextConfig;
+    voiceErrorMessage = '';
+    pendingVoiceSubmit = false;
+    if (voiceState === 'listening') {
+      stopVoiceDictation('config');
+    } else {
+      resetVoiceDraftState();
+      voiceState = 'idle';
+    }
+    reportVoiceProviderSelection();
+    syncVoiceUi();
+  }
+
+  const voiceProvider: VoiceTranscriber = createBrowserVoiceTranscriber({
+    onStart: () => {
+      voiceState = 'listening';
+      voiceErrorMessage = '';
+      emitVoiceTelemetry('voice_started', {
+        provider: 'browser',
+      });
+      syncVoiceUi();
+      scheduleVoiceStop();
+    },
+    onResult: ({ finalTranscript, interimTranscript }) => {
+      voiceFinalTranscript = finalTranscript;
+      voiceInterimTranscript = interimTranscript;
+      applyVoiceDraft();
+      scheduleVoiceStop();
+    },
+    onEnd: ({ requested }) => {
+      const finalDraft = sanitizeText(buildVoiceDraft());
+      const stoppedReason = voiceStopReason || (requested ? 'manual' : 'silence');
+      clearVoiceStopTimer();
+      if (voiceState !== 'error') {
+        voiceState = 'idle';
+        voiceErrorMessage = '';
+      }
+      if (finalDraft) {
+        emitVoiceTelemetry('voice_transcript_ready', {
+          chars: finalDraft.length,
+          hadExistingDraft: sanitizeText(voiceDraftBase).length > 0,
+        });
+      }
+      emitVoiceTelemetry('voice_stopped', {
+        reason: stoppedReason,
+        requested,
+      });
+      const shouldSubmit = pendingVoiceSubmit;
+      pendingVoiceSubmit = false;
+      voiceStopReason = null;
+      resetVoiceDraftState();
+      syncVoiceUi();
+      if (shouldSubmit) {
+        submitComposerDraft();
+      }
+    },
+    onError: handleVoiceError,
+  });
 
   /* ── Overflow menu logic ── */
   function toggleOverflow(): void {
@@ -3602,11 +4001,16 @@ export function mountWidget(opts: MountOptions): RoverUi {
   function syncComposerDisabledState(): void {
     const disabled = currentMode === 'observer' && !canComposeInObserver;
     inputEl.disabled = disabled;
+    voiceButton.disabled = disabled;
     questionPromptCancel.disabled = disabled;
     questionPromptSubmit.disabled = disabled;
     for (const node of Array.from(questionPromptForm.querySelectorAll('.questionPromptInput'))) {
       (node as HTMLInputElement).disabled = disabled;
     }
+    if (disabled && voiceState === 'listening') {
+      stopVoiceDictation('disabled');
+    }
+    syncVoiceUi();
   }
 
   function setTraceExpanded(next: boolean): void {
@@ -3955,6 +4359,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
       window.clearTimeout(moodResetTimer);
       moodResetTimer = null;
     }
+    clearVoiceStopTimer();
+    voiceProvider.dispose();
     if (greetingRevealTimer) {
       window.clearTimeout(greetingRevealTimer);
       greetingRevealTimer = null;
@@ -4064,8 +4470,20 @@ export function mountWidget(opts: MountOptions): RoverUi {
   });
 
   inputEl.addEventListener('input', () => {
+    if (voiceState === 'listening') {
+      stopVoiceDictation('typed');
+    }
     inputEl.style.height = 'auto';
     inputEl.style.height = `${Math.min(96, Math.max(44, inputEl.scrollHeight))}px`;
+  });
+
+  voiceButton.addEventListener('click', () => {
+    if (inputEl.disabled) return;
+    if (voiceState === 'listening') {
+      stopVoiceDictation('manual');
+      return;
+    }
+    startVoiceDictation();
   });
 
   questionPromptForm.addEventListener('submit', ev => {
@@ -4137,12 +4555,12 @@ export function mountWidget(opts: MountOptions): RoverUi {
   composer.addEventListener('submit', ev => {
     ev.preventDefault();
     if (inputEl.disabled) return;
-    const text = sanitizeText(inputEl.value);
-    if (!text) return;
-    setTaskSuggestion({ visible: false });
-    opts.onSend(text);
-    inputEl.value = '';
-    inputEl.style.height = '44px';
+    if (voiceState === 'listening') {
+      pendingVoiceSubmit = true;
+      stopVoiceDictation('submit');
+      return;
+    }
+    submitComposerDraft();
   });
 
   /* Escape closes panel when open */
@@ -4217,6 +4635,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   }
 
   setExecutionMode('controller');
+  setVoiceConfig(voiceConfig);
   setTraceExpanded(false);
   if (currentShortcuts.length > 0) {
     renderShortcuts(currentShortcuts);
@@ -4396,6 +4815,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     showGreeting,
     dismissGreeting,
     setVisitorName,
+    setVoiceConfig,
     open,
     close,
     show,

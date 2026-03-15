@@ -15,6 +15,12 @@ export type RoverSnapshotMeta = {
   digest?: string;
 };
 
+export type RoverServerVoiceConfig = {
+  enabled?: boolean;
+  language?: string;
+  autoStopMs?: number;
+};
+
 export type RoverServerSiteConfig = {
   shortcuts?: Array<Record<string, unknown>>;
   greeting?: {
@@ -27,6 +33,7 @@ export type RoverServerSiteConfig = {
     shortcutMaxStored?: number;
     shortcutMaxRendered?: number;
   };
+  voice?: RoverServerVoiceConfig;
   pageConfig?: RoverPageCaptureConfig | null;
   version?: string | number;
 };

@@ -11,6 +11,7 @@ import {
   type RoverShortcut,
   type RoverTimelineEvent,
   type RoverUi,
+  type RoverVoiceConfig,
 } from '@rover/ui';
 import {
   SessionCoordinator,
@@ -286,6 +287,7 @@ export type RoverInit = {
       duration?: number;
       disabled?: boolean;
     };
+    voice?: RoverVoiceConfig;
     /** Tab highlighting indicators when Rover is active. */
     tabIndicator?: {
       /** Prepend "[Rover] " to document.title during task execution. Default: true */
@@ -334,6 +336,14 @@ export type RoverEventName =
   | 'close';
 
 export type RoverEventHandler = (payload?: any) => void;
+
+type RoverVoiceTelemetryEventName =
+  | 'voice_started'
+  | 'voice_stopped'
+  | 'voice_transcript_ready'
+  | 'voice_error'
+  | 'voice_permission_denied'
+  | 'voice_provider_selected';
 
 export type RoverInstance = {
   boot: (cfg: RoverInit) => RoverInstance;
@@ -393,6 +403,10 @@ const SHORTCUT_DESCRIPTION_MAX_CHARS = 200;
 const SHORTCUT_PROMPT_MAX_CHARS = 700;
 const SHORTCUT_ICON_MAX_CHARS = 8;
 const GREETING_TEXT_MAX_CHARS = 240;
+const VOICE_LANGUAGE_MAX_CHARS = 48;
+const VOICE_AUTO_STOP_DEFAULT_MS = 1400;
+const VOICE_AUTO_STOP_MIN_MS = 800;
+const VOICE_AUTO_STOP_MAX_MS = 5000;
 const NAV_HANDOFF_BOOTSTRAP_PREFIX = 'rover:handoff-bootstrap:';
 const NAV_HANDOFF_BOOTSTRAP_TTL_MS = 30_000;
 const PRESERVED_WIDGET_OPEN_GUARD_TTL_MS = 120_000;
@@ -405,8 +419,10 @@ const SERVER_CANCEL_REPAIR_MAX_DELAY_MS = 15_000;
 const SERVER_CANCEL_REPAIR_MAX_ATTEMPTS = 7;
 const SERVER_CANCEL_REPAIR_MAX_QUEUE = 80;
 
+type TelemetryEventName = RoverEventName | RoverVoiceTelemetryEventName;
+
 type TelemetryEventRecord = {
-  name: RoverEventName;
+  name: TelemetryEventName;
   ts: number;
   seq: number;
   payload?: unknown;
@@ -438,19 +454,23 @@ const TELEMETRY_STATUS_MIN_INTERVAL_MS = 1_500;
 const TELEMETRY_CHECKPOINT_STATE_MIN_INTERVAL_MS = 5_000;
 const TELEMETRY_MIN_FLUSH_COOLDOWN_MS = 10_000;
 const TELEMETRY_FAST_LANE_MAX_DELAY_MS = 1_200;
-const TELEMETRY_FAST_LANE_EVENTS = new Set<RoverEventName>([
+const TELEMETRY_FAST_LANE_EVENTS = new Set<TelemetryEventName>([
   'error',
   'navigation_guardrail',
   'checkpoint_error',
   'tab_event_conflict_exhausted',
+  'voice_error',
+  'voice_permission_denied',
 ]);
-const TELEMETRY_BACKGROUND_ALLOWED_EVENTS = new Set<RoverEventName>([
+const TELEMETRY_BACKGROUND_ALLOWED_EVENTS = new Set<TelemetryEventName>([
   'ready',
   'error',
   'auth_required',
   'navigation_guardrail',
   'checkpoint_error',
   'tab_event_conflict_exhausted',
+  'voice_error',
+  'voice_permission_denied',
 ]);
 let resolvedVisitorId: string | undefined = undefined;
 let resolvedVisitor: { name?: string; email?: string } | undefined = undefined;
@@ -1589,6 +1609,7 @@ async function ensureRoverServerRuntime(cfg: RoverInit): Promise<void> {
           const resolvedSiteConfig: RoverResolvedSiteConfig = {
             shortcuts: sanitizeShortcutList(session.siteConfig.shortcuts),
             greeting: sanitizeGreetingConfig(session.siteConfig.greeting),
+            voice: sanitizeVoiceConfig(session.siteConfig.voice),
             limits: sanitizeSiteConfigLimits(session.siteConfig.limits),
             pageConfig: sanitizeResolvedPageCaptureConfig(session.siteConfig.pageConfig),
             version: session.siteConfig.version != null ? String(session.siteConfig.version) : undefined,
@@ -1757,7 +1778,7 @@ function setupTelemetry(cfg: RoverInit): void {
   }, telemetry.flushIntervalMs);
 }
 
-function recordTelemetryEvent(event: RoverEventName, payload?: any): void {
+function recordTelemetryEvent(event: TelemetryEventName, payload?: any): void {
   if (!canUseTelemetry(currentConfig) || telemetryPausedAuth) return;
   if (shouldDeferBackgroundSync() && !TELEMETRY_BACKGROUND_ALLOWED_EVENTS.has(event)) return;
   const telemetry = normalizeTelemetryConfig(currentConfig);
@@ -1808,6 +1829,10 @@ function recordTelemetryEvent(event: RoverEventName, payload?: any): void {
       }, TELEMETRY_MIN_FLUSH_COOLDOWN_MS - sinceLastFlush);
     }
   }
+}
+
+function recordVoiceTelemetryEvent(event: RoverVoiceTelemetryEventName, payload?: any): void {
+  recordTelemetryEvent(event, payload);
 }
 
 type WorkerStatusStage = 'analyze' | 'route' | 'execute' | 'verify' | 'complete';
@@ -6947,7 +6972,7 @@ function handleWorkerMessage(msg: any): void {
   }
 }
 
-/* ── Site config: shortcuts + greeting + page capture (cache, merge, fetch) ── */
+/* ── Site config: shortcuts + greeting + voice + page capture (cache, merge, fetch) ── */
 
 type RoverGreetingConfig = {
   text?: string;
@@ -6959,6 +6984,7 @@ type RoverGreetingConfig = {
 type RoverResolvedSiteConfig = {
   shortcuts: RoverShortcut[];
   greeting?: RoverGreetingConfig;
+  voice?: RoverVoiceConfig;
   limits?: RoverShortcutLimits;
   pageConfig?: RoverPageCaptureConfig;
   version?: string;
@@ -6990,6 +7016,33 @@ function sanitizeSiteConfigLimits(raw: any): RoverShortcutLimits | undefined {
 
 function sanitizeResolvedPageCaptureConfig(raw: unknown): RoverPageCaptureConfig | undefined {
   return sanitizeRoverPageCaptureConfig(raw);
+}
+
+function normalizeVoiceAutoStopMs(input: unknown): number | undefined {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed)) return undefined;
+  return Math.max(VOICE_AUTO_STOP_MIN_MS, Math.min(VOICE_AUTO_STOP_MAX_MS, Math.floor(parsed)));
+}
+
+function sanitizeVoiceConfig(raw: unknown): RoverVoiceConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const input = raw as Record<string, unknown>;
+  const next: RoverVoiceConfig = {};
+  if (typeof input.enabled === 'boolean') {
+    next.enabled = input.enabled;
+  }
+  const language = String(input.language || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9-]/g, '')
+    .slice(0, VOICE_LANGUAGE_MAX_CHARS);
+  if (language) {
+    next.language = language;
+  }
+  const autoStopMs = normalizeVoiceAutoStopMs(input.autoStopMs);
+  if (autoStopMs !== undefined) {
+    next.autoStopMs = autoStopMs;
+  }
+  return Object.keys(next).length ? next : undefined;
 }
 
 function resolveEffectivePageCaptureConfig(cfg: RoverInit | null): RoverPageCaptureConfig | undefined {
@@ -7039,6 +7092,7 @@ function getCachedSiteConfig(siteId: string): RoverResolvedSiteConfig | null {
       return {
         shortcuts: sanitizeShortcutList(parsed.data.shortcuts),
         greeting: sanitizeGreetingConfig(parsed.data.greeting),
+        voice: sanitizeVoiceConfig(parsed.data.voice),
         limits: sanitizeSiteConfigLimits(parsed.data.limits),
         pageConfig: sanitizeResolvedPageCaptureConfig(parsed.data.pageConfig),
         version: typeof parsed.version === 'string' ? parsed.version : undefined,
@@ -7071,6 +7125,7 @@ function setCachedSiteConfig(siteId: string, data: RoverResolvedSiteConfig): voi
         data: {
           shortcuts: sanitizeShortcutList(data.shortcuts),
           greeting: sanitizeGreetingConfig(data.greeting),
+          voice: sanitizeVoiceConfig(data.voice),
           limits: sanitizeSiteConfigLimits(data.limits),
           pageConfig: sanitizeResolvedPageCaptureConfig(data.pageConfig),
         },
@@ -7186,6 +7241,21 @@ function resolveEffectiveGreetingConfig(cfg: RoverInit | null): RoverGreetingCon
   };
 }
 
+function resolveEffectiveVoiceConfig(cfg: RoverInit | null): RoverVoiceConfig | undefined {
+  if (!cfg) return undefined;
+  const fromBackend = sanitizeVoiceConfig(backendSiteConfig?.voice);
+  const fromBoot = sanitizeVoiceConfig(cfg.ui?.voice);
+  if (!fromBackend && !fromBoot) return undefined;
+  const merged: RoverVoiceConfig = {
+    ...(fromBackend || {}),
+    ...(fromBoot || {}),
+  };
+  if (merged.enabled === true && merged.autoStopMs === undefined) {
+    merged.autoStopMs = VOICE_AUTO_STOP_DEFAULT_MS;
+  }
+  return merged;
+}
+
 function buildGreetingText(greetingCfg: RoverGreetingConfig | undefined): string {
   const name = resolvedVisitor?.name;
   const customText = greetingCfg?.text;
@@ -7236,6 +7306,7 @@ function applyEffectiveSiteConfig(cfg: RoverInit): void {
   const backendShortcuts = sanitizeShortcutList(backendSiteConfig?.shortcuts || []);
   const merged = mergeShortcuts(configShortcuts, backendShortcuts);
   ui?.setShortcuts(getRenderableShortcuts(merged));
+  ui?.setVoiceConfig(resolveEffectiveVoiceConfig(cfg));
   syncEffectivePageCaptureConfig(cfg);
 }
 
@@ -7280,6 +7351,7 @@ async function fetchBackendSiteConfig(cfg: RoverInit): Promise<RoverResolvedSite
   return {
     shortcuts: sanitizeShortcutList(payload.shortcuts),
     greeting: sanitizeGreetingConfig(payload.greeting),
+    voice: sanitizeVoiceConfig(payload.voice),
     limits: sanitizeSiteConfigLimits(payload.limits),
     pageConfig: sanitizeResolvedPageCaptureConfig(payload.pageConfig),
     version: payload.version != null ? String(payload.version) : undefined,
@@ -7999,7 +8071,11 @@ function createRuntime(cfg: RoverInit): void {
   ui = mountWidget({
     shortcuts: getRenderableShortcuts(sanitizeShortcutList(cfg.ui?.shortcuts || [])),
     greeting: resolveEffectiveGreetingConfig(cfg),
+    voice: resolveEffectiveVoiceConfig(cfg),
     visitorName: resolvedVisitor?.name,
+    onVoiceTelemetry: (event, payload) => {
+      recordVoiceTelemetryEvent(event, payload);
+    },
     onShortcutClick: (shortcut) => {
       const text = String(shortcut.prompt || '').trim();
       if (!text) return;
@@ -8784,6 +8860,10 @@ export function update(cfg: Partial<RoverInit>): void {
       panel: {
         ...currentConfig.ui?.panel,
         ...cfg.ui?.panel,
+      },
+      voice: {
+        ...currentConfig.ui?.voice,
+        ...cfg.ui?.voice,
       },
     },
     tools: {

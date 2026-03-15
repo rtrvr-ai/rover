@@ -155,9 +155,10 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `ui.showTaskControls` | `boolean` | `true` | Show new/end task controls |
 | `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced) |
 | `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | — | Greeting bubble config (`{name}` token supported) |
+| `ui.voice` | `{ enabled?: boolean; language?: string; autoStopMs?: number }` | — | Browser dictation for supported Chromium browsers. Rover fills the draft live, stops after silence, and the user still sends manually. |
 | `pageConfig` | `RoverPageCaptureConfig` | — | Optional per-site page-capture overrides such as `disableAutoScroll`, settle timing, and sparse-tree retry settings |
 
-When a site key or session token is used, Rover fetches cloud site config via `/v2/rover/session/open` (shortcuts + greeting + pageConfig).  
+When a site key or session token is used, Rover fetches cloud site config via `/v2/rover/session/open` (shortcuts + greeting + voice + pageConfig).
 If the same field exists in both cloud config and boot config, boot config wins.
 
 If you enable `tools.web.scrapeMode: 'on_demand'`, use a site key capability profile that includes cloud scrape support.
