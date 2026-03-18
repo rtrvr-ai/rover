@@ -1,8 +1,8 @@
 # Rover
 
 [![CI](https://github.com/rtrvr-ai/rover/actions/workflows/ci.yml/badge.svg)](https://github.com/rtrvr-ai/rover/actions/workflows/ci.yml)
-[![License: FSL-1.1-Apache-2.0](https://img.shields.io/badge/License-FSL--1.1--Apache--2.0-blue.svg)](LICENSE)
 [![npm](https://img.shields.io/npm/v/@rtrvr-ai/rover)](https://www.npmjs.com/package/@rtrvr-ai/rover)
+[![License: FSL-1.1-Apache-2.0](https://img.shields.io/badge/License-FSL--1.1--Apache--2.0-blue.svg)](LICENSE)
 [![Discord](https://img.shields.io/discord/1288571209918844969?color=7289da&label=Discord&logo=discord&logoColor=white)](https://rtrvr.ai/discord)
 [![GitHub stars](https://img.shields.io/github/stars/rtrvr-ai/rover?style=social)](https://github.com/rtrvr-ai/rover)
 
