@@ -10,7 +10,7 @@
 
 Chatbots talk. Rover does. One line of code — Rover reads your live page,
 plans actions, and executes them in milliseconds. Clicks, forms, navigation —
-directly in the browser. No screenshots, no VMs, no RAG pipelines.
+directly in the DOM. No screenshots, no VMs, no RAG pipelines.
 
 - **Websites** — drop a script tag
 - **Chrome Extensions** — inject into any page
