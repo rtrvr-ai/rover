@@ -1,6 +1,6 @@
 {
   "name": "@rtrvr-ai/rover",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "license": "FSL-1.1-Apache-2.0",
   "description": "Turn any website into an AI-native interface — for your users and for AI.",
   "author": "RTRVR AI, INC. <support@rtrvr.ai>",
@@ -14,10 +14,24 @@
     "url": "https://github.com/rtrvr-ai/rover/issues"
   },
   "keywords": [
-    "rover", "web-agent", "ai-agent", "automation", "embedded", "dom",
-    "browser-automation", "autonomous-agent", "sdk", "electron", "browser-extension",
-    "chrome-extension", "agentic", "deep-link", "accessibility", "open-source",
-    "dom-agent", "ai-web-agent"
+    "rover",
+    "web-agent",
+    "ai-agent",
+    "automation",
+    "embedded",
+    "dom",
+    "browser-automation",
+    "autonomous-agent",
+    "sdk",
+    "electron",
+    "browser-extension",
+    "chrome-extension",
+    "agentic",
+    "deep-link",
+    "accessibility",
+    "open-source",
+    "dom-agent",
+    "ai-web-agent"
   ],
   "private": false,
   "type": "module",

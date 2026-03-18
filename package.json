@@ -1,7 +1,7 @@
 {
   "name": "rover",
   "private": true,
-  "version": "2.0.1",
+  "version": "2.0.2",
   "license": "FSL-1.1-Apache-2.0",
   "description": "Turn any website into an AI-native interface — for your users and for AI.",
   "repository": {
