@@ -14,6 +14,11 @@ import {
   isUrlAllowedByDomains,
   normalizeAllowedDomains,
 } from './navigationScope.js';
+import {
+  NON_ACTION_TOOLS,
+  SCOPE_SAFE_TOOLS,
+  shouldBlockToolForOutOfScopeContext,
+} from './toolScopePolicy.js';
 
 export type DomainScopeMode = 'host_only' | 'registrable_domain';
 export type ExternalNavigationPolicy = 'open_new_tab_notice' | 'block' | 'allow';
@@ -251,7 +256,8 @@ export class Bridge {
     }
 
     if (this.shouldBlockForOutOfScopeContext(toolName)) {
-      const reason = 'Current tab is outside the allowed navigation scope.';
+      const currentHost = extractHostname(window.location.href) || window.location.hostname || 'unknown';
+      const reason = `Current tab host "${currentHost}" is outside the allowed navigation scope (${formatAllowedDomainsForMessage(this.allowedDomains)}).`;
       return this.domainScopeBlockedResponse(window.location.href, reason, { fromCurrentContext: true });
     }
 
@@ -992,9 +998,12 @@ export class Bridge {
   }
 
   private shouldBlockForOutOfScopeContext(toolName: SystemToolNames): boolean {
-    if (this.externalNavigationPolicy === 'allow') return false;
-    if (NON_ACTION_TOOLS.has(toolName) || SCOPE_SAFE_TOOLS.has(toolName)) return false;
-    return !isUrlAllowedByDomains(window.location.href, this.allowedDomains);
+    return shouldBlockToolForOutOfScopeContext({
+      toolName,
+      currentUrl: window.location.href,
+      allowedDomains: this.allowedDomains,
+      externalNavigationPolicy: this.externalNavigationPolicy,
+    });
   }
 
   private getInterceptedClickTarget(args: Record<string, any>): {
@@ -1047,17 +1056,17 @@ export class Bridge {
     options?: { fromCurrentContext?: boolean; decisionReason?: string },
   ): any {
     const policyAction = this.externalNavigationPolicy === 'block' ? 'block' : 'open_new_tab_notice';
+    const currentUrl = window.location.href;
+    const currentHost = extractHostname(currentUrl) || window.location.hostname || undefined;
+    const blockedHost = extractHostname(targetUrl) || undefined;
     this.emitNavigationGuardrail({
       blockedUrl: targetUrl,
-      currentUrl: window.location.href,
+      currentUrl,
       policyAction,
       reason,
       allowedDomains: this.allowedDomains,
       openedInNewTab: false,
     });
-
-    let blockedDomain: string | undefined;
-    try { blockedDomain = new URL(targetUrl).hostname; } catch { /* ignore */ }
 
     return {
       success: false,
@@ -1076,19 +1085,24 @@ export class Bridge {
           retryable: false,
         },
         blocked_url: targetUrl,
-        current_url: window.location.href,
+        blocked_host: blockedHost,
+        current_url: currentUrl,
+        current_host: currentHost,
         policy_action: policyAction,
+        allowed_domains: this.allowedDomains,
+        domain_scope_mode: this.domainScopeMode,
+        external_navigation_policy: this.externalNavigationPolicy,
         blockedDomainStatus: 'blocked',
         navigationOutcome: 'blocked',
         decisionReason: options?.decisionReason || 'policy_blocked',
         from_current_context: !!options?.fromCurrentContext,
-        agentInstruction: `Navigation to ${blockedDomain || targetUrl} is blocked by domain policy. Do NOT retry this URL. Acknowledge to user and proceed with the next step.`,
-        blockedDomain: blockedDomain || targetUrl,
+        agentInstruction: `Navigation to ${blockedHost || targetUrl} is blocked by domain policy. Do NOT retry this URL. Acknowledge to user and proceed with the next step.`,
+        blockedDomain: blockedHost || targetUrl,
         // Dummy page context for blocked domain so agent has something to work with
         pageContext: {
           url: targetUrl,
-          title: `[Blocked] ${blockedDomain || targetUrl}`,
-          contentText: `Access to ${blockedDomain || targetUrl} is restricted by navigation policy. The page content is not available. Continue the task without this resource or use /scrape endpoint if external context is needed.`,
+          title: `[Blocked] ${blockedHost || targetUrl}`,
+          contentText: `Access to ${blockedHost || targetUrl} is restricted by navigation policy. The page content is not available. Continue the task without this resource or use /scrape endpoint if external context is needed.`,
           accessible: false,
         },
       },
@@ -1098,9 +1112,14 @@ export class Bridge {
         retryable: false,
         details: {
           blockedUrl: targetUrl,
-          currentUrl: window.location.href,
+          blockedHost,
+          currentUrl,
+          currentHost,
           policyAction,
-          blockedDomain,
+          allowedDomains: this.allowedDomains,
+          domainScopeMode: this.domainScopeMode,
+          externalNavigationPolicy: this.externalNavigationPolicy,
+          fromCurrentContext: !!options?.fromCurrentContext,
         },
       },
     };
@@ -1471,6 +1490,10 @@ function normalizeToolName(name: string | undefined): string {
   return String(name || '').trim();
 }
 
+function formatAllowedDomainsForMessage(allowedDomains: string[]): string {
+  return allowedDomains.length ? allowedDomains.join(', ') : '(none)';
+}
+
 function normalizeDomainScopeMode(mode?: DomainScopeMode): DomainScopeMode {
   return mode === 'host_only' ? 'host_only' : 'registrable_domain';
 }
@@ -1523,26 +1546,6 @@ function capabilityUnavailableResponse(message: string, code = 'CAPABILITY_UNAVA
     },
   };
 }
-
-const NON_ACTION_TOOLS = new Set<SystemToolNames>([
-  SystemToolNames.describe_images,
-  SystemToolNames.wait_action,
-  SystemToolNames.wait_for_element,
-  SystemToolNames.answer_task,
-  SystemToolNames.solve_captcha,
-  SystemToolNames.network_run_recipe,
-]);
-
-const SCOPE_SAFE_TOOLS = new Set<SystemToolNames>([
-  SystemToolNames.goto_url,
-  SystemToolNames.google_search,
-  SystemToolNames.go_back,
-  SystemToolNames.go_forward,
-  SystemToolNames.refresh_page,
-  SystemToolNames.open_new_tab,
-  SystemToolNames.switch_tab,
-  SystemToolNames.close_tab,
-]);
 
 function toWire(md: FrameworkElementMetadata): FrameworkElementMetadataWire {
   const frameworks = (md.frameworks || [])

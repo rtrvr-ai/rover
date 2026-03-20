@@ -21,6 +21,14 @@ export type RoverServerVoiceConfig = {
   autoStopMs?: number;
 };
 
+export type RoverServerAiAccessConfig = {
+  enabled?: boolean;
+  allowPromptLaunch?: boolean;
+  allowShortcutLaunch?: boolean;
+  allowCloudBrowser?: boolean;
+  debugStreaming?: boolean;
+};
+
 export type RoverServerSiteConfig = {
   shortcuts?: Array<Record<string, unknown>>;
   greeting?: {
@@ -34,9 +42,63 @@ export type RoverServerSiteConfig = {
     shortcutMaxRendered?: number;
   };
   voice?: RoverServerVoiceConfig;
+  aiAccess?: RoverServerAiAccessConfig;
   pageConfig?: RoverPageCaptureConfig | null;
   version?: string | number;
 };
+
+export type RoverLaunchExecutionTarget = 'browser_attach' | 'cloud_browser';
+export type RoverLaunchDetailLevel = 'sanitized' | 'full' | 'debug';
+
+export type RoverLaunchInputSpec =
+  | {
+      kind: 'prompt';
+      prompt: string;
+    }
+  | {
+      kind: 'shortcut';
+      prompt: string;
+      shortcutId: string;
+      routing?: 'act' | 'planner' | 'auto';
+    };
+
+export type RoverLaunchAttachResponse = {
+  requestId: string;
+  status?: string;
+  executionTarget?: RoverLaunchExecutionTarget;
+  detail?: RoverLaunchDetailLevel;
+  targetUrl?: string;
+  input?: RoverLaunchInputSpec;
+  sessionId?: string;
+  runId?: string;
+};
+
+export type RoverTaskBrowserClaimResponse = {
+  taskId: string;
+  requestId: string;
+  status?: string;
+  executionTarget?: RoverLaunchExecutionTarget;
+  detail?: RoverLaunchDetailLevel;
+  targetUrl?: string;
+  input?: RoverLaunchInputSpec;
+  sessionId?: string;
+  runId?: string;
+};
+
+export type RoverLaunchIngestEvent =
+  | {
+      type:
+        | 'state_transition'
+        | 'status_update'
+        | 'tool_start'
+        | 'tool_result'
+        | 'assistant_output'
+        | 'needs_input'
+        | 'page_observation'
+        | 'error';
+      ts?: number;
+      data?: Record<string, unknown>;
+    };
 
 export type RoverServerProjection = {
   sessionId: string;
@@ -181,7 +243,7 @@ function asNumber(value: unknown, fallback: number): number {
 }
 
 function toBaseUrl(apiBase?: string): string {
-  const fallback = 'https://extensionrouter.rtrvr.ai';
+  const fallback = 'https://agent.rtrvr.ai';
   const base = String(apiBase || fallback).trim().replace(/\/+$/, '');
   if (!base) return fallback;
   if (base.endsWith('/extensionRouter/v2/rover')) {
@@ -216,6 +278,9 @@ function resolveRoverBaseCandidates(apiBase: string | undefined): string[] {
   const expectedSuffix = '/v2/rover';
   if (rawApiBase.endsWith(expectedSuffix) || rawApiBase.endsWith('/extensionRouter/v2/rover')) {
     return unique([directV2, primary]);
+  }
+  if (!rawApiBase && base === 'https://agent.rtrvr.ai') {
+    return unique([primary, 'https://extensionrouter.rtrvr.ai/v2/rover']);
   }
   return unique([primary]);
 }
@@ -1065,6 +1130,84 @@ export class RoverServerRuntimeClient {
       requests: batch.map(r => ({ path: r.path, body: r.body })),
     });
     return result?.data?.results || [];
+  }
+
+  async attachLaunch(params: {
+    requestId: string;
+    attachToken: string;
+  }): Promise<RoverLaunchAttachResponse | null> {
+    const requestId = String(params.requestId || '').trim();
+    const attachToken = String(params.attachToken || '').trim();
+    if (!requestId || !attachToken) return null;
+    const result = await this.postJson<RoverLaunchAttachResponse>(`/launches/${encodeURIComponent(requestId)}/attach`, {
+      attachToken,
+      roverAttach: attachToken,
+      host: this.options.getHost?.(),
+    });
+    return result.ok ? (result.data || null) : null;
+  }
+
+  async claimBrowserTaskReceipt(params: {
+    receipt: string;
+  }): Promise<RoverTaskBrowserClaimResponse | null> {
+    const receipt = String(params.receipt || '').trim();
+    if (!receipt) return null;
+    await this.ensureSession(false);
+    const payload = {
+      receipt,
+      requestNonce: createRequestNonce(),
+      sessionToken: this.sessionToken,
+      sessionId: this.sessionId,
+      host: this.options.getHost?.(),
+    };
+    if (!this.baseCandidates.length) {
+      this.baseCandidates = resolveRoverBases(this.base);
+      this.base = this.baseCandidates[0] || this.base;
+      this.baseIndex = 0;
+    }
+    const agentBases = unique(this.baseCandidates.map(candidate => toBaseUrl(candidate)));
+    let lastError: unknown;
+    for (const base of agentBases) {
+      try {
+        const response = await fetch(`${base}/v1/tasks/claim-browser`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify(payload),
+        });
+        const json = await parseJsonSafe(response);
+        if (!response.ok || !json?.success) {
+          lastError = new Error(String(json?.error || `request failed (${response.status})`));
+          (lastError as any).status = response.status;
+          (lastError as any).details = json?.data || json;
+          continue;
+        }
+        return (json.data || null) as RoverTaskBrowserClaimResponse | null;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (lastError instanceof Error) throw lastError;
+    throw new Error('Browser receipt claim failed.');
+  }
+
+  async ingestLaunchEvents(params: {
+    requestId: string;
+    runId?: string;
+    events: RoverLaunchIngestEvent[];
+  }): Promise<boolean> {
+    const requestId = String(params.requestId || '').trim();
+    const events = Array.isArray(params.events) ? params.events.filter(Boolean) : [];
+    if (!requestId || !events.length) return false;
+    const result = await this.postJson<{ accepted?: boolean }>('/events/ingest', {
+      launchRequestId: requestId,
+      runId: String(params.runId || '').trim() || undefined,
+      events: events.map(event => ({
+        type: event.type,
+        ts: event.ts,
+        data: event.data,
+      })),
+    });
+    return result.ok && result.data?.accepted !== false;
   }
 
   private scheduleProjectionPoll(delayMs: number): void {

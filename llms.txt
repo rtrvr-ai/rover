@@ -1,48 +1,133 @@
 # Rover
 
-> Turn any web interface into an AI agent. DOM-native SDK that reads the real DOM, plans actions, and executes them directly in the browser — clicks, forms, navigation — with sub-second latency and zero infrastructure.
+> Turn any website into an AI-native interface. Rover is a DOM-native web agent that reads the live DOM, plans actions, and executes them directly in the browser.
 
-Built by RTRVR AI. Works on websites, browser extensions, Electron apps, or anywhere there's a DOM.
+Built by RTRVR AI. Works on websites, browser extensions, Electron apps, and other DOM environments.
 
-## Embed on a website (one line)
+## Install on a website
 
-<script src="https://rover.rtrvr.ai/embed.js" data-site-id="YOUR_SITE_ID" data-public-key="pk_site_YOUR_PUBLIC_KEY" data-allowed-domains="yourdomain.com"></script>
+Get your site credentials from Rover Workspace:
 
-## npm
+- `https://rover.rtrvr.ai/workspace`
+- `https://www.rtrvr.ai/rover/workspace`
 
-npm install @rtrvr-ai/rover
-import { boot, shutdown } from '@rtrvr-ai/rover';
-boot({ siteId: '...', publicKey: 'pk_site_...', allowedDomains: ['yourdomain.com'] });
+Site owners install Rover with:
 
-## AI-Ready URLs
+- `siteId`
+- `publicKey` (`pk_site_*`)
+- optional `siteKeyId`
 
-Any Rover-enabled page can be queried by AI agents:
-https://example.com?rover=book%20a%20flight
-https://example.com?rover_shortcut=checkout_flow
-No MCP servers, tool definitions, or browser automation tools needed.
+Example:
+
+```html
+<script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
+<script>
+  (function(){ var r = window.rover = window.rover || function(){ (r.q = r.q || []).push(arguments); }; r.l = +new Date(); })();
+  rover('boot', {
+    siteId: 'YOUR_SITE_ID',
+    publicKey: 'pk_site_YOUR_PUBLIC_KEY',
+    siteKeyId: 'YOUR_SITE_KEY_ID',
+    apiBase: 'https://agent.rtrvr.ai',
+    allowedDomains: ['yourdomain.com'],
+    domainScopeMode: 'registrable_domain',
+  });
+</script>
+<script src="https://rover.rtrvr.ai/embed.js?v=YOUR_SITE_KEY_ID" async></script>
+```
+
+The discovery marker is optional but recommended. When `aiAccess.enabled` is turned on in Workspace, the generated snippet includes it automatically.
+
+## Two ways agents use Rover
+
+### 1. Browser-first convenience
+
+Deep links are the simplest human/browser entrypoint:
+
+- `https://example.com?rover=book%20a%20flight`
+- `https://example.com?rover_shortcut=checkout_flow`
+
+These open Rover on the page and run through the normal browser runtime.
+
+### 2. Machine protocol
+
+The canonical AI / CLI / agent protocol is:
+
+```http
+POST https://agent.rtrvr.ai/v1/tasks
+Content-Type: application/json
+
+{ "url": "https://example.com", "prompt": "book a flight" }
+```
+
+Or:
+
+```http
+POST https://agent.rtrvr.ai/v1/tasks
+Content-Type: application/json
+
+{ "url": "https://example.com", "shortcut": "checkout_flow" }
+```
+
+Anonymous AI callers do **not** need `siteId`, `publicKey`, or `siteKeyId`.
+
+The returned task URL is the canonical resource:
+
+- `GET` + `Accept: application/json` for polling/final result
+- `GET` + `Accept: text/event-stream` for SSE
+- `GET` + `Accept: application/x-ndjson` for CLI-friendly streaming
+- `POST { "input": "..." }` to continue when the task requests input
+- `DELETE` to cancel
+
+For browser-first handoff, task creation may also return:
+
+- `open`: clean receipt URL, for example `https://example.com/#rover_receipt=rrc_...`
+- `browserLink`: optional readable alias, for example `https://example.com/?rover=book+a+flight#rover_receipt=rrc_...`
+
+Explicit `Prefer: execution=cloud` omits browser handoff URLs. Use `Prefer: execution=cloud` when the caller needs guaranteed browserless execution. `execution=auto` currently prefers browser attach first.
+
+Quick examples:
+
+- Browser-first URL:
+  - `https://www.rtrvr.ai/?rover=get%20me%20the%20latest%20blog%20post`
+- Machine task create:
+
+```bash
+curl -X POST 'https://agent.rtrvr.ai/v1/tasks' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json' \
+  -H 'Prefer: execution=cloud' \
+  -d '{
+    "url": "https://www.rtrvr.ai",
+    "prompt": "get me the latest blog post"
+  }'
+```
+
+See `/SKILLS.md` for a copy-paste external-agent prompt plus Node, Python, and shell examples.
 
 ## JS API
 
-rover.send(text) — send a task to Rover
-rover.open() / rover.close() — toggle chat panel
-rover.show() / rover.hide() — toggle widget visibility
-rover.newTask() / rover.endTask() — task lifecycle
-rover.registerTool(def, handler) — register client-side tools
-rover.on(event, handler) — subscribe to events (ready, status, error)
-rover.identify({ name, email }) — set visitor identity
-rover.getState() — get runtime state
-rover.update(config) — update config without reboot
+- `rover.send(text)` — send a task to Rover
+- `rover.open()` / `rover.close()` — toggle chat panel
+- `rover.show()` / `rover.hide()` — toggle widget visibility
+- `rover.newTask()` / `rover.endTask()` — task lifecycle
+- `rover.registerTool(def, handler)` — register client-side tools
+- `rover.on(event, handler)` — subscribe to runtime events
+- `rover.identify({ name, email })` — set visitor identity
+- `rover.getState()` — read runtime state
+- `rover.update(config)` — patch config without rebooting
 
 ## Documentation
 
-- SDK API Reference: /packages/sdk/README.md
-- Integration Guide: /docs/INTEGRATION.md
-- Architecture: /docs/ARCHITECTURE.md
-- Security Model: /docs/SECURITY_MODEL.md
+- SDK API Reference: `/packages/sdk/README.md`
+- Integration Guide: `/docs/INTEGRATION.md`
+- External Agent Guide: `/SKILLS.md`
+- Architecture: `/docs/ARCHITECTURE.md`
+- Security Model: `/docs/SECURITY_MODEL.md`
 
 ## Links
 
-- Website: https://www.rtrvr.ai/rover
-- npm: https://www.npmjs.com/package/@rtrvr-ai/rover
-- GitHub: https://github.com/rtrvr-ai/rover
-- Discord: https://rtrvr.ai/discord
+- Website: `https://www.rtrvr.ai/rover`
+- Workspace: `https://rover.rtrvr.ai/workspace`
+- npm: `https://www.npmjs.com/package/@rtrvr-ai/rover`
+- GitHub: `https://github.com/rtrvr-ai/rover`
+- Discord: `https://rtrvr.ai/discord`

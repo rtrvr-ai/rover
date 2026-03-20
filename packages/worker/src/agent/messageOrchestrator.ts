@@ -2,6 +2,7 @@ import { executePlannerWithTools } from './plannerAgent.js';
 import { executeToolFromPlan } from './toolExecutor.js';
 import { parseMessage, validateFunctionCall, convertParametersToTypes } from './toolParser.js';
 import { PLANNER_FUNCTION_CALLS } from '@rover/shared/lib/utils/constants.js';
+import { deriveRegistrableDomain, normalizeHostToken } from '@rover/shared/lib/utils/domainScope.js';
 import type {
   MessageOrchestratorOptions,
   PlannerOptions,
@@ -65,42 +66,12 @@ const COMPLEX_TASK_HINTS = [
   'slides',
 ];
 
-const MULTI_LABEL_TLDS = new Set([
-  'co.uk',
-  'org.uk',
-  'gov.uk',
-  'ac.uk',
-  'com.au',
-  'net.au',
-  'org.au',
-  'co.jp',
-  'com.br',
-  'com.mx',
-  'com.sg',
-  'co.in',
-]);
-
 function extractHostFromUrl(input: string): string {
-  const raw = String(input || '').trim();
-  if (!raw) return '';
-  try {
-    return new URL(raw).hostname.toLowerCase();
-  } catch {
-    return '';
-  }
+  return normalizeHostToken(input);
 }
 
 function registrableDomain(host: string): string {
-  const clean = String(host || '').trim().toLowerCase().replace(/^\.+/, '');
-  if (!clean) return '';
-  if (clean === 'localhost' || /^\d+\.\d+\.\d+\.\d+$/.test(clean)) return clean;
-  const parts = clean.split('.').filter(Boolean);
-  if (parts.length < 2) return clean;
-  const tail2 = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
-  if (parts.length >= 3 && MULTI_LABEL_TLDS.has(tail2)) {
-    return `${parts[parts.length - 3]}.${tail2}`;
-  }
-  return tail2;
+  return deriveRegistrableDomain(host);
 }
 
 function hasCrossDomainPlanDependency(
@@ -487,3 +458,10 @@ export async function handleSendMessageWithFunctions(
 
   return { success: true, processedMessage: result.processedMessage };
 }
+
+export const __messageOrchestratorInternals = {
+  countCrossDomainNavigationDependencies,
+  extractHostFromUrl,
+  hasCrossDomainPlanDependency,
+  registrableDomain,
+};

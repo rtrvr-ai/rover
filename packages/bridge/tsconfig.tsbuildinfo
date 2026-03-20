@@ -1,1 +1,1 @@
-{"root":["./src/bridge.ts","./src/index.ts","./src/navigationscope.ts","./src/rpc.ts"],"version":"5.9.3"}
+{"root":["./src/bridge.ts","./src/index.ts","./src/navigationscope.ts","./src/rpc.ts","./src/toolscopepolicy.ts"],"version":"5.9.3"}

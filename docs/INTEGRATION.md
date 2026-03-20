@@ -21,6 +21,7 @@ When credits are exhausted, Rover API calls return an `auth_required` event. See
 Add this snippet before `</body>` on your website:
 
 ```html
+<script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
 <script>
   (function(){
     var r = window.rover = window.rover || function(){
@@ -39,7 +40,9 @@ Add this snippet before `</body>` on your website:
 <script src="https://rover.rtrvr.ai/embed.js" async></script>
 ```
 
-Get your `siteId` and `publicKey` (`pk_site_*`) from the [Rover Workspace](https://rover.rtrvr.ai/workspace).
+Get your `siteId` and `publicKey` (`pk_site_*`) from the [Rover Workspace](https://rover.rtrvr.ai/workspace). If you also have a `siteKeyId`, append it to the script URL as `embed.js?v=YOUR_SITE_KEY_ID` for cache-busting and safer key-rotation rollouts. The `v` query string does not affect domain authorization or scope matching.
+
+Site-owner credentials are only for installing Rover on your website. External AI callers do **not** need `siteId`, `publicKey`, or `siteKeyId` when they use the public task protocol.
 
 ### Single Script Tag (Data Attributes)
 
@@ -49,14 +52,22 @@ For the simplest integration, use data attributes — no inline JavaScript neede
 <script src="https://rover.rtrvr.ai/embed.js"
   data-site-id="YOUR_SITE_ID"
   data-public-key="pk_site_YOUR_PUBLIC_KEY"
-  data-allowed-domains="yourdomain.com,app.yourdomain.com"
+  data-allowed-domains="yourdomain.com"
   data-domain-scope-mode="registrable_domain">
 </script>
 ```
 
 Supported data attributes: `data-site-id`, `data-public-key`, `data-allowed-domains` (comma-separated), `data-domain-scope-mode`, `data-site-key-id`, `data-worker-url`.
 
-Use `data-domain-scope-mode="host_only"` when the key should only run on the exact host that booted Rover. In `host_only` mode, plain entries like `example.com` are normalized as exact-host rules instead of suffix matches.
+Use `data-domain-scope-mode="host_only"` when the key should only run on the exact host that booted Rover. In `host_only` mode, plain entries like `example.com` are normalized as exact-host rules instead of suffix matches. In the default `registrable_domain` mode, a plain entry like `example.com` matches the apex host and its subdomains, while `*.example.com` matches subdomains only.
+
+### Domain Scope Semantics
+
+- `allowedDomains: ['example.com']` with `domainScopeMode: 'registrable_domain'` allows `example.com` and all of its subdomains.
+- `allowedDomains: ['*.example.com']` allows subdomains only. It does not match the apex host `example.com`.
+- `allowedDomains: ['app.example.com']` with `domainScopeMode: 'registrable_domain'` allows `app.example.com` and its subdomains, but not sibling hosts such as `www.example.com`.
+- `allowedDomains: ['example.com']` with `domainScopeMode: 'host_only'` allows only the exact host `example.com`.
+- `example.com` plus `*.example.com` is usually redundant in `registrable_domain` mode, because the plain `example.com` entry already covers the apex host and subdomains.
 
 For advanced configuration (task routing, checkpointing, UI options), use the JS boot call.
 
@@ -223,7 +234,7 @@ If your site sets a `Content-Security-Policy` header or `<meta>` tag, add the fo
 |---|---|---|
 | `script-src` | `https://rover.rtrvr.ai blob:` | Loads the SDK script. `blob:` is needed because the Web Worker is created from a blob URL via `importScripts()`. |
 | `worker-src` | `blob: https://rover.rtrvr.ai` | Allows the Web Worker to execute. The worker handles AI task processing off the main thread. |
-| `connect-src` | `https://extensionrouter.rtrvr.ai` | API calls for task execution, authentication, and checkpointing. |
+| `connect-src` | `https://agent.rtrvr.ai` | API calls for task execution, authentication, checkpointing, and public task resources. |
 | `style-src` | `'unsafe-inline'` | Rover renders inside a Shadow DOM and injects its styles inline. This is standard for Shadow DOM components. |
 | `font-src` | `https://rover.rtrvr.ai` | Loads the self-hosted Manrope font used in the widget UI. |
 
@@ -239,7 +250,7 @@ If your site sets a `Content-Security-Policy` header or `<meta>` tag, add the fo
 <meta http-equiv="Content-Security-Policy" content="
   script-src 'self' https://rover.rtrvr.ai blob:;
   worker-src blob: https://rover.rtrvr.ai;
-  connect-src 'self' https://extensionrouter.rtrvr.ai;
+  connect-src 'self' https://agent.rtrvr.ai;
   style-src 'self' 'unsafe-inline';
   font-src 'self' https://rover.rtrvr.ai;
   media-src 'self' https://www.rtrvr.ai;
@@ -327,21 +338,21 @@ rover.boot(config);
 | `siteId` | `string` | *required* | Site identifier from Workspace |
 | `publicKey` | `string` | — | Public Rover bootstrap key (`pk_site_*`) from Workspace |
 | `sessionToken` | `string` | — | Optional pre-minted short-lived session token (`rvrsess_*`) |
-| `siteKeyId` | `string` | — | Site key ID from Workspace |
+| `siteKeyId` | `string` | — | Site key ID from Workspace. Recommended for embed cache-busting/rotation rollouts; not used for scope matching. |
 | `visitorId` | `string` | auto | Stable visitor identifier |
 | `visitor` | `{ name?: string; email?: string }` | — | Optional visitor profile for greeting personalization. Recommended flow is async updates via `identify(...)` after login/user hydration. |
 | `sessionId` | `string` | auto | Explicit session ID |
 | `sessionScope` | `'shared_site' \| 'tab'` | `'shared_site'` | Shared cross-tab session or tab-isolated session |
 | `mode` | `'full' \| 'safe'` | `'full'` | Runtime mode |
-| `apiBase` | `string` | `https://extensionrouter.rtrvr.ai` | Custom API base URL. Rover runtime uses `/v2/rover/*` under this base. |
+| `apiBase` | `string` | `https://agent.rtrvr.ai` | Custom API base URL. Rover runtime uses `/v2/rover/*` under this base. |
 | `workerUrl` | `string` | auto | Custom worker URL (self-hosting) |
 
 ### Domain Guardrails & Navigation
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `allowedDomains` | `string[]` | `[]` | Hostnames where Rover may operate |
-| `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | Domain matching strategy |
+| `allowedDomains` | `string[]` | `[]` | Hostnames or patterns where Rover may operate. In `registrable_domain`, plain `example.com` covers the apex host and subdomains. |
+| `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | How Rover interprets plain entries in `allowedDomains`: `registrable_domain` = apex + subdomains, `host_only` = exact host only. |
 | `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
 | `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | In-scope cross-host navigation policy |
 | `openOnInit` | `boolean` | `false` | Open panel after boot |
@@ -431,7 +442,7 @@ When `tools.web.scrapeMode` is `on_demand`, ensure your Rover site key includes 
 | `ui.voice` | `{ enabled?: boolean; language?: string; autoStopMs?: number }` | — | Browser dictation on supported Chromium browsers. Transcript fills the draft live, Rover waits for post-speech silence before stopping, and the user manually sends. |
 | `pageConfig` | `RoverPageCaptureConfig` | — | Optional per-site page-capture overrides such as `disableAutoScroll`, settle timing, and sparse-tree retry settings |
 
-With site keys (or a valid `rvrsess_*` token), Rover fetches cloud site config via `POST /v2/rover/session/open` (shortcuts + greeting + voice + pageConfig).
+With site keys (or a valid `rvrsess_*` token), Rover fetches cloud site config via `POST /v2/rover/session/open` (shortcuts + greeting + voice + aiAccess + pageConfig).
 If boot config and cloud config define the same field, boot config takes precedence.
 `deepLink` remains boot/runtime only and is not stored in cloud site config.
 
@@ -447,9 +458,42 @@ Use raw prompt deep links for ad hoc tasks:
 https://example.com?rover=book%20a%20flight
 ```
 
+For AI and CLI tools that need structured results back, use the neutral task resource instead of raw deep links:
+
+```http
+POST https://agent.rtrvr.ai/v1/tasks
+Content-Type: application/json
+
+{ "url": "https://example.com", "prompt": "book a flight" }
+```
+
+The returned task URL supports JSON polling, SSE, NDJSON, continuation input, and cancel. Task creation may also return:
+
+- `open`: clean receipt URL for browser attach
+- `browserLink`: optional readable alias with visible `?rover=` or `?rover_shortcut=` when it fits the URL budget
+
+The task URL remains canonical; receipt links are only a browser handoff layer over that same task.
+
+The discovery marker is optional but recommended:
+
+```html
+<script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
+```
+
+Execution guidance:
+
+- `Prefer: execution=cloud` is the explicit browserless path today
+- `Prefer: execution=browser` keeps execution browser-first
+- `Prefer: execution=auto` currently prefers browser attach first; delayed cloud auto-promotion is a follow-up robustness phase
+
+Site owners manage install credentials in Workspace:
+
+- `https://rover.rtrvr.ai/workspace`
+- `https://www.rtrvr.ai/rover/workspace`
+
 ### Rover V2 Runtime APIs
 
-Runtime base is `https://extensionrouter.rtrvr.ai/v2/rover/*`.
+Runtime base is `https://agent.rtrvr.ai/v2/rover/*`.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -568,7 +612,7 @@ When authentication is missing or invalid, Rover emits an `auth_required` event:
 
 ### Widget doesn't appear
 - **CSP errors in console?** Add the required CSP directives from the [CSP section](#content-security-policy-csp).
-- **Domain not allowed?** Check that the current hostname is in `allowedDomains`. With `domainScopeMode: 'registrable_domain'`, `app.example.com` matches an `example.com` entry.
+- **Domain not allowed?** Check that the current hostname is in `allowedDomains`. With `domainScopeMode: 'registrable_domain'`, `app.example.com` matches an `example.com` entry, but `*.example.com` does not match the apex `example.com`, and `app.example.com` does not automatically match sibling hosts like `www.example.com`.
 - **No site key?** Rover requires a valid `publicKey` (`pk_site_*`). Generate one in the [Workspace](https://rover.rtrvr.ai/workspace).
 
 ### Worker fails to start
@@ -580,7 +624,7 @@ When authentication is missing or invalid, Rover emits an `auth_required` event:
 - CSP may be blocking `font-src https://rover.rtrvr.ai`. Add this directive, or self-host the font.
 
 ### API errors / "Failed to fetch"
-- Add `connect-src https://extensionrouter.rtrvr.ai` to your CSP.
+- Add `connect-src https://agent.rtrvr.ai` to your CSP.
 
 ### Auth errors
 - Ensure `publicKey` is present and valid in the boot config.

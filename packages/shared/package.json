@@ -28,8 +28,9 @@
     "postinstall": "pnpm ready"
   },
   "dependencies": {
+    "@google/genai": "^1.27.0",
     "@rover/a11y-tree": "workspace:*",
-    "@google/genai": "^1.27.0"
+    "tldts": "^7.0.27"
   },
   "devDependencies": {
     "@rover/tsconfig": "workspace:*",

@@ -46,8 +46,8 @@ Without bootstrap auth, Rover emits `auth_required` with code `MISSING_API_KEY` 
 
 | Environment | URL |
 |-------------|-----|
-| **Production base** | `https://extensionrouter.rtrvr.ai` |
-| **Production Rover API** | `https://extensionrouter.rtrvr.ai/v2/rover/*` |
+| **Production base** | `https://agent.rtrvr.ai` |
+| **Production Rover API** | `https://agent.rtrvr.ai/v2/rover/*` |
 | **Firebase Emulator base** | `http://127.0.0.1:5002/rtrvr-extension-functions/us-central1` |
 | **Firebase Emulator Rover API** | `http://127.0.0.1:5002/rtrvr-extension-functions/us-central1/v2/rover/*` |
 
@@ -73,7 +73,7 @@ import { init } from '@rover/sdk';
 
 init({
   siteId: 'demo',
-  apiBase: 'https://extensionrouter.rtrvr.ai',
+  apiBase: 'https://agent.rtrvr.ai',
   publicKey: 'pk_site_YOUR_PUBLIC_KEY_HERE', // Bootstrap key; Rover exchanges to rvrsess_* automatically
   workerUrl: new URL('./worker.ts', import.meta.url).toString(),
   openOnInit: true,
@@ -326,7 +326,7 @@ init({
 ### CRITICAL: Wrong backend URL in demo app
 **File:** `apps/demo/src/main.ts`
 **Was:** `apiBase: 'http://localhost:8787'` (Cloudflare Workers URL - incorrect)
-**Fixed to:** `apiBase: 'https://extensionrouter.rtrvr.ai'`
+**Fixed to:** `apiBase: 'https://agent.rtrvr.ai'`
 **Impact:** Every backend call would fail with connection refused.
 
 ### CRITICAL: Missing bootstrap key in demo config

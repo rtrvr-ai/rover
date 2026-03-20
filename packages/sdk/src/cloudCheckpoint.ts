@@ -1,7 +1,7 @@
 import type { SharedSessionState } from './sessionCoordinator.js';
 import type { PersistedRuntimeState } from './runtimeTypes.js';
 
-const DEFAULT_EXTENSION_ROUTER_BASE = 'https://extensionrouter.rtrvr.ai';
+const DEFAULT_EXTENSION_ROUTER_BASE = 'https://agent.rtrvr.ai';
 const SESSION_TOKEN_PREFIX = 'rvrsess_';
 
 export type RoverCloudCheckpointPayload = {
@@ -198,6 +198,9 @@ function normalizeRoverV2Bases(apiBase?: string): string[] {
   const rawApiBase = String(apiBase || '').trim().replace(/\/+$/, '');
   if (rawApiBase.endsWith('/v2/rover') || rawApiBase.endsWith('/extensionRouter/v2/rover')) {
     return unique([rawApiBase.replace('/extensionRouter/v2/rover', '/v2/rover'), `${base}/v2/rover`]);
+  }
+  if (!rawApiBase && base === 'https://agent.rtrvr.ai') {
+    return unique([`${base}/v2/rover`, 'https://extensionrouter.rtrvr.ai/v2/rover']);
   }
   return unique([`${base}/v2/rover`]);
 }

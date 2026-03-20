@@ -18,6 +18,7 @@ You need an rtrvr.ai account with available credits. Free accounts get 250 credi
 Add this snippet before `</body>` on any page:
 
 ```html
+<script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
 <script>
   (function(){
     var r = window.rover = window.rover || function(){
@@ -36,6 +37,15 @@ Add this snippet before `</body>` on any page:
 <script src="https://rover.rtrvr.ai/embed.js" async></script>
 ```
 
+Get `siteId`, `publicKey` (`pk_site_*`), and optional `siteKeyId` from Rover Workspace:
+
+- `https://rover.rtrvr.ai/workspace`
+- `https://www.rtrvr.ai/rover/workspace`
+
+Those values are for site owners installing Rover. External AI callers do **not** need them.
+
+If you have a `siteKeyId`, append it to the script URL as `embed.js?v=YOUR_SITE_KEY_ID` for cache-busting and safer key rotation. The `v` query string does not affect domain authorization or scope matching.
+
 Or use the single-tag shorthand with data attributes:
 
 ```html
@@ -47,7 +57,14 @@ Or use the single-tag shorthand with data attributes:
 </script>
 ```
 
-Use `data-domain-scope-mode="host_only"` to require exact host matches. Plain entries such as `example.com` become exact-host rules in `host_only` mode, while `registrable_domain` continues to allow subdomains.
+Use `data-domain-scope-mode="host_only"` to require exact host matches. Plain entries such as `example.com` become exact-host rules in `host_only` mode. In the default `registrable_domain` mode, plain entries match the apex host and its subdomains, while `*.example.com` matches subdomains only.
+
+Common patterns:
+
+- `allowedDomains: ['example.com']` with `registrable_domain` allows `example.com` and all subdomains.
+- `allowedDomains: ['*.example.com']` allows subdomains only, not the apex host.
+- `allowedDomains: ['app.example.com']` with `registrable_domain` allows `app.example.com` and its subdomains, but not sibling hosts.
+- `allowedDomains: ['example.com']` with `host_only` allows only the exact host `example.com`.
 
 ## npm Install
 
@@ -118,11 +135,11 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `siteId` | `string` | *required* | Site identifier |
 | `publicKey` | `string` | — | Public embeddable site key (`pk_site_*`) from Rover Workspace |
 | `sessionToken` | `string` | — | Optional short-lived Rover session token (`rvrsess_*`). |
-| `siteKeyId` | `string` | — | Site key ID from Workspace |
+| `siteKeyId` | `string` | — | Site key ID from Workspace. Recommended for embed cache-busting/rotation rollouts; not used for scope matching. |
 | `visitor` | `{ name?: string; email?: string }` | — | Optional visitor profile for greeting personalization. Recommended flow is async updates via `identify(...)` after login/user hydration. |
-| `apiBase` | `string` | `https://extensionrouter.rtrvr.ai` | Optional API base override. Rover uses `/v2/rover/*` under this base. |
-| `allowedDomains` | `string[]` | `[]` | Hostnames where Rover may operate |
-| `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | Domain matching strategy |
+| `apiBase` | `string` | `https://agent.rtrvr.ai` | Optional API base override. Rover uses `/v2/rover/*` under this base. |
+| `allowedDomains` | `string[]` | `[]` | Hostnames or patterns where Rover may operate. In `registrable_domain`, plain `example.com` covers the apex host and subdomains. |
+| `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | How Rover interprets plain `allowedDomains` entries: `registrable_domain` = apex + subdomains, `host_only` = exact host only. |
 | `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
 | `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | In-scope cross-host navigation policy |
 | `mode` | `'full' \| 'safe'` | `'full'` | Runtime mode |
@@ -264,9 +281,56 @@ If you enable `tools.web.scrapeMode: 'on_demand'`, use a site key capability pro
 
 See [full configuration reference](https://github.com/rtrvr-ai/rover/blob/main/docs/INTEGRATION.md#configuration-reference).
 
+## Public Agent Tasks
+
+Rover-enabled sites expose two public entrypoints:
+
+- browser-first convenience via `?rover=` and `?rover_shortcut=`
+- machine-first task resources via `POST https://agent.rtrvr.ai/v1/tasks`
+
+Use `/v1/tasks` when you need structured progress, continuation, or the final result back.
+
+The source-visible marker is optional but recommended:
+
+```html
+<script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
+```
+
+```http
+POST https://agent.rtrvr.ai/v1/tasks
+Content-Type: application/json
+
+{ "url": "https://www.rtrvr.ai", "prompt": "get me the latest blog post" }
+```
+
+Anonymous AI callers do **not** need `siteId`, `publicKey`, or `siteKeyId`.
+
+The returned task URL is the canonical resource:
+
+- `GET` + `Accept: application/json` for polling or final result
+- `GET` + `Accept: text/event-stream` for SSE
+- `GET` + `Accept: application/x-ndjson` for CLI-friendly streaming
+- `POST { "input": "..." }` for continuation when the task asks for more input
+- `DELETE` to cancel
+
+Task creation may also return browser handoff URLs:
+
+- `open`: clean receipt URL for browser attach
+- `browserLink`: optional readable alias with visible `?rover=` or `?rover_shortcut=` when it fits the URL budget
+
+The task URL remains canonical; receipt links are only a browser handoff layer over that same task.
+
+The response also includes an `open` URL for browser attach.
+
+- `Prefer: execution=browser` keeps execution browser-first
+- `Prefer: execution=cloud` is the explicit browserless path today
+- `Prefer: execution=auto` prefers browser attach first; delayed cloud auto-promotion is a follow-up robustness phase
+
+Rover deep links like `?rover=` and `?rover_shortcut=` remain the simple browser-first entrypoints; `/v1/tasks` is the machine-oriented protocol.
+
 ## Rover V2 Runtime Endpoints
 
-Browser runtime calls target `https://extensionrouter.rtrvr.ai/v2/rover/*`:
+Browser runtime calls target `https://agent.rtrvr.ai/v2/rover/*`:
 
 - `POST /session/open`
 - `POST /command` (`RUN_INPUT`, `RUN_CONTROL`, `TAB_EVENT`, `ASK_USER_ANSWER`)
@@ -359,7 +423,7 @@ If your site sets a CSP header, add these directives:
 |---|---|---|
 | `script-src` | `https://rover.rtrvr.ai blob:` | SDK script + Web Worker blob |
 | `worker-src` | `blob: https://rover.rtrvr.ai` | Web Worker execution |
-| `connect-src` | `https://extensionrouter.rtrvr.ai` | API calls |
+| `connect-src` | `https://agent.rtrvr.ai` | API calls |
 | `style-src` | `'unsafe-inline'` | Shadow DOM styles |
 | `font-src` | `https://rover.rtrvr.ai` | Self-hosted Manrope font |
 

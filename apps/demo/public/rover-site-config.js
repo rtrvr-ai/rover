@@ -9,7 +9,7 @@ window.__ROVER_WEBSITE_CONFIG__ = {
   siteKeyId: 'YOUR_SITE_KEY_ID_HERE',
 
   // Change if you want to point to another backend.
-  apiBase: 'https://extensionrouter.rtrvr.ai',
+  apiBase: 'https://agent.rtrvr.ai',
 
   // Stable visitor identity for cross-subdomain checkpoint restore.
   // In production this should come from your own session/user identity.
