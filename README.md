@@ -119,7 +119,7 @@ See [`packages/sdk/README.md`](packages/sdk/README.md) for full API reference, R
 ## Features
 
 - **Browser-first deep links** — trigger tasks via `?rover=checkout` or `?rover_shortcut=onboarding`
-- **Machine task protocol** — any Rover-enabled page becomes callable through `POST https://agent.rtrvr.ai/v1/tasks`
+- **Agent Task Protocol (ATP)** — any Rover-enabled page is callable via `POST /v1/tasks` by AI agents, CLIs, and autonomous systems
 - **Universal DOM agent** — websites, extensions, Electron, any DOM environment
 - **Autonomous navigation** — plans and executes multi-step tasks across pages
 - **Shadow DOM widget** — chat UI that mounts without touching your styles
@@ -129,15 +129,16 @@ See [`packages/sdk/README.md`](packages/sdk/README.md) for full API reference, R
 - **Framework agnostic** — React, Vue, Angular, vanilla JS, WordPress, Shopify
 - **Voice input** — browser-native dictation for hands-free interaction
 - **Cloud checkpointing** — session state synced across tabs and page reloads
-- **WebMCP (Coming Soon)** — sites surface shortcuts as tools other agents can invoke
+- **Agent identity & analytics (Coming Soon)** — first-party visibility into which AI agents visit, what they attempt, and what works
+- **WebMCP (Coming Soon)** — sites surface their actions as discoverable tools other agents can invoke
 
 ---
 
-## AI / Agent Access
+## AI / Agent Access — Agent Task Protocol (ATP)
 
 Rover-enabled sites support two public paths.
 
-### Machine path
+### Machine path (ATP)
 
 This is the canonical AI / CLI protocol:
 
@@ -244,9 +245,31 @@ rover('boot', {
 
 For the full external-agent contract, see [SKILLS.md](SKILLS.md).
 
-## WebMCP (Coming Soon)
+## Roadmap
 
-Sites running Rover can surface their shortcuts as tools that other AI agents can discover and invoke — turning any web app into a composable building block for agent workflows. No server changes, no API wrappers. The page _is_ the API.
+### Agent Task Protocol (ATP)
+
+Formalized open protocol for AI agents, CLIs, and autonomous systems to interact with any Rover-enabled website. `POST /v1/tasks` with a URL and a natural-language prompt — structured results back via JSON polling, SSE, or NDJSON streaming. The page is the API. No Playwright, no MCP servers, no middleware.
+
+Live today. Specification and copy-paste examples in [SKILLS.md](SKILLS.md).
+
+### Agent Identity & Analytics
+
+First-party visibility into AI agent traffic. Which agents visit your site, what they attempt, what succeeds, what fails — direct signal from real interactions, not estimates from third-party GEO or AI SEO tools.
+
+Rover accepts the calling agent's identity, so site owners see exactly who is acting on their page: which AI, which user, which intent. The missing analytics layer for the agentic web.
+
+### Per-Agent, Per-User, Per-Geo Customization
+
+Connect user identity (PPID), geography, and agent identity to Rover. Customize agent behavior and responses per user, per region, per calling AI. A user in Tokyo gets a different experience than one in New York. Claude gets different capabilities than a custom enterprise agent.
+
+### WebMCP
+
+Sites surface their actions and capabilities as discoverable tools other AI agents can invoke natively — turning any web app into a composable building block for agent workflows. No server changes, no API wrappers. Your site publishes what it can do; other agents call those actions directly.
+
+### Voice Accessibility
+
+Browser-native voice-driven workflows for hands-free interaction. Early access available today — full voice-first experiences coming.
 
 ---
 
