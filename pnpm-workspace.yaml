@@ -8,4 +8,5 @@ packages:
   - "packages/ui"
   - "packages/sdk"
   - "packages/tsconfig"
+  - "packages/roverbook"
   - "apps/*"

@@ -1,0 +1,5 @@
+{
+  "extends": "@rover/tsconfig/module",
+  "compilerOptions": { "outDir": "dist", "rootDir": "src" },
+  "include": ["src"]
+}

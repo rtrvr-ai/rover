@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "@rtrvr-ai/rover": "workspace:*",
-    "@rover/worker": "workspace:*"
+    "@rover/worker": "workspace:*",
+    "@rover/roverbook": "workspace:*"
   },
   "devDependencies": {
     "vite": "^5.4.1",

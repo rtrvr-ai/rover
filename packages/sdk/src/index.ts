@@ -46,6 +46,11 @@ import {
 } from './cloudCheckpoint.js';
 import { createRuntimeStateStore, type RuntimeStateStore } from './runtimeStorage.js';
 import {
+  buildPublicRunLifecyclePayload as buildPublicRunLifecyclePayloadHelper,
+  buildPublicRunStartedPayload as buildPublicRunStartedPayloadHelper,
+  normalizePromptContextEntry as normalizePromptContextEntryHelper,
+} from './publicRunEvents.js';
+import {
   writeCrossDomainResumeCookie,
   readCrossDomainResumeCookie,
   clearCrossDomainResumeCookie,
@@ -356,6 +361,9 @@ export type RoverEventName =
   | 'ready'
   | 'updated'
   | 'status'
+  | 'run_started'
+  | 'run_state_transition'
+  | 'run_completed'
   | 'tool_start'
   | 'tool_result'
   | 'error'
@@ -375,6 +383,32 @@ export type RoverEventName =
   | 'close';
 
 export type RoverEventHandler = (payload?: any) => void;
+
+export type RoverPromptContextEntry = {
+  role?: 'model';
+  message: string;
+  source?: string;
+};
+
+export type RoverPromptContextInput = {
+  userText: string;
+  isFreshTask: boolean;
+  pageUrl: string;
+  taskId?: string;
+  taskBoundaryId?: string;
+  visitorId?: string;
+  visitor?: { name?: string; email?: string };
+};
+
+export type RoverPromptContextProvider = (
+  input: RoverPromptContextInput,
+) =>
+  | string
+  | RoverPromptContextEntry
+  | Array<string | RoverPromptContextEntry>
+  | null
+  | undefined
+  | Promise<string | RoverPromptContextEntry | Array<string | RoverPromptContextEntry> | null | undefined>;
 
 type RoverVoiceTelemetryEventName =
   | 'voice_started'
@@ -397,6 +431,8 @@ export type RoverInstance = {
   newTask: (options?: { reason?: string; clearUi?: boolean }) => void;
   endTask: (options?: { reason?: string }) => void;
   getState: () => any;
+  requestSigned: (input: string | URL, init?: RequestInit) => Promise<Response>;
+  registerPromptContextProvider: (provider: RoverPromptContextProvider) => () => void;
   registerTool: (
     nameOrDef: string | ClientToolDefinition,
     handler: (args: any) => any | Promise<any>,
@@ -684,6 +720,7 @@ type ActivePublicTaskContext = {
   updatedAt: number;
 };
 let activePublicTaskContext: ActivePublicTaskContext | null = null;
+const promptContextProviders = new Set<RoverPromptContextProvider>();
 let browserReceiptLastHandledKey = '';
 let browserReceiptClaimInFlightKey = '';
 let browserReceiptRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -768,6 +805,63 @@ function emit(event: RoverEventName, payload?: any): void {
       // no-op
     }
   }
+}
+
+function normalizePromptContextEntry(
+  input: string | RoverPromptContextEntry,
+): FollowupChatEntry | null {
+  return normalizePromptContextEntryHelper(input);
+}
+
+async function resolvePromptContextEntries(
+  input: RoverPromptContextInput,
+): Promise<FollowupChatEntry[]> {
+  if (promptContextProviders.size === 0) return [];
+  const entries: FollowupChatEntry[] = [];
+  for (const provider of promptContextProviders) {
+    try {
+      const raw = await provider(input);
+      const list = Array.isArray(raw) ? raw : raw == null ? [] : [raw];
+      for (const item of list) {
+        const normalized = normalizePromptContextEntry(item);
+        if (normalized) entries.push(normalized);
+      }
+    } catch {
+      // Best-effort only; prompt context must not block task execution.
+    }
+  }
+  return sanitizeChatLogEntries(entries);
+}
+
+function buildPublicRunStartedPayload(msg: any): Record<string, unknown> {
+  return buildPublicRunStartedPayloadHelper({
+    msg,
+    taskId: String(runtimeState?.activeTask?.taskId || getActiveTaskRecord()?.taskId || '').trim() || undefined,
+    currentTaskBoundaryId: runtimeState?.pendingRun?.taskBoundaryId || currentTaskBoundaryId,
+    normalizeTaskBoundaryId: value => normalizeTaskBoundaryId(typeof value === 'string' ? value : undefined),
+    pageUrl: typeof window !== 'undefined' ? window.location.href : undefined,
+    now: Date.now(),
+  });
+}
+
+function buildPublicRunLifecyclePayload(
+  msg: any,
+  completionState: ReturnType<typeof normalizeRunCompletionState>,
+): Record<string, unknown> {
+  const runId =
+    typeof msg?.runId === 'string' && msg.runId.trim()
+      ? msg.runId.trim()
+      : String(runtimeState?.pendingRun?.id || '').trim() || undefined;
+  return buildPublicRunLifecyclePayloadHelper({
+    msg: runId ? { ...msg, runId } : msg,
+    taskId: String(runtimeState?.activeTask?.taskId || getActiveTaskRecord()?.taskId || '').trim() || undefined,
+    currentTaskBoundaryId: runtimeState?.pendingRun?.taskBoundaryId || currentTaskBoundaryId,
+    normalizeTaskBoundaryId: value => normalizeTaskBoundaryId(typeof value === 'string' ? value : undefined),
+    completionState,
+    latestSummary: runId ? latestAssistantByRunId.get(runId) : undefined,
+    pageUrl: typeof window !== 'undefined' ? window.location.href : undefined,
+    now: Date.now(),
+  });
 }
 
 function on(event: RoverEventName, handler: RoverEventHandler): () => void {
@@ -5124,7 +5218,21 @@ async function dispatchUserPromptAsync(
   const followupChatDecision = shouldStartFreshTask
     ? buildFollowupChatLogForFreshPrompt(trimmed, activeTaskStatus)
     : { reason: 'mode_disabled', overlap: 0 };
-  const seedChatLog = sanitizeChatLogEntries(followupChatDecision.chatLog);
+  const providerSeedChatLog = shouldStartFreshTask
+    ? await resolvePromptContextEntries({
+      userText: trimmed,
+      isFreshTask: true,
+      pageUrl: window.location.href,
+      taskId: String(runtimeState?.activeTask?.taskId || '').trim() || undefined,
+      taskBoundaryId: normalizeTaskBoundaryId(currentTaskBoundaryId),
+      visitorId: resolvedVisitorId,
+      visitor: resolvedVisitor,
+    })
+    : [];
+  const seedChatLog = sanitizeChatLogEntries([
+    ...providerSeedChatLog,
+    ...(followupChatDecision.chatLog || []),
+  ]);
   recordTelemetryEvent('status', {
     event: 'task_boundary_decision',
     startFreshTask: shouldStartFreshTask,
@@ -6782,6 +6890,7 @@ function handleWorkerMessage(msg: any): void {
       immediate: true,
       runId: typeof msg.runId === 'string' ? msg.runId : undefined,
     });
+    emit('run_started', buildPublicRunStartedPayload(msg));
     return;
   }
 
@@ -6790,6 +6899,7 @@ function handleWorkerMessage(msg: any): void {
     autoResumeAttempted = false;
     autoResumeSessionWaitAttempts = 0;
     const completionState = normalizeRunCompletionState(msg);
+    const publicRunPayload = buildPublicRunLifecyclePayload(msg, completionState);
     const terminalState = completionState.terminalState;
     const continuationReason = completionState.continuationReason;
     const launchTransitionStatus: 'running' | 'awaiting_user' | 'completed' | 'failed' =
@@ -7060,6 +7170,10 @@ function handleWorkerMessage(msg: any): void {
     }
     if (isTerminalRunCompletion) {
       finalizeLaunchObservationForRun(completedRunId);
+    }
+    emit('run_state_transition', publicRunPayload);
+    if (msg.type === 'run_completed' || isTerminalRunCompletion) {
+      emit('run_completed', publicRunPayload);
     }
     syncOrchestratorConversationList();
     return;
@@ -10084,6 +10198,8 @@ export function boot(cfg: RoverInit): RoverInstance {
     newTask,
     endTask,
     getState,
+    requestSigned,
+    registerPromptContextProvider,
     registerTool,
     identify,
     on,
@@ -10424,6 +10540,7 @@ export function shutdown(): void {
   browserReceiptLastHandledKey = '';
   browserReceiptClaimInFlightKey = '';
   activePublicTaskContext = null;
+  promptContextProviders.clear();
   builtInToolsRegistered = false;
   agentNavigationPending = false;
   currentTaskBoundaryId = '';
@@ -10530,6 +10647,48 @@ export function hide(): void {
 export function send(text: string): void {
   if (!text?.trim()) return;
   dispatchUserPrompt(text);
+}
+
+export async function requestSigned(input: string | URL, init: RequestInit = {}): Promise<Response> {
+  if (!currentConfig) {
+    throw new Error('Rover is not booted.');
+  }
+  await ensureRoverServerRuntime(currentConfig);
+  await roverServerRuntime?.ensureSession(false);
+  const sessionToken =
+    roverServerRuntime?.getSessionToken()
+    || runtimeSessionToken
+    || getRuntimeSessionToken(currentConfig);
+  if (!sessionToken) {
+    throw new Error('Rover signed request is unavailable without an active Rover session.');
+  }
+  const headers = new Headers(init.headers || undefined);
+  if (!headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${sessionToken}`);
+  }
+  if (runtimeState?.sessionId && !headers.has('X-Rover-Session-Id')) {
+    headers.set('X-Rover-Session-Id', runtimeState.sessionId);
+  }
+  if (currentConfig.siteId && !headers.has('X-Rover-Site-Id')) {
+    headers.set('X-Rover-Site-Id', currentConfig.siteId);
+  }
+  if (typeof window !== 'undefined' && !headers.has('X-Rover-Host')) {
+    headers.set('X-Rover-Host', window.location.hostname);
+  }
+  return fetch(input, {
+    ...init,
+    headers,
+  });
+}
+
+export function registerPromptContextProvider(provider: RoverPromptContextProvider): () => void {
+  if (typeof provider !== 'function') {
+    return () => undefined;
+  }
+  promptContextProviders.add(provider);
+  return () => {
+    promptContextProviders.delete(provider);
+  };
 }
 
 export function newTask(options?: { reason?: string; clearUi?: boolean }): void {
@@ -10725,6 +10884,8 @@ function normalizeCommandName(command: string): keyof RoverInstance | undefined 
   if (c === 'newTask') return 'newTask';
   if (c === 'endTask') return 'endTask';
   if (c === 'getState') return 'getState';
+  if (c === 'requestSigned') return 'requestSigned';
+  if (c === 'registerPromptContextProvider') return 'registerPromptContextProvider';
   if (c === 'registerTool') return 'registerTool';
   if (c === 'on') return 'on';
   return undefined;
@@ -10738,6 +10899,9 @@ export const __roverInternalsForTests = {
     maxCoalesceDelayMs: MAX_PERSIST_COALESCE_DELAY_MS,
   }),
   getTelemetryFastLaneEvents: () => Array.from(TELEMETRY_FAST_LANE_EVENTS.values()),
+  normalizePromptContextEntry,
+  buildPublicRunStartedPayload,
+  buildPublicRunLifecyclePayload,
 };
 
 type RoverGlobalFn = ((command: string, ...args: any[]) => any) & Partial<RoverInstance> & { q?: any[]; l?: number };
@@ -10766,6 +10930,8 @@ export function installGlobal(): void {
   apiFn.newTask = newTask;
   apiFn.endTask = endTask;
   apiFn.getState = getState;
+  apiFn.requestSigned = requestSigned;
+  apiFn.registerPromptContextProvider = registerPromptContextProvider;
   apiFn.registerTool = registerTool;
   apiFn.on = on;
 
