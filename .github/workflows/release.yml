@@ -45,7 +45,7 @@ jobs:
           git checkout -b "$BRANCH"
           git add -A
           git commit -m "chore: bump version to ${{ inputs.version }}"
-          git push origin "$BRANCH"
+          git push origin "$BRANCH" --force
 
       - name: Summary
         run: |
