@@ -73,7 +73,9 @@ export async function submitDerivedInterviews(
   questions: string[],
 ): Promise<InterviewAnswer[]> {
   const answers = buildDerivedInterviewAnswers(visit, identity, questions.length ? questions : DEFAULT_INTERVIEW_QUESTIONS);
-  await api.submitInterviews(answers);
+  const ok = await api.submitInterviews(answers);
+  if (!ok) {
+    throw new Error(`Failed to submit derived interviews for visit ${visit.visitId}`);
+  }
   return answers;
 }
-
