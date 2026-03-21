@@ -312,6 +312,7 @@ The returned task URL is the canonical resource:
 - `GET` + `Accept: application/x-ndjson` for CLI-friendly streaming
 - `POST { "input": "..." }` for continuation when the task asks for more input
 - `DELETE` to cancel
+- a `workflow` URL when the task belongs to an aggregated multi-site workflow
 
 Task creation may also return browser handoff URLs:
 
@@ -320,13 +321,26 @@ Task creation may also return browser handoff URLs:
 
 The task URL remains canonical; receipt links are only a browser handoff layer over that same task.
 
-The response also includes an `open` URL for browser attach.
-
 - `Prefer: execution=browser` keeps execution browser-first
 - `Prefer: execution=cloud` is the explicit browserless path today
 - `Prefer: execution=auto` prefers browser attach first; delayed cloud auto-promotion is a follow-up robustness phase
 
 Rover deep links like `?rover=` and `?rover_shortcut=` remain the simple browser-first entrypoints; `/v1/tasks` is the machine-oriented protocol.
+
+### Cross-site workflows and handoffs
+
+Public tasks can delegate to Rover on another Rover-enabled site without leaving the same protocol surface.
+
+- `POST /v1/tasks/{id}/handoffs` creates a child task on another site
+- `GET /v1/workflows/{id}` returns aggregated workflow state or stream
+- child tasks inherit the same workflow lineage as the parent
+
+Receiving sites must explicitly opt in through Workspace/site config:
+
+- `aiAccess.enabled = true`
+- `aiAccess.allowDelegatedHandoffs = true`
+
+By default, handoffs carry a structured summary rather than the full transcript or tool trace.
 
 ## Rover V2 Runtime Endpoints
 

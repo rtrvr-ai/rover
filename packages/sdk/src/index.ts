@@ -104,11 +104,12 @@ import {
   resolveRoverBases,
   type TabEventDecisionResponse,
   type RoverLaunchAttachResponse,
+  type RoverPublicTaskPayload,
   type RoverTaskBrowserClaimResponse,
   type RoverLaunchIngestEvent,
-  type RoverServerAiAccessConfig,
   type RoverServerProjection,
   type RoverServerPolicy,
+  type RoverServerAiAccessConfig,
   type RoverServerSiteConfig,
 } from './serverRuntime.js';
 import {
@@ -168,6 +169,7 @@ type RoverAiAccessConfig = {
   allowPromptLaunch?: boolean;
   allowShortcutLaunch?: boolean;
   allowCloudBrowser?: boolean;
+  allowDelegatedHandoffs?: boolean;
   debugStreaming?: boolean;
 };
 
@@ -461,6 +463,10 @@ const LAUNCH_ATTACH_WAIT_MS = 10_000;
 const LAUNCH_ATTACH_RETRY_MS = 400;
 const LAUNCH_EVENT_MAX_BATCH_SIZE = 40;
 const LAUNCH_EVENT_RETRY_DELAY_MS = 1_000;
+const RECEIPT_CLAIM_RETRY_MS = 350;
+const RECEIPT_CLAIM_WAIT_MS = 10_000;
+const DEFAULT_ACTION_TIMEOUT_MS = 30_000;
+const HANDOFF_TOOL_POLL_SLICE_SECONDS = 20;
 
 type TelemetryEventName = RoverEventName | RoverVoiceTelemetryEventName;
 
@@ -573,16 +579,6 @@ let pendingLaunchRequest:
       deadlineAt: number;
     }
   | null = null;
-let browserReceiptLastHandledKey = '';
-let browserReceiptClaimRetryTimer: ReturnType<typeof setTimeout> | null = null;
-let browserReceiptClaimInFlightKey = '';
-let pendingBrowserReceiptRequest:
-  | {
-      handleKey: string;
-      request: RoverBrowserReceiptRequest;
-      deadlineAt: number;
-    }
-  | null = null;
 type ActiveLaunchBinding = {
   requestId: string;
   attachToken?: string;
@@ -676,6 +672,39 @@ let runtimeServerEpoch = 1;
 let serverAcceptedRunId: string | undefined;
 let lastAppliedServerSnapshotKey = '';
 let taskOrchestrator: TaskOrchestrator | null = null;
+type ActivePublicTaskContext = {
+  taskId: string;
+  taskUrl: string;
+  taskAccessToken?: string;
+  workflowId?: string;
+  workflowUrl?: string;
+  workflowAccessToken?: string;
+  taskBoundaryId?: string;
+  runId?: string;
+  updatedAt: number;
+};
+let activePublicTaskContext: ActivePublicTaskContext | null = null;
+let browserReceiptLastHandledKey = '';
+let browserReceiptClaimInFlightKey = '';
+let browserReceiptRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let browserReceiptPending:
+  | {
+      handleKey: string;
+      deadlineAt: number;
+    }
+  | null = null;
+type HandoffToolArgs = {
+  url?: string;
+  instruction?: string;
+  prompt?: string;
+  shortcutId?: string;
+  contextSummary?: string;
+  expectedOutput?: string;
+  execution?: 'auto' | 'browser' | 'cloud';
+  task?: string;
+  answer?: string;
+};
+let builtInToolsRegistered = false;
 const RUN_SCOPED_WORKER_MESSAGE_TYPES = new Set([
   'run_started',
   'run_state_transition',
@@ -7215,6 +7244,7 @@ function sanitizeAiAccessConfig(raw: unknown): RoverAiAccessConfig | undefined {
   if (typeof input.allowPromptLaunch === 'boolean') next.allowPromptLaunch = input.allowPromptLaunch;
   if (typeof input.allowShortcutLaunch === 'boolean') next.allowShortcutLaunch = input.allowShortcutLaunch;
   if (typeof input.allowCloudBrowser === 'boolean') next.allowCloudBrowser = input.allowCloudBrowser;
+  if (typeof input.allowDelegatedHandoffs === 'boolean') next.allowDelegatedHandoffs = input.allowDelegatedHandoffs;
   if (typeof input.debugStreaming === 'boolean') next.debugStreaming = input.debugStreaming;
   return Object.keys(next).length ? next : undefined;
 }
@@ -7424,57 +7454,6 @@ function clearPendingLaunchAttach(): void {
     launchAttachRetryTimer = null;
   }
   pendingLaunchRequest = null;
-}
-
-function clearPendingBrowserReceiptClaim(): void {
-  if (browserReceiptClaimRetryTimer) {
-    clearTimeout(browserReceiptClaimRetryTimer);
-    browserReceiptClaimRetryTimer = null;
-  }
-  pendingBrowserReceiptRequest = null;
-}
-
-function buildBrowserReceiptHandleKey(request: RoverBrowserReceiptRequest): string {
-  return `${window.location.href}::${request.signature}`;
-}
-
-function consumeHandledBrowserReceipt(
-  request: RoverBrowserReceiptRequest,
-  options?: { consumeDeepLink?: boolean },
-): void {
-  const currentRelativeUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-  let nextRelativeUrl = stripBrowserReceiptParams(window.location.href);
-  if (options?.consumeDeepLink !== false && currentConfig) {
-    nextRelativeUrl = stripDeepLinkParams(nextRelativeUrl, resolveDeepLinkConfig(currentConfig.deepLink));
-  }
-  if (nextRelativeUrl === currentRelativeUrl) return;
-  try {
-    history.replaceState(history.state, document.title, nextRelativeUrl);
-    recordTelemetryEvent('status', {
-      event: 'browser_receipt_consumed',
-    });
-  } catch {
-    // no-op
-  }
-}
-
-function scheduleBrowserReceiptClaimRetry(
-  handleKey: string,
-  request: RoverBrowserReceiptRequest,
-  deadlineAt: number,
-): void {
-  const existing = pendingBrowserReceiptRequest;
-  if (existing?.handleKey === handleKey && existing.deadlineAt === deadlineAt && browserReceiptClaimRetryTimer) {
-    return;
-  }
-  if (browserReceiptClaimRetryTimer) {
-    clearTimeout(browserReceiptClaimRetryTimer);
-  }
-  pendingBrowserReceiptRequest = { handleKey, request, deadlineAt };
-  browserReceiptClaimRetryTimer = setTimeout(() => {
-    browserReceiptClaimRetryTimer = null;
-    maybeHandleBrowserReceipt('receipt_retry');
-  }, LAUNCH_ATTACH_RETRY_MS);
 }
 
 function buildLaunchHandleKey(request: RoverLaunchRequest): string {
@@ -7708,33 +7687,6 @@ function handleLaunchAttachFailure(
   }
 }
 
-function handleBrowserReceiptClaimFailure(
-  request: RoverBrowserReceiptRequest,
-  handleKey: string,
-  message: string,
-  options?: { fallbackToDeepLink?: boolean; openWidget?: boolean },
-): void {
-  clearPendingBrowserReceiptClaim();
-  browserReceiptClaimInFlightKey = '';
-  const canFallback = options?.fallbackToDeepLink === true && !!currentConfig && !!parseDeepLinkRequest(
-    stripBrowserReceiptParams(window.location.href),
-    resolveDeepLinkConfig(currentConfig.deepLink),
-  );
-  if (!canFallback && options?.openWidget !== false) {
-    open();
-    appendUiMessage('system', `Rover couldn't claim the browser receipt: ${message}`, true);
-  }
-  recordTelemetryEvent('status', {
-    event: 'browser_receipt_claim_failed',
-    message,
-  });
-  browserReceiptLastHandledKey = handleKey;
-  consumeHandledBrowserReceipt(request, { consumeDeepLink: false });
-  if (canFallback) {
-    maybeHandleDeepLink('receipt_fallback');
-  }
-}
-
 function dispatchLaunchInput(response: RoverLaunchAttachResponse | RoverTaskBrowserClaimResponse): void {
   const input = response.input;
   if (!input || typeof input.prompt !== 'string' || !input.prompt.trim()) {
@@ -7749,109 +7701,6 @@ function dispatchLaunchInput(response: RoverLaunchAttachResponse | RoverTaskBrow
     return;
   }
   dispatchUserPrompt(input.prompt, { reason: 'launch_prompt' });
-}
-
-function maybeHandleBrowserReceipt(
-  source: 'boot' | 'update' | 'navigation' | 'site_config' | 'receipt_retry',
-): void {
-  if (!currentConfig || typeof window === 'undefined') return;
-  const request = parseBrowserReceiptRequest(window.location.href);
-  if (!request) {
-    clearPendingBrowserReceiptClaim();
-    browserReceiptLastHandledKey = '';
-    browserReceiptClaimInFlightKey = '';
-    return;
-  }
-
-  const handleKey = buildBrowserReceiptHandleKey(request);
-  if (
-    handleKey === browserReceiptLastHandledKey
-    || activeLaunchBinding?.handleKey === handleKey
-    || browserReceiptClaimInFlightKey === handleKey
-  ) {
-    return;
-  }
-
-  const deadlineAt = pendingBrowserReceiptRequest?.handleKey === handleKey
-    ? pendingBrowserReceiptRequest.deadlineAt
-    : Date.now() + LAUNCH_ATTACH_WAIT_MS;
-  if (Date.now() >= deadlineAt) {
-    handleBrowserReceiptClaimFailure(
-      request,
-      handleKey,
-      'Browser receipt claim timed out before Rover finished booting.',
-      {
-        fallbackToDeepLink: true,
-        openWidget: true,
-      },
-    );
-    return;
-  }
-
-  browserReceiptClaimInFlightKey = handleKey;
-  void ensureRoverServerRuntime(currentConfig)
-    .then(async () => {
-      if (!roverServerRuntime) {
-        scheduleBrowserReceiptClaimRetry(handleKey, request, deadlineAt);
-        return;
-      }
-      const response = await roverServerRuntime.claimBrowserTaskReceipt({
-        receipt: request.receipt,
-      });
-      if (!response) {
-        scheduleBrowserReceiptClaimRetry(handleKey, request, deadlineAt);
-        return;
-      }
-
-      clearPendingBrowserReceiptClaim();
-      activeLaunchBinding = {
-        requestId: response.requestId,
-        handleKey,
-        status: response.status,
-        detail: response.detail,
-        executionTarget: response.executionTarget,
-        runId: response.runId,
-        pendingEvents: [],
-        attachCompletedAt: Date.now(),
-      };
-      dispatchLaunchInput(response);
-      enqueueLaunchRuntimeEvent('state_transition', {
-        status: response.status === 'awaiting_user' ? 'awaiting_user' : 'running',
-        executionTarget: response.executionTarget,
-        detail: response.detail,
-        source: 'browser_receipt',
-      }, {
-        immediate: true,
-        runId: response.runId,
-      });
-      recordTelemetryEvent('status', {
-        event: 'browser_receipt_claimed',
-        source,
-        requestId: response.requestId,
-      });
-      browserReceiptLastHandledKey = handleKey;
-      consumeHandledBrowserReceipt(request, { consumeDeepLink: true });
-    })
-    .catch(error => {
-      if (Date.now() < deadlineAt) {
-        scheduleBrowserReceiptClaimRetry(handleKey, request, deadlineAt);
-        return;
-      }
-      handleBrowserReceiptClaimFailure(
-        request,
-        handleKey,
-        (error as Error)?.message || 'Unknown browser receipt failure.',
-        {
-          fallbackToDeepLink: true,
-          openWidget: true,
-        },
-      );
-    })
-    .finally(() => {
-      if (browserReceiptClaimInFlightKey === handleKey) {
-        browserReceiptClaimInFlightKey = '';
-      }
-    });
 }
 
 function maybeHandleLaunchAttach(
@@ -8043,18 +7892,641 @@ function handleDeepLinkShortcutNotFound(
   consumeHandledDeepLink(config, request);
 }
 
+function resolveAgentTaskBaseUrl(): string {
+  const rawBase = String(currentConfig?.apiBase || 'https://agent.rtrvr.ai').trim().replace(/\/+$/, '');
+  if (!rawBase) return 'https://agent.rtrvr.ai';
+  if (rawBase.endsWith('/extensionRouter/v2/rover')) {
+    return rawBase.slice(0, -('/extensionRouter/v2/rover'.length));
+  }
+  if (rawBase.endsWith('/v2/rover')) {
+    return rawBase.slice(0, -('/v2/rover'.length));
+  }
+  return rawBase;
+}
+
+function extractTaskAccessToken(taskUrl?: string): string | undefined {
+  const raw = String(taskUrl || '').trim();
+  if (!raw) return undefined;
+  try {
+    const parsed = new URL(raw);
+    const access = String(parsed.searchParams.get('access') || '').trim();
+    return access || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildAgentTaskUrl(taskId: string, accessToken?: string): string {
+  const url = new URL(`${resolveAgentTaskBaseUrl()}/v1/tasks/${encodeURIComponent(taskId)}`);
+  if (accessToken) {
+    url.searchParams.set('access', accessToken);
+  }
+  return url.toString();
+}
+
+function buildAgentWorkflowUrl(workflowId: string, accessToken?: string): string {
+  const url = new URL(`${resolveAgentTaskBaseUrl()}/v1/workflows/${encodeURIComponent(workflowId)}`);
+  if (accessToken) {
+    url.searchParams.set('access', accessToken);
+  }
+  return url.toString();
+}
+
+function bindPublicTaskContext(input: {
+  taskId: string;
+  taskUrl?: string;
+  taskAccessToken?: string;
+  workflowId?: string;
+  workflowUrl?: string;
+  workflowAccessToken?: string;
+  runId?: string;
+}): void {
+  const taskId = String(input.taskId || '').trim();
+  if (!taskId) return;
+  const taskAccessToken = String(input.taskAccessToken || extractTaskAccessToken(input.taskUrl) || '').trim() || undefined;
+  const workflowId = String(input.workflowId || '').trim() || undefined;
+  const workflowAccessToken = String(input.workflowAccessToken || extractTaskAccessToken(input.workflowUrl) || '').trim() || undefined;
+  activePublicTaskContext = {
+    taskId,
+    taskUrl: String(input.taskUrl || buildAgentTaskUrl(taskId, taskAccessToken)).trim(),
+    taskAccessToken,
+    workflowId,
+    workflowUrl: workflowId
+      ? String(input.workflowUrl || buildAgentWorkflowUrl(workflowId, workflowAccessToken)).trim()
+      : undefined,
+    workflowAccessToken,
+    taskBoundaryId: normalizeTaskBoundaryId(currentTaskBoundaryId || runtimeState?.workerState?.taskBoundaryId),
+    runId: String(input.runId || runtimeState?.pendingRun?.id || '').trim() || undefined,
+    updatedAt: Date.now(),
+  };
+}
+
+function getCurrentPublicTaskBoundaryId(): string {
+  return normalizeTaskBoundaryId(currentTaskBoundaryId || runtimeState?.workerState?.taskBoundaryId) || '';
+}
+
+function normalizeHandoffExecution(value: unknown): 'auto' | 'browser' | 'cloud' {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'browser' || normalized === 'cloud') return normalized;
+  return 'auto';
+}
+
+function isTerminalPublicTaskStatus(status: unknown): boolean {
+  const normalized = String(status || '').trim().toLowerCase();
+  return normalized === 'completed' || normalized === 'failed' || normalized === 'cancelled' || normalized === 'expired';
+}
+
+function extractTaskIdFromTaskUrl(taskUrlOrId: string): string | undefined {
+  const raw = String(taskUrlOrId || '').trim();
+  if (!raw) return undefined;
+  if (!/^https?:\/\//i.test(raw)) return raw;
+  try {
+    const parsed = new URL(raw);
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const taskIndex = parts.lastIndexOf('tasks');
+    if (taskIndex >= 0 && parts[taskIndex + 1]) {
+      return decodeURIComponent(parts[taskIndex + 1]);
+    }
+    const workflowIndex = parts.lastIndexOf('workflows');
+    if (workflowIndex >= 0 && parts[workflowIndex + 1]) {
+      return decodeURIComponent(parts[workflowIndex + 1]);
+    }
+  } catch {
+    // no-op
+  }
+  return undefined;
+}
+
+function buildCurrentHandoffObservation(): Record<string, unknown> {
+  const summary = String(lastCompletedTaskSummary || runtimeState?.uiStatus || runtimeState?.transientStatus?.text || '').trim();
+  return {
+    url: window.location.href,
+    title: document.title,
+    host: window.location.hostname,
+    ...(summary ? { summary } : {}),
+  };
+}
+
+function buildFallbackRootWorkflowPrompt(): string {
+  const title = String(document.title || '').trim();
+  if (title) {
+    return `Continue the current Rover workflow on ${title}.`;
+  }
+  return `Continue the current Rover workflow on ${window.location.hostname}.`;
+}
+
+async function ensureRootPublicTaskContextForHandoff(): Promise<ActivePublicTaskContext> {
+  const boundaryId = getCurrentPublicTaskBoundaryId();
+  const existing = activePublicTaskContext;
+  if (
+    existing
+    && existing.taskId
+    && existing.taskAccessToken
+    && (!boundaryId || existing.taskBoundaryId === boundaryId)
+  ) {
+    existing.runId = String(runtimeState?.pendingRun?.id || existing.runId || '').trim() || undefined;
+    existing.updatedAt = Date.now();
+    return existing;
+  }
+  if (!currentConfig) {
+    throw new Error('Rover is not booted.');
+  }
+  await ensureRoverServerRuntime(currentConfig);
+  if (!roverServerRuntime) {
+    throw new Error('Rover server runtime is unavailable.');
+  }
+  const prompt = resolveCanonicalTaskInputForRun(runtimeState?.pendingRun?.id) || buildFallbackRootWorkflowPrompt();
+  const created = await roverServerRuntime.createSessionRootTask({
+    url: window.location.href,
+    prompt,
+    runId: String(runtimeState?.pendingRun?.id || '').trim() || undefined,
+  });
+  if (!created?.id || !created.task) {
+    throw new Error('Failed to create the root public workflow task.');
+  }
+  bindPublicTaskContext({
+    taskId: created.id,
+    taskUrl: created.task,
+    taskAccessToken: extractTaskAccessToken(created.task),
+    workflowId: extractTaskIdFromTaskUrl(created.workflow || ''),
+    workflowUrl: created.workflow,
+    workflowAccessToken: extractTaskAccessToken(created.workflow),
+    runId: String(runtimeState?.pendingRun?.id || '').trim() || undefined,
+  });
+  if (!activePublicTaskContext?.taskAccessToken) {
+    throw new Error('Root public workflow task is missing an access token.');
+  }
+  recordTelemetryEvent('status', {
+    event: 'handoff_root_task_created',
+    taskId: activePublicTaskContext.taskId,
+    workflowId: activePublicTaskContext.workflowId,
+  });
+  return activePublicTaskContext;
+}
+
+async function followPublicTaskUntilStable(
+  taskUrlOrId: string,
+  accessToken?: string,
+  timeoutMs = DEFAULT_ACTION_TIMEOUT_MS,
+): Promise<RoverPublicTaskPayload | null> {
+  if (!currentConfig) return null;
+  await ensureRoverServerRuntime(currentConfig);
+  if (!roverServerRuntime) {
+    throw new Error('Rover server runtime is unavailable.');
+  }
+  const deadlineAt = Date.now() + Math.max(0, timeoutMs);
+  let latest: RoverPublicTaskPayload | null = null;
+  while (true) {
+    const remainingMs = deadlineAt - Date.now();
+    const waitSeconds = remainingMs > 0
+      ? Math.max(1, Math.min(HANDOFF_TOOL_POLL_SLICE_SECONDS, Math.ceil(remainingMs / 1000)))
+      : 0;
+    latest = await roverServerRuntime.getPublicTask(taskUrlOrId, {
+      accessToken,
+      waitSeconds,
+    });
+    if (!latest) return latest;
+    if (isTerminalPublicTaskStatus(latest.status) || latest.status === 'input_required') {
+      return latest;
+    }
+    if (remainingMs <= 0) {
+      return latest;
+    }
+  }
+}
+
+function tryOpenDelegatedBrowserTask(task: RoverPublicTaskPayload, execution: 'auto' | 'browser' | 'cloud'): {
+  opened: boolean;
+  targetUrl?: string;
+  error?: string;
+} {
+  if (execution === 'cloud') {
+    return { opened: false };
+  }
+  const targetUrl = String(task.open || task.browserLink || '').trim();
+  if (!targetUrl) {
+    return { opened: false };
+  }
+  try {
+    const openedWindow = window.open(targetUrl, '_blank', 'noopener,noreferrer');
+    if (openedWindow) {
+      return { opened: true, targetUrl };
+    }
+    return {
+      opened: false,
+      targetUrl,
+      error: 'Browser blocked the delegated Rover handoff window.',
+    };
+  } catch (error) {
+    return {
+      opened: false,
+      targetUrl,
+      error: (error as Error)?.message || 'Unable to open the delegated Rover site.',
+    };
+  }
+}
+
+function buildHandoffToolResult(
+  task: RoverPublicTaskPayload,
+  options?: { browserOpen?: { opened: boolean; targetUrl?: string; error?: string } },
+): Record<string, unknown> {
+  const status = String(task.status || 'pending').trim().toLowerCase();
+  const taskUrl = String(task.task || '').trim();
+  const workflowUrl = String(task.workflow || '').trim();
+  const summary = String(task.result?.summary || task.result?.text || task.input?.message || '').trim();
+  const questions = normalizeAskUserQuestions(task.input?.questions);
+  const browserOpen = options?.browserOpen;
+  const base: Record<string, unknown> = {
+    success: status === 'completed',
+    status,
+    task: taskUrl || undefined,
+    workflow: workflowUrl || undefined,
+    open: task.open,
+    browserLink: task.browserLink,
+    result: task.result,
+    handoff: task.handoff,
+    summary: task.result?.summary,
+    text: task.result?.text || summary || undefined,
+    observation: task.result?.observation,
+    transcript: task.result?.transcript,
+    artifacts: task.result?.artifacts,
+    taskStatus: status,
+    ...(browserOpen?.targetUrl ? { browserOpenUrl: browserOpen.targetUrl } : {}),
+    ...(browserOpen?.opened ? { browserOpened: true } : {}),
+    ...(browserOpen?.error ? { browserOpenError: browserOpen.error } : {}),
+  };
+
+  if (status === 'completed') {
+    return {
+      ...base,
+      taskComplete: true,
+      terminalState: 'completed',
+      message: summary || 'Delegated Rover task completed.',
+    };
+  }
+
+  if (status === 'input_required') {
+    return {
+      ...base,
+      success: false,
+      taskComplete: false,
+      terminalState: 'waiting_input',
+      continuationReason: 'awaiting_user',
+      needsUserInput: true,
+      waitingForUserInput: true,
+      questions: questions.length ? questions : task.input?.questions,
+      input: task.input,
+      message: String(task.input?.message || summary || 'Delegated Rover task needs more input.').trim(),
+    };
+  }
+
+  if (status === 'failed' || status === 'cancelled' || status === 'expired') {
+    const errorMessage = String(task.result?.error || summary || `Delegated Rover task ${status}.`).trim();
+    return {
+      ...base,
+      success: false,
+      taskComplete: false,
+      terminalState: 'failed',
+      error: errorMessage,
+      message: errorMessage,
+    };
+  }
+
+  const runningMessage =
+    status === 'waiting_browser'
+      ? 'Delegated Rover task is waiting for a browser attachment. Re-open the returned URL or call again with execution="cloud" for a browserless run.'
+      : 'Delegated Rover task is still running. Call handoff_to_rover_site again with the returned task URL to keep following it.';
+  return {
+    ...base,
+    success: false,
+    taskComplete: false,
+    terminalState: 'in_progress',
+    continuationReason: 'loop_continue',
+    message: runningMessage,
+  };
+}
+
+async function handleBuiltInRoverHandoff(rawArgs: HandoffToolArgs | undefined): Promise<Record<string, unknown>> {
+  const args = (rawArgs && typeof rawArgs === 'object' ? rawArgs : {}) as HandoffToolArgs;
+  if (!currentConfig) {
+    throw new Error('Rover is not booted.');
+  }
+  await ensureRoverServerRuntime(currentConfig);
+  if (!roverServerRuntime) {
+    throw new Error('Rover server runtime is unavailable.');
+  }
+
+  const execution = normalizeHandoffExecution(args.execution);
+  const answer = String(args.answer || '').trim();
+  const existingTaskUrl = String(args.task || '').trim();
+
+  if (existingTaskUrl) {
+    const accessToken = extractTaskAccessToken(existingTaskUrl);
+    let latest = answer
+      ? await roverServerRuntime.continuePublicTask(existingTaskUrl, answer, { accessToken })
+      : await roverServerRuntime.getPublicTask(existingTaskUrl, { accessToken });
+    if (!latest) {
+      throw new Error('Delegated Rover task could not be loaded.');
+    }
+    let browserOpen: { opened: boolean; targetUrl?: string; error?: string } | undefined;
+    if (!isTerminalPublicTaskStatus(latest.status) && latest.status !== 'input_required') {
+      browserOpen = tryOpenDelegatedBrowserTask(latest, execution);
+      latest = (await followPublicTaskUntilStable(existingTaskUrl, accessToken, DEFAULT_ACTION_TIMEOUT_MS)) || latest;
+    }
+    return buildHandoffToolResult(latest, browserOpen ? { browserOpen } : undefined);
+  }
+
+  const targetUrl = String(args.url || '').trim();
+  const shortcutId = String(args.shortcutId || '').trim();
+  const instruction = String(args.instruction || '').trim();
+  const prompt = String(args.prompt || '').trim();
+  if (!targetUrl) {
+    throw new Error('handoff_to_rover_site requires url or task.');
+  }
+  if (!shortcutId && !instruction && !prompt) {
+    throw new Error('handoff_to_rover_site requires instruction, prompt, or shortcutId when creating a new handoff.');
+  }
+
+  const parentContext = await ensureRootPublicTaskContextForHandoff();
+  const created = await roverServerRuntime.createTaskHandoff({
+    parentTaskId: parentContext.taskId,
+    taskAccessToken: String(parentContext.taskAccessToken || '').trim(),
+    url: targetUrl,
+    ...(shortcutId ? { shortcutId } : {}),
+    ...(!shortcutId && instruction ? { instruction } : {}),
+    ...(!shortcutId && !instruction && prompt ? { prompt } : {}),
+    ...(String(args.contextSummary || lastCompletedTaskSummary || '').trim()
+      ? { contextSummary: String(args.contextSummary || lastCompletedTaskSummary).trim() }
+      : {}),
+    ...(String(args.expectedOutput || '').trim()
+      ? { expectedOutput: String(args.expectedOutput).trim() }
+      : {}),
+    ...(String(resolveCanonicalTaskInputForRun(runtimeState?.pendingRun?.id) || '').trim()
+      ? { originalGoal: String(resolveCanonicalTaskInputForRun(runtimeState?.pendingRun?.id) || '').trim() }
+      : {}),
+    lastObservation: buildCurrentHandoffObservation(),
+    execution,
+  });
+  if (!created) {
+    throw new Error('Delegated Rover handoff could not be created.');
+  }
+
+  let browserOpen: { opened: boolean; targetUrl?: string; error?: string } | undefined;
+  if (!isTerminalPublicTaskStatus(created.status) && created.status !== 'input_required') {
+    browserOpen = tryOpenDelegatedBrowserTask(created, execution);
+  }
+  const accessToken = extractTaskAccessToken(created.task);
+  const latest = (!isTerminalPublicTaskStatus(created.status) && created.status !== 'input_required')
+    ? ((await followPublicTaskUntilStable(created.task, accessToken, DEFAULT_ACTION_TIMEOUT_MS)) || created)
+    : created;
+  recordTelemetryEvent('status', {
+    event: 'handoff_task_created',
+    parentTaskId: parentContext.taskId,
+    childTaskId: latest.id,
+    workflowId: extractTaskIdFromTaskUrl(latest.workflow || '') || parentContext.workflowId,
+    targetHost: (() => {
+      try { return new URL(targetUrl).hostname; } catch { return undefined; }
+    })(),
+  });
+  return buildHandoffToolResult(latest, browserOpen ? { browserOpen } : undefined);
+}
+
+const BUILT_IN_HANDOFF_TOOL_DEF: ClientToolDefinition = {
+  name: 'handoff_to_rover_site',
+  description: 'Delegate part of the current Rover workflow to Rover on another Rover-enabled site and keep following that child task until it completes or asks for more input.',
+  parameters: {
+    url: {
+      type: 'string',
+      description: 'Absolute URL for the Rover-enabled site that should handle the delegated step.',
+    },
+    instruction: {
+      type: 'string',
+      description: 'Delegation instruction for the target site. Use this for natural-language delegation.',
+    },
+    prompt: {
+      type: 'string',
+      description: 'Prompt alias for instruction when creating a delegated task.',
+    },
+    shortcutId: {
+      type: 'string',
+      description: 'Exact shortcut ID to run on the delegated Rover site instead of a natural-language instruction.',
+    },
+    contextSummary: {
+      type: 'string',
+      description: 'Short structured summary of what the target Rover site should know before continuing.',
+    },
+    expectedOutput: {
+      type: 'string',
+      description: 'Describe the output the delegated site should return to the parent workflow.',
+    },
+    execution: {
+      type: 'string',
+      enum: ['auto', 'browser', 'cloud'],
+      description: 'Use browser to try a new tab first, cloud for guaranteed browserless execution, or auto for browser-first hybrid behavior.',
+    },
+    task: {
+      type: 'string',
+      description: 'Existing delegated task URL or task ID to keep following or resume after user input.',
+    },
+    answer: {
+      type: 'string',
+      description: 'Answer to send when resuming a delegated task that is waiting for user input.',
+    },
+  },
+  llmCallable: true,
+};
+
+function ensureBuiltInToolsRegistered(): void {
+  if (builtInToolsRegistered || !bridge || !worker) return;
+  applyToolRegistration({
+    def: BUILT_IN_HANDOFF_TOOL_DEF,
+    handler: handleBuiltInRoverHandoff,
+  });
+  builtInToolsRegistered = true;
+}
+
+function clearPendingBrowserReceipt(): void {
+  if (browserReceiptRetryTimer) {
+    clearTimeout(browserReceiptRetryTimer);
+    browserReceiptRetryTimer = null;
+  }
+  browserReceiptPending = null;
+}
+
+function buildBrowserReceiptHandleKey(request: RoverBrowserReceiptRequest): string {
+  return `${window.location.href}::${request.signature}`;
+}
+
+function consumeHandledBrowserReceipt(
+  request: RoverBrowserReceiptRequest,
+  options?: { consumeDeepLink?: boolean },
+): void {
+  const currentRelativeUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  let nextRelativeUrl = stripBrowserReceiptParams(window.location.href);
+  if (options?.consumeDeepLink && currentConfig) {
+    const nextAbsoluteUrl = new URL(nextRelativeUrl, window.location.origin).toString();
+    nextRelativeUrl = stripDeepLinkParams(nextAbsoluteUrl, resolveDeepLinkConfig(currentConfig.deepLink));
+  }
+  if (nextRelativeUrl === currentRelativeUrl) return;
+  try {
+    history.replaceState(history.state, document.title, nextRelativeUrl);
+    recordTelemetryEvent('status', {
+      event: 'browser_receipt_consumed',
+      receipt: request.receipt,
+      consumeDeepLink: options?.consumeDeepLink === true,
+    });
+  } catch {
+    // no-op
+  }
+}
+
+function scheduleBrowserReceiptRetry(handleKey: string, deadlineAt: number): void {
+  const existing = browserReceiptPending;
+  if (existing?.handleKey === handleKey && existing.deadlineAt === deadlineAt && browserReceiptRetryTimer) {
+    return;
+  }
+  if (browserReceiptRetryTimer) {
+    clearTimeout(browserReceiptRetryTimer);
+  }
+  browserReceiptPending = { handleKey, deadlineAt };
+  browserReceiptRetryTimer = setTimeout(() => {
+    browserReceiptRetryTimer = null;
+    maybeHandleBrowserReceipt('receipt_retry');
+  }, RECEIPT_CLAIM_RETRY_MS);
+}
+
+function dispatchClaimedBrowserTask(response: RoverTaskBrowserClaimResponse): void {
+  const input = response.input;
+  if (!input || typeof input.prompt !== 'string' || !input.prompt.trim()) {
+    throw new Error('Browser receipt claim did not include a prompt.');
+  }
+  open();
+  if (input.kind === 'shortcut') {
+    dispatchUserPrompt(input.prompt, {
+      reason: 'browser_receipt_shortcut',
+      routing: input.routing,
+    });
+    return;
+  }
+  dispatchUserPrompt(input.prompt, { reason: 'browser_receipt_prompt' });
+}
+
+function handleBrowserReceiptClaimFailure(
+  request: RoverBrowserReceiptRequest,
+  handleKey: string,
+  message: string,
+  options?: { fallbackToDeepLink?: boolean; openWidget?: boolean },
+): void {
+  clearPendingBrowserReceipt();
+  if (options?.openWidget) {
+    open();
+    appendUiMessage('system', `Rover couldn't claim the browser receipt: ${message}`, true);
+  }
+  recordTelemetryEvent('status', {
+    event: 'browser_receipt_claim_failed',
+    message,
+  });
+  browserReceiptLastHandledKey = handleKey;
+  consumeHandledBrowserReceipt(request, { consumeDeepLink: false });
+  if (options?.fallbackToDeepLink) {
+    maybeHandleDeepLink('receipt_fallback');
+  }
+}
+
+function maybeHandleBrowserReceipt(
+  source: 'boot' | 'update' | 'navigation' | 'site_config' | 'receipt_retry',
+): boolean {
+  if (!currentConfig || typeof window === 'undefined') return false;
+  const request = parseBrowserReceiptRequest(window.location.href);
+  if (!request) {
+    clearPendingBrowserReceipt();
+    browserReceiptLastHandledKey = '';
+    browserReceiptClaimInFlightKey = '';
+    return false;
+  }
+
+  const handleKey = buildBrowserReceiptHandleKey(request);
+  if (handleKey === browserReceiptLastHandledKey || browserReceiptClaimInFlightKey === handleKey) {
+    return true;
+  }
+
+  const deadlineAt = browserReceiptPending?.handleKey === handleKey
+    ? browserReceiptPending.deadlineAt
+    : Date.now() + RECEIPT_CLAIM_WAIT_MS;
+  if (Date.now() >= deadlineAt) {
+    handleBrowserReceiptClaimFailure(
+      request,
+      handleKey,
+      'Browser receipt claim timed out before Rover finished booting.',
+      {
+        fallbackToDeepLink: true,
+        openWidget: true,
+      },
+    );
+    return true;
+  }
+
+  browserReceiptClaimInFlightKey = handleKey;
+  void ensureRoverServerRuntime(currentConfig)
+    .then(async () => {
+      if (!roverServerRuntime) {
+        scheduleBrowserReceiptRetry(handleKey, deadlineAt);
+        return;
+      }
+      const response = await roverServerRuntime.claimBrowserTaskReceipt({
+        receipt: request.receipt,
+      });
+      if (!response) {
+        scheduleBrowserReceiptRetry(handleKey, deadlineAt);
+        return;
+      }
+
+      clearPendingBrowserReceipt();
+      bindPublicTaskContext({
+        taskId: response.taskId,
+        taskAccessToken: response.taskAccessToken,
+        workflowId: response.workflowId,
+        workflowAccessToken: response.workflowAccessToken,
+        runId: response.runId,
+      });
+      dispatchClaimedBrowserTask(response);
+      recordTelemetryEvent('status', {
+        event: 'browser_receipt_claimed',
+        source,
+        taskId: response.taskId,
+      });
+      browserReceiptLastHandledKey = handleKey;
+      consumeHandledBrowserReceipt(request, { consumeDeepLink: true });
+    })
+    .catch(error => {
+      if (Date.now() < deadlineAt) {
+        scheduleBrowserReceiptRetry(handleKey, deadlineAt);
+        return;
+      }
+      handleBrowserReceiptClaimFailure(
+        request,
+        handleKey,
+        (error as Error)?.message || 'Unknown browser receipt failure.',
+        {
+          fallbackToDeepLink: true,
+          openWidget: true,
+        },
+      );
+    })
+    .finally(() => {
+      if (browserReceiptClaimInFlightKey === handleKey) {
+        browserReceiptClaimInFlightKey = '';
+      }
+    });
+
+  return true;
+}
+
 function maybeHandleDeepLink(source: 'boot' | 'update' | 'navigation' | 'site_config' | 'shortcut_retry' | 'receipt_fallback'): void {
   if (!currentConfig || typeof window === 'undefined') return;
   const config = resolveDeepLinkConfig(currentConfig.deepLink);
-  const browserReceipt = parseBrowserReceiptRequest(window.location.href);
-  if (browserReceipt) {
-    const receiptHandleKey = buildBrowserReceiptHandleKey(browserReceipt);
-    if (
-      receiptHandleKey === browserReceiptClaimInFlightKey
-      || pendingBrowserReceiptRequest?.handleKey === receiptHandleKey
-    ) {
-      return;
-    }
+  if (source !== 'receipt_fallback' && parseBrowserReceiptRequest(window.location.href)) {
+    return;
   }
   const request = parseDeepLinkRequest(window.location.href, config);
   if (!request) {
@@ -9439,7 +9911,7 @@ export function boot(cfg: RoverInit): RoverInstance {
     },
     timing: {
       navigationDelayMs: normalizeTimingNumber(cfg.timing?.navigationDelayMs, 0, 3000),
-      actionTimeoutMs: normalizeTimingNumber(cfg.timing?.actionTimeoutMs, 5_000, 120_000),
+      actionTimeoutMs: normalizeTimingNumber(cfg.timing?.actionTimeoutMs, DEFAULT_ACTION_TIMEOUT_MS, 120_000),
       domSettleDebounceMs: normalizeTimingNumber(cfg.timing?.domSettleDebounceMs, 8, 500),
       domSettleMaxWaitMs: normalizeTimingNumber(cfg.timing?.domSettleMaxWaitMs, 80, 5000),
       domSettleRetries: normalizeTimingNumber(cfg.timing?.domSettleRetries, 0, 6),
@@ -9617,6 +10089,7 @@ export function boot(cfg: RoverInit): RoverInstance {
     on,
   };
 
+  ensureBuiltInToolsRegistered();
   if (pendingToolRegistrations.length) {
     for (const pending of pendingToolRegistrations) {
       applyToolRegistration(pending);
@@ -9664,7 +10137,7 @@ export function update(cfg: Partial<RoverInit>): void {
       ),
       actionTimeoutMs: normalizeTimingNumber(
         cfg.timing?.actionTimeoutMs ?? currentConfig.timing?.actionTimeoutMs,
-        5_000,
+        DEFAULT_ACTION_TIMEOUT_MS,
         120_000,
       ),
       domSettleDebounceMs: normalizeTimingNumber(
@@ -9940,16 +10413,18 @@ export function shutdown(): void {
   ignoredRunIds.clear();
   externalContextCache.clear();
   clearPendingLaunchAttach();
-  clearPendingBrowserReceiptClaim();
   clearPendingDeepLinkShortcut();
-  browserReceiptClaimInFlightKey = '';
-  browserReceiptLastHandledKey = '';
   launchAttachInFlightKey = '';
   launchLastHandledKey = '';
   launchLastIgnoredDisabledKey = '';
   resetActiveLaunchBinding();
   deepLinkLastHandledKey = '';
   deepLinkLastIgnoredDisabledKey = '';
+  clearPendingBrowserReceipt();
+  browserReceiptLastHandledKey = '';
+  browserReceiptClaimInFlightKey = '';
+  activePublicTaskContext = null;
+  builtInToolsRegistered = false;
   agentNavigationPending = false;
   currentTaskBoundaryId = '';
   runtimeId = '';

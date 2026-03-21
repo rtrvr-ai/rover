@@ -78,12 +78,23 @@ The returned task URL is the canonical resource:
 - `POST { "input": "..." }` to continue when the task requests input
 - `DELETE` to cancel
 
-For browser-first handoff, task creation may also return:
+Task responses may also include:
 
+- `workflow`: canonical aggregated lineage resource for root task + delegated child tasks
 - `open`: clean receipt URL, for example `https://example.com/#rover_receipt=rrc_...`
 - `browserLink`: optional readable alias, for example `https://example.com/?rover=book+a+flight#rover_receipt=rrc_...`
 
 Explicit `Prefer: execution=cloud` omits browser handoff URLs. Use `Prefer: execution=cloud` when the caller needs guaranteed browserless execution. `execution=auto` currently prefers browser attach first.
+
+Cross-site Rover delegation stays on the same public protocol:
+
+- `POST /v1/tasks/{id}/handoffs` delegates part of a workflow to Rover on another Rover-enabled site
+- `GET /v1/workflows/{id}` reads the aggregated workflow state or stream
+
+Receiving sites must opt in:
+
+- `aiAccess.enabled = true`
+- `aiAccess.allowDelegatedHandoffs = true`
 
 Quick examples:
 

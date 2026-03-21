@@ -26,6 +26,7 @@ export type RoverServerAiAccessConfig = {
   allowPromptLaunch?: boolean;
   allowShortcutLaunch?: boolean;
   allowCloudBrowser?: boolean;
+  allowDelegatedHandoffs?: boolean;
   debugStreaming?: boolean;
 };
 
@@ -83,22 +84,83 @@ export type RoverTaskBrowserClaimResponse = {
   input?: RoverLaunchInputSpec;
   sessionId?: string;
   runId?: string;
+  taskAccessToken?: string;
+  workflowId?: string;
+  workflowAccessToken?: string;
 };
 
-export type RoverLaunchIngestEvent =
-  | {
-      type:
-        | 'state_transition'
-        | 'status_update'
-        | 'tool_start'
-        | 'tool_result'
-        | 'assistant_output'
-        | 'needs_input'
-        | 'page_observation'
-        | 'error';
-      ts?: number;
-      data?: Record<string, unknown>;
+export type RoverPublicTaskStatus =
+  | 'pending'
+  | 'waiting_browser'
+  | 'running'
+  | 'input_required'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'expired';
+
+export type RoverPublicTaskPayload = {
+  id: string;
+  task: string;
+  workflow?: string;
+  status: RoverPublicTaskStatus;
+  open?: string;
+  browserLink?: string;
+  result?: {
+    text?: string;
+    blocks?: unknown[];
+    summary?: string;
+    observation?: {
+      url?: string;
+      title?: string;
+      host?: string;
+      summary?: string;
+      snapshotDigest?: string;
+      debugRef?: Record<string, unknown>;
     };
+    transcript?: {
+      messages?: Array<{
+        role?: string;
+        text?: string;
+        blocks?: unknown[];
+        ts?: number;
+      }>;
+      ref?: Record<string, unknown>;
+    };
+    artifacts?: Record<string, unknown>[];
+    error?: string;
+  };
+  handoff?: {
+    workflowId?: string;
+    parentTaskId?: string;
+    sourceHost?: string;
+    sourceUrl?: string;
+    originalGoal?: string;
+    instruction?: string;
+    contextSummary?: string;
+    expectedOutput?: string;
+    lastObservation?: Record<string, unknown>;
+  };
+  input?: {
+    questions?: unknown[];
+    askUser?: Record<string, unknown>;
+    message?: string;
+  };
+};
+
+export type RoverLaunchIngestEvent = {
+  type:
+    | 'state_transition'
+    | 'status_update'
+    | 'tool_start'
+    | 'tool_result'
+    | 'assistant_output'
+    | 'needs_input'
+    | 'page_observation'
+    | 'error';
+  ts?: number;
+  data?: Record<string, unknown>;
+};
 
 export type RoverServerProjection = {
   sessionId: string;
@@ -368,6 +430,18 @@ async function parseJsonSafe(response: Response): Promise<any> {
     const text = await response.text().catch(() => '');
     return text ? { error: text } : undefined;
   }
+}
+
+function normalizeTaskUrl(baseUrl: string, taskUrlOrId: string, accessToken?: string): string {
+  const raw = String(taskUrlOrId || '').trim();
+  const url =
+    raw.startsWith('http://') || raw.startsWith('https://')
+      ? new URL(raw)
+      : new URL(`${toBaseUrl(baseUrl)}/v1/tasks/${encodeURIComponent(raw)}`);
+  if (accessToken && !url.searchParams.get('access')) {
+    url.searchParams.set('access', accessToken);
+  }
+  return url.toString();
 }
 
 export class RoverServerRuntimeClient {
@@ -1190,6 +1264,159 @@ export class RoverServerRuntimeClient {
     throw new Error('Browser receipt claim failed.');
   }
 
+  async createSessionRootTask(params: {
+    url: string;
+    prompt: string;
+    runId?: string;
+  }): Promise<RoverPublicTaskPayload | null> {
+    const url = String(params.url || '').trim();
+    const prompt = String(params.prompt || '').trim();
+    if (!url || !prompt) return null;
+    await this.ensureSession(false);
+    const payload = {
+      url,
+      prompt,
+      runId: String(params.runId || '').trim() || undefined,
+      requestNonce: createRequestNonce(),
+      sessionToken: this.sessionToken,
+      sessionId: this.sessionId,
+      host: this.options.getHost?.(),
+    };
+    if (!this.baseCandidates.length) {
+      this.baseCandidates = resolveRoverBases(this.base);
+      this.base = this.baseCandidates[0] || this.base;
+      this.baseIndex = 0;
+    }
+    const agentBases = unique(this.baseCandidates.map(candidate => toBaseUrl(candidate)));
+    let lastError: unknown;
+    for (const base of agentBases) {
+      try {
+        const response = await fetch(`${base}/v1/tasks/session-root`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain', Accept: 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const json = await parseJsonSafe(response);
+        if (!response.ok || !json?.success) {
+          lastError = new Error(String(json?.error || `request failed (${response.status})`));
+          (lastError as any).status = response.status;
+          (lastError as any).details = json?.data || json;
+          continue;
+        }
+        return (json.data || null) as RoverPublicTaskPayload | null;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (lastError instanceof Error) throw lastError;
+    throw new Error('Session root task creation failed.');
+  }
+
+  async createTaskHandoff(params: {
+    parentTaskId: string;
+    taskAccessToken: string;
+    url: string;
+    prompt?: string;
+    instruction?: string;
+    shortcutId?: string;
+    contextSummary?: string;
+    expectedOutput?: string;
+    originalGoal?: string;
+    lastObservation?: Record<string, unknown>;
+    execution?: 'auto' | 'browser' | 'cloud';
+  }): Promise<RoverPublicTaskPayload | null> {
+    const parentTaskId = String(params.parentTaskId || '').trim();
+    const taskAccessToken = String(params.taskAccessToken || '').trim();
+    const url = String(params.url || '').trim();
+    if (!parentTaskId || !taskAccessToken || !url) return null;
+    await this.ensureSession(false);
+    const handoffUrl = normalizeTaskUrl(toBaseUrl(this.base), parentTaskId, taskAccessToken)
+      .replace(/\/+$/, '')
+      .concat('/handoffs');
+    const headers = new Headers({
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    });
+    const prefer: string[] = [];
+    if (params.execution) {
+      prefer.push(`execution=${params.execution}`);
+    }
+    if (prefer.length) {
+      headers.set('Prefer', prefer.join(', '));
+    }
+    const payload = {
+      url,
+      ...(String(params.prompt || '').trim() ? { prompt: String(params.prompt).trim() } : {}),
+      ...(String(params.instruction || '').trim() ? { instruction: String(params.instruction).trim() } : {}),
+      ...(String(params.shortcutId || '').trim() ? { shortcutId: String(params.shortcutId).trim() } : {}),
+      ...(String(params.contextSummary || '').trim() ? { contextSummary: String(params.contextSummary).trim() } : {}),
+      ...(String(params.expectedOutput || '').trim() ? { expectedOutput: String(params.expectedOutput).trim() } : {}),
+      ...(String(params.originalGoal || '').trim() ? { originalGoal: String(params.originalGoal).trim() } : {}),
+      ...(params.lastObservation && typeof params.lastObservation === 'object' ? { lastObservation: params.lastObservation } : {}),
+      sessionToken: this.sessionToken,
+      sessionId: this.sessionId,
+      host: this.options.getHost?.(),
+    };
+    const response = await fetch(handoffUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+    const json = await parseJsonSafe(response);
+    if (!response.ok || !json?.success) {
+      const message = String(json?.error || `request failed (${response.status})`);
+      const error = new Error(message);
+      (error as any).status = response.status;
+      (error as any).details = json?.data || json;
+      throw error;
+    }
+    return (json.data || null) as RoverPublicTaskPayload | null;
+  }
+
+  async getPublicTask(taskUrlOrId: string, options: { accessToken?: string; waitSeconds?: number } = {}): Promise<RoverPublicTaskPayload | null> {
+    const headers = new Headers({ Accept: 'application/json' });
+    if (typeof options.waitSeconds === 'number' && options.waitSeconds > 0) {
+      headers.set('Prefer', `wait=${Math.trunc(options.waitSeconds)}`);
+    }
+    const url = normalizeTaskUrl(toBaseUrl(this.base), taskUrlOrId, options.accessToken);
+    const response = await fetch(url, {
+      method: 'GET',
+      headers,
+    });
+    const json = await parseJsonSafe(response);
+    if (!response.ok || !json?.success) {
+      const message = String(json?.error || `request failed (${response.status})`);
+      const error = new Error(message);
+      (error as any).status = response.status;
+      (error as any).details = json?.data || json;
+      throw error;
+    }
+    return (json.data || null) as RoverPublicTaskPayload | null;
+  }
+
+  async continuePublicTask(taskUrlOrId: string, input: string, options: { accessToken?: string } = {}): Promise<RoverPublicTaskPayload | null> {
+    const message = String(input || '').trim();
+    if (!message) return null;
+    const headers = new Headers({
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    });
+    const url = normalizeTaskUrl(toBaseUrl(this.base), taskUrlOrId, options.accessToken);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ input: message }),
+    });
+    const json = await parseJsonSafe(response);
+    if (!response.ok || !json?.success) {
+      const messageText = String(json?.error || `request failed (${response.status})`);
+      const error = new Error(messageText);
+      (error as any).status = response.status;
+      (error as any).details = json?.data || json;
+      throw error;
+    }
+    return (json.data || null) as RoverPublicTaskPayload | null;
+  }
   async ingestLaunchEvents(params: {
     requestId: string;
     runId?: string;
