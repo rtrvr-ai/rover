@@ -115,7 +115,10 @@ export class AgentMemory {
       provenance: input.provenance || 'agent_authored',
       createdAt: Date.now(),
     };
-    await this.api.saveNote(note);
+    const ok = await this.api.saveNote(note);
+    if (!ok) {
+      throw new Error(`Failed to save RoverBook note for site ${this.config.siteId}`);
+    }
     if (note.visibility === 'shared') {
       this.snapshot.sharedNotes = [note, ...this.snapshot.sharedNotes];
     } else {

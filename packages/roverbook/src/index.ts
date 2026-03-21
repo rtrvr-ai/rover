@@ -139,13 +139,25 @@ export function enableRoverBook(
     const identity = await resolveIdentity();
     tracker.setIdentity(identity);
     if (config.memory?.enabled !== false && config.memory?.autoDerivedNotes !== false) {
-      await memory.createDerivedNotes(visit);
+      try {
+        await memory.createDerivedNotes(visit);
+      } catch (error) {
+        log('derived note submission failed', visit.visitId, toErrorMessage(error));
+      }
     }
     if (config.interviews?.enabled !== false && config.interviews?.autoDerivedAnswers !== false) {
       const questions = config.interviews?.questions || DEFAULT_INTERVIEW_QUESTIONS;
-      await submitDerivedInterviews(api, visit, identity, questions);
+      try {
+        await submitDerivedInterviews(api, visit, identity, questions);
+      } catch (error) {
+        log('derived interview submission failed', visit.visitId, toErrorMessage(error));
+      }
     }
-    await submitDerivedReview(api, visit, identity);
+    try {
+      await submitDerivedReview(api, visit, identity);
+    } catch (error) {
+      log('derived review submission failed', visit.visitId, toErrorMessage(error));
+    }
     await collector.flush();
   };
 

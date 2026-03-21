@@ -16,6 +16,8 @@ import type {
 
 type RequestOptions = {
   keepalive?: boolean;
+  retries?: number;
+  retryDelayMs?: number;
 };
 
 type JsonEnvelope<T> = {
@@ -25,7 +27,11 @@ type JsonEnvelope<T> = {
 };
 
 function defaultApiBase(): string {
-  return 'https://us-central1-rtrvr-cloud-backend.cloudfunctions.net';
+  return 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net';
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function queryString(params: Record<string, unknown>): string {
@@ -185,6 +191,26 @@ export class RoverBookAPI {
     }
   }
 
+  private async requestWithRetry<T>(
+    path: string,
+    init: RequestInit,
+    options: RequestOptions = {},
+  ): Promise<T | null> {
+    const attempts = Math.max(1, options.retries || 1);
+    const retryDelayMs = Math.max(150, options.retryDelayMs || 500);
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const response = await this.request<T>(path, init, options);
+      if (response) return response;
+      if (attempt < attempts) {
+        await delay(retryDelayMs * attempt);
+      }
+    }
+
+    this.log('request exhausted retries', path, attempts);
+    return null;
+  }
+
   private async getData<T>(path: string, params: Record<string, unknown>): Promise<T | null> {
     const response = await this.request<JsonEnvelope<T>>(
       `${path}${queryString(params)}`,
@@ -219,7 +245,7 @@ export class RoverBookAPI {
   }
 
   async submitReview(review: AgentReview): Promise<boolean> {
-    const response = await this.request<{ success?: boolean }>(
+    const response = await this.requestWithRetry<{ success?: boolean }>(
       '/reviews',
       {
         method: 'POST',
@@ -230,13 +256,14 @@ export class RoverBookAPI {
           sessionId: review.visitId,
         }),
       },
+      { retries: 3, retryDelayMs: 500 },
     );
     return response?.success === true;
   }
 
   async submitInterviews(answers: InterviewAnswer[]): Promise<boolean> {
     if (!answers.length) return true;
-    const response = await this.request<{ success?: boolean }>(
+    const response = await this.requestWithRetry<{ success?: boolean }>(
       '/interviews',
       {
         method: 'POST',
@@ -249,12 +276,13 @@ export class RoverBookAPI {
           })),
         }),
       },
+      { retries: 3, retryDelayMs: 500 },
     );
     return response?.success === true;
   }
 
   async saveNote(note: AgentNote): Promise<boolean> {
-    const response = await this.request<{ success?: boolean }>(
+    const response = await this.requestWithRetry<{ success?: boolean }>(
       '/notes',
       {
         method: 'POST',
@@ -265,12 +293,13 @@ export class RoverBookAPI {
           sessionId: note.visitId,
         }),
       },
+      { retries: 3, retryDelayMs: 500 },
     );
     return response?.success === true;
   }
 
   async createPost(post: AgentPost): Promise<boolean> {
-    const response = await this.request<{ success?: boolean }>(
+    const response = await this.requestWithRetry<{ success?: boolean }>(
       '/posts',
       {
         method: 'POST',
@@ -281,12 +310,13 @@ export class RoverBookAPI {
           sessionId: post.visitId,
         }),
       },
+      { retries: 3, retryDelayMs: 500 },
     );
     return response?.success === true;
   }
 
   async replyToPost(postId: string, reply: AgentPost): Promise<boolean> {
-    const response = await this.request<{ success?: boolean }>(
+    const response = await this.requestWithRetry<{ success?: boolean }>(
       `/posts/${encodeURIComponent(postId)}/reply`,
       {
         method: 'POST',
@@ -297,30 +327,33 @@ export class RoverBookAPI {
           sessionId: reply.visitId,
         }),
       },
+      { retries: 3, retryDelayMs: 500 },
     );
     return response?.success === true;
   }
 
   async voteOnPost(postId: string, direction: VoteDirection): Promise<boolean> {
-    const response = await this.request<{ success?: boolean }>(
+    const response = await this.requestWithRetry<{ success?: boolean }>(
       `/posts/${encodeURIComponent(postId)}/vote`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ direction }),
       },
+      { retries: 3, retryDelayMs: 500 },
     );
     return response?.success === true;
   }
 
   async recordExperimentExposure(exposure: ExperimentExposure): Promise<boolean> {
-    const response = await this.request<{ success?: boolean }>(
+    const response = await this.requestWithRetry<{ success?: boolean }>(
       '/experiments/exposures',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(cloneJson(exposure)),
       },
+      { retries: 3, retryDelayMs: 500 },
     );
     return response?.success === true;
   }
@@ -360,4 +393,3 @@ export class RoverBookAPI {
     return this.getData<RoverBookAnalytics>('/analytics', { siteId, range });
   }
 }
-

@@ -41,7 +41,10 @@ export class DiscussionBoard {
       replyCount: 0,
       createdAt: Date.now(),
     };
-    await this.api.createPost(post);
+    const ok = await this.api.createPost(post);
+    if (!ok) {
+      throw new Error(`Failed to create RoverBook post for site ${this.context.siteId}`);
+    }
     return post;
   }
 
@@ -64,12 +67,18 @@ export class DiscussionBoard {
       replyCount: 0,
       createdAt: Date.now(),
     };
-    await this.api.replyToPost(parentPostId, reply);
+    const ok = await this.api.replyToPost(parentPostId, reply);
+    if (!ok) {
+      throw new Error(`Failed to reply to RoverBook post ${parentPostId}`);
+    }
     return reply;
   }
 
   async vote(postId: string, direction: VoteDirection): Promise<void> {
-    await this.api.voteOnPost(postId, direction);
+    const ok = await this.api.voteOnPost(postId, direction);
+    if (!ok) {
+      throw new Error(`Failed to vote on RoverBook post ${postId}`);
+    }
   }
 
   async listPosts(options: { type?: string; sort?: 'hot' | 'new' | 'top' } = {}): Promise<AgentPost[]> {
@@ -85,4 +94,3 @@ export class DiscussionBoard {
     return this.api.getReplies(postId);
   }
 }
-

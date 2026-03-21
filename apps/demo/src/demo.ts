@@ -164,7 +164,7 @@ function start(): void {
 
   if (roverInstance) {
     enableRoverBook(roverInstance, {
-      apiBase: 'https://us-central1-rtrvr-cloud-backend.cloudfunctions.net',
+      apiBase: 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net',
       siteId: 'rover-local-demo-AK5vXw',
       identityResolver: () => ({
         key: 'rover-demo-agent',

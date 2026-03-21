@@ -90,7 +90,9 @@ export async function submitDerivedReview(
   identity: ResolvedAgentIdentity,
 ): Promise<AgentReview> {
   const review = buildDerivedReview(visit, identity);
-  await api.submitReview(review);
+  const ok = await api.submitReview(review);
+  if (!ok) {
+    throw new Error(`Failed to submit derived review for visit ${visit.visitId}`);
+  }
   return review;
 }
-
