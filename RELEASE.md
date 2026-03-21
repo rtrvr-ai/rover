@@ -15,9 +15,7 @@ You can release a new version in two ways:
 
 ### Method 1: GitHub Workflow (Recommended)
 
-Two-step process that respects branch protection rules:
-
-**Step 1 — Create release PR:**
+One-step process — the workflow handles everything:
 
 1. Go to **Actions** tab in GitHub
 2. Select **"Release & Publish to npm"** workflow
@@ -25,24 +23,21 @@ Two-step process that respects branch protection rules:
 4. Enter the new version (e.g., `0.1.2`)
 5. Click **"Run workflow"**
 
-This bumps all package.json files and creates a PR from `release/v0.1.2` → `main`.
-
-**Step 2 — Merge and tag:**
-
-```bash
-# Merge the PR (via GitHub UI or CLI)
-gh pr merge release/v0.1.2 --squash
-
-# Pull and push the tag to trigger npm publish
-git pull origin main
-git tag v0.1.2
-git push origin v0.1.2
-```
-
-**What happens on tag push:**
+**What happens automatically:**
+- ✅ Bumps version in all package.json files
+- ✅ Pushes release branch (`release/v0.1.2`)
 - ✅ Builds all packages
 - ✅ Publishes to npm
+- ✅ Pushes tag (`v0.1.2`)
 - ✅ Creates GitHub Release
+
+**Optional — sync main:**
+
+The workflow prints a PR link at the end. Create the PR to keep `main`'s package.json versions in sync:
+
+```
+https://github.com/rtrvr-ai/rover/compare/main...release/v0.1.2?expand=1
+```
 
 ---
 
@@ -186,9 +181,9 @@ After successful release:
 
 ## CI/CD Workflows
 
-### `release.yml` (Two-phase)
-- **Phase 1** (workflow_dispatch): Bumps versions, creates release PR
-- **Phase 2** (tag push `v*.*.*`): Builds packages, publishes to npm, creates GitHub Release
+### `release.yml`
+- **`release` job** (workflow_dispatch): Bumps versions, builds, publishes to npm, pushes tag, creates GitHub Release — all in one step
+- **`publish` job** (tag push `v*.*.*`): Fallback for local `git tag + push` workflow — builds and publishes to npm
 
 ### `build-deploy.yml` (Auto on Push)
 - Triggers: Push to `main` branch

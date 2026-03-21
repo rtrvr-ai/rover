@@ -1,7 +1,7 @@
 name: Release & Publish to npm
 
 on:
-  # Manual trigger — creates a release PR
+  # Manual trigger — bumps, builds, publishes, tags, and creates GitHub Release
   workflow_dispatch:
     inputs:
       version:
@@ -9,14 +9,14 @@ on:
         required: true
         type: string
 
-  # Tag push — builds and publishes to npm
+  # Tag push — fallback for local `git tag + push` workflow
   push:
     tags:
       - 'v*.*.*'
 
 jobs:
-  # Step 1: Create a release PR (manual trigger only)
-  prepare-release:
+  # One-shot release: bump → build → publish → tag → GitHub Release
+  release:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -32,6 +32,7 @@ jobs:
         with:
           node-version: 20
           cache: pnpm
+          registry-url: https://registry.npmjs.org
 
       - name: Bump version
         run: node scripts/bump-version.mjs ${{ inputs.version }}
@@ -47,17 +48,55 @@ jobs:
           git commit -m "chore: bump version to ${{ inputs.version }}"
           git push origin "$BRANCH" --force
 
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm -r --filter '!@rover/demo' build
+
+      - name: Publish to npm
+        run: cd packages/sdk && npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Push tag
+        run: |
+          git tag "v${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ inputs.version }}
+          name: Release v${{ inputs.version }}
+          body: |
+            ## What's Changed
+            Version ${{ inputs.version }} of @rtrvr-ai/rover
+
+            ### Install
+            ```bash
+            npm install @rtrvr-ai/rover@${{ inputs.version }}
+            ```
+
+            ### CDN
+            ```html
+            <script src="https://rtrvr.ai/rover.js"></script>
+            ```
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Summary
         run: |
-          echo "✅ Release branch pushed: release/v${{ inputs.version }}"
+          echo "✅ Successfully published @rtrvr-ai/rover@${{ inputs.version }}"
+          echo "📦 NPM: https://www.npmjs.com/package/@rtrvr-ai/rover"
+          echo "🎉 GitHub Release: https://github.com/${{ github.repository }}/releases/tag/v${{ inputs.version }}"
           echo ""
-          echo "Next steps:"
-          echo "  1. Create PR: https://github.com/${{ github.repository }}/compare/main...release/v${{ inputs.version }}?expand=1"
-          echo "  2. Merge the PR"
-          echo "  3. Push the tag: git pull origin main && git tag v${{ inputs.version }} && git push origin v${{ inputs.version }}"
-          echo "  4. Tag push will trigger npm publish automatically"
+          echo "📝 (Optional) Sync main — create a PR to update package.json versions:"
+          echo "   https://github.com/${{ github.repository }}/compare/main...release/v${{ inputs.version }}?expand=1&title=chore:+sync+v${{ inputs.version }}+to+main"
 
-  # Step 2: Build & publish (tag push only)
+  # Fallback: Build & publish on tag push (for local `git tag + push` workflow)
   publish:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
