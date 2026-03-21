@@ -13,34 +13,11 @@ This document explains how to release new versions of the Rover SDK.
 
 You can release a new version in two ways:
 
-### Method 1: Local Git Tag (Recommended)
+### Method 1: GitHub Workflow (Recommended)
 
-This is the standard Git workflow:
+Two-step process that respects branch protection rules:
 
-```bash
-# 1. Bump version in all packages
-pnpm version:bump 0.1.2
-
-# 2. Commit and tag
-git add -A
-git commit -m "chore: bump version to 0.1.2"
-git tag v0.1.2
-
-# 3. Push with tags
-git push && git push --tags
-```
-
-**What happens:**
-- ✅ Git tag triggers GitHub Actions
-- ✅ Builds all packages
-- ✅ Publishes to npm
-- ✅ Creates GitHub Release
-
----
-
-### Method 2: Manual GitHub Workflow
-
-Trigger directly from GitHub UI:
+**Step 1 — Create release PR:**
 
 1. Go to **Actions** tab in GitHub
 2. Select **"Release & Publish to npm"** workflow
@@ -48,9 +25,51 @@ Trigger directly from GitHub UI:
 4. Enter the new version (e.g., `0.1.2`)
 5. Click **"Run workflow"**
 
-**What happens:**
-- ✅ Bumps version in all package.json files
-- ✅ Commits and creates git tag
+This bumps all package.json files and creates a PR from `release/v0.1.2` → `main`.
+
+**Step 2 — Merge and tag:**
+
+```bash
+# Merge the PR (via GitHub UI or CLI)
+gh pr merge release/v0.1.2 --squash
+
+# Pull and push the tag to trigger npm publish
+git pull origin main
+git tag v0.1.2
+git push origin v0.1.2
+```
+
+**What happens on tag push:**
+- ✅ Builds all packages
+- ✅ Publishes to npm
+- ✅ Creates GitHub Release
+
+---
+
+### Method 2: Local (Manual)
+
+```bash
+# 1. Create a release branch
+git checkout -b release/v0.1.2
+
+# 2. Bump version in all packages
+pnpm version:bump 0.1.2
+
+# 3. Commit and push
+git add -A
+git commit -m "chore: bump version to 0.1.2"
+git push origin release/v0.1.2
+
+# 4. Create PR, get it reviewed, merge
+gh pr create --title "chore: release v0.1.2" --base main
+
+# 5. After merge, push the tag to trigger publish
+git checkout main && git pull
+git tag v0.1.2
+git push origin v0.1.2
+```
+
+**What happens on tag push:**
 - ✅ Builds all packages
 - ✅ Publishes to npm
 - ✅ Creates GitHub Release
@@ -167,12 +186,9 @@ After successful release:
 
 ## CI/CD Workflows
 
-### `release.yml` (Manual + Tag-triggered)
-- Triggers: Manual workflow_dispatch OR git tags (`v*.*.*`)
-- Bumps versions (manual only)
-- Builds packages
-- Publishes to npm
-- Creates GitHub Release
+### `release.yml` (Two-phase)
+- **Phase 1** (workflow_dispatch): Bumps versions, creates release PR
+- **Phase 2** (tag push `v*.*.*`): Builds packages, publishes to npm, creates GitHub Release
 
 ### `build-deploy.yml` (Auto on Push)
 - Triggers: Push to `main` branch

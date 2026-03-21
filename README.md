@@ -349,10 +349,17 @@ pnpm lint
 See [RELEASE.md](RELEASE.md) for detailed instructions.
 
 ```bash
+# Option A: Trigger via GitHub Actions UI (creates a release PR)
+# Option B: Local
+git checkout -b release/v0.1.2
 pnpm version:bump 0.1.2
 git add -A && git commit -m "chore: bump version to 0.1.2"
-git tag v0.1.2
-git push && git push --tags
+git push origin release/v0.1.2
+gh pr create --title "chore: release v0.1.2" --base main
+
+# After PR is merged, push the tag to trigger npm publish
+git checkout main && git pull
+git tag v0.1.2 && git push origin v0.1.2
 ```
 
 ## Contributing
