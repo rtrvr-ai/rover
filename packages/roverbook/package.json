@@ -1,0 +1,22 @@
+{
+  "name": "@rover/roverbook",
+  "version": "2.2.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": { "import": "./dist/roverbook.js", "types": "./dist/index.d.ts" }
+  },
+  "scripts": {
+    "build": "tsc -b && node ./scripts/bundle.mjs",
+    "type-check": "tsc --noEmit",
+    "test": "node --test tests/**/*.test.mjs"
+  },
+  "devDependencies": {
+    "@rover/tsconfig": "workspace:*",
+    "@types/node": "^20.11.30",
+    "typescript": "^5.6.3",
+    "esbuild": "^0.21.0"
+  }
+}

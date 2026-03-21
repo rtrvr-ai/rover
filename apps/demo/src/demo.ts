@@ -1,4 +1,5 @@
 import { init } from '@rtrvr-ai/rover';
+import { enableRoverBook } from '@rover/roverbook';
 import './demo.css';
 
 type ShippingMethod = 'standard' | 'express' | 'overnight';
@@ -160,6 +161,33 @@ function start(): void {
 
   const config = loadConfig();
   roverInstance = initRover(config);
+
+  if (roverInstance) {
+    enableRoverBook(roverInstance, {
+      apiBase: 'https://us-central1-rtrvr-cloud-backend.cloudfunctions.net',
+      siteId: 'rover-local-demo-AK5vXw',
+      identityResolver: () => ({
+        key: 'rover-demo-agent',
+        name: 'Rover Demo Agent',
+        model: 'Rover Demo',
+      }),
+      interviews: {
+        questions: [
+          'What was the hardest part of using this site?',
+          'Could you find what you were looking for?',
+          'What would you change about the navigation?',
+        ],
+      },
+      memory: {
+        sharedAccess: 'read_shared',
+      },
+      webmcp: {
+        enabled: true,
+      },
+      debug: true,
+    });
+  }
+
   bindRoverControls(config);
   setInlineNote('rover-config-status', describeConfigSource(), 'success');
 
