@@ -25,7 +25,7 @@ To run a task on a Rover-enabled site:
 4. If you need guaranteed browserless execution, create the task with header Prefer: execution=cloud.
 5. Follow the canonical "task" URL with Accept: text/event-stream for live steps or Accept: application/json for polling/final results.
 6. If the task enters input_required, POST { "input": "..." } to the same task URL.
-7. For cross-site delegation, POST to /v1/tasks/{id}/handoffs instead of inventing a new protocol.
+7. For cross-site delegation, POST to /v1/tasks/{id}/handoffs and keep following the same workflow instead of inventing a new protocol.
 8. Return the final result text plus any important observations.
 
 Do not treat ?rover= or ?rover_shortcut= alone as the result channel. They only run Rover in the browser unless they were issued from a task and paired with a receipt link.
@@ -270,6 +270,8 @@ Prefer: wait=15
 If the task completes within the wait budget, the server may return `200` with the terminal task payload. Otherwise it returns `202` plus the canonical task URL.
 
 ## Workflows and cross-site handoffs
+
+This extends the same public task protocol. It does not introduce a separate orchestration surface.
 
 Every public task belongs to a workflow.
 

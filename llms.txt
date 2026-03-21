@@ -96,6 +96,8 @@ Receiving sites must opt in:
 - `aiAccess.enabled = true`
 - `aiAccess.allowDelegatedHandoffs = true`
 
+This extends ATP; it does not replace `/v1/tasks`.
+
 Quick examples:
 
 - Browser-first URL:

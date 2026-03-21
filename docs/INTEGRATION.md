@@ -472,7 +472,7 @@ The returned task URL supports JSON polling, SSE, NDJSON, continuation input, an
 - `open`: clean receipt URL for browser attach
 - `browserLink`: optional readable alias with visible `?rover=` or `?rover_shortcut=` when it fits the URL budget
 
-The task URL remains canonical; receipt links are only a browser handoff layer over that same task.
+The task URL remains canonical; receipt links are only a browser handoff layer over that same task. When returned, `workflow` is the canonical aggregated lineage resource layered on top of that same ATP contract.
 
 ### Public agent tasks and workflows
 
@@ -485,16 +485,18 @@ The task URL remains canonical; receipt links are only a browser handoff layer o
 
 Use `GET /v1/workflows/{id}` when you need one aggregated multi-site view of the current workflow state or final result.
 
+Cross-site workflows extend the same public task protocol. They do not replace `/v1/tasks`.
+
 Cross-site delegation stays on the same public protocol:
 
 - `POST /v1/tasks/{id}/handoffs` creates a child task on another Rover-enabled site
 - child tasks inherit the same workflow lineage
 - `GET /v1/workflows/{id}` aggregates status and result across parent and child tasks
 
-Receiving sites must opt in through site config:
+Receiving sites must opt in through Workspace/site config:
 
-- `siteConfig.aiAccess.enabled = true`
-- `siteConfig.aiAccess.allowDelegatedHandoffs = true`
+- `aiAccess.enabled = true`
+- `aiAccess.allowDelegatedHandoffs = true`
 
 By default, handoffs carry a structured summary of the goal, context, and last observation rather than the full transcript.
 

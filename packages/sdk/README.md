@@ -281,7 +281,7 @@ If you enable `tools.web.scrapeMode: 'on_demand'`, use a site key capability pro
 
 See [full configuration reference](https://github.com/rtrvr-ai/rover/blob/main/docs/INTEGRATION.md#configuration-reference).
 
-## Public Agent Tasks
+## Public Agent Tasks (ATP)
 
 Rover-enabled sites expose two public entrypoints:
 
@@ -325,7 +325,7 @@ The task URL remains canonical; receipt links are only a browser handoff layer o
 - `Prefer: execution=cloud` is the explicit browserless path today
 - `Prefer: execution=auto` prefers browser attach first; delayed cloud auto-promotion is a follow-up robustness phase
 
-Rover deep links like `?rover=` and `?rover_shortcut=` remain the simple browser-first entrypoints; `/v1/tasks` is the machine-oriented protocol.
+Rover deep links like `?rover=` and `?rover_shortcut=` remain the simple browser-first entrypoints; `/v1/tasks` is the machine-oriented protocol. Cross-site workflows and handoffs extend that same public contract rather than replacing it.
 
 ### Cross-site workflows and handoffs
 
