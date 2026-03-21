@@ -120,6 +120,7 @@ See [`packages/sdk/README.md`](packages/sdk/README.md) for full API reference, R
 
 - **Browser-first deep links** — trigger tasks via `?rover=checkout` or `?rover_shortcut=onboarding`
 - **Agent Task Protocol (ATP)** — any Rover-enabled page is callable via `POST /v1/tasks` by AI agents, CLIs, and autonomous systems
+- **Cross-site workflows and handoffs** — delegate part of a workflow to Rover on another Rover-enabled site and keep one shared workflow lineage
 - **Universal DOM agent** — websites, extensions, Electron, any DOM environment
 - **Autonomous navigation** — plans and executes multi-step tasks across pages
 - **Shadow DOM widget** — chat UI that mounts without touching your styles
@@ -165,6 +166,7 @@ The response returns a canonical task URL that supports:
 - NDJSON
 - continuation input
 - cancel
+- a `workflow` URL for aggregated cross-site lineage when the task belongs to a workflow
 - an `open` receipt URL for clean browser attach
 - an optional `browserLink` readable alias when the prompt/shortcut fits safely in the visible URL
 
@@ -174,6 +176,8 @@ Task creation may also return browser handoff URLs:
 - `browserLink`: optional readable alias such as `https://example.com/?rover=book+a+flight#rover_receipt=rrc_...`
 
 The task URL remains the only durable public resource. Receipt links are browser handoff helpers layered on top of that same task.
+
+Task responses may also include a canonical `workflow` URL. Use that resource when you want an aggregated multi-site view of a root task plus any delegated child tasks. This extends ATP rather than introducing a separate public protocol.
 
 Anonymous AI callers do **not** need `siteId`, `publicKey`, or `siteKeyId`. Those values are for site owners installing Rover through Workspace:
 
@@ -202,6 +206,23 @@ curl -X POST 'https://agent.rtrvr.ai/v1/tasks' \
 ```
 
 See [SKILLS.md](SKILLS.md) for the exact external-agent prompt plus Node, Python, and shell examples.
+
+### Cross-site workflows and handoffs
+
+Rover tasks can delegate work to Rover on another Rover-enabled site without leaving the public task protocol.
+
+- create the root task with `POST /v1/tasks`
+- delegate from that task with `POST /v1/tasks/{id}/handoffs`
+- follow aggregated lineage with `GET /v1/workflows/{id}`
+
+Delegated child tasks inherit the same `workflow` and can use the same browser receipt flow or explicit `Prefer: execution=cloud`.
+
+Receiving sites must explicitly opt in through Workspace/site config:
+
+- `aiAccess.enabled = true`
+- `aiAccess.allowDelegatedHandoffs = true`
+
+By default, handoffs pass a structured summary of the current goal, context, and last observation rather than the full transcript.
 
 ### Browser-first path
 
@@ -316,7 +337,7 @@ Host page
 |-----|-----|-------------|
 | [SDK Reference](packages/sdk/README.md) | Integrators | Full API, config, framework guides, CSP |
 | [Integration Guide](docs/INTEGRATION.md) | Integrators | Setup, examples, troubleshooting |
-| [External Agent Guide](SKILLS.md) | AI / CLI / agents | Discovery marker, `/v1/tasks`, SSE, NDJSON, continuation |
+| [External Agent Guide](SKILLS.md) | AI / CLI / agents | Discovery marker, `/v1/tasks`, workflows, handoffs, SSE, NDJSON, continuation |
 | [Architecture](docs/ARCHITECTURE.md) | Contributors | Package graph, data flow, design decisions |
 | [Testing](docs/TESTING.md) | Contributors | Local testing, debugging |
 | [Security Model](docs/SECURITY_MODEL.md) | Security | Threat model, key types |

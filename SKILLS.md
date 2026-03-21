@@ -20,11 +20,13 @@ If a website may be Rover-enabled, optionally fetch its HTML and look for <scrip
 
 To run a task on a Rover-enabled site:
 1. Create a task with POST https://agent.rtrvr.ai/v1/tasks and JSON { "url": "<site>", "prompt": "<instruction>" } or { "url": "<site>", "shortcut": "<id>" }.
-2. If you can open a real browser with the user's session and the response includes "open", open that URL. If the response includes "browserLink" and you want a readable URL, you may open it instead.
-3. If you need guaranteed browserless execution, create the task with header Prefer: execution=cloud.
-4. Follow the canonical "task" URL with Accept: text/event-stream for live steps or Accept: application/json for polling/final results.
-5. If the task enters input_required, POST { "input": "..." } to the same task URL.
-6. Return the final result text plus any important observations.
+2. If the response includes "workflow", treat it as the aggregated lineage handle for any delegated child tasks.
+3. If you can open a real browser with the user's session and the response includes "open", open that URL. If the response includes "browserLink" and you want a readable URL, you may open it instead.
+4. If you need guaranteed browserless execution, create the task with header Prefer: execution=cloud.
+5. Follow the canonical "task" URL with Accept: text/event-stream for live steps or Accept: application/json for polling/final results.
+6. If the task enters input_required, POST { "input": "..." } to the same task URL.
+7. For cross-site delegation, POST to /v1/tasks/{id}/handoffs and keep following the same workflow instead of inventing a new protocol.
+8. Return the final result text plus any important observations.
 
 Do not treat ?rover= or ?rover_shortcut= alone as the result channel. They only run Rover in the browser unless they were issued from a task and paired with a receipt link.
 ```
@@ -192,6 +194,7 @@ Typical `202 Accepted` response:
 {
   "id": "agt_123",
   "task": "https://agent.rtrvr.ai/v1/tasks/agt_123?access=agt_access_...",
+  "workflow": "https://agent.rtrvr.ai/v1/workflows/wrk_123?access=wrk_access_...",
   "open": "https://www.rtrvr.ai/#rover_receipt=rrc_...",
   "browserLink": "https://www.rtrvr.ai/?rover=get+me+the+latest+blog+post#rover_receipt=rrc_...",
   "status": "pending"
@@ -230,6 +233,8 @@ The returned `task` URL is the canonical resource.
 
 Receipt links are only a browser handoff layer over the same task. They do not replace the task URL, and they do not create a second public protocol.
 
+If present, the returned `workflow` URL is the canonical aggregated resource for a root task plus any delegated child tasks on other Rover-enabled sites.
+
 ### Polling / final JSON
 
 ```http
@@ -263,6 +268,54 @@ Prefer: wait=15
 ```
 
 If the task completes within the wait budget, the server may return `200` with the terminal task payload. Otherwise it returns `202` plus the canonical task URL.
+
+## Workflows and cross-site handoffs
+
+This extends the same public task protocol. It does not introduce a separate orchestration surface.
+
+Every public task belongs to a workflow.
+
+- root tasks create a new workflow
+- delegated child tasks inherit the parent workflow
+- the task response may include a `workflow` URL that aggregates all lineage
+
+Read the aggregated workflow:
+
+```http
+GET https://agent.rtrvr.ai/v1/workflows/wrk_123?access=wrk_access_...
+Accept: application/json
+```
+
+Stream aggregated workflow events:
+
+```http
+GET https://agent.rtrvr.ai/v1/workflows/wrk_123?access=wrk_access_...
+Accept: text/event-stream
+```
+
+Delegate from one task to another Rover-enabled site:
+
+```http
+POST https://agent.rtrvr.ai/v1/tasks/agt_123/handoffs?access=agt_access_...
+Content-Type: application/json
+Accept: application/json
+Prefer: execution=cloud
+
+{
+  "url": "https://y.example.com",
+  "prompt": "continue this workflow and collect the user's billing status",
+  "instruction": "Use the billing page and return the current plan plus renewal date.",
+  "contextSummary": "The user is already authenticated on x.example.com and asked for account status across multiple properties.",
+  "expectedOutput": "Return the plan name and renewal date."
+}
+```
+
+Receiving sites must explicitly allow delegated handoffs:
+
+- `aiAccess.enabled = true`
+- `aiAccess.allowDelegatedHandoffs = true`
+
+Handoffs pass a structured summary by default, not the full transcript or tool trace.
 
 ## Event model
 
@@ -345,9 +398,11 @@ Use these when you only need the site to run Rover in-browser. Use `/v1/tasks` w
 
 1. Optionally fetch page HTML and look for `application/agent+json`.
 2. `POST { url, prompt }` or `{ url, shortcut }` to `https://agent.rtrvr.ai/v1/tasks`.
-3. If possible, open the returned `open` URL in a real browser. If `browserLink` is present and you want a readable browser URL, you can open that instead.
-4. Otherwise stream or poll the returned `task` URL.
-5. If the task enters `input_required`, `POST { input }` to the same task URL.
-6. Return the terminal `done` / final task result.
+3. If the response includes `workflow`, keep it as the aggregated lineage handle for any delegated child tasks.
+4. If possible, open the returned `open` URL in a real browser. If `browserLink` is present and you want a readable browser URL, you can open that instead.
+5. Otherwise stream or poll the returned `task` URL.
+6. If the task enters `input_required`, `POST { input }` to the same task URL.
+7. If you need to delegate to another Rover-enabled site, call `POST /v1/tasks/{id}/handoffs` and follow the same `workflow`.
+8. Return the terminal `done` / final task result.
 
 That is the entire universal Rover site contract.
