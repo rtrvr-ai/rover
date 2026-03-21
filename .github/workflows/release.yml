@@ -21,7 +21,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 
@@ -37,7 +36,7 @@ jobs:
       - name: Bump version
         run: node scripts/bump-version.mjs ${{ inputs.version }}
 
-      - name: Create release PR
+      - name: Push release branch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -48,34 +47,14 @@ jobs:
           git commit -m "chore: bump version to ${{ inputs.version }}"
           git push origin "$BRANCH"
 
-          gh pr create \
-            --title "chore: release v${{ inputs.version }}" \
-            --body "$(cat <<'EOF'
-          ## Release v${{ inputs.version }}
-
-          Automated version bump across all packages.
-
-          **After merging**, push the tag to trigger npm publish:
-          ```bash
-          git pull origin main
-          git tag v${{ inputs.version }}
-          git push origin v${{ inputs.version }}
-          ```
-          EOF
-          )" \
-            --base main \
-            --head "$BRANCH"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Summary
         run: |
-          echo "✅ Release PR created for v${{ inputs.version }}"
+          echo "✅ Release branch pushed: release/v${{ inputs.version }}"
           echo ""
           echo "Next steps:"
-          echo "  1. Review and merge the PR"
-          echo "  2. Pull main locally: git pull origin main"
-          echo "  3. Push the tag: git tag v${{ inputs.version }} && git push origin v${{ inputs.version }}"
+          echo "  1. Create PR: https://github.com/${{ github.repository }}/compare/main...release/v${{ inputs.version }}?expand=1"
+          echo "  2. Merge the PR"
+          echo "  3. Push the tag: git pull origin main && git tag v${{ inputs.version }} && git push origin v${{ inputs.version }}"
           echo "  4. Tag push will trigger npm publish automatically"
 
   # Step 2: Build & publish (tag push only)
