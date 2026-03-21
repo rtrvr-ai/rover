@@ -30,6 +30,16 @@ import {
   type RoverDeepLinkRequest,
 } from './deepLink.js';
 import {
+  parseLaunchRequest,
+  stripLaunchParams,
+  type RoverLaunchRequest,
+} from './launchParams.js';
+import {
+  parseBrowserReceiptRequest,
+  stripBrowserReceiptParams,
+  type RoverBrowserReceiptRequest,
+} from './receiptLink.js';
+import {
   RoverCloudCheckpointClient,
   type RoverCloudCheckpointPayload,
   type RoverCloudCheckpointState,
@@ -93,6 +103,10 @@ import {
   resolveRoverBase,
   resolveRoverBases,
   type TabEventDecisionResponse,
+  type RoverLaunchAttachResponse,
+  type RoverTaskBrowserClaimResponse,
+  type RoverLaunchIngestEvent,
+  type RoverServerAiAccessConfig,
   type RoverServerProjection,
   type RoverServerPolicy,
   type RoverServerSiteConfig,
@@ -147,6 +161,14 @@ export type RoverDeepLinkConfig = {
   promptParam?: string;
   shortcutParam?: string;
   consume?: boolean;
+};
+
+type RoverAiAccessConfig = {
+  enabled?: boolean;
+  allowPromptLaunch?: boolean;
+  allowShortcutLaunch?: boolean;
+  allowCloudBrowser?: boolean;
+  debugStreaming?: boolean;
 };
 
 export type RoverInit = {
@@ -435,6 +457,10 @@ const SERVER_CANCEL_REPAIR_MAX_ATTEMPTS = 7;
 const SERVER_CANCEL_REPAIR_MAX_QUEUE = 80;
 const DEEP_LINK_SHORTCUT_WAIT_MS = 2_500;
 const DEEP_LINK_SHORTCUT_RETRY_MS = 250;
+const LAUNCH_ATTACH_WAIT_MS = 10_000;
+const LAUNCH_ATTACH_RETRY_MS = 400;
+const LAUNCH_EVENT_MAX_BATCH_SIZE = 40;
+const LAUNCH_EVENT_RETRY_DELAY_MS = 1_000;
 
 type TelemetryEventName = RoverEventName | RoverVoiceTelemetryEventName;
 
@@ -536,6 +562,43 @@ let deepLinkPendingShortcut:
       deadlineAt: number;
     }
   | null = null;
+let launchLastHandledKey = '';
+let launchLastIgnoredDisabledKey = '';
+let launchAttachRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let launchAttachInFlightKey = '';
+let pendingLaunchRequest:
+  | {
+      handleKey: string;
+      request: RoverLaunchRequest;
+      deadlineAt: number;
+    }
+  | null = null;
+let browserReceiptLastHandledKey = '';
+let browserReceiptClaimRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let browserReceiptClaimInFlightKey = '';
+let pendingBrowserReceiptRequest:
+  | {
+      handleKey: string;
+      request: RoverBrowserReceiptRequest;
+      deadlineAt: number;
+    }
+  | null = null;
+type ActiveLaunchBinding = {
+  requestId: string;
+  attachToken?: string;
+  handleKey: string;
+  status?: string;
+  detail?: 'sanitized' | 'full' | 'debug';
+  executionTarget?: 'browser_attach' | 'cloud_browser';
+  runId?: string;
+  ingestInFlight?: boolean;
+  pendingEvents: RoverLaunchIngestEvent[];
+  lastNeedsInputSignature?: string;
+  finalObservationRunId?: string;
+  attachCompletedAt?: number;
+};
+let activeLaunchBinding: ActiveLaunchBinding | null = null;
+let launchEventFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
 function addTrackedListener(
   target: EventTarget,
@@ -1637,6 +1700,7 @@ async function ensureRoverServerRuntime(cfg: RoverInit): Promise<void> {
             shortcuts: sanitizeShortcutList(session.siteConfig.shortcuts),
             greeting: sanitizeGreetingConfig(session.siteConfig.greeting),
             voice: sanitizeVoiceConfig(session.siteConfig.voice),
+            aiAccess: sanitizeAiAccessConfig(session.siteConfig.aiAccess),
             limits: sanitizeSiteConfigLimits(session.siteConfig.limits),
             pageConfig: sanitizeResolvedPageCaptureConfig(session.siteConfig.pageConfig),
             version: session.siteConfig.version != null ? String(session.siteConfig.version) : undefined,
@@ -4066,6 +4130,9 @@ function syncQuestionPromptFromWorkerState(): void {
   const questions = normalizeAskUserQuestions(runtimeState?.workerState?.pendingAskUser?.questions);
   if (!questions.length) {
     lastQuestionPromptFlushSignature = '';
+    if (activeLaunchBinding) {
+      activeLaunchBinding.lastNeedsInputSignature = undefined;
+    }
     ui?.setQuestionPrompt(undefined);
     return;
   }
@@ -4075,6 +4142,7 @@ function syncQuestionPromptFromWorkerState(): void {
     flushCheckpointCritical('question_prompt_boundary');
   }
   ui?.setQuestionPrompt({ questions });
+  maybeEmitLaunchNeedsInput(questions);
 }
 
 function isPendingRunLikelyActive(): boolean {
@@ -6388,6 +6456,13 @@ function handleWorkerMessage(msg: any): void {
       detailBlocks: blocks,
       status: 'success',
     });
+    enqueueLaunchRuntimeEvent('assistant_output', {
+      text,
+      blocks,
+    }, {
+      immediate: true,
+      runId: typeof msg.runId === 'string' ? msg.runId : undefined,
+    });
     return;
   }
 
@@ -6434,6 +6509,9 @@ function handleWorkerMessage(msg: any): void {
       }
     }
     emit('status', msg);
+    enqueueLaunchRuntimeEvent('status_update', buildLaunchStatusEventData(msg), {
+      runId: typeof msg.runId === 'string' ? msg.runId : undefined,
+    });
     return;
   }
 
@@ -6468,6 +6546,9 @@ function handleWorkerMessage(msg: any): void {
       status: 'pending',
     });
     emit('tool_start', msg);
+    enqueueLaunchRuntimeEvent('tool_start', buildLaunchToolStartData(msg), {
+      runId: typeof msg.runId === 'string' ? msg.runId : undefined,
+    });
     return;
   }
 
@@ -6491,6 +6572,9 @@ function handleWorkerMessage(msg: any): void {
       status: msg?.result?.success === false ? 'error' : 'success',
     });
     emit('tool_result', msg);
+    enqueueLaunchRuntimeEvent('tool_result', buildLaunchToolResultData(msg), {
+      runId: typeof msg.runId === 'string' ? msg.runId : undefined,
+    });
     return;
   }
 
@@ -6528,6 +6612,12 @@ function handleWorkerMessage(msg: any): void {
       status: 'error',
     });
     emit('error', msg);
+    enqueueLaunchRuntimeEvent('error', {
+      message: String(msg.message || 'unknown'),
+    }, {
+      immediate: true,
+      runId: typeof msg.runId === 'string' ? msg.runId : undefined,
+    });
     return;
   }
 
@@ -6655,6 +6745,14 @@ function handleWorkerMessage(msg: any): void {
         taskOrchestrator.dispatch(targetTask.taskId, { type: 'START' });
       }
     }
+    enqueueLaunchRuntimeEvent('state_transition', {
+      status: 'running',
+      mode: runtimeState?.lastRoutingDecision?.mode,
+      reason: msg.resume ? 'run_resumed' : 'run_started',
+    }, {
+      immediate: true,
+      runId: typeof msg.runId === 'string' ? msg.runId : undefined,
+    });
     return;
   }
 
@@ -6665,6 +6763,14 @@ function handleWorkerMessage(msg: any): void {
     const completionState = normalizeRunCompletionState(msg);
     const terminalState = completionState.terminalState;
     const continuationReason = completionState.continuationReason;
+    const launchTransitionStatus: 'running' | 'awaiting_user' | 'completed' | 'failed' =
+      completionState.needsUserInput
+        ? 'awaiting_user'
+        : terminalState === 'completed'
+          ? 'completed'
+          : terminalState === 'failed' || msg?.ok === false
+            ? 'failed'
+            : 'running';
     const isTerminalRunCompletion =
       msg?.ok === false
       || terminalState === 'completed'
@@ -6902,6 +7008,30 @@ function handleWorkerMessage(msg: any): void {
         }
       }
     }
+    enqueueLaunchRuntimeEvent('state_transition', {
+      status: launchTransitionStatus,
+      mode:
+        msg?.route?.mode === 'act' || msg?.route?.mode === 'planner'
+          ? msg.route.mode
+          : runtimeState?.lastRoutingDecision?.mode,
+      reason:
+        typeof msg?.error === 'string'
+          ? msg.error
+          : continuationReason || terminalState,
+      terminalState,
+    }, {
+      immediate: isTerminalRunCompletion || completionState.needsUserInput,
+      runId: completedRunId,
+    });
+    if (completionState.needsUserInput) {
+      const launchQuestions = completionState.questions || normalizeAskUserQuestions(msg.questions);
+      if (launchQuestions.length) {
+        maybeEmitLaunchNeedsInput(launchQuestions);
+      }
+    }
+    if (isTerminalRunCompletion) {
+      finalizeLaunchObservationForRun(completedRunId);
+    }
     syncOrchestratorConversationList();
     return;
   }
@@ -7016,6 +7146,7 @@ type RoverResolvedSiteConfig = {
   shortcuts: RoverShortcut[];
   greeting?: RoverGreetingConfig;
   voice?: RoverVoiceConfig;
+  aiAccess?: RoverAiAccessConfig;
   limits?: RoverShortcutLimits;
   pageConfig?: RoverPageCaptureConfig;
   version?: string;
@@ -7076,6 +7207,18 @@ function sanitizeVoiceConfig(raw: unknown): RoverVoiceConfig | undefined {
   return Object.keys(next).length ? next : undefined;
 }
 
+function sanitizeAiAccessConfig(raw: unknown): RoverAiAccessConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const input = raw as RoverServerAiAccessConfig;
+  const next: RoverAiAccessConfig = {};
+  if (typeof input.enabled === 'boolean') next.enabled = input.enabled;
+  if (typeof input.allowPromptLaunch === 'boolean') next.allowPromptLaunch = input.allowPromptLaunch;
+  if (typeof input.allowShortcutLaunch === 'boolean') next.allowShortcutLaunch = input.allowShortcutLaunch;
+  if (typeof input.allowCloudBrowser === 'boolean') next.allowCloudBrowser = input.allowCloudBrowser;
+  if (typeof input.debugStreaming === 'boolean') next.debugStreaming = input.debugStreaming;
+  return Object.keys(next).length ? next : undefined;
+}
+
 function resolveEffectivePageCaptureConfig(cfg: RoverInit | null): RoverPageCaptureConfig | undefined {
   if (!cfg) return undefined;
   const fromBackend = sanitizeResolvedPageCaptureConfig(backendSiteConfig?.pageConfig);
@@ -7085,6 +7228,11 @@ function resolveEffectivePageCaptureConfig(cfg: RoverInit | null): RoverPageCapt
     ...(fromInit || {}),
   });
   return merged;
+}
+
+function resolveEffectiveAiAccessConfig(cfg: RoverInit | null): RoverAiAccessConfig | undefined {
+  if (!cfg) return undefined;
+  return sanitizeAiAccessConfig(backendSiteConfig?.aiAccess);
 }
 
 function syncEffectivePageCaptureConfig(cfg: RoverInit | null): void {
@@ -7124,6 +7272,7 @@ function getCachedSiteConfig(siteId: string): RoverResolvedSiteConfig | null {
         shortcuts: sanitizeShortcutList(parsed.data.shortcuts),
         greeting: sanitizeGreetingConfig(parsed.data.greeting),
         voice: sanitizeVoiceConfig(parsed.data.voice),
+        aiAccess: sanitizeAiAccessConfig(parsed.data.aiAccess),
         limits: sanitizeSiteConfigLimits(parsed.data.limits),
         pageConfig: sanitizeResolvedPageCaptureConfig(parsed.data.pageConfig),
         version: typeof parsed.version === 'string' ? parsed.version : undefined,
@@ -7157,6 +7306,7 @@ function setCachedSiteConfig(siteId: string, data: RoverResolvedSiteConfig): voi
           shortcuts: sanitizeShortcutList(data.shortcuts),
           greeting: sanitizeGreetingConfig(data.greeting),
           voice: sanitizeVoiceConfig(data.voice),
+          aiAccess: sanitizeAiAccessConfig(data.aiAccess),
           limits: sanitizeSiteConfigLimits(data.limits),
           pageConfig: sanitizeResolvedPageCaptureConfig(data.pageConfig),
         },
@@ -7268,6 +7418,557 @@ function getRenderableShortcuts(shortcuts: RoverShortcut[]): RoverShortcut[] {
     .slice(0, renderLimit);
 }
 
+function clearPendingLaunchAttach(): void {
+  if (launchAttachRetryTimer) {
+    clearTimeout(launchAttachRetryTimer);
+    launchAttachRetryTimer = null;
+  }
+  pendingLaunchRequest = null;
+}
+
+function clearPendingBrowserReceiptClaim(): void {
+  if (browserReceiptClaimRetryTimer) {
+    clearTimeout(browserReceiptClaimRetryTimer);
+    browserReceiptClaimRetryTimer = null;
+  }
+  pendingBrowserReceiptRequest = null;
+}
+
+function buildBrowserReceiptHandleKey(request: RoverBrowserReceiptRequest): string {
+  return `${window.location.href}::${request.signature}`;
+}
+
+function consumeHandledBrowserReceipt(
+  request: RoverBrowserReceiptRequest,
+  options?: { consumeDeepLink?: boolean },
+): void {
+  const currentRelativeUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  let nextRelativeUrl = stripBrowserReceiptParams(window.location.href);
+  if (options?.consumeDeepLink !== false && currentConfig) {
+    nextRelativeUrl = stripDeepLinkParams(nextRelativeUrl, resolveDeepLinkConfig(currentConfig.deepLink));
+  }
+  if (nextRelativeUrl === currentRelativeUrl) return;
+  try {
+    history.replaceState(history.state, document.title, nextRelativeUrl);
+    recordTelemetryEvent('status', {
+      event: 'browser_receipt_consumed',
+    });
+  } catch {
+    // no-op
+  }
+}
+
+function scheduleBrowserReceiptClaimRetry(
+  handleKey: string,
+  request: RoverBrowserReceiptRequest,
+  deadlineAt: number,
+): void {
+  const existing = pendingBrowserReceiptRequest;
+  if (existing?.handleKey === handleKey && existing.deadlineAt === deadlineAt && browserReceiptClaimRetryTimer) {
+    return;
+  }
+  if (browserReceiptClaimRetryTimer) {
+    clearTimeout(browserReceiptClaimRetryTimer);
+  }
+  pendingBrowserReceiptRequest = { handleKey, request, deadlineAt };
+  browserReceiptClaimRetryTimer = setTimeout(() => {
+    browserReceiptClaimRetryTimer = null;
+    maybeHandleBrowserReceipt('receipt_retry');
+  }, LAUNCH_ATTACH_RETRY_MS);
+}
+
+function buildLaunchHandleKey(request: RoverLaunchRequest): string {
+  return `${window.location.href}::${request.signature}`;
+}
+
+function consumeHandledLaunchRequest(request: RoverLaunchRequest): void {
+  const currentRelativeUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  const nextRelativeUrl = stripLaunchParams(window.location.href);
+  if (nextRelativeUrl === currentRelativeUrl) return;
+  try {
+    history.replaceState(history.state, document.title, nextRelativeUrl);
+    recordTelemetryEvent('status', {
+      event: 'launch_params_consumed',
+      requestId: request.requestId,
+    });
+  } catch {
+    // no-op
+  }
+}
+
+function scheduleLaunchAttachRetry(handleKey: string, request: RoverLaunchRequest, deadlineAt: number): void {
+  const existing = pendingLaunchRequest;
+  if (existing?.handleKey === handleKey && existing.deadlineAt === deadlineAt && launchAttachRetryTimer) {
+    return;
+  }
+  if (launchAttachRetryTimer) {
+    clearTimeout(launchAttachRetryTimer);
+  }
+  pendingLaunchRequest = { handleKey, request, deadlineAt };
+  launchAttachRetryTimer = setTimeout(() => {
+    launchAttachRetryTimer = null;
+    maybeHandleLaunchAttach('attach_retry');
+  }, LAUNCH_ATTACH_RETRY_MS);
+}
+
+function clearLaunchEventFlushTimer(): void {
+  if (launchEventFlushTimer) {
+    clearTimeout(launchEventFlushTimer);
+    launchEventFlushTimer = null;
+  }
+}
+
+function resetActiveLaunchBinding(): void {
+  clearLaunchEventFlushTimer();
+  activeLaunchBinding = null;
+}
+
+function scheduleLaunchEventFlush(delayMs = 0): void {
+  if (!activeLaunchBinding?.pendingEvents.length) return;
+  if (launchEventFlushTimer) return;
+  launchEventFlushTimer = setTimeout(() => {
+    launchEventFlushTimer = null;
+    void flushLaunchEvents();
+  }, Math.max(0, delayMs));
+}
+
+async function flushLaunchEvents(force = false): Promise<void> {
+  const binding = activeLaunchBinding;
+  if (!binding || !binding.pendingEvents.length || binding.ingestInFlight) return;
+  if (!roverServerRuntime) return;
+  if (!force && shouldDeferBackgroundSync()) {
+    scheduleLaunchEventFlush(LAUNCH_EVENT_RETRY_DELAY_MS);
+    return;
+  }
+  const batch = binding.pendingEvents.splice(0, LAUNCH_EVENT_MAX_BATCH_SIZE);
+  if (!batch.length) return;
+  binding.ingestInFlight = true;
+  try {
+    const accepted = await roverServerRuntime.ingestLaunchEvents({
+      requestId: binding.requestId,
+      runId: binding.runId,
+      events: batch,
+    });
+    if (!accepted) {
+      binding.pendingEvents = [...batch, ...binding.pendingEvents].slice(-LAUNCH_EVENT_MAX_BATCH_SIZE * 4);
+      scheduleLaunchEventFlush(LAUNCH_EVENT_RETRY_DELAY_MS);
+    }
+  } catch {
+    binding.pendingEvents = [...batch, ...binding.pendingEvents].slice(-LAUNCH_EVENT_MAX_BATCH_SIZE * 4);
+    scheduleLaunchEventFlush(LAUNCH_EVENT_RETRY_DELAY_MS);
+  } finally {
+    binding.ingestInFlight = false;
+  }
+  if (binding.pendingEvents.length) {
+    scheduleLaunchEventFlush(0);
+  }
+}
+
+function enqueueLaunchRuntimeEvent(
+  type: RoverLaunchIngestEvent['type'],
+  data?: Record<string, unknown>,
+  options?: { immediate?: boolean; runId?: string },
+): void {
+  const binding = activeLaunchBinding;
+  if (!binding) return;
+  if (options?.runId) {
+    binding.runId = options.runId;
+  }
+  binding.pendingEvents.push({
+    type,
+    ts: Date.now(),
+    data,
+  });
+  if (options?.immediate) {
+    clearLaunchEventFlushTimer();
+    void flushLaunchEvents(true);
+    return;
+  }
+  scheduleLaunchEventFlush(0);
+}
+
+function getLatestAssistantTextForLaunch(runId?: string): string | undefined {
+  const byRunId = String(runId || '').trim();
+  if (byRunId) {
+    const text = String(latestAssistantByRunId.get(byRunId) || '').trim();
+    if (text) return text;
+  }
+  const latestAssistant = [...(runtimeState?.uiMessages || [])].reverse().find(message => message.role === 'assistant');
+  const fallback = String(latestAssistant?.text || '').trim();
+  return fallback || undefined;
+}
+
+function getLatestSnapshotDigestForLaunch(): string | undefined {
+  const key = String(lastAppliedServerSnapshotKey || '').trim();
+  if (!key) return undefined;
+  const idx = key.indexOf(':');
+  if (idx < 0) return undefined;
+  const digest = key.slice(idx + 1).trim();
+  return digest || undefined;
+}
+
+function shouldIncludeLaunchFullData(): boolean {
+  return activeLaunchBinding?.detail === 'full' || activeLaunchBinding?.detail === 'debug';
+}
+
+function shouldIncludeLaunchDebugData(): boolean {
+  return activeLaunchBinding?.detail === 'debug';
+}
+
+function buildLaunchStatusEventData(msg: any): Record<string, unknown> {
+  const data: Record<string, unknown> = {
+    stage: normalizeStatusStage(msg?.stage),
+    message: typeof msg?.message === 'string' ? msg.message : undefined,
+    compactThought: typeof msg?.compactThought === 'string' ? msg.compactThought : undefined,
+  };
+  if (shouldIncludeLaunchDebugData()) {
+    data.thought = typeof msg?.thought === 'string' ? msg.thought : undefined;
+  }
+  return data;
+}
+
+function buildLaunchToolStartData(msg: any): Record<string, unknown> {
+  const data: Record<string, unknown> = {
+    toolName: typeof msg?.call?.name === 'string' ? msg.call.name : 'tool',
+  };
+  if (shouldIncludeLaunchFullData()) {
+    data.args = msg?.call?.args;
+  }
+  return data;
+}
+
+function buildLaunchToolResultData(msg: any): Record<string, unknown> {
+  const data: Record<string, unknown> = {
+    toolName: typeof msg?.call?.name === 'string' ? msg.call.name : 'tool',
+    success: msg?.result?.success !== false,
+  };
+  if (shouldIncludeLaunchFullData()) {
+    data.result = msg?.result;
+  } else if (typeof msg?.result?.message === 'string') {
+    data.message = msg.result.message;
+  }
+  return data;
+}
+
+function buildLaunchObservation(runId?: string): Record<string, unknown> {
+  const url = window.location.href;
+  const title = String(document.title || '').trim() || undefined;
+  const host = String(window.location.hostname || '').trim() || undefined;
+  const summary = getLatestAssistantTextForLaunch(runId);
+  const snapshotDigest = getLatestSnapshotDigestForLaunch();
+  return {
+    url,
+    title,
+    host,
+    summary,
+    snapshotDigest,
+  };
+}
+
+function maybeEmitLaunchNeedsInput(questions: RoverAskUserQuestion[]): void {
+  const binding = activeLaunchBinding;
+  if (!binding || !questions.length) return;
+  const signature = questions.map(question => `${question.key}:${question.query}`).join('|');
+  if (binding.lastNeedsInputSignature === signature) return;
+  binding.lastNeedsInputSignature = signature;
+  enqueueLaunchRuntimeEvent('needs_input', { questions }, { immediate: true });
+}
+
+function finalizeLaunchObservationForRun(runId?: string): void {
+  const binding = activeLaunchBinding;
+  if (!binding) return;
+  const normalizedRunId = String(runId || binding.runId || '').trim() || undefined;
+  if (normalizedRunId && binding.finalObservationRunId === normalizedRunId) return;
+  if (normalizedRunId) {
+    binding.finalObservationRunId = normalizedRunId;
+  }
+  enqueueLaunchRuntimeEvent('page_observation', buildLaunchObservation(normalizedRunId), { immediate: true, runId: normalizedRunId });
+}
+
+function handleLaunchAttachFailure(
+  request: RoverLaunchRequest,
+  handleKey: string,
+  message: string,
+  options?: { consume?: boolean; openWidget?: boolean },
+): void {
+  clearPendingLaunchAttach();
+  launchAttachInFlightKey = '';
+  if (options?.openWidget !== false) {
+    open();
+    appendUiMessage('system', `Rover couldn't start the AI launch: ${message}`, true);
+  }
+  recordTelemetryEvent('status', {
+    event: 'launch_attach_failed',
+    requestId: request.requestId,
+    message,
+  });
+  launchLastHandledKey = handleKey;
+  if (options?.consume !== false) {
+    consumeHandledLaunchRequest(request);
+  }
+}
+
+function handleBrowserReceiptClaimFailure(
+  request: RoverBrowserReceiptRequest,
+  handleKey: string,
+  message: string,
+  options?: { fallbackToDeepLink?: boolean; openWidget?: boolean },
+): void {
+  clearPendingBrowserReceiptClaim();
+  browserReceiptClaimInFlightKey = '';
+  const canFallback = options?.fallbackToDeepLink === true && !!currentConfig && !!parseDeepLinkRequest(
+    stripBrowserReceiptParams(window.location.href),
+    resolveDeepLinkConfig(currentConfig.deepLink),
+  );
+  if (!canFallback && options?.openWidget !== false) {
+    open();
+    appendUiMessage('system', `Rover couldn't claim the browser receipt: ${message}`, true);
+  }
+  recordTelemetryEvent('status', {
+    event: 'browser_receipt_claim_failed',
+    message,
+  });
+  browserReceiptLastHandledKey = handleKey;
+  consumeHandledBrowserReceipt(request, { consumeDeepLink: false });
+  if (canFallback) {
+    maybeHandleDeepLink('receipt_fallback');
+  }
+}
+
+function dispatchLaunchInput(response: RoverLaunchAttachResponse | RoverTaskBrowserClaimResponse): void {
+  const input = response.input;
+  if (!input || typeof input.prompt !== 'string' || !input.prompt.trim()) {
+    throw new Error('Launch attach response did not include a prompt.');
+  }
+  open();
+  if (input.kind === 'shortcut') {
+    dispatchUserPrompt(input.prompt, {
+      reason: 'launch_shortcut',
+      routing: input.routing,
+    });
+    return;
+  }
+  dispatchUserPrompt(input.prompt, { reason: 'launch_prompt' });
+}
+
+function maybeHandleBrowserReceipt(
+  source: 'boot' | 'update' | 'navigation' | 'site_config' | 'receipt_retry',
+): void {
+  if (!currentConfig || typeof window === 'undefined') return;
+  const request = parseBrowserReceiptRequest(window.location.href);
+  if (!request) {
+    clearPendingBrowserReceiptClaim();
+    browserReceiptLastHandledKey = '';
+    browserReceiptClaimInFlightKey = '';
+    return;
+  }
+
+  const handleKey = buildBrowserReceiptHandleKey(request);
+  if (
+    handleKey === browserReceiptLastHandledKey
+    || activeLaunchBinding?.handleKey === handleKey
+    || browserReceiptClaimInFlightKey === handleKey
+  ) {
+    return;
+  }
+
+  const deadlineAt = pendingBrowserReceiptRequest?.handleKey === handleKey
+    ? pendingBrowserReceiptRequest.deadlineAt
+    : Date.now() + LAUNCH_ATTACH_WAIT_MS;
+  if (Date.now() >= deadlineAt) {
+    handleBrowserReceiptClaimFailure(
+      request,
+      handleKey,
+      'Browser receipt claim timed out before Rover finished booting.',
+      {
+        fallbackToDeepLink: true,
+        openWidget: true,
+      },
+    );
+    return;
+  }
+
+  browserReceiptClaimInFlightKey = handleKey;
+  void ensureRoverServerRuntime(currentConfig)
+    .then(async () => {
+      if (!roverServerRuntime) {
+        scheduleBrowserReceiptClaimRetry(handleKey, request, deadlineAt);
+        return;
+      }
+      const response = await roverServerRuntime.claimBrowserTaskReceipt({
+        receipt: request.receipt,
+      });
+      if (!response) {
+        scheduleBrowserReceiptClaimRetry(handleKey, request, deadlineAt);
+        return;
+      }
+
+      clearPendingBrowserReceiptClaim();
+      activeLaunchBinding = {
+        requestId: response.requestId,
+        handleKey,
+        status: response.status,
+        detail: response.detail,
+        executionTarget: response.executionTarget,
+        runId: response.runId,
+        pendingEvents: [],
+        attachCompletedAt: Date.now(),
+      };
+      dispatchLaunchInput(response);
+      enqueueLaunchRuntimeEvent('state_transition', {
+        status: response.status === 'awaiting_user' ? 'awaiting_user' : 'running',
+        executionTarget: response.executionTarget,
+        detail: response.detail,
+        source: 'browser_receipt',
+      }, {
+        immediate: true,
+        runId: response.runId,
+      });
+      recordTelemetryEvent('status', {
+        event: 'browser_receipt_claimed',
+        source,
+        requestId: response.requestId,
+      });
+      browserReceiptLastHandledKey = handleKey;
+      consumeHandledBrowserReceipt(request, { consumeDeepLink: true });
+    })
+    .catch(error => {
+      if (Date.now() < deadlineAt) {
+        scheduleBrowserReceiptClaimRetry(handleKey, request, deadlineAt);
+        return;
+      }
+      handleBrowserReceiptClaimFailure(
+        request,
+        handleKey,
+        (error as Error)?.message || 'Unknown browser receipt failure.',
+        {
+          fallbackToDeepLink: true,
+          openWidget: true,
+        },
+      );
+    })
+    .finally(() => {
+      if (browserReceiptClaimInFlightKey === handleKey) {
+        browserReceiptClaimInFlightKey = '';
+      }
+    });
+}
+
+function maybeHandleLaunchAttach(
+  source: 'boot' | 'update' | 'navigation' | 'site_config' | 'attach_retry',
+): void {
+  if (!currentConfig || typeof window === 'undefined') return;
+  const request = parseLaunchRequest(window.location.href);
+  if (!request) {
+    clearPendingLaunchAttach();
+    launchLastHandledKey = '';
+    launchLastIgnoredDisabledKey = '';
+    launchAttachInFlightKey = '';
+    return;
+  }
+
+  const handleKey = buildLaunchHandleKey(request);
+  if (handleKey === launchLastHandledKey || activeLaunchBinding?.handleKey === handleKey || launchAttachInFlightKey === handleKey) {
+    return;
+  }
+
+  const aiAccess = resolveEffectiveAiAccessConfig(currentConfig);
+  if (aiAccess && aiAccess.enabled === false) {
+    clearPendingLaunchAttach();
+    if (launchLastIgnoredDisabledKey !== handleKey) {
+      recordTelemetryEvent('status', {
+        event: 'launch_ignored_disabled',
+        requestId: request.requestId,
+        source,
+      });
+      launchLastIgnoredDisabledKey = handleKey;
+    }
+    handleLaunchAttachFailure(request, handleKey, 'AI launch is not enabled for this Rover embed.', {
+      consume: true,
+      openWidget: true,
+    });
+    return;
+  }
+  launchLastIgnoredDisabledKey = '';
+
+  const deadlineAt = pendingLaunchRequest?.handleKey === handleKey
+    ? pendingLaunchRequest.deadlineAt
+    : Date.now() + LAUNCH_ATTACH_WAIT_MS;
+  if (Date.now() >= deadlineAt) {
+    handleLaunchAttachFailure(request, handleKey, 'Launch attach timed out before Rover finished booting.', {
+      consume: true,
+      openWidget: true,
+    });
+    return;
+  }
+
+  launchAttachInFlightKey = handleKey;
+  void ensureRoverServerRuntime(currentConfig)
+    .then(async () => {
+      if (!roverServerRuntime) {
+        scheduleLaunchAttachRetry(handleKey, request, deadlineAt);
+        return;
+      }
+      const response = await roverServerRuntime.attachLaunch({
+        requestId: request.requestId,
+        attachToken: request.attachToken,
+      });
+      if (!response) {
+        scheduleLaunchAttachRetry(handleKey, request, deadlineAt);
+        return;
+      }
+
+      clearPendingLaunchAttach();
+      activeLaunchBinding = {
+        requestId: request.requestId,
+        attachToken: request.attachToken,
+        handleKey,
+        status: response.status,
+        detail: response.detail,
+        executionTarget: response.executionTarget,
+        runId: response.runId,
+        pendingEvents: [],
+        attachCompletedAt: Date.now(),
+      };
+      dispatchLaunchInput(response);
+      enqueueLaunchRuntimeEvent('state_transition', {
+        status: response.status === 'awaiting_user' ? 'awaiting_user' : 'running',
+        executionTarget: response.executionTarget,
+        detail: response.detail,
+        source: 'launch_attach',
+      }, {
+        immediate: true,
+        runId: response.runId,
+      });
+      recordTelemetryEvent('status', {
+        event: 'launch_attached',
+        requestId: request.requestId,
+        source,
+        executionTarget: response.executionTarget,
+        detail: response.detail,
+      });
+      launchLastHandledKey = handleKey;
+      consumeHandledLaunchRequest(request);
+    })
+    .catch(error => {
+      if (Date.now() < deadlineAt) {
+        scheduleLaunchAttachRetry(handleKey, request, deadlineAt);
+        return;
+      }
+      handleLaunchAttachFailure(
+        request,
+        handleKey,
+        (error as Error)?.message || 'Unknown launch attach failure.',
+        { consume: true, openWidget: true },
+      );
+    })
+    .finally(() => {
+      if (launchAttachInFlightKey === handleKey) {
+        launchAttachInFlightKey = '';
+      }
+    });
+}
+
 function clearPendingDeepLinkShortcut(): void {
   if (deepLinkShortcutRetryTimer) {
     clearTimeout(deepLinkShortcutRetryTimer);
@@ -7342,9 +8043,19 @@ function handleDeepLinkShortcutNotFound(
   consumeHandledDeepLink(config, request);
 }
 
-function maybeHandleDeepLink(source: 'boot' | 'update' | 'navigation' | 'site_config' | 'shortcut_retry'): void {
+function maybeHandleDeepLink(source: 'boot' | 'update' | 'navigation' | 'site_config' | 'shortcut_retry' | 'receipt_fallback'): void {
   if (!currentConfig || typeof window === 'undefined') return;
   const config = resolveDeepLinkConfig(currentConfig.deepLink);
+  const browserReceipt = parseBrowserReceiptRequest(window.location.href);
+  if (browserReceipt) {
+    const receiptHandleKey = buildBrowserReceiptHandleKey(browserReceipt);
+    if (
+      receiptHandleKey === browserReceiptClaimInFlightKey
+      || pendingBrowserReceiptRequest?.handleKey === receiptHandleKey
+    ) {
+      return;
+    }
+  }
   const request = parseDeepLinkRequest(window.location.href, config);
   if (!request) {
     clearPendingDeepLinkShortcut();
@@ -7506,6 +8217,8 @@ function applyEffectiveSiteConfig(cfg: RoverInit): void {
   ui?.setShortcuts(getRenderableShortcuts(merged));
   ui?.setVoiceConfig(resolveEffectiveVoiceConfig(cfg));
   syncEffectivePageCaptureConfig(cfg);
+  maybeHandleBrowserReceipt('site_config');
+  maybeHandleLaunchAttach('site_config');
   maybeHandleDeepLink('site_config');
 }
 
@@ -7551,6 +8264,7 @@ async function fetchBackendSiteConfig(cfg: RoverInit): Promise<RoverResolvedSite
     shortcuts: sanitizeShortcutList(payload.shortcuts),
     greeting: sanitizeGreetingConfig(payload.greeting),
     voice: sanitizeVoiceConfig(payload.voice),
+    aiAccess: sanitizeAiAccessConfig(payload.aiAccess),
     limits: sanitizeSiteConfigLimits(payload.limits),
     pageConfig: sanitizeResolvedPageCaptureConfig(payload.pageConfig),
     version: payload.version != null ? String(payload.version) : undefined,
@@ -8474,6 +9188,8 @@ function createRuntime(cfg: RoverInit): void {
   const navigationHandler = () => {
     sessionCoordinator?.registerCurrentTab(window.location.href, document.title);
     sessionCoordinator?.broadcastNavigation(window.location.href, document.title);
+    maybeHandleBrowserReceipt('navigation');
+    maybeHandleLaunchAttach('navigation');
     maybeHandleDeepLink('navigation');
   };
 
@@ -8851,6 +9567,8 @@ export function boot(cfg: RoverInit): RoverInstance {
 
   createRuntime(currentConfig);
   void ensureRoverServerRuntime(currentConfig);
+  maybeHandleBrowserReceipt('boot');
+  maybeHandleLaunchAttach('boot');
   maybeHandleDeepLink('boot');
 
   // If no server runtime needed (no auth config), or if we already have a valid
@@ -9169,6 +9887,8 @@ export function update(cfg: Partial<RoverInit>): void {
     if (cfg.openOnInit || shouldPreserveWidgetOpenForState(runtimeState)) open();
     else close();
   }
+  maybeHandleBrowserReceipt('update');
+  maybeHandleLaunchAttach('update');
   maybeHandleDeepLink('update');
   syncMainWorldObserverPause();
 }
@@ -9177,6 +9897,7 @@ export function shutdown(): void {
   clearPreservedWidgetOpenGuard();
   hideTaskSuggestion();
   persistRuntimeStateImmediate();
+  void flushLaunchEvents(true);
   void flushTelemetry(true);
   stopTelemetry();
   cloudCheckpointClient?.markDirty();
@@ -9218,7 +9939,15 @@ export function shutdown(): void {
   latestAssistantByRunId.clear();
   ignoredRunIds.clear();
   externalContextCache.clear();
+  clearPendingLaunchAttach();
+  clearPendingBrowserReceiptClaim();
   clearPendingDeepLinkShortcut();
+  browserReceiptClaimInFlightKey = '';
+  browserReceiptLastHandledKey = '';
+  launchAttachInFlightKey = '';
+  launchLastHandledKey = '';
+  launchLastIgnoredDisabledKey = '';
+  resetActiveLaunchBinding();
   deepLinkLastHandledKey = '';
   deepLinkLastIgnoredDisabledKey = '';
   agentNavigationPending = false;

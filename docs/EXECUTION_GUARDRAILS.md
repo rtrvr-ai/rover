@@ -2,7 +2,9 @@
 
 ## Domain Scope
 - `domainScopeMode: 'registrable_domain' | 'host_only'`.
-- Default is `registrable_domain` (supports `a.com` and subdomains).
+- Default is `registrable_domain` (plain `a.com` matches the apex host and its subdomains).
+- Domain scope still respects the hosts you list. `app.a.com` in `registrable_domain` mode allows `app.a.com` and its subdomains, not sibling hosts like `www.a.com`.
+- Wildcards are narrower: `*.a.com` matches subdomains only, not `a.com`.
 - `host_only` uses exact-host matching for stricter isolation.
 
 ## External Navigation Policy

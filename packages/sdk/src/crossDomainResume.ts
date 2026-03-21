@@ -1,3 +1,5 @@
+import { deriveRegistrableDomain, isIpHostToken, normalizeHostToken } from './navigationScope.js';
+
 /**
  * Cross-domain resume via registrable-domain-scoped cookies.
  *
@@ -10,20 +12,6 @@
 
 const COOKIE_PREFIX = 'rover_xdr_';
 const MAX_COOKIE_AGE_S = 300; // 5 minutes — enough time for cross-subdomain resume
-const MULTI_LABEL_TLDS = new Set([
-  'co.uk',
-  'org.uk',
-  'gov.uk',
-  'ac.uk',
-  'com.au',
-  'net.au',
-  'org.au',
-  'co.jp',
-  'com.br',
-  'com.mx',
-  'com.sg',
-  'co.in',
-]);
 
 export interface CrossDomainResumeData {
   sessionId: string;
@@ -55,21 +43,16 @@ export interface CrossDomainResumeData {
   timestamp: number;
 }
 
-/**
- * Extract the registrable domain from a hostname.
- * e.g. "rover.rtrvr.ai" → "rtrvr.ai", "app.foo.co.uk" → "co.uk" (simplified).
- */
 function getRegistrableDomain(hostname: string): string {
-  const host = String(hostname || '').trim().toLowerCase();
-  if (!host) return '';
-  if (host === 'localhost' || /^\d+\.\d+\.\d+\.\d+$/.test(host)) return host;
-  const parts = host.split('.').filter(Boolean);
-  if (parts.length < 2) return host;
-  const tail2 = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
-  if (parts.length >= 3 && MULTI_LABEL_TLDS.has(tail2)) {
-    return `${parts[parts.length - 3]}.${tail2}`;
+  return deriveRegistrableDomain(hostname);
+}
+
+function shouldScopeCookieToRegistrableDomain(domain: string): boolean {
+  const normalized = normalizeHostToken(domain);
+  if (!normalized || normalized === 'localhost' || isIpHostToken(normalized)) {
+    return false;
   }
-  return tail2;
+  return true;
 }
 
 function cookieName(siteId: string): string {
@@ -147,7 +130,7 @@ export function writeCrossDomainResumeCookie(
       `max-age=${MAX_COOKIE_AGE_S}`,
       'SameSite=Lax',
     ];
-    if (domain && domain !== 'localhost' && !/^\d+\.\d+\.\d+\.\d+$/.test(domain)) {
+    if (shouldScopeCookieToRegistrableDomain(domain)) {
       parts.push(`domain=.${domain}`);
     }
     if (isSecure) parts.push('Secure');
@@ -172,7 +155,7 @@ export function readCrossDomainResumeCookie(
     const cookies = document.cookie.split(';');
     const maxAgeMs = Math.max(1_000, Number(options?.maxAgeMs) || MAX_COOKIE_AGE_S * 1000);
     const currentUrl = normalizeUrlForMatch(options?.currentUrl || window.location.href);
-    const currentHost = String(options?.currentHost || window.location.hostname || '').trim().toLowerCase();
+    const currentHost = normalizeHostToken(options?.currentHost || window.location.hostname || '');
     const expectedHandoffId = String(options?.expectedHandoffId || '').trim();
     const requireTargetMatch = options?.requireTargetMatch !== false;
 
@@ -202,7 +185,7 @@ export function readCrossDomainResumeCookie(
         }
 
         if (data.sourceHost) {
-          const sourceHost = String(data.sourceHost || '').trim().toLowerCase();
+          const sourceHost = normalizeHostToken(data.sourceHost || '');
           // Allow same-host reads when an explicit handoffId was matched (intentional handoff)
           const isSameHost = sourceHost && currentHost && sourceHost === currentHost;
           if (isSameHost && !expectedHandoffId) {
@@ -232,7 +215,7 @@ export function clearCrossDomainResumeCookie(siteId: string): void {
       'max-age=0',
       'SameSite=Lax',
     ];
-    if (domain && domain !== 'localhost' && !/^\d+\.\d+\.\d+\.\d+$/.test(domain)) {
+    if (shouldScopeCookieToRegistrableDomain(domain)) {
       parts.push(`domain=.${domain}`);
     }
     if (isSecure) parts.push('Secure');

@@ -41,6 +41,14 @@ test('exact and wildcard patterns apply correctly', () => {
     }),
     true,
   );
+  assert.equal(
+    isHostInNavigationScope({
+      host: 'rtrvr.ai',
+      allowedDomains: ['*.rtrvr.ai'],
+      domainScopeMode: 'registrable_domain',
+    }),
+    false,
+  );
 });
 
 test('host_only mode treats plain allowlist tokens as exact host matches', () => {
@@ -60,4 +68,25 @@ test('host_only mode treats plain allowlist tokens as exact host matches', () =>
     }),
     false,
   );
+});
+
+test('registrable_domain derivation respects private suffixes and IPv6 host normalization', () => {
+  assert.equal(
+    isHostInNavigationScope({
+      host: 'beta.sphere-demo-nine.vercel.app',
+      currentHost: 'sphere-demo-nine.vercel.app',
+      domainScopeMode: 'registrable_domain',
+    }),
+    true,
+  );
+  assert.equal(
+    isHostInNavigationScope({
+      host: 'other-site.vercel.app',
+      currentHost: 'sphere-demo-nine.vercel.app',
+      domainScopeMode: 'registrable_domain',
+    }),
+    false,
+  );
+  assert.equal(normalizeDomainPatternToken('[::1]'), '::1');
+  assert.equal(normalizeDomainPatternToken('http://[::1]:3000/path'), '::1');
 });

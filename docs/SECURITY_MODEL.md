@@ -5,6 +5,8 @@ Rover runs in customer pages, so client-visible keys are exposed to browser cont
 
 ## Key Principles
 - Site keys are domain-scoped (`allowedDomains`) and validated server-side.
+- `domainScopeMode` changes how listed hosts are interpreted, not whether `allowedDomains` is used.
+- In `registrable_domain`, a plain `example.com` entry allows the apex host and its subdomains, while `*.example.com` allows subdomains only.
 - Authorization checks use `origin/referer/host` context for key validation.
 - Out-of-scope same-tab navigation/actions are blocked or redirected to new-tab policy.
 - Auth failures return structured payloads so clients can fail safe.

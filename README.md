@@ -6,7 +6,7 @@
 [![Discord](https://img.shields.io/discord/1288571209918844969?color=7289da&label=Discord&logo=discord&logoColor=white)](https://rtrvr.ai/discord)
 [![GitHub stars](https://img.shields.io/github/stars/rtrvr-ai/rover?style=social)](https://github.com/rtrvr-ai/rover)
 
-**Turn any website into an AI-native interface — for your users and for AI.**
+**Turn any website into an AI-native interface — for users, AI apps, CLIs, and autonomous agents.**
 
 Chatbots talk. Rover does. One line of code — Rover reads your live page,
 plans actions, and executes them in milliseconds. Clicks, forms, navigation —
@@ -15,9 +15,7 @@ directly in the DOM. No screenshots, no VMs, no RAG pipelines.
 - **Websites** — drop a script tag
 - **Chrome Extensions** — inject into any page
 - **Electron Apps** — same engine, same capabilities
-
-AI agents call your site by URL:
-`https://example.com?rover=book+a+flight`
+- **AI / CLI / agent callers** — use the neutral task resource at `POST https://agent.rtrvr.ai/v1/tasks`
 
 ---
 
@@ -29,15 +27,26 @@ AI agents call your site by URL:
 | Reads DOM | No | Vision/pixels | Direct DOM + a11y tree |
 | Latency | N/A | Seconds per action | Milliseconds |
 | Infrastructure | Iframe/server | Remote VM | Zero — runs in-browser |
-| AI-ready URLs | No | No | `?rover=do+something` |
+| AI / agent access | No | No | `POST /v1/tasks` + `?rover=` convenience |
 | Open Source | Varies | No | FSL-1.1-Apache-2.0 |
 
 ### For websites
 Drop-in embed — users get an AI assistant that actually does things on the page.
 
 ### For AI agents
-Any Rover-enabled page is queryable via URL — no MCP servers, no tool definitions, no Playwright:
-`https://example.com?rover=book%20a%20flight`
+Rover exposes two entrypoints:
+
+- browser-first convenience via `?rover=` / `?rover_shortcut=`
+- machine-first task resources via `POST https://agent.rtrvr.ai/v1/tasks`
+
+Use `/v1/tasks` when you need structured progress or final results back.
+
+Copy-paste agent examples live in [SKILLS.md](SKILLS.md), including:
+
+- an exact Codex / external-agent prompt
+- a Node `fetch` example
+- a Python example
+- a shell helper function
 
 ### For any DOM interface
 The core SDK works anywhere there's a DOM — browser extensions, Electron apps, webviews. The chat widget is the website surface; the agent engine is universal.
@@ -96,12 +105,21 @@ boot({
 });
 ```
 
+Domain scope cheat sheet: in the default `registrable_domain` mode, `allowedDomains: ['example.com']` allows `example.com` and all of its subdomains. `allowedDomains: ['*.example.com']` allows subdomains only, not the apex host. `host_only` makes plain entries such as `example.com` exact-host only.
+
+Get `siteId`, `publicKey` (`pk_site_*`), and optional `siteKeyId` from Workspace:
+
+- `https://rover.rtrvr.ai/workspace`
+- `https://www.rtrvr.ai/rover/workspace`
+
+If you enable Public AI / Agent Task Access in Workspace, the generated snippet includes the source-visible discovery marker automatically. External AI callers do not need those values; they use `POST https://agent.rtrvr.ai/v1/tasks`.
+
 See [`packages/sdk/README.md`](packages/sdk/README.md) for full API reference, React/Next.js/Vue examples, and CSP configuration.
 
 ## Features
 
-- **AI-ready deep links** — trigger tasks via URL: `?rover=checkout` or `?rover_shortcut=onboarding`
-- **AI-callable URLs** — any Rover-enabled page becomes an AI endpoint, no MCP/Playwright/middleware
+- **Browser-first deep links** — trigger tasks via `?rover=checkout` or `?rover_shortcut=onboarding`
+- **Machine task protocol** — any Rover-enabled page becomes callable through `POST https://agent.rtrvr.ai/v1/tasks`
 - **Universal DOM agent** — websites, extensions, Electron, any DOM environment
 - **Autonomous navigation** — plans and executes multi-step tasks across pages
 - **Shadow DOM widget** — chat UI that mounts without touching your styles
@@ -115,9 +133,76 @@ See [`packages/sdk/README.md`](packages/sdk/README.md) for full API reference, R
 
 ---
 
-## AI-Callable URLs
+## AI / Agent Access
 
-Any page running Rover becomes callable by AI agents — no MCP servers, no tool definitions, no Playwright middleware.
+Rover-enabled sites support two public paths.
+
+### Machine path
+
+This is the canonical AI / CLI protocol:
+
+```http
+POST https://agent.rtrvr.ai/v1/tasks
+Content-Type: application/json
+
+{ "url": "https://example.com", "prompt": "book a flight to tokyo" }
+```
+
+Or:
+
+```http
+POST https://agent.rtrvr.ai/v1/tasks
+Content-Type: application/json
+
+{ "url": "https://example.com", "shortcut": "checkout_flow" }
+```
+
+The response returns a canonical task URL that supports:
+
+- JSON polling / final result
+- SSE
+- NDJSON
+- continuation input
+- cancel
+- an `open` receipt URL for clean browser attach
+- an optional `browserLink` readable alias when the prompt/shortcut fits safely in the visible URL
+
+Task creation may also return browser handoff URLs:
+
+- `open`: clean receipt URL such as `https://example.com/#rover_receipt=rrc_...`
+- `browserLink`: optional readable alias such as `https://example.com/?rover=book+a+flight#rover_receipt=rrc_...`
+
+The task URL remains the only durable public resource. Receipt links are browser handoff helpers layered on top of that same task.
+
+Anonymous AI callers do **not** need `siteId`, `publicKey`, or `siteKeyId`. Those values are for site owners installing Rover through Workspace:
+
+- `https://rover.rtrvr.ai/workspace`
+- `https://www.rtrvr.ai/rover/workspace`
+
+If the site emits the discovery marker below, AI tools can detect support directly from HTML:
+
+```html
+<script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
+```
+
+Use `Prefer: execution=cloud` when you need guaranteed browserless execution today.
+
+Quick create example:
+
+```bash
+curl -X POST 'https://agent.rtrvr.ai/v1/tasks' \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json' \
+  -H 'Prefer: execution=cloud' \
+  -d '{
+    "url": "https://www.rtrvr.ai",
+    "prompt": "get me the latest blog post"
+  }'
+```
+
+See [SKILLS.md](SKILLS.md) for the exact external-agent prompt plus Node, Python, and shell examples.
+
+### Browser-first path
 
 ### Prompt deep links
 
@@ -127,7 +212,7 @@ Pass a natural-language instruction via query parameter:
 https://example.com?rover=book+a+flight+to+tokyo
 ```
 
-Rover boots, reads the page, and executes the task autonomously.
+Rover boots in the page, reads the DOM, and executes the task autonomously.
 
 ### Shortcut deep links
 
@@ -137,9 +222,11 @@ Invoke a pre-defined shortcut by ID for repeatable, deterministic flows:
 https://example.com?rover_shortcut=checkout_flow
 ```
 
+These links run Rover in the browser UI. They are not the machine-readable result channel by themselves. If you need structured progress or results back, use `/v1/tasks`.
+
 ### Configuration
 
-Deep links are opt-in. Enable them in your boot config:
+Deep links are opt-in browser convenience. Enable them in your boot config:
 
 ```js
 rover('boot', {
@@ -154,6 +241,8 @@ rover('boot', {
 ```
 
 ---
+
+For the full external-agent contract, see [SKILLS.md](SKILLS.md).
 
 ## WebMCP (Coming Soon)
 
@@ -204,6 +293,7 @@ Host page
 |-----|-----|-------------|
 | [SDK Reference](packages/sdk/README.md) | Integrators | Full API, config, framework guides, CSP |
 | [Integration Guide](docs/INTEGRATION.md) | Integrators | Setup, examples, troubleshooting |
+| [External Agent Guide](SKILLS.md) | AI / CLI / agents | Discovery marker, `/v1/tasks`, SSE, NDJSON, continuation |
 | [Architecture](docs/ARCHITECTURE.md) | Contributors | Package graph, data flow, design decisions |
 | [Testing](docs/TESTING.md) | Contributors | Local testing, debugging |
 | [Security Model](docs/SECURITY_MODEL.md) | Security | Threat model, key types |

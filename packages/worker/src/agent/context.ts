@@ -1,4 +1,5 @@
 import { DEFAULT_GEMINI_MODEL } from '@rover/shared/lib/utils/constants.js';
+import { matchesDomainPattern, normalizeDomainPatternToken } from '@rover/shared/lib/utils/domainScope.js';
 import { sanitizeRoverPageCaptureConfig } from '@rover/shared/lib/page/index.js';
 import type { LLMIntegration, PageConfig, RoverPageCaptureConfig, UserProfile } from '@rover/shared/lib/types/index.js';
 import type {
@@ -69,7 +70,7 @@ export type AgentContext = {
   signal?: AbortSignal;
 };
 
-const DEFAULT_EXTENSION_ROUTER_BASE = 'https://extensionrouter.rtrvr.ai';
+const DEFAULT_EXTENSION_ROUTER_BASE = 'https://agent.rtrvr.ai';
 
 const CANONICAL_ADDITIONAL_TOOLS = new Set(['generate_sheets', 'generate_docs', 'generate_slides', 'generate_websites']);
 const LEGACY_ADDITIONAL_TOOL_ALIASES: Record<string, string> = {
@@ -113,7 +114,7 @@ function normalizeDomainRules(input?: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const raw of input) {
-    const next = String(raw || '').trim().toLowerCase().replace(/^\./, '');
+    const next = normalizeDomainPatternToken(String(raw || ''));
     if (!next || seen.has(next)) continue;
     seen.add(next);
     out.push(next);
@@ -136,14 +137,7 @@ function hostFromUrl(url: string): string | undefined {
 }
 
 function matchesDomainRule(host: string, rule: string): boolean {
-  const clean = String(rule || '').trim().toLowerCase();
-  if (!clean) return false;
-  if (clean === '*') return true;
-  if (clean.startsWith('*.')) {
-    const base = clean.slice(2);
-    return !!base && (host === base || host.endsWith(`.${base}`));
-  }
-  return host === clean || host.endsWith(`.${clean}`);
+  return matchesDomainPattern(host, rule);
 }
 
 function normalizeExternalWebConfig(input?: ExternalWebConfig): Required<Pick<ExternalWebConfig, 'enableExternalWebContext' | 'scrapeMode'>> & {
