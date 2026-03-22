@@ -42,6 +42,35 @@ test('same page with two tasks creates two distinct visits', () => {
   assert.notEqual(visits[0].runSummaries[0].runId, visits[1].runSummaries[0].runId);
 });
 
+test('run_started reuses the active visit when Rover promotes a local task id to a server task id', () => {
+  const tracker = new VisitTracker({ siteId: 'site-demo' }, { key: 'agent-1', name: 'Agent 1' });
+
+  tracker.handleTaskStarted({ taskId: 'task-local-1', reason: 'auto_new_prompt_boundary' });
+  tracker.handleRunStarted({
+    taskId: 'task_server_1',
+    runId: 'run-1',
+    taskBoundaryId: 'boundary-1',
+    text: 'find pricing',
+    pageUrl: 'https://example.com/pricing',
+  });
+  tracker.handleRunLifecycle('run_completed', {
+    taskId: 'task_server_1',
+    runId: 'run-1',
+    taskBoundaryId: 'boundary-1',
+    terminalState: 'completed',
+    taskComplete: true,
+    endedAt: Date.now(),
+    pageUrl: 'https://example.com/pricing',
+  });
+
+  const visits = tracker.listVisits();
+  assert.equal(visits.length, 1);
+  assert.equal(visits[0].visitId, 'task-local-1');
+  assert.equal(visits[0].taskId, 'task_server_1');
+  assert.equal(visits[0].runSummaries.length, 1);
+  assert.equal(visits[0].outcome, 'success');
+});
+
 test('same agent revisit loads prior notes into prompt context', async () => {
   const api = {
     getNotes: async params => {
@@ -123,4 +152,3 @@ test('shared-note access obeys visibility settings', async () => {
   assert.deepEqual(calls.map(call => call.visibility), ['private', 'shared']);
   assert.equal(sharedSnapshot.sharedNotes.length, 1);
 });
-
