@@ -1,6 +1,6 @@
 {
   "name": "@rover/system-tool-utilities",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "description": "rtrvr.ai chrome extension - system tool utilities",
   "license": "FSL-1.1-Apache-2.0",
   "type": "module",
