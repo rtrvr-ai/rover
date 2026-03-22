@@ -104,7 +104,7 @@ function createEvent(
 }
 
 function inferToolStepType(toolName?: string): string {
-  const normalized = asString(toolName).toLowerCase();
+  const normalized = (asString(toolName) || '').toLowerCase();
   if (!normalized) return 'other';
   if (
     normalized.includes('goto')
