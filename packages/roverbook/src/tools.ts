@@ -40,9 +40,12 @@ function buildManualReview(
     visitId: visit?.visitId || createId('visit'),
     runId: visit?.runSummaries[visit.runSummaries.length - 1]?.runId,
     siteId: config.siteId,
-    agentKey: identity.key,
+    agentKey: identity.memoryKey || identity.key,
     agentName: identity.name || visit?.agentName,
+    agentVendor: identity.vendor || visit?.agentVendor,
     agentModel: identity.model || visit?.agentModel,
+    agentTrust: identity.trust || visit?.agentTrust,
+    agentSource: identity.source || visit?.agentSource,
     provenance: 'agent_authored',
     overallRating,
     categoryRatings: {
@@ -153,8 +156,12 @@ export function registerTools(instance: RoverInstanceLike, deps: ToolDeps): void
         visitId: visit?.visitId || createId('visit'),
         runId: visit?.runSummaries[visit.runSummaries.length - 1]?.runId,
         siteId: deps.config.siteId,
-        agentKey: identity.key,
+        agentKey: identity.memoryKey || identity.key,
         agentName: identity.name,
+        agentVendor: identity.vendor || visit?.agentVendor,
+        agentModel: identity.model || visit?.agentModel,
+        agentTrust: identity.trust || visit?.agentTrust,
+        agentSource: identity.source || visit?.agentSource,
         question: String(args?.question || ''),
         answer: String(args?.answer || ''),
         sentiment: 'neutral',
@@ -254,4 +261,3 @@ export function registerTools(instance: RoverInstanceLike, deps: ToolDeps): void
     },
   );
 }
-

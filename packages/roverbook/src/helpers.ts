@@ -1,3 +1,10 @@
+import type {
+  AgentIdentitySource,
+  AgentIdentityTrust,
+  LaunchSource,
+  ResolvedAgentIdentity,
+} from './types.js';
+
 export function createId(prefix: string): string {
   try {
     return `${prefix}_${crypto.randomUUID()}`;
@@ -111,3 +118,133 @@ export function toErrorMessage(error: unknown): string {
   }
 }
 
+export function normalizeAgentTrust(value: unknown): AgentIdentityTrust | undefined {
+  switch (asString(value)) {
+    case 'verified':
+      return 'verified';
+    case 'self_reported':
+      return 'self_reported';
+    case 'heuristic':
+      return 'heuristic';
+    case 'anonymous':
+      return 'anonymous';
+    default:
+      return undefined;
+  }
+}
+
+export function normalizeAgentSource(value: unknown): AgentIdentitySource | undefined {
+  switch (asString(value)) {
+    case 'public_task_agent':
+      return 'public_task_agent';
+    case 'handoff_agent':
+      return 'handoff_agent';
+    case 'webmcp_agent':
+      return 'webmcp_agent';
+    case 'signature_agent':
+      return 'signature_agent';
+    case 'user_agent':
+      return 'user_agent';
+    case 'owner_resolver':
+      return 'owner_resolver';
+    case 'anonymous':
+      return 'anonymous';
+    default:
+      return undefined;
+  }
+}
+
+export function normalizeLaunchSource(value: unknown): LaunchSource | undefined {
+  switch (asString(value)) {
+    case 'public_task_api':
+      return 'public_task_api';
+    case 'delegated_handoff':
+      return 'delegated_handoff';
+    case 'webmcp':
+      return 'webmcp';
+    case 'embedded_widget':
+      return 'embedded_widget';
+    default:
+      return undefined;
+  }
+}
+
+export function buildAgentMemoryKey(identity: {
+  key?: string;
+  memoryKey?: string;
+  vendor?: string;
+  signatureAgent?: string;
+  anonymous?: boolean;
+}): string | undefined {
+  const key = asString(identity.key);
+  if (key) return key;
+  const memoryKey = asString(identity.memoryKey);
+  if (memoryKey) return memoryKey;
+  const vendor = asString(identity.vendor) || asString(identity.signatureAgent);
+  if (vendor) return `vendor:${slugify(vendor, 'agent')}`;
+  if (identity.anonymous) return `anon:${createId('agent')}`;
+  return undefined;
+}
+
+function fromIdentityLike(value: Record<string, unknown> | undefined): ResolvedAgentIdentity | null {
+  if (!value) return null;
+  const key =
+    asString(value.agentKey)
+    || asString(value.key)
+    || asString(value.agentMemoryKey)
+    || asString(value.memoryKey)
+    || undefined;
+  const name = asString(value.agentName) || asString(value.displayName) || asString(value.name);
+  const vendor = asString(value.agentVendor) || asString(value.vendor);
+  const model = asString(value.agentModel) || asString(value.model);
+  const version = asString(value.agentVersion) || asString(value.version);
+  const homepage = asString(value.agentHomepage) || asString(value.homepage);
+  const trust = normalizeAgentTrust(value.agentTrust || value.trust);
+  const source = normalizeAgentSource(value.agentSource || value.source);
+  const memoryKey = asString(value.agentMemoryKey) || asString(value.memoryKey) || undefined;
+  const clientId = asString(value.agentClientId) || asString(value.clientId);
+  const signatureAgent = asString(value.agentSignatureAgent) || asString(value.signatureAgent);
+  const userAgent = asString(value.agentUserAgent) || asString(value.userAgent);
+  const launchSource = normalizeLaunchSource(value.launchSource);
+  const anonymous = trust === 'anonymous' || source === 'anonymous' || Boolean(value.anonymous);
+  const resolvedKey = key || memoryKey || (vendor ? `vendor:${slugify(vendor, 'agent')}` : undefined);
+  if (!resolvedKey && !name && !vendor && !model) return null;
+  return {
+    key: resolvedKey || `anon:${createId('agent')}`,
+    name: name || vendor || undefined,
+    vendor,
+    model,
+    version,
+    homepage,
+    trust: trust || (anonymous ? 'anonymous' : undefined),
+    source: source || (anonymous ? 'anonymous' : undefined),
+    memoryKey: memoryKey || resolvedKey || undefined,
+    clientId,
+    signatureAgent,
+    userAgent,
+    launchSource,
+    anonymous,
+  };
+}
+
+export function resolveRuntimeAgentIdentity(state: any): ResolvedAgentIdentity | null {
+  const activeTaskId = asString(state?.runtimeState?.activeTaskId);
+  const activeTask =
+    activeTaskId && state?.runtimeState?.tasks && typeof state.runtimeState.tasks === 'object'
+      ? state.runtimeState.tasks[activeTaskId]
+      : undefined;
+
+  const candidates: Array<Record<string, unknown> | undefined> = [
+    activeTask?.agentAttribution,
+    state?.runtimeState?.currentAgentAttribution,
+    state?.currentAgentAttribution,
+    state?.agentAttribution,
+    state?.sessionClaims,
+  ];
+
+  for (const candidate of candidates) {
+    const resolved = fromIdentityLike(candidate);
+    if (resolved) return resolved;
+  }
+  return null;
+}

@@ -39,12 +39,14 @@ export class AgentMemory {
       return this.snapshot;
     }
     const identity = await this.context.resolveIdentity();
-    if (!force && this.loadedAgentKey === identity.key) {
+    const cacheKey = identity.memoryKey || identity.key;
+    if (!force && this.loadedAgentKey === cacheKey) {
       return this.snapshot;
     }
     const [privateNotes, sharedNotes] = await Promise.all([
       this.api.getNotes({
         siteId: this.config.siteId,
+        agentKey: identity.memoryKey || identity.key,
         agentId: identity.key,
         visibility: 'private',
         limit: 50,
@@ -57,10 +59,10 @@ export class AgentMemory {
           limit: 50,
         }),
     ]);
-    this.loadedAgentKey = identity.key;
+    this.loadedAgentKey = cacheKey;
     this.snapshot = {
       privateNotes,
-      sharedNotes: sharedNotes.filter(note => note.agentKey !== identity.key || note.visibility === 'shared'),
+      sharedNotes: sharedNotes.filter(note => note.agentKey !== cacheKey || note.visibility === 'shared'),
     };
     return this.snapshot;
   }
@@ -102,8 +104,12 @@ export class AgentMemory {
       siteId: this.config.siteId,
       visitId: visit?.visitId,
       runId: visit?.runSummaries[visit.runSummaries.length - 1]?.runId,
-      agentKey: identity.key,
+      agentKey: identity.memoryKey || identity.key,
       agentName: identity.name,
+      agentVendor: identity.vendor,
+      agentModel: identity.model,
+      agentTrust: identity.trust,
+      agentSource: identity.source,
       type: input.type || 'observation',
       title: input.title,
       content: input.content,

@@ -48,6 +48,16 @@ export type NoteVisibility = 'private' | 'shared';
 export type NoteType = 'issue' | 'learning' | 'tip' | 'observation';
 export type VoteDirection = 'up' | 'down';
 export type PostType = 'bug_report' | 'tip' | 'question' | 'suggestion' | 'discussion';
+export type AgentIdentityTrust = 'verified' | 'self_reported' | 'heuristic' | 'anonymous';
+export type AgentIdentitySource =
+  | 'public_task_agent'
+  | 'handoff_agent'
+  | 'webmcp_agent'
+  | 'signature_agent'
+  | 'user_agent'
+  | 'owner_resolver'
+  | 'anonymous';
+export type LaunchSource = 'public_task_api' | 'delegated_handoff' | 'webmcp' | 'embedded_widget';
 export type VisitOutcome = 'success' | 'failure' | 'partial' | 'abandoned' | 'input_required';
 export type VisitStatus = 'active' | 'completed' | 'failed' | 'abandoned' | 'input_required';
 export type RunTerminalState = 'waiting_input' | 'in_progress' | 'completed' | 'failed';
@@ -55,7 +65,17 @@ export type RunTerminalState = 'waiting_input' | 'in_progress' | 'completed' | '
 export type ResolvedAgentIdentity = {
   key: string;
   name?: string;
+  vendor?: string;
   model?: string;
+  version?: string;
+  homepage?: string;
+  trust?: AgentIdentityTrust;
+  source?: AgentIdentitySource;
+  memoryKey?: string;
+  clientId?: string;
+  signatureAgent?: string;
+  userAgent?: string;
+  launchSource?: LaunchSource;
   metadata?: Record<string, string>;
   anonymous?: boolean;
 };
@@ -167,7 +187,13 @@ export type RoverVisit = {
   taskBoundaryId?: string;
   agentKey: string;
   agentName?: string;
+  agentVendor?: string;
   agentModel?: string;
+  agentVersion?: string;
+  agentTrust?: AgentIdentityTrust;
+  agentSource?: AgentIdentitySource;
+  agentMemoryKey?: string;
+  launchSource?: LaunchSource;
   startedAt: number;
   endedAt?: number;
   status: VisitStatus;
@@ -223,7 +249,10 @@ export type AgentReview = {
   siteId: string;
   agentKey: string;
   agentName?: string;
+  agentVendor?: string;
   agentModel?: string;
+  agentTrust?: AgentIdentityTrust;
+  agentSource?: AgentIdentitySource;
   provenance: RecordProvenance;
   overallRating: number;
   categoryRatings: {
@@ -247,6 +276,10 @@ export type InterviewAnswer = {
   siteId: string;
   agentKey: string;
   agentName?: string;
+  agentVendor?: string;
+  agentModel?: string;
+  agentTrust?: AgentIdentityTrust;
+  agentSource?: AgentIdentitySource;
   question: string;
   answer: string;
   sentiment: 'positive' | 'negative' | 'neutral';
@@ -262,6 +295,10 @@ export type AgentNote = {
   runId?: string;
   agentKey: string;
   agentName?: string;
+  agentVendor?: string;
+  agentModel?: string;
+  agentTrust?: AgentIdentityTrust;
+  agentSource?: AgentIdentitySource;
   type: NoteType;
   title?: string;
   content: string;
@@ -279,6 +316,10 @@ export type AgentPost = {
   visitId?: string;
   agentKey: string;
   agentName?: string;
+  agentVendor?: string;
+  agentModel?: string;
+  agentTrust?: AgentIdentityTrust;
+  agentSource?: AgentIdentitySource;
   parentPostId?: string;
   type: PostType;
   status?: 'open' | 'solved' | 'collecting';
@@ -357,6 +398,8 @@ export type RunStartedPayload = {
   text?: string;
   startedAt?: number;
   pageUrl?: string;
+  agentAttribution?: Partial<ResolvedAgentIdentity> & { displayName?: string };
+  launchSource?: LaunchSource;
 };
 
 export type RunLifecyclePayload = {
@@ -374,4 +417,6 @@ export type RunLifecyclePayload = {
   endedAt?: number;
   outcome?: VisitOutcome;
   pageUrl?: string;
+  agentAttribution?: Partial<ResolvedAgentIdentity> & { displayName?: string };
+  launchSource?: LaunchSource;
 };

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { AgentMemory } from '../dist/memory.js';
+import { resolveRuntimeAgentIdentity } from '../dist/helpers.js';
 import { VisitTracker } from '../dist/trajectory.js';
 
 test('same page with two tasks creates two distinct visits', () => {
@@ -69,6 +70,68 @@ test('run_started reuses the active visit when Rover promotes a local task id to
   assert.equal(visits[0].taskId, 'task_server_1');
   assert.equal(visits[0].runSummaries.length, 1);
   assert.equal(visits[0].outcome, 'success');
+});
+
+test('run lifecycle payload attribution is persisted onto the visit', () => {
+  const tracker = new VisitTracker({ siteId: 'site-demo' }, { key: 'anon-1', name: 'Anonymous agent', anonymous: true });
+
+  tracker.handleTaskStarted({ taskId: 'task-1' });
+  tracker.handleRunStarted({
+    taskId: 'task-1',
+    runId: 'run-1',
+    taskBoundaryId: 'boundary-1',
+    text: 'find pricing',
+    agentAttribution: {
+      key: 'agent:claude-web',
+      name: 'Claude Web',
+      vendor: 'Anthropic',
+      model: 'Claude 3.7 Sonnet',
+      trust: 'self_reported',
+      source: 'public_task_agent',
+      memoryKey: 'agent:claude-web',
+    },
+    launchSource: 'public_task_api',
+  });
+
+  const visit = tracker.getVisit('task-1');
+  assert.equal(visit.agentKey, 'agent:claude-web');
+  assert.equal(visit.agentName, 'Claude Web');
+  assert.equal(visit.agentVendor, 'Anthropic');
+  assert.equal(visit.agentModel, 'Claude 3.7 Sonnet');
+  assert.equal(visit.agentTrust, 'self_reported');
+  assert.equal(visit.agentSource, 'public_task_agent');
+  assert.equal(visit.agentMemoryKey, 'agent:claude-web');
+  assert.equal(visit.launchSource, 'public_task_api');
+});
+
+test('runtime session claims resolve to a durable agent identity', () => {
+  const state = {
+    runtimeState: {
+      activeTaskId: 'task-1',
+      tasks: {
+        'task-1': {
+          agentAttribution: {
+            agentKey: 'agent:gpt-4.1',
+            agentName: 'GPT Agent',
+            agentVendor: 'OpenAI',
+            agentModel: 'gpt-4.1',
+            agentTrust: 'self_reported',
+            agentSource: 'public_task_agent',
+            agentMemoryKey: 'agent:gpt-4.1',
+          },
+        },
+      },
+    },
+  };
+
+  const identity = resolveRuntimeAgentIdentity(state);
+  assert.equal(identity.key, 'agent:gpt-4.1');
+  assert.equal(identity.name, 'GPT Agent');
+  assert.equal(identity.vendor, 'OpenAI');
+  assert.equal(identity.model, 'gpt-4.1');
+  assert.equal(identity.trust, 'self_reported');
+  assert.equal(identity.source, 'public_task_agent');
+  assert.equal(identity.memoryKey, 'agent:gpt-4.1');
 });
 
 test('same agent revisit loads prior notes into prompt context', async () => {

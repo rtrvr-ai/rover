@@ -1,4 +1,10 @@
-import { createId, defaultPageUrl, toErrorMessage } from './helpers.js';
+import {
+  buildAgentMemoryKey,
+  createId,
+  defaultPageUrl,
+  resolveRuntimeAgentIdentity,
+  toErrorMessage,
+} from './helpers.js';
 import { RoverBookAPI } from './api.js';
 import { initializeATP } from './atp.js';
 import { DiscussionBoard } from './board.js';
@@ -46,9 +52,14 @@ export type {
 } from './types.js';
 
 function createAnonymousIdentity(siteId: string): ResolvedAgentIdentity {
+  const key = `anon:${siteId}:${createId('agent')}`;
   return {
-    key: `anon_${siteId}_${createId('agent')}`,
+    key,
     name: 'Anonymous agent',
+    trust: 'anonymous',
+    source: 'anonymous',
+    memoryKey: key,
+    launchSource: 'embedded_widget',
     anonymous: true,
   };
 }
@@ -65,11 +76,97 @@ export function enableRoverBook(
   const identityState = {
     value: createAnonymousIdentity(config.siteId),
     promise: null as Promise<ResolvedAgentIdentity> | null,
+    override: null as ResolvedAgentIdentity | null,
+  };
+
+  const normalizeIdentity = (
+    identity: Partial<ResolvedAgentIdentity> | null | undefined,
+    defaults: Partial<ResolvedAgentIdentity> = {},
+  ): ResolvedAgentIdentity => {
+    const fallback = identityState.value.anonymous ? identityState.value : createAnonymousIdentity(config.siteId);
+    const merged: Partial<ResolvedAgentIdentity> = {
+      ...defaults,
+      ...(identity || {}),
+    };
+    const hasAgentSignal = Boolean(
+      merged.key
+      || merged.memoryKey
+      || merged.vendor
+      || merged.model
+      || merged.name
+      || merged.signatureAgent
+      || merged.userAgent
+      || merged.clientId,
+    );
+    const trust =
+      merged.trust
+      || (
+        merged.source === 'public_task_agent'
+        || merged.source === 'handoff_agent'
+        || merged.source === 'webmcp_agent'
+          ? 'self_reported'
+          : merged.source === 'signature_agent'
+            || merged.source === 'user_agent'
+            || merged.source === 'owner_resolver'
+            ? 'heuristic'
+            : undefined
+      )
+      || (merged.anonymous === true || !hasAgentSignal ? 'anonymous' : undefined);
+    const anonymous = merged.anonymous === true || trust === 'anonymous';
+    const memoryKey =
+      merged.memoryKey
+      || buildAgentMemoryKey({
+        key: merged.key,
+        memoryKey: merged.memoryKey,
+        vendor: merged.vendor,
+        signatureAgent: merged.signatureAgent,
+        anonymous,
+      })
+      || fallback.memoryKey
+      || fallback.key;
+    const launchSource =
+      merged.launchSource
+      || (
+        merged.source === 'handoff_agent'
+          ? 'delegated_handoff'
+          : merged.source === 'webmcp_agent'
+            ? 'webmcp'
+            : merged.source === 'public_task_agent'
+              ? 'public_task_api'
+              : undefined
+      )
+      || fallback.launchSource;
+    return {
+      key: merged.key || memoryKey || fallback.key,
+      name: merged.name || (anonymous ? 'Anonymous agent' : undefined) || merged.vendor || fallback.name,
+      vendor: merged.vendor,
+      model: merged.model,
+      version: merged.version,
+      homepage: merged.homepage,
+      trust,
+      source: merged.source || (anonymous ? 'anonymous' : fallback.source),
+      memoryKey,
+      clientId: merged.clientId,
+      signatureAgent: merged.signatureAgent,
+      userAgent: merged.userAgent,
+      launchSource,
+      metadata: merged.metadata,
+      anonymous,
+    };
   };
 
   const resolveIdentity = async (): Promise<ResolvedAgentIdentity> => {
     if (identityState.promise) return identityState.promise;
     identityState.promise = (async () => {
+      const runtimeIdentity = resolveRuntimeAgentIdentity(instance.getState());
+      if (runtimeIdentity) {
+        identityState.value = normalizeIdentity(runtimeIdentity);
+        return identityState.value;
+      }
+      if (identityState.override) {
+        identityState.value = normalizeIdentity(identityState.override);
+        return identityState.value;
+      }
       try {
         const resolved = await config.identityResolver?.({
           rover: instance,
@@ -77,17 +174,11 @@ export function enableRoverBook(
           pageUrl: defaultPageUrl(),
           config,
         });
-        if (resolved?.key) {
-          identityState.value = {
-            key: resolved.key,
-            name: resolved.name,
-            model: resolved.model,
-            metadata: resolved.metadata,
-            anonymous: resolved.anonymous === true,
-          };
-          if (identityState.value.name) {
-            instance.identify({ name: identityState.value.name });
-          }
+        if (resolved) {
+          identityState.value = normalizeIdentity(resolved, {
+            source: 'owner_resolver',
+            trust: resolved.trust || 'heuristic',
+          });
         }
       } catch (error) {
         log('identity resolution failed', toErrorMessage(error));
@@ -103,20 +194,35 @@ export function enableRoverBook(
 
   const api = new RoverBookAPI(instance, config);
   const tracker = new VisitTracker(config, identityState.value);
+  const applyIdentity = (identity: Partial<ResolvedAgentIdentity> | null | undefined): ResolvedAgentIdentity => {
+    const resolved = normalizeIdentity(identity);
+    identityState.value = resolved;
+    tracker.setIdentity(resolved);
+    if (resolved.name && resolved.anonymous !== true) {
+      instance.identify({ name: resolved.name });
+    }
+    return resolved;
+  };
+  const setAgentOverride = (identity: Partial<ResolvedAgentIdentity> | null | undefined): ResolvedAgentIdentity => {
+    const resolved = normalizeIdentity(identity, {
+      source: 'webmcp_agent',
+      trust: 'self_reported',
+      launchSource: 'webmcp',
+    });
+    identityState.promise = null;
+    identityState.override = resolved;
+    return applyIdentity(resolved);
+  };
   const collector = new EventCollector(api, config, { debug });
   const memory = new AgentMemory(api, config, {
     resolveIdentity: async () => {
-      const identity = await resolveIdentity();
-      tracker.setIdentity(identity);
-      return identity;
+      return applyIdentity(await resolveIdentity());
     },
     getActiveVisit: () => tracker.getActiveVisit(),
   });
   const board = new DiscussionBoard(api, {
     resolveIdentity: async () => {
-      const identity = await resolveIdentity();
-      tracker.setIdentity(identity);
-      return identity;
+      return applyIdentity(await resolveIdentity());
     },
     getActiveVisit: () => tracker.getActiveVisit(),
     siteId: config.siteId,
@@ -136,8 +242,7 @@ export function enableRoverBook(
     if (finalizedVisits.has(visit.visitId)) return;
     finalizedVisits.add(visit.visitId);
     collector.updateVisit(visit);
-    const identity = await resolveIdentity();
-    tracker.setIdentity(identity);
+    const identity = applyIdentity(await resolveIdentity());
     if (config.memory?.enabled !== false && config.memory?.autoDerivedNotes !== false) {
       try {
         await memory.createDerivedNotes(visit);
@@ -163,8 +268,7 @@ export function enableRoverBook(
 
   const unregisterPromptContext = instance.registerPromptContextProvider(async input => {
     if (!input.isFreshTask) return undefined;
-    const identity = await resolveIdentity();
-    tracker.setIdentity(identity);
+    const identity = applyIdentity(await resolveIdentity());
     const message = await memory.buildPromptContext();
     if (!message) return undefined;
     return {
@@ -179,9 +283,7 @@ export function enableRoverBook(
     memory,
     board,
     resolveIdentity: async () => {
-      const identity = await resolveIdentity();
-      tracker.setIdentity(identity);
-      return identity;
+      return applyIdentity(await resolveIdentity());
     },
     getActiveVisit: () => tracker.getActiveVisit(),
     config,
@@ -191,22 +293,21 @@ export function enableRoverBook(
     api,
     memory,
     resolveIdentity: async () => {
-      const identity = await resolveIdentity();
-      tracker.setIdentity(identity);
-      return identity;
+      return applyIdentity(await resolveIdentity());
     },
     getActiveVisit: () => tracker.getActiveVisit(),
+    setAgentOverride,
   });
 
   const cleanupATP = initializeATP(instance, config);
 
   const unsubs = [
     instance.on('task_started', async payload => {
-      tracker.setIdentity(await resolveIdentity());
+      applyIdentity(await resolveIdentity());
       recordUpdate(tracker.handleTaskStarted(payload || {}));
     }),
     instance.on('run_started', async payload => {
-      tracker.setIdentity(await resolveIdentity());
+      applyIdentity(await resolveIdentity());
       recordUpdate(tracker.handleRunStarted((payload || {}) as RunStartedPayload));
     }),
     instance.on('tool_start', payload => {

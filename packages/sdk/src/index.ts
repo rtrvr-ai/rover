@@ -720,6 +720,23 @@ type ActivePublicTaskContext = {
   updatedAt: number;
 };
 let activePublicTaskContext: ActivePublicTaskContext | null = null;
+type RoverRuntimeAgentAttribution = {
+  agentKey: string;
+  agentName?: string;
+  agentVendor?: string;
+  agentModel?: string;
+  agentTrust?: 'verified' | 'self_reported' | 'heuristic' | 'anonymous';
+  agentSource?:
+    | 'public_task_agent'
+    | 'handoff_agent'
+    | 'webmcp_agent'
+    | 'signature_agent'
+    | 'user_agent'
+    | 'owner_resolver'
+    | 'anonymous';
+  agentMemoryKey?: string;
+  launchSource?: 'public_task_api' | 'delegated_handoff' | 'webmcp' | 'embedded_widget';
+};
 const promptContextProviders = new Set<RoverPromptContextProvider>();
 let browserReceiptLastHandledKey = '';
 let browserReceiptClaimInFlightKey = '';
@@ -1655,6 +1672,76 @@ function updateRuntimeSessionToken(token?: string, expiresAt?: number): void {
       sessionStorage.removeItem(`rover:sess:${siteId}`);
     }
   } catch { /* ignore */ }
+}
+
+function decodeBase64UrlUtf8(input: string): string {
+  try {
+    const normalized = String(input || '').replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4);
+    if (typeof atob === 'function') {
+      const binary = atob(padded);
+      const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
+      return new TextDecoder().decode(bytes);
+    }
+  } catch {
+    // fall through
+  }
+  return '';
+}
+
+function readRuntimeAgentAttribution(token?: string): RoverRuntimeAgentAttribution | null {
+  const raw = String(token || '').trim();
+  if (!raw.startsWith('rvrsess_')) return null;
+  const packed = raw.slice('rvrsess_'.length);
+  const dotIndex = packed.lastIndexOf('.');
+  if (dotIndex <= 0) return null;
+  const payloadRaw = decodeBase64UrlUtf8(packed.slice(0, dotIndex));
+  if (!payloadRaw) return null;
+  try {
+    const claims = JSON.parse(payloadRaw) as Record<string, unknown>;
+    const agentKey = String(claims.agentKey || '').trim();
+    const agentName = String(claims.agentName || '').trim() || undefined;
+    const agentVendor = String(claims.agentVendor || '').trim() || undefined;
+    const agentModel = String(claims.agentModel || '').trim() || undefined;
+    const agentTrust = String(claims.agentTrust || '').trim() as RoverRuntimeAgentAttribution['agentTrust'];
+    const agentSource = String(claims.agentSource || '').trim() as RoverRuntimeAgentAttribution['agentSource'];
+    const agentMemoryKey = String(claims.agentMemoryKey || '').trim() || undefined;
+    const launchSource = String(claims.launchSource || '').trim() as RoverRuntimeAgentAttribution['launchSource'];
+    if (!agentKey && !agentName && !agentVendor && !agentModel) return null;
+    return {
+      agentKey: agentKey || agentMemoryKey || agentVendor || agentName || 'anonymous',
+      agentName,
+      agentVendor,
+      agentModel,
+      agentTrust:
+        agentTrust === 'verified'
+        || agentTrust === 'self_reported'
+        || agentTrust === 'heuristic'
+        || agentTrust === 'anonymous'
+          ? agentTrust
+          : undefined,
+      agentSource:
+        agentSource === 'public_task_agent'
+        || agentSource === 'handoff_agent'
+        || agentSource === 'webmcp_agent'
+        || agentSource === 'signature_agent'
+        || agentSource === 'user_agent'
+        || agentSource === 'owner_resolver'
+        || agentSource === 'anonymous'
+          ? agentSource
+          : undefined,
+      agentMemoryKey,
+      launchSource:
+        launchSource === 'public_task_api'
+        || launchSource === 'delegated_handoff'
+        || launchSource === 'webmcp'
+        || launchSource === 'embedded_widget'
+          ? launchSource
+          : undefined,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function applyServerPolicy(policy?: RoverServerPolicy): void {
@@ -10848,12 +10935,18 @@ export function endTask(options?: { reason?: string }): void {
 }
 
 export function getState(): any {
+  const currentAgentAttribution = readRuntimeAgentAttribution(getRuntimeSessionToken());
+  const runtimeSnapshot = runtimeState ? cloneRuntimeStateForCheckpoint(runtimeState) : null;
+  if (runtimeSnapshot && currentAgentAttribution) {
+    (runtimeSnapshot as any).currentAgentAttribution = currentAgentAttribution;
+  }
   return {
     mode: currentMode,
     runtimeId,
-    runtimeState: runtimeState ? cloneRuntimeStateForCheckpoint(runtimeState) : null,
+    runtimeState: runtimeSnapshot,
     sharedState: sessionCoordinator?.getState() || null,
     pendingTaskSuggestion,
+    currentAgentAttribution,
   };
 }
 

@@ -40,13 +40,25 @@ Add this snippet before `</body>` on your website:
 <script src="https://rover.rtrvr.ai/embed.js" async></script>
 ```
 
+If RoverBook is enabled in Rover Workspace, the authoritative generated snippet also includes:
+
+- `https://rover.rtrvr.ai/roverbook.js`
+- an inline attach block that calls `window.RoverBook.enableRoverBook(window.rover, {...})`
+
+Copy the Workspace-generated snippet as-is for production installs instead of hand-assembling RoverBook config by hand.
+
+Workspace also controls site mode:
+
+- `Full Rover agent`: action-capable Rover runtime
+- `RoverBook analytics-only`: embed-oriented RoverBook deployment with action tools disabled
+
 Get your `siteId` and `publicKey` (`pk_site_*`) from the [Rover Workspace](https://rover.rtrvr.ai/workspace). If you also have a `siteKeyId`, append it to the script URL as `embed.js?v=YOUR_SITE_KEY_ID` for cache-busting and safer key-rotation rollouts. The `v` query string does not affect domain authorization or scope matching.
 
 Site-owner credentials are only for installing Rover on your website. External AI callers do **not** need `siteId`, `publicKey`, or `siteKeyId` when they use the public task protocol.
 
 ### Single Script Tag (Data Attributes)
 
-For the simplest integration, use data attributes — no inline JavaScript needed:
+For the simplest integration, use data attributes, no inline JavaScript needed:
 
 ```html
 <script src="https://rover.rtrvr.ai/embed.js"
@@ -77,10 +89,48 @@ For advanced configuration (task routing, checkpointing, UI options), use the JS
 
 The two-part snippet pattern works like this:
 
-1. **Queue stub** — The inline `<script>` creates a lightweight `rover()` function that queues commands. This lets you call `rover('boot', ...)` immediately, before the SDK has loaded.
-2. **Async SDK** — The `embed.js` script loads asynchronously (non-blocking). Once loaded, it replays any queued commands and replaces the stub with the full API.
+1. **Queue stub**: the inline `<script>` creates a lightweight `rover()` function that queues commands. This lets you call `rover('boot', ...)` immediately, before the SDK has loaded.
+2. **Async SDK**: the `embed.js` script loads asynchronously. Once loaded, it replays any queued commands and replaces the stub with the full API.
 
 This pattern ensures Rover never blocks your page load, and commands are never lost regardless of load order.
+
+## RoverBook In Rover Workspace
+
+RoverBook now lives inside Rover Workspace rather than a separate dashboard surface.
+
+Workspace split:
+
+- `sites`: site directory and switching
+- `setup`: key/domain/policy management, install snippet, site config, RoverBook interview questions, RoverBook webhook subscriptions
+- `overview`
+- `analytics`
+- `trajectories`
+- `reviews`
+- `interviews`
+- `board`
+- `memory`
+
+Important contract split:
+
+- browser/site-tag RoverBook writes remain signed Rover session writes
+- owner-facing RoverBook reads and settings are Workspace callables that require owner auth
+- RoverBook webhook secrets are private owner settings and are not returned in public site/embed config
+
+## Agent Identity Attribution
+
+Rover and RoverBook now attribute visiting agents with a tiered trust model.
+
+Resolution order:
+
+1. verified signal
+2. explicit `agent` metadata on `POST /v1/tasks`, delegated handoffs, or WebMCP task tools
+3. heuristic headers: `User-Agent`, `Signature-Agent`, `Signature`, `Signature-Input`, `X-RTRVR-Client-Id`
+4. advanced local `identityResolver`
+5. anonymous fallback
+
+For Rover-managed traffic, the browser runtime reads agent attribution from task/session claims first. Script-tag installs therefore do not need a custom site-owner `identityResolver` just to make RoverBook memory or revisit analytics work.
+
+Current launch behavior emits `self_reported`, `heuristic`, and `anonymous`. `verified` remains reserved for real verification and is not inferred from unsigned headers.
 
 ---
 
@@ -102,6 +152,7 @@ boot({
 ```
 
 **When to use npm over the script tag:**
+
 - TypeScript types and autocompletion
 - Version pinning via `package.json`
 - SPA lifecycle management (boot/shutdown on mount/unmount)
@@ -135,14 +186,13 @@ export function RoverWidget() {
 }
 ```
 
-**Next.js SSR guard** — Rover requires `window` and `document`. Use a dynamic import:
+**Next.js SSR guard**: Rover requires `window` and `document`. Use a dynamic import:
 
 ```tsx
 import dynamic from 'next/dynamic';
 
 const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 
-// In your layout or page:
 export default function Layout({ children }) {
   return (
     <>
@@ -176,7 +226,7 @@ onUnmounted(async () => {
 </script>
 ```
 
-**Nuxt** — Create a client-only plugin:
+**Nuxt**: create a client-only plugin:
 
 ```typescript
 // plugins/rover.client.ts
@@ -224,7 +274,7 @@ add_action('wp_footer', function() {
 
 ## Content Security Policy (CSP)
 
-**No CSP header on your site?** Skip this section — Rover works out of the box with no configuration.
+**No CSP header on your site?** Skip this section. Rover works out of the box with no configuration.
 
 If your site sets a `Content-Security-Policy` header or `<meta>` tag, add the following directives:
 
@@ -232,10 +282,10 @@ If your site sets a `Content-Security-Policy` header or `<meta>` tag, add the fo
 
 | Directive | Value | Why |
 |---|---|---|
-| `script-src` | `https://rover.rtrvr.ai blob:` | Loads the SDK script. `blob:` is needed because the Web Worker is created from a blob URL via `importScripts()`. |
-| `worker-src` | `blob: https://rover.rtrvr.ai` | Allows the Web Worker to execute. The worker handles AI task processing off the main thread. |
+| `script-src` | `https://rover.rtrvr.ai blob:` | Loads the SDK script. `blob:` is needed because the Web Worker is created from a blob URL. |
+| `worker-src` | `blob: https://rover.rtrvr.ai` | Allows the Web Worker to execute. |
 | `connect-src` | `https://agent.rtrvr.ai` | API calls for task execution, authentication, checkpointing, and public task resources. |
-| `style-src` | `'unsafe-inline'` | Rover renders inside a Shadow DOM and injects its styles inline. This is standard for Shadow DOM components. |
+| `style-src` | `'unsafe-inline'` | Rover renders inside a Shadow DOM and injects its styles inline. |
 | `font-src` | `https://rover.rtrvr.ai` | Loads the self-hosted Manrope font used in the widget UI. |
 
 ### Optional Directives
@@ -264,7 +314,7 @@ If your CSP policy cannot allow any external script domains, self-host the Rover
 1. Download from `https://rover.rtrvr.ai/`:
    - `embed.js`
    - `worker/rover-worker.js`
-   - `rover/fonts/manrope-latin.woff2` (optional — for font self-hosting)
+   - `rover/fonts/manrope-latin.woff2` (optional - for font self-hosting)
 2. Host them on your origin (e.g., `/assets/rover/`)
 3. Load from your origin:
 
@@ -293,7 +343,7 @@ This eliminates all `script-src`, `worker-src`, and `font-src` external domain r
 
 ## CORS
 
-**You do NOT need to configure CORS on your server.** CORS headers are set on Rover's CDN (Vercel) side. The `embed.js`, worker, and font files all include `Access-Control-Allow-Origin: *`. Your website simply loads them — no server-side changes required.
+**You do NOT need to configure CORS on your server.** CORS headers are set on Rover's CDN (Vercel) side. The `embed.js`, worker, and font files all include `Access-Control-Allow-Origin: *`. Your website simply loads them - no server-side changes required.
 
 ---
 
@@ -314,16 +364,18 @@ rover.boot(config);
 | `boot` | `config: RoverInit` | Initialize Rover. If already booted, calls `update` instead. |
 | `init` | `config: RoverInit` | Alias for `boot`. |
 | `update` | `config: Partial<RoverInit>` | Update configuration without rebooting. |
-| `shutdown` | — | Destroy the widget, worker, and all state. |
-| `open` | — | Open the chat panel. |
-| `close` | — | Close the chat panel. |
-| `show` | — | Show the widget (launcher button + panel). |
-| `hide` | — | Hide the widget entirely. |
+| `shutdown` | - | Destroy the widget, worker, and all state. |
+| `open` | - | Open the chat panel. |
+| `close` | - | Close the chat panel. |
+| `show` | - | Show the widget (launcher button + panel). |
+| `hide` | - | Hide the widget entirely. |
 | `send` | `text: string` | Send a user message. |
 | `newTask` | `{ reason?: string }` | Start a new task, clearing conversation and worker context. |
 | `endTask` | `{ reason?: string }` | End the current task without destroying the session. |
-| `getState` | — | Returns the current runtime state object. |
+| `getState` | - | Returns the current runtime state object. |
 | `registerTool` | `def, handler` | Register a client-side tool callable by the agent. |
+| `requestSigned` | `url, init?` | Issue a fetch signed with the current Rover session token and site/session headers. |
+| `registerPromptContextProvider` | `provider` | Inject bounded prompt context before a fresh Rover task/run. |
 | `identify` | `{ name?, email? }` | Update visitor profile after boot (async auth/user hydration). |
 | `on` | `event, handler` | Subscribe to an event. Returns an unsubscribe function. |
 
@@ -336,11 +388,11 @@ rover.boot(config);
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `siteId` | `string` | *required* | Site identifier from Workspace |
-| `publicKey` | `string` | — | Public Rover bootstrap key (`pk_site_*`) from Workspace |
-| `sessionToken` | `string` | — | Optional pre-minted short-lived session token (`rvrsess_*`) |
-| `siteKeyId` | `string` | — | Site key ID from Workspace. Recommended for embed cache-busting/rotation rollouts; not used for scope matching. |
+| `publicKey` | `string` | - | Public Rover bootstrap key (`pk_site_*`) from Workspace |
+| `sessionToken` | `string` | - | Optional pre-minted short-lived session token (`rvrsess_*`) |
+| `siteKeyId` | `string` | - | Site key ID from Workspace. Recommended for embed cache-busting/rotation rollouts; not used for scope matching. |
 | `visitorId` | `string` | auto | Stable visitor identifier |
-| `visitor` | `{ name?: string; email?: string }` | — | Optional visitor profile for greeting personalization. Recommended flow is async updates via `identify(...)` after login/user hydration. |
+| `visitor` | `{ name?: string; email?: string }` | - | Optional visitor profile for greeting personalization. Recommended flow is async updates via `identify(...)` after login/user hydration. |
 | `sessionId` | `string` | auto | Explicit session ID |
 | `sessionScope` | `'shared_site' \| 'tab'` | `'shared_site'` | Shared cross-tab session or tab-isolated session |
 | `mode` | `'full' \| 'safe'` | `'full'` | Runtime mode |
@@ -374,9 +426,9 @@ rover.boot(config);
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `taskContext.resetMode` | `'auto' \| 'ask' \| 'off'` | `'auto'` | Advisory task reset behavior |
-| `taskContext.inactivityMs` | `number` | — | Optional inactivity hint for continuity logic |
+| `taskContext.inactivityMs` | `number` | - | Optional inactivity hint for continuity logic |
 | `taskContext.suggestReset` | `boolean` | `true` | Allow reset suggestions when continuity is unclear |
-| `taskContext.semanticSimilarityThreshold` | `number` | — | Optional similarity hint for continuity scoring |
+| `taskContext.semanticSimilarityThreshold` | `number` | - | Optional similarity hint for continuity scoring |
 | `task.followup.mode` | `'heuristic_same_window'` | `'heuristic_same_window'` | Heuristic follow-up chat-cue carryover mode |
 | `task.followup.ttlMs` | `number` | `120000` | Max age (ms) of prior completed/ended task eligible for follow-up chat cues |
 | `task.followup.minLexicalOverlap` | `number` | `0.18` | Minimum lexical overlap ratio to attach follow-up chat cues |
@@ -392,15 +444,15 @@ rover.boot(config);
 | `checkpointing.pullIntervalMs` | `number` | service default | Pull interval for checkpoint refresh |
 | `checkpointing.minFlushIntervalMs` | `number` | service default | Minimum checkpoint flush interval |
 | `checkpointing.ttlHours` | `number` | `1` | Checkpoint TTL in hours |
-| `checkpointing.onStateChange` | `(payload) => void` | — | Checkpoint lifecycle updates (`active`, `paused_auth`) |
-| `checkpointing.onError` | `(payload) => void` | — | Checkpoint request error callback |
+| `checkpointing.onStateChange` | `(payload) => void` | - | Checkpoint lifecycle updates (`active`, `paused_auth`) |
+| `checkpointing.onError` | `(payload) => void` | - | Checkpoint request error callback |
 
 ### Telemetry
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `telemetry.enabled` | `boolean` | `true` | Enable runtime telemetry batching |
-| `telemetry.sampleRate` | `number` | `1` | Sampling ratio (`1` = all events, `0.1` ≈ 10%) |
+| `telemetry.sampleRate` | `number` | `1` | Sampling ratio (`1` = all events, `0.1` ~ 10%) |
 | `telemetry.flushIntervalMs` | `number` | `12000` | Flush cadence for buffered telemetry events |
 | `telemetry.maxBatchSize` | `number` | `30` | Maximum number of telemetry events sent per flush request |
 | `telemetry.includePayloads` | `boolean` | `false` | Include richer per-event payload details (debug/tool context). Increases telemetry volume and may include sensitive runtime content. |
@@ -438,9 +490,9 @@ When `tools.web.scrapeMode` is `on_demand`, ensure your Rover site key includes 
 | `ui.panel.resizable` | `boolean` | `true` | Enables desktop freeform resizing plus phone/tablet snap-height resizing with per-device memory |
 | `ui.showTaskControls` | `boolean` | `true` | Show new/end task controls |
 | `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced) |
-| `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | — | Greeting bubble config; supports `{name}` placeholder |
-| `ui.voice` | `{ enabled?: boolean; language?: string; autoStopMs?: number }` | — | Browser dictation on supported Chromium browsers. Transcript fills the draft live, Rover waits for post-speech silence before stopping, and the user manually sends. |
-| `pageConfig` | `RoverPageCaptureConfig` | — | Optional per-site page-capture overrides such as `disableAutoScroll`, settle timing, and sparse-tree retry settings |
+| `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | - | Greeting bubble config; supports `{name}` placeholder |
+| `ui.voice` | `{ enabled?: boolean; language?: string; autoStopMs?: number }` | - | Browser dictation on supported Chromium browsers. Transcript fills the draft live, Rover waits for post-speech silence before stopping, and the user manually sends. |
+| `pageConfig` | `RoverPageCaptureConfig` | - | Optional per-site page-capture overrides such as `disableAutoScroll`, settle timing, and sparse-tree retry settings |
 
 With site keys (or a valid `rvrsess_*` token), Rover fetches cloud site config via `POST /v2/rover/session/open` (shortcuts + greeting + voice + aiAccess + pageConfig).
 If boot config and cloud config define the same field, boot config takes precedence.
@@ -583,7 +635,7 @@ off(); // unsubscribe
 
 | Event | Payload | Description |
 |---|---|---|
-| `ready` | — | SDK initialized, worker connected |
+| `ready` | - | SDK initialized, worker connected |
 | `updated` | `config` | Configuration updated via `update()` |
 | `status` | `{ stage, compactThought }` | Execution progress. Stages: `analyze`, `route`, `execute`, `verify`, `complete` |
 | `tool_start` | `{ name, args }` | Agent started executing a tool |
@@ -594,14 +646,17 @@ off(); // unsubscribe
 | `mode_change` | `{ mode }` | Switched between `controller` and `observer` |
 | `task_started` | `{ reason }` | New task started |
 | `task_ended` | `{ reason }` | Task ended |
-| `context_restored` | — | Session restored from checkpoint |
+| `run_started` | `{ taskId, runId, taskBoundaryId, state, taskComplete, needsUserInput, summary? }` | Public run lifecycle start event |
+| `run_state_transition` | `{ taskId, runId, taskBoundaryId, state, taskComplete, needsUserInput, summary?, error? }` | Public run lifecycle transition event |
+| `run_completed` | `{ taskId, runId, taskBoundaryId, state, taskComplete, needsUserInput, summary?, error? }` | Terminal public run lifecycle event |
+| `context_restored` | - | Session restored from checkpoint |
 | `checkpoint_state` | `{ state, reason?, action?, code?, message? }` | Checkpoint sync state updates |
 | `checkpoint_error` | `{ action, code?, message, ... }` | Checkpoint request failure details |
 | `tab_event_conflict_retry` | `{ runId, conflict?, ... }` | A stale seq/epoch tab-event conflict was recovered by one silent retry |
 | `tab_event_conflict_exhausted` | `{ runId, conflict?, ... }` | Tab-event stale conflict retry was exhausted (non-fatal; projection sync path) |
 | `checkpoint_token_missing` | `{ action, status }` | Legacy checkpoint browser path was blocked |
-| `open` | — | Panel opened |
-| `close` | — | Panel closed |
+| `open` | - | Panel opened |
+| `close` | - | Panel closed |
 
 ---
 
