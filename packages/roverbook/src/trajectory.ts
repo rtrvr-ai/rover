@@ -179,7 +179,13 @@ function createEmptyVisit(
     latestUrl: pageUrl,
     agentKey: identity.key,
     agentName: identity.name,
+    agentVendor: identity.vendor,
     agentModel: identity.model,
+    agentVersion: identity.version,
+    agentTrust: identity.trust,
+    agentSource: identity.source,
+    agentMemoryKey: identity.memoryKey || identity.key,
+    launchSource: identity.launchSource,
     startedAt: Date.now(),
     status: 'active',
     outcome: 'partial',
@@ -200,6 +206,52 @@ function createEmptyVisit(
   };
 }
 
+function applyIdentityToVisit(visit: ActiveVisitState, identity: Partial<ResolvedAgentIdentity> | null | undefined): void {
+  if (!identity) return;
+  if (identity.key) visit.agentKey = identity.key;
+  if (identity.name) visit.agentName = identity.name;
+  if (identity.vendor) visit.agentVendor = identity.vendor;
+  if (identity.model) visit.agentModel = identity.model;
+  if (identity.version) visit.agentVersion = identity.version;
+  if (identity.trust) visit.agentTrust = identity.trust;
+  if (identity.source) visit.agentSource = identity.source;
+  if (identity.memoryKey || identity.key) {
+    visit.agentMemoryKey = identity.memoryKey || identity.key;
+  }
+  if (identity.launchSource) visit.launchSource = identity.launchSource;
+}
+
+function payloadIdentity(
+  payload?: (RunStartedPayload | RunLifecyclePayload) & { agentAttribution?: Record<string, unknown> | undefined },
+): Partial<ResolvedAgentIdentity> | null {
+  const attribution = payload?.agentAttribution;
+  if (!attribution || typeof attribution !== 'object') return null;
+  return {
+    key: asString(attribution.key) || asString((attribution as { agentKey?: unknown }).agentKey),
+    name:
+      asString(attribution.name)
+      || asString((attribution as { displayName?: unknown }).displayName)
+      || asString((attribution as { agentName?: unknown }).agentName),
+    vendor: asString(attribution.vendor) || asString((attribution as { agentVendor?: unknown }).agentVendor),
+    model: asString(attribution.model) || asString((attribution as { agentModel?: unknown }).agentModel),
+    version: asString(attribution.version) || asString((attribution as { agentVersion?: unknown }).agentVersion),
+    homepage: asString(attribution.homepage) || asString((attribution as { agentHomepage?: unknown }).agentHomepage),
+    trust: attribution.trust as ResolvedAgentIdentity['trust'],
+    source: attribution.source as ResolvedAgentIdentity['source'],
+    memoryKey:
+      asString(attribution.memoryKey)
+      || asString((attribution as { agentMemoryKey?: unknown }).agentMemoryKey)
+      || undefined,
+    clientId: asString(attribution.clientId) || asString((attribution as { agentClientId?: unknown }).agentClientId),
+    signatureAgent:
+      asString(attribution.signatureAgent)
+      || asString((attribution as { agentSignatureAgent?: unknown }).agentSignatureAgent),
+    userAgent: asString(attribution.userAgent) || asString((attribution as { agentUserAgent?: unknown }).agentUserAgent),
+    launchSource: payload?.launchSource || (attribution.launchSource as ResolvedAgentIdentity['launchSource']),
+    anonymous: attribution.anonymous === true,
+  };
+}
+
 export class VisitTracker {
   private readonly visits = new Map<string, ActiveVisitState>();
   private readonly runToVisit = new Map<string, string>();
@@ -217,9 +269,7 @@ export class VisitTracker {
   setIdentity(identity: ResolvedAgentIdentity): void {
     this.identity = identity;
     for (const visit of this.visits.values()) {
-      visit.agentKey = identity.key;
-      visit.agentName = identity.name;
-      visit.agentModel = identity.model;
+      applyIdentityToVisit(visit, identity);
     }
   }
 
@@ -272,6 +322,7 @@ export class VisitTracker {
     visit.taskBoundaryId = taskBoundaryId || visit.taskBoundaryId;
     visit.taskId = taskId || visit.taskId;
     visit.latestUrl = asString(payload.pageUrl) || defaultPageUrl();
+    applyIdentityToVisit(visit, payloadIdentity(payload));
     this.addVisitedPage(visit, visit.latestUrl);
     visit.runs.push(run);
     visit.metrics.totalRuns = visit.runs.length;
@@ -417,6 +468,7 @@ export class VisitTracker {
     const run = this.findRun(asString(payload.runId), asString(payload.taskId));
     if (!run) return null;
     const visit = run.visit;
+    applyIdentityToVisit(visit, payloadIdentity(payload));
     run.run.taskBoundaryId = asString(payload.taskBoundaryId) || run.run.taskBoundaryId;
     visit.taskBoundaryId = run.run.taskBoundaryId || visit.taskBoundaryId;
     run.run.terminalState = payload.terminalState;
@@ -489,9 +541,7 @@ export class VisitTracker {
   private ensureVisit(taskId: string): ActiveVisitState {
     const existing = this.visits.get(taskId);
     if (existing) {
-      existing.agentKey = this.identity.key;
-      existing.agentName = this.identity.name;
-      existing.agentModel = this.identity.model;
+      applyIdentityToVisit(existing, this.identity);
       return existing;
     }
     const visit = createEmptyVisit(taskId, this.config.siteId, this.identity);
@@ -583,7 +633,13 @@ export class VisitTracker {
       taskBoundaryId: visit.taskBoundaryId,
       agentKey: visit.agentKey,
       agentName: visit.agentName,
+      agentVendor: visit.agentVendor,
       agentModel: visit.agentModel,
+      agentVersion: visit.agentVersion,
+      agentTrust: visit.agentTrust,
+      agentSource: visit.agentSource,
+      agentMemoryKey: visit.agentMemoryKey,
+      launchSource: visit.launchSource,
       startedAt: visit.startedAt,
       endedAt: visit.endedAt,
       status: visit.status,

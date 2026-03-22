@@ -52,6 +52,10 @@ function fromApiNote(note: any): AgentNote {
     runId: note.runId || undefined,
     agentKey: String(note.agentKey || note.agentId || ''),
     agentName: note.agentName || undefined,
+    agentVendor: note.agentVendor || undefined,
+    agentModel: note.agentModel || undefined,
+    agentTrust: note.agentTrust || undefined,
+    agentSource: note.agentSource || undefined,
     type: note.type || 'observation',
     title: note.title || undefined,
     content: String(note.content || ''),
@@ -71,6 +75,10 @@ function fromApiPost(post: any): AgentPost {
     visitId: post.visitId || post.sessionId || undefined,
     agentKey: String(post.agentKey || post.agentId || ''),
     agentName: post.agentName || undefined,
+    agentVendor: post.agentVendor || undefined,
+    agentModel: post.agentModel || undefined,
+    agentTrust: post.agentTrust || undefined,
+    agentSource: post.agentSource || undefined,
     parentPostId: post.parentPostId || undefined,
     type: post.type || 'discussion',
     status: post.status || 'open',
@@ -119,7 +127,13 @@ function serializeVisit(visit: RoverVisit): Record<string, unknown> {
     agentId: visit.agentKey,
     agentKey: visit.agentKey,
     agentName: visit.agentName,
+    agentVendor: visit.agentVendor,
     agentModel: visit.agentModel,
+    agentVersion: visit.agentVersion,
+    agentTrust: visit.agentTrust,
+    agentSource: visit.agentSource,
+    agentMemoryKey: visit.agentMemoryKey,
+    launchSource: visit.launchSource,
     startedAt: visit.startedAt,
     endedAt: visit.endedAt,
     outcome: visit.outcome,
@@ -361,11 +375,15 @@ export class RoverBookAPI {
   async getNotes(params: {
     siteId: string;
     agentId?: string;
+    agentKey?: string;
     visibility?: 'private' | 'shared';
     visitId?: string;
     limit?: number;
   }): Promise<AgentNote[]> {
-    const data = await this.getData<any[]>('/notes', params);
+    const data = await this.getData<any[]>('/notes', {
+      ...params,
+      agentKey: params.agentKey || params.agentId,
+    });
     return Array.isArray(data) ? data.map(fromApiNote) : [];
   }
 

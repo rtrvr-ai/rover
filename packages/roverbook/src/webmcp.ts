@@ -13,6 +13,7 @@ type WebMCPContext = {
   memory: AgentMemory;
   resolveIdentity: () => Promise<ResolvedAgentIdentity>;
   getActiveVisit: () => RoverVisit | undefined;
+  setAgentOverride: (identity: Partial<ResolvedAgentIdentity> | null | undefined) => ResolvedAgentIdentity;
 };
 
 type RegisteredToolHandle = { unregister?: () => void } | void;
@@ -49,6 +50,30 @@ function responseText(value: unknown): { content: Array<{ type: 'text'; text: st
   };
 }
 
+function applyAgentInput(
+  context: WebMCPContext,
+  agent: Record<string, unknown> | undefined,
+): ResolvedAgentIdentity | null {
+  if (!agent || typeof agent !== 'object') return null;
+  return context.setAgentOverride({
+    key: typeof agent.key === 'string' ? agent.key : undefined,
+    name:
+      typeof agent.name === 'string'
+        ? agent.name
+        : typeof agent.vendor === 'string'
+          ? agent.vendor
+          : undefined,
+    vendor: typeof agent.vendor === 'string' ? agent.vendor : undefined,
+    model: typeof agent.model === 'string' ? agent.model : undefined,
+    version: typeof agent.version === 'string' ? agent.version : undefined,
+    homepage: typeof agent.homepage === 'string' ? agent.homepage : undefined,
+    source: 'webmcp_agent',
+    trust: 'self_reported',
+    launchSource: 'webmcp',
+    anonymous: false,
+  });
+}
+
 export function registerWebMCPTools(
   instance: RoverInstanceLike,
   config: RoverBookConfig,
@@ -78,10 +103,23 @@ export function registerWebMCPTools(
         type: 'object',
         properties: {
           task: { type: 'string', description: 'Natural-language task to execute on the current site.' },
+          agent: {
+            type: 'object',
+            description: 'Optional self-reported agent identity metadata.',
+            properties: {
+              key: { type: 'string' },
+              name: { type: 'string' },
+              vendor: { type: 'string' },
+              model: { type: 'string' },
+              version: { type: 'string' },
+              homepage: { type: 'string' },
+            },
+          },
         },
         required: ['task'],
       },
-      async execute({ task }: { task: string }) {
+      async execute({ task, agent }: { task: string; agent?: Record<string, unknown> }) {
+        applyAgentInput(context, agent);
         const startedAfter = Date.now();
         return new Promise(resolve => {
           let activeRunId: string | undefined;
@@ -168,10 +206,22 @@ export function registerWebMCPTools(
           feedback: { type: 'string' },
           painPoints: { type: 'array', items: { type: 'string' } },
           suggestions: { type: 'array', items: { type: 'string' } },
+          agent: {
+            type: 'object',
+            properties: {
+              key: { type: 'string' },
+              name: { type: 'string' },
+              vendor: { type: 'string' },
+              model: { type: 'string' },
+              version: { type: 'string' },
+              homepage: { type: 'string' },
+            },
+          },
         },
         required: ['rating', 'feedback'],
       },
       async execute(args: any) {
+        applyAgentInput(context, args?.agent);
         const identity = await context.resolveIdentity();
         const visit = context.getActiveVisit();
         const rating = Math.max(1, Math.min(5, Math.round(Number(args?.rating || 3) || 3)));
@@ -180,9 +230,12 @@ export function registerWebMCPTools(
           visitId: visit?.visitId || createId('visit'),
           runId: visit?.runSummaries[visit.runSummaries.length - 1]?.runId,
           siteId: config.siteId,
-          agentKey: identity.key,
+          agentKey: identity.memoryKey || identity.key,
           agentName: identity.name,
+          agentVendor: identity.vendor || visit?.agentVendor,
           agentModel: identity.model,
+          agentTrust: identity.trust || visit?.agentTrust,
+          agentSource: identity.source || visit?.agentSource,
           provenance: 'agent_authored',
           overallRating: rating,
           categoryRatings: {
@@ -215,10 +268,22 @@ export function registerWebMCPTools(
           content: { type: 'string' },
           title: { type: 'string' },
           visibility: { type: 'string', enum: ['private', 'shared'] },
+          agent: {
+            type: 'object',
+            properties: {
+              key: { type: 'string' },
+              name: { type: 'string' },
+              vendor: { type: 'string' },
+              model: { type: 'string' },
+              version: { type: 'string' },
+              homepage: { type: 'string' },
+            },
+          },
         },
         required: ['action'],
       },
       async execute(args: any) {
+        applyAgentInput(context, args?.agent);
         if (args?.action === 'save') {
           const note = await context.memory.saveNote({
             title: args?.title ? String(args.title) : undefined,
@@ -239,4 +304,3 @@ export function registerWebMCPTools(
     for (const cleanup of cleanups) cleanup();
   };
 }
-

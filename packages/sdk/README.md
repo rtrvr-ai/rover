@@ -37,6 +37,13 @@ Add this snippet before `</body>` on any page:
 <script src="https://rover.rtrvr.ai/embed.js" async></script>
 ```
 
+If RoverBook is enabled for the site in Rover Workspace, the generated install snippet also includes `https://rover.rtrvr.ai/roverbook.js` plus an inline attach block that calls `window.RoverBook.enableRoverBook(window.rover, ...)`. Copy the Workspace snippet as-is for production installs.
+
+Workspace also controls site mode:
+
+- `Full Rover agent`: action-capable Rover runtime
+- `RoverBook analytics-only`: embed-oriented RoverBook deployment with action tools disabled
+
 Get `siteId`, `publicKey` (`pk_site_*`), and optional `siteKeyId` from Rover Workspace:
 
 - `https://rover.rtrvr.ai/workspace`
@@ -303,6 +310,26 @@ Content-Type: application/json
 { "url": "https://www.rtrvr.ai", "prompt": "get me the latest blog post" }
 ```
 
+Callers may also provide structured visiting-agent metadata:
+
+```http
+POST https://agent.rtrvr.ai/v1/tasks
+Content-Type: application/json
+
+{
+  "url": "https://www.rtrvr.ai",
+  "prompt": "get me the latest blog post",
+  "agent": {
+    "key": "gpt-5.4-demo-agent",
+    "name": "GPT-5.4 Demo Agent",
+    "vendor": "OpenAI",
+    "model": "gpt-5.4",
+    "version": "2026-03",
+    "homepage": "https://openai.com"
+  }
+}
+```
+
 Anonymous AI callers do **not** need `siteId`, `publicKey`, or `siteKeyId`.
 
 The returned task URL is the canonical resource:
@@ -327,6 +354,18 @@ The task URL remains canonical; receipt links are only a browser handoff layer o
 
 Rover deep links like `?rover=` and `?rover_shortcut=` remain the simple browser-first entrypoints; `/v1/tasks` is the machine-oriented protocol. Cross-site workflows and handoffs extend that same public contract rather than replacing it.
 
+### Agent identity attribution
+
+Rover normalizes visiting-agent attribution in this order:
+
+1. verified signal
+2. explicit `agent` object on public task creation or handoffs
+3. heuristic headers such as `User-Agent`, `Signature-Agent`, `Signature`, `Signature-Input`, and `X-RTRVR-Client-Id`
+4. advanced local fallbacks such as RoverBook `identityResolver`
+5. anonymous fallback
+
+Current launch behavior emits `self_reported`, `heuristic`, and `anonymous`. `verified` remains reserved for a real verifier and is not inferred from plain headers alone.
+
 ### Cross-site workflows and handoffs
 
 Public tasks can delegate to Rover on another Rover-enabled site without leaving the same protocol surface.
@@ -334,6 +373,8 @@ Public tasks can delegate to Rover on another Rover-enabled site without leaving
 - `POST /v1/tasks/{id}/handoffs` creates a child task on another site
 - `GET /v1/workflows/{id}` returns aggregated workflow state or stream
 - child tasks inherit the same workflow lineage as the parent
+
+Handoff creation also accepts the optional `agent` object so a child task can inherit or explicitly override visiting-agent attribution.
 
 Receiving sites must explicitly opt in through Workspace/site config:
 
@@ -400,6 +441,8 @@ rover.send('Hello');
 | `getState()` | Get current runtime state |
 | `update(config)` | Update configuration without rebooting |
 | `registerTool(def, handler)` | Register a client-side tool |
+| `requestSigned(url, init?)` | Issue a fetch signed with the current Rover session token and site/session headers |
+| `registerPromptContextProvider(provider)` | Inject bounded prompt context before a fresh Rover task/run |
 | `identify(visitor)` | Update visitor profile after boot (for async login/user hydration) |
 | `on(event, handler)` | Subscribe to events (returns unsubscribe fn) |
 
@@ -423,11 +466,16 @@ rover.on('error', (err) => console.error(err));
 | `navigation_guardrail` | `{ url, policy }` | Out-of-scope navigation intercepted |
 | `task_started` | `{ reason }` | New task started |
 | `task_ended` | `{ reason }` | Task ended |
+| `run_started` | `{ taskId, runId, taskBoundaryId, state, taskComplete, needsUserInput, summary? }` | Public run lifecycle start event |
+| `run_state_transition` | `{ taskId, runId, taskBoundaryId, state, taskComplete, needsUserInput, summary?, error? }` | Public run lifecycle transition |
+| `run_completed` | `{ taskId, runId, taskBoundaryId, state, taskComplete, needsUserInput, summary?, error? }` | Terminal public run lifecycle event |
 | `checkpoint_state` | `{ state, reason?, action?, code?, message? }` | Checkpoint sync state updates |
 | `checkpoint_error` | `{ action, code?, message, ... }` | Checkpoint request failure details |
 | `tab_event_conflict_retry` | `{ runId, conflict?, ... }` | One stale seq/epoch tab-event conflict was recovered by silent retry |
 | `tab_event_conflict_exhausted` | `{ runId, conflict?, ... }` | Tab-event stale conflict retry exhausted (non-fatal; projection sync follows) |
 | `checkpoint_token_missing` | `{ action, status }` | Legacy checkpoint browser path blocked |
+
+`requestSigned(...)` and `registerPromptContextProvider(...)` are the main extension points RoverBook uses for signed analytics writes and memory injection.
 
 ## Content Security Policy (CSP)
 

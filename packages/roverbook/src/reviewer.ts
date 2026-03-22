@@ -65,9 +65,12 @@ export function buildDerivedReview(
     visitId: visit.visitId,
     runId: visit.runSummaries[visit.runSummaries.length - 1]?.runId,
     siteId: visit.siteId,
-    agentKey: identity.key,
+    agentKey: identity.memoryKey || identity.key,
     agentName: identity.name || visit.agentName,
+    agentVendor: identity.vendor || visit.agentVendor,
     agentModel: identity.model || visit.agentModel,
+    agentTrust: identity.trust || visit.agentTrust,
+    agentSource: identity.source || visit.agentSource,
     provenance: 'derived',
     overallRating,
     categoryRatings: {
