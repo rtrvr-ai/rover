@@ -196,6 +196,7 @@ export type RoverBookEventType =
 export type RoverBookEvent = {
   eventId: string;
   type: RoverBookEventType;
+  event?: string;
   siteId: string;
   visitId: string;
   taskId: string;
@@ -204,6 +205,14 @@ export type RoverBookEvent = {
   ts: number;
   pageUrl?: string;
   summary?: string;
+  stepType?: string;
+  toolName?: string;
+  target?: string;
+  url?: string;
+  durationMs?: number;
+  success?: boolean;
+  errorMessage?: string;
+  errorDetail?: string;
   payload?: Record<string, unknown>;
 };
 

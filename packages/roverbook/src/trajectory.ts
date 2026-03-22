@@ -12,6 +12,7 @@ import {
 import type {
   ResolvedAgentIdentity,
   RoverBookConfig,
+  RoverBookEventType,
   RoverBookEvent,
   RoverRunSummary,
   RoverVisit,
@@ -75,19 +76,92 @@ function createEvent(
   payload: Record<string, unknown>,
   runId?: string,
 ): RoverBookEvent {
+  const toolName = asString(payload.toolName || (payload as { call?: { name?: unknown } })?.call?.name);
+  const errorMessage = asString(payload.errorMessage || payload.error);
+  const pageUrl = asString(payload.pageUrl || payload.url) || defaultPageUrl();
   return {
     eventId: createId('event'),
     type,
+    event: type,
     siteId: visit.siteId,
     visitId: visit.visitId,
     taskId: visit.taskId,
     runId,
     taskBoundaryId: visit.taskBoundaryId,
     ts: Date.now(),
-    pageUrl: defaultPageUrl(),
+    pageUrl,
     summary: truncate(typeof payload.summary === 'string' ? payload.summary : undefined, 240),
+    stepType: inferEventStepType(type, payload),
+    toolName: toolName || undefined,
+    target: asString(payload.target) || undefined,
+    url: pageUrl || undefined,
+    durationMs: Number.isFinite(Number(payload.durationMs)) ? Number(payload.durationMs) : undefined,
+    success: typeof payload.success === 'boolean' ? payload.success : undefined,
+    errorMessage: errorMessage || undefined,
+    errorDetail: asString(payload.errorDetail) || undefined,
     payload,
   };
+}
+
+function inferToolStepType(toolName?: string): string {
+  const normalized = asString(toolName).toLowerCase();
+  if (!normalized) return 'other';
+  if (
+    normalized.includes('goto')
+    || normalized.includes('navigate')
+    || normalized.includes('open')
+    || normalized.includes('visit')
+  ) {
+    return 'navigate';
+  }
+  if (
+    normalized.includes('click')
+    || normalized.includes('tap')
+    || normalized.includes('press')
+    || normalized.includes('select')
+  ) {
+    return 'click';
+  }
+  if (
+    normalized.includes('type')
+    || normalized.includes('fill')
+    || normalized.includes('input')
+    || normalized.includes('enter')
+  ) {
+    return normalized.includes('fill') ? 'fill' : 'type';
+  }
+  if (normalized.includes('scroll')) return 'scroll';
+  if (normalized.includes('submit')) return 'submit';
+  if (
+    normalized.includes('extract')
+    || normalized.includes('read')
+    || normalized.includes('scrape')
+    || normalized.includes('capture')
+  ) {
+    return 'extract';
+  }
+  if (normalized.includes('search') || normalized.includes('find')) return 'search';
+  if (normalized.includes('wait')) return 'wait_for';
+  return 'other';
+}
+
+function inferEventStepType(type: RoverBookEventType, payload: Record<string, unknown>): string {
+  if (type === 'error') return 'error';
+  if (type === 'navigation_guardrail') return 'backtrack';
+  if (
+    type === 'status'
+    || type === 'task_started'
+    || type === 'task_ended'
+    || type === 'run_started'
+    || type === 'run_state_transition'
+    || type === 'run_completed'
+  ) {
+    return 'status';
+  }
+  if (type === 'tool_start' || type === 'tool_result') {
+    return inferToolStepType(asString(payload.toolName || (payload as { call?: { name?: unknown } })?.call?.name));
+  }
+  return 'other';
 }
 
 function createEmptyVisit(
@@ -178,7 +252,7 @@ export class VisitTracker {
 
   handleRunStarted(payload: RunStartedPayload): TrackingUpdate | null {
     const taskId = asString(payload.taskId) || this.activeVisitId || createId('visit');
-    const visit = this.ensureVisit(taskId);
+    const visit = this.resolveVisitForRun(taskId);
     const runId = asString(payload.runId) || createId('run');
     const taskBoundaryId = asString(payload.taskBoundaryId);
     const run: ActiveRunState = {
@@ -196,18 +270,21 @@ export class VisitTracker {
       steps: [],
     };
     visit.taskBoundaryId = taskBoundaryId || visit.taskBoundaryId;
+    visit.taskId = taskId || visit.taskId;
     visit.latestUrl = asString(payload.pageUrl) || defaultPageUrl();
     this.addVisitedPage(visit, visit.latestUrl);
     visit.runs.push(run);
     visit.metrics.totalRuns = visit.runs.length;
     visit.runSummaries = visit.runs.map(current => this.toRunSummary(current));
     this.runToVisit.set(runId, visit.visitId);
+    this.activeVisitId = visit.visitId;
     return {
       event: createEvent(visit, 'run_started', {
         runId,
         taskId: visit.taskId,
         taskBoundaryId,
         text: run.prompt,
+        pageUrl: visit.latestUrl,
       }, runId),
       visit: this.snapshotVisit(visit),
     };
@@ -368,6 +445,7 @@ export class VisitTracker {
       summary: run.run.summary,
       error: run.run.error,
       outcome: run.run.outcome,
+      pageUrl: visit.latestUrl,
     }, run.run.runId);
 
     const shouldFinalize =
@@ -419,6 +497,21 @@ export class VisitTracker {
     const visit = createEmptyVisit(taskId, this.config.siteId, this.identity);
     this.visits.set(taskId, visit);
     return visit;
+  }
+
+  private resolveVisitForRun(taskId: string): ActiveVisitState {
+    const explicitTaskId = asString(taskId);
+    if (explicitTaskId && this.visits.has(explicitTaskId)) {
+      return this.visits.get(explicitTaskId)!;
+    }
+    if (this.activeVisitId) {
+      const active = this.visits.get(this.activeVisitId);
+      if (active && !active.finalized && active.runs.length === 0) {
+        active.taskId = explicitTaskId || active.taskId;
+        return active;
+      }
+    }
+    return this.ensureVisit(explicitTaskId || createId('visit'));
   }
 
   private addVisitedPage(visit: ActiveVisitState, pageUrl?: string): void {
@@ -525,4 +618,3 @@ export class VisitTracker {
     };
   }
 }
-
