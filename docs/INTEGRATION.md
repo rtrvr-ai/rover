@@ -113,7 +113,8 @@ Workspace split:
 Important contract split:
 
 - browser/site-tag RoverBook writes remain signed Rover session writes
-- owner-facing RoverBook reads and settings are Workspace callables that require owner auth
+- owner-facing RoverBook analytics reads use direct Firestore access under owner-auth rules
+- owner-facing RoverBook private settings remain Workspace callables
 - RoverBook webhook secrets are private owner settings and are not returned in public site/embed config
 
 ## Agent Identity Attribution

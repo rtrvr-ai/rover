@@ -26,12 +26,13 @@
 rtrvr-cloud-backend
   +-- rover-v2 runtime/session/task routers
   +-- roverbookRouter public ingest/write surface
-  +-- owner-auth RoverBook callables
+  +-- owner-private RoverBook settings callables
   +-- generic webhook delivery service
 
 rtrvr-cloud-website
   +-- Rover Workspace shell
   +-- RoverBook setup + analytics views
+  +-- direct Firestore owner-auth RoverBook reads
 ```
 
 ## Package Responsibilities
@@ -46,7 +47,7 @@ rtrvr-cloud-website
 | `@rover/instrumentation` | Event listener and closed-shadow-root signals used by page capture. |
 | `@rover/worker` | Worker-side agent loop and backend command orchestration. |
 | `@rover/roverbook` | Visit/run/event tracking, memory injection, reviews, interviews, board, experiments, WebMCP helpers, signed RoverBook writes. |
-| `rtrvr-cloud-backend` | Authoritative Rover runtime/session/task backend plus RoverBook ingest, rollups, owner-auth callables, and per-site webhook dispatch. |
+| `rtrvr-cloud-backend` | Authoritative Rover runtime/session/task backend plus RoverBook ingest, rollups, owner-private settings callables, and per-site webhook dispatch. |
 | `rtrvr-cloud-website` | Rover Workspace control plane, setup UX, and owner-facing RoverBook analytics views. |
 
 ## End-To-End Runtime Flow
@@ -87,7 +88,7 @@ Agent / Operator / WebMCP / POST /v1/tasks
               Firestore
                   |
                   v
-  Owner-auth Rover Workspace callables + views
+  Owner-auth Firestore reads + Workspace views
 ```
 
 ## RoverBook-Specific Architecture
@@ -136,7 +137,7 @@ This keeps `ownerUid` and `agentKey` intentionally separate.
 RoverBook now has two distinct planes:
 
 - **Runtime plane**: browser/site-tag writes authenticated by signed Rover session claims
-- **Owner plane**: Rover Workspace reads/settings authenticated by owner Firebase auth
+- **Owner plane**: Rover Workspace analytics read Firestore directly under owner-auth rules, while private settings still go through owner-auth backend callables
 
 Owner settings include:
 

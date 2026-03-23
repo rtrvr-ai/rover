@@ -83,7 +83,7 @@ These settings are intentionally omitted from the public site config returned to
 
 ## Backend Enforcement
 
-- Site ownership is checked before owner-auth RoverBook reads/settings are returned.
+- Site ownership is enforced in two places: Firestore rules gate owner-facing RoverBook analytics reads, and backend callables gate owner-private RoverBook settings.
 - Public RoverBook writes derive `siteId`, host, and session context from verified Rover session claims rather than trusting raw client input.
 - Generic webhook delivery enforces HTTPS-only validation, payload shaping, retries/backoff, and signing.
 - Domain policy, usage metrics, and blocked-host attempts remain enforced at the Rover key layer.

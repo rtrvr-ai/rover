@@ -307,7 +307,8 @@ RoverBook uses Rover's real runtime boundaries:
 Important contract split:
 
 - **runtime/site-tag writes** use signed Rover session auth via `requestSigned(...)`
-- **owner workspace reads/settings** use owner-authenticated callables
+- **owner workspace analytics** read Firestore directly under owner-auth rules
+- **owner workspace private settings** stay backend-mediated for masked secrets and site-owner mutations
 - per-site webhook secrets and interview questions stay private to the owner plane
 
 ### RoverBook in Rover Workspace
@@ -423,7 +424,8 @@ Runtime flow:
 - Rover creates and executes tasks
 - Rover emits public lifecycle and tool events
 - RoverBook listens, builds visits/runs/events, and writes signed analytics
-- owner-auth workspace callables read the resulting AX data
+- owner-auth workspace analytics read the resulting AX data from Firestore
+- owner-auth private settings stay on backend callables
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full end-to-end picture.
 

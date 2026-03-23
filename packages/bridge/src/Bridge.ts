@@ -8,7 +8,12 @@ import { EventHandlerReverseMap, parseNumericListenerAttribute } from '@rover/a1
 import type { UploadFilePayload } from '@rover/shared/lib/system-tools/wire.js';
 import { fetchFileForUploadSmart } from '@rover/shared/lib/page/file-upload-utils.js';
 import { buildPageData, buildSnapshot, executeMainWorldTool, ensureMainWorldActions, ensureScrollDetector } from '@rover/dom';
-import { installInstrumentation, type InstrumentationController, type InstrumentationOptions } from '@rover/instrumentation';
+import {
+  installInstrumentation,
+  startInstrumentation,
+  type InstrumentationController,
+  type InstrumentationOptions,
+} from '@rover/instrumentation';
 import {
   extractHostname,
   isUrlAllowedByDomains,
@@ -122,6 +127,7 @@ export class Bridge {
   private uploadStore = new Map<string, { bytes: ArrayBuffer; createdAt: number }>();
   private uploadProviderInstalled = false;
   private actionGateContext: ActionGateContext = {};
+  private instrumentationStarted = false;
   private static readonly NAV_PREFLIGHT_TIMEOUT_MS = 1500;
 
   constructor(opts: BridgeOptions = {}) {
@@ -209,7 +215,7 @@ export class Bridge {
   }
 
   async getSnapshot() {
-    await ensureListenerScan(this.root);
+    await this.ensureListenerScan();
     return buildSnapshot(this.root, this.instrumentation, {
       includeFrames: this.includeFrames,
       disableDomAnnotations: this.disableDomAnnotations,
@@ -217,7 +223,7 @@ export class Bridge {
   }
 
   async getPageData(params?: { pageConfig?: PageConfig }) {
-    await ensureListenerScan(this.root);
+    await this.ensureListenerScan();
     const requestedPageConfig = sanitizeRoverPageCaptureConfig(params?.pageConfig);
     const pageConfig: PageConfig = {
       ...(requestedPageConfig || {}),
@@ -247,6 +253,30 @@ export class Bridge {
       disableDomAnnotations: this.disableDomAnnotations,
       pageConfig,
     });
+  }
+
+  private ensureInstrumentationStarted(): void {
+    if (this.instrumentationStarted) return;
+    startInstrumentation();
+    this.instrumentationStarted = true;
+  }
+
+  private async ensureListenerScan(): Promise<void> {
+    this.ensureInstrumentationStarted();
+    try {
+      const doc = this.root.ownerDocument || document;
+      const win = doc.defaultView || window;
+      const internalKey = (win as any).__RTRVR_INTERNAL_KEY__ || '__RTRVR_INTERNAL__';
+      const internal = (win as any)[internalKey];
+      const flushScan = internal?.flushScan;
+      if (typeof flushScan === 'function') {
+        await flushScan({ mode: 'priority', includeShadow: true, includeSameOriginIframes: true, budgetMs: 400 });
+        return;
+      }
+      (win as any).rtrvrAIMarkInteractiveElements?.();
+    } catch {
+      // ignore
+    }
   }
 
   async executeTool(call: { name: string; args?: Record<string, any> }, payload?: UploadFilePayload): Promise<any> {
@@ -1559,23 +1589,6 @@ function toWire(md: FrameworkElementMetadata): FrameworkElementMetadataWire {
     pattern: md.pattern,
     value: md.value ?? null,
   };
-}
-
-async function ensureListenerScan(root: Element): Promise<void> {
-  try {
-    const doc = root.ownerDocument || document;
-    const win = doc.defaultView || window;
-    const internalKey = (win as any).__RTRVR_INTERNAL_KEY__ || '__RTRVR_INTERNAL__';
-    const internal = (win as any)[internalKey];
-    const flushScan = internal?.flushScan;
-    if (typeof flushScan === 'function') {
-      await flushScan({ mode: 'priority', includeShadow: true, includeSameOriginIframes: true, budgetMs: 400 });
-      return;
-    }
-    (win as any).rtrvrAIMarkInteractiveElements?.();
-  } catch {
-    // ignore
-  }
 }
 
 function inferInteractionPattern(listenersRaw: string, toolName: SystemToolNames): string {

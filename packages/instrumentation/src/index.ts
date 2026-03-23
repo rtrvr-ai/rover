@@ -1,4 +1,4 @@
-import './relay-listeners.js';
+import { startRelayListeners } from './relay-listeners.js';
 
 import type { ElementSignalProvider } from '@rover/a11y-tree';
 import {
@@ -24,6 +24,7 @@ export type InstrumentationController = {
 };
 
 let controller: InstrumentationController | null = null;
+let started = false;
 
 function getListenerEncoding(el: Element): string | null {
   try {
@@ -111,15 +112,6 @@ function buildSignalProvider(): ElementSignalProvider {
 export function installInstrumentation(_opts: InstrumentationOptions = {}): InstrumentationController {
   if (controller) return controller;
 
-  // Ensure relay listener detection has run and force a baseline scan when possible.
-  if (typeof window !== 'undefined') {
-    try {
-      (window as any).rtrvrAIMarkInteractiveElements?.();
-    } catch {
-      // ignore
-    }
-  }
-
   controller = {
     signalProvider: buildSignalProvider(),
     getFrameworkMetadata,
@@ -130,6 +122,12 @@ export function installInstrumentation(_opts: InstrumentationOptions = {}): Inst
   };
 
   return controller;
+}
+
+export function startInstrumentation(): void {
+  if (started) return;
+  startRelayListeners();
+  started = true;
 }
 
 export function getActiveInstrumentation(): InstrumentationController | null {

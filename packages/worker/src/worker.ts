@@ -325,15 +325,11 @@ async function getCurrentTab(): Promise<RoverTab> {
       };
     }
   } catch {
-    // ignore and fall back
+    // Ignore. Worker bootstrap must stay DOM-passive until the first real task
+    // requests page analysis.
   }
 
-  try {
-    const pageData = await bridgeRpc('getPageData');
-    return { id: 1, url: pageData?.url, title: pageData?.title, external: false, accessMode: 'live_dom' };
-  } catch {
-    return { id: 1, external: false, accessMode: 'live_dom' };
-  }
+  return { id: 1, external: false, accessMode: 'live_dom' };
 }
 
 async function getKnownTabs(): Promise<RoverTab[]> {
