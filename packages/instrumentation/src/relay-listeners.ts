@@ -56,7 +56,9 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   other: ListenerSourceBit.Other,
 };
 
-(() => {
+export function startRelayListeners(): void {
+  if (typeof window === 'undefined') return;
+
   interface RtrvrListenerMeta {
     type: string;
     source: ListenerSource;
@@ -294,9 +296,6 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   ];
 
   if (win[MAIN_WORLD_FLAG]) {
-    if (typeof win.rtrvrAIMarkInteractiveElements === 'function') {
-      win.rtrvrAIMarkInteractiveElements();
-    }
     if (typeof win.rtrvrAISetObserverPaused !== 'function') {
       win.rtrvrAISetObserverPaused = () => false;
     }
@@ -2326,7 +2325,6 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
       detectFrameworksFromGlobals(); // catch late globals on DOM ready
       if (!isBackgroundWorkPaused()) {
         initMutationObserver();
-        win.rtrvrAIMarkInteractiveElements?.();
         // run secondary sweep once we actually know framework flags
         void secondaryScanIfNeeded({ budgetMs: 20 }); // see next patch section
       }
@@ -2342,4 +2340,4 @@ const ListenerSourceBits: Partial<Record<ListenerSource, ListenerSourceBit>> = {
   }
 
   bootstrap();
-})();
+}

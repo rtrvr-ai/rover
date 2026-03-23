@@ -6,7 +6,6 @@ import {
   toErrorMessage,
 } from './helpers.js';
 import { RoverBookAPI } from './api.js';
-import { initializeATP } from './atp.js';
 import { DiscussionBoard } from './board.js';
 import { EventCollector } from './collector.js';
 import { submitDerivedInterviews, DEFAULT_INTERVIEW_QUESTIONS } from './interviewer.js';
@@ -299,8 +298,6 @@ export function enableRoverBook(
     setAgentOverride,
   });
 
-  const cleanupATP = initializeATP(instance, config);
-
   const unsubs = [
     instance.on('task_started', async payload => {
       applyIdentity(await resolveIdentity());
@@ -346,7 +343,6 @@ export function enableRoverBook(
       for (const unsub of unsubs) unsub();
       unregisterPromptContext();
       cleanupWebMCP?.();
-      cleanupATP?.();
       await collector.dispose();
     },
     exposeExperiment: async (

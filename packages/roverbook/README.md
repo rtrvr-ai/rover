@@ -78,7 +78,7 @@ When you call `enableRoverBook(instance, config)`, the package:
 3. starts visit/run/event tracking
 4. registers explicit RoverBook tools on the Rover instance
 5. registers WebMCP tools when `navigator.modelContext` is available
-6. disables the old custom ATP shim and defers to Rover public tasks/handoffs
+6. defers cross-site task orchestration to Rover public tasks and delegated handoffs
 7. batches and flushes events to the backend with signed Rover session auth
 
 ## Identity
@@ -226,9 +226,9 @@ RoverBook calls the following routes behind `roverbookRouter`:
 - `GET /scores`
 - `GET /analytics`
 
-The dashboard and bot layer use the same router for reads.
+These signed GET routes are for RoverBook runtime and agent-facing surfaces.
 
-In the migrated Rover Workspace model, owner-facing analytics/settings are served through authenticated Workspace callables rather than direct browser calls to the public GET routes. Public RoverBook writes still use signed Rover session auth.
+In the migrated Rover Workspace model, owner-facing analytics read Firestore directly under owner-auth rules. Private settings such as notification subscriptions stay backend-mediated. Public RoverBook writes still use signed Rover session auth.
 
 ## Rover Workspace Integration
 
