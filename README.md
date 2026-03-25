@@ -133,7 +133,7 @@ const rover = boot({
 
 enableRoverBook(rover, {
   siteId: "YOUR_SITE_ID",
-  apiBase: "https://us-central1-rtrvr-extension-functions.cloudfunctions.net",
+  apiBase: "https://roverbook.rtrvr.ai",
   memory: {
     sharedAccess: "read_shared",
   },
