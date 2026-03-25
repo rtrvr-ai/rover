@@ -27,7 +27,7 @@ type JsonEnvelope<T> = {
 };
 
 function defaultApiBase(): string {
-  return 'https://us-central1-rtrvr-extension-functions.cloudfunctions.net';
+  return 'https://roverbook.rtrvr.ai';
 }
 
 function delay(ms: number): Promise<void> {
