@@ -91,6 +91,130 @@ import {
 
 Use `createRoverConsoleSnippet(...)` and `createRoverBookmarklet(...)` to generate one-click bootstrap payloads for a temporary session, and `attachLaunch(...)` when you want to attach a pre-created launch from code.
 
+### Which helper to use
+
+- `createRoverConsoleSnippet(...)`
+  Best for desktop demos, debugging, and screen-sharing when you can paste into DevTools.
+- `createRoverBookmarklet(...)`
+  Best for quick one-click demos across many pages, with the same current-page limitations as manual injection.
+- `createRoverScriptTagSnippet(...)`
+  Best for generating an actual snippet from known config values such as Workspace `siteId` and `publicKey`.
+- `attachLaunch(...)`
+  Best when you already created a launch elsewhere and want Rover to attach to it after boot.
+
+### Example: console snippet
+
+```ts
+import { createRoverConsoleSnippet } from '@rtrvr-ai/rover';
+
+const snippet = createRoverConsoleSnippet({
+  siteId: 'preview_site',
+  sessionToken: 'rvrsess_short_lived_token',
+  allowedDomains: ['example.com'],
+  domainScopeMode: 'host_only',
+  apiBase: 'https://agent.rtrvr.ai',
+  openOnInit: true,
+  mode: 'full',
+  allowActions: true,
+});
+```
+
+### Example: bookmarklet
+
+```ts
+import { createRoverBookmarklet } from '@rtrvr-ai/rover';
+
+const bookmarklet = createRoverBookmarklet({
+  siteId: 'preview_site',
+  sessionToken: 'rvrsess_short_lived_token',
+  allowedDomains: ['example.com'],
+  domainScopeMode: 'host_only',
+  apiBase: 'https://agent.rtrvr.ai',
+});
+```
+
+### Example: production script-tag snippet from Workspace config
+
+```ts
+import { createRoverScriptTagSnippet } from '@rtrvr-ai/rover';
+
+const snippet = createRoverScriptTagSnippet({
+  siteId: 'site_123',
+  publicKey: 'pk_site_123',
+  siteKeyId: 'key_123',
+  allowedDomains: ['example.com'],
+  domainScopeMode: 'registrable_domain',
+  apiBase: 'https://agent.rtrvr.ai',
+});
+```
+
+### Example: attach a pre-created launch
+
+```ts
+import { attachLaunch, boot } from '@rtrvr-ai/rover';
+
+boot({
+  siteId: 'preview_site',
+  sessionToken: 'rvrsess_short_lived_token',
+  allowedDomains: ['example.com'],
+  domainScopeMode: 'host_only',
+});
+
+attachLaunch({
+  requestId: 'rl_123',
+  attachToken: 'attach_123',
+});
+```
+
+### Two config sources
+
+Use one of these sources for the helper functions above:
+
+- **Workspace production config**
+  Persistent `siteId`, `publicKey`, optional `siteKeyId`, `allowedDomains`, and `domainScopeMode` from Rover Workspace.
+- **Hosted preview config**
+  Short-lived preview/runtime values produced by Rover Instant Preview on the website or by your own preview service.
+
+Get Workspace config from:
+
+- [https://www.rtrvr.ai/rover/workspace](https://www.rtrvr.ai/rover/workspace)
+- [https://rover.rtrvr.ai/workspace](https://rover.rtrvr.ai/workspace)
+
+If you want a public extension that can use either config source, see the Preview Helper app:
+
+- [https://github.com/rtrvr-ai/rover/tree/main/apps/preview-helper](https://github.com/rtrvr-ai/rover/tree/main/apps/preview-helper)
+- [https://www.rtrvr.ai/rover/docs/instant-preview-api](https://www.rtrvr.ai/rover/docs/instant-preview-api)
+
+### Hosted preview handoff behavior
+
+The open-source helper extension understands hosted preview handoff URLs that include:
+
+- `rover_preview_id`
+- `rover_preview_token`
+- `rover_preview_api`
+
+When those are present, the helper can fetch the short-lived preview config from the hosted Rover API and reconnect it across navigation.
+
+### Security notes
+
+- `pk_site_*` values are Workspace install credentials for a real site.
+- `rvrsess_*` values are short-lived runtime session credentials.
+- Preview tokens are demo credentials and should be treated as ephemeral.
+- Do not treat preview tokens as a replacement for production Workspace site keys.
+- Keep preview or helper injections scoped to the intended host with `allowedDomains` and the right `domainScopeMode`.
+
+### Hosted playground
+
+If you want the full managed preview flow, including preview creation and Workspace handoff, use the hosted website:
+
+- [https://www.rtrvr.ai/rover/instant-preview](https://www.rtrvr.ai/rover/instant-preview)
+
+More architecture detail:
+
+- [Instant Preview architecture](https://github.com/rtrvr-ai/rover/blob/main/docs/INSTANT_PREVIEW.md)
+- [Hosted preview API docs](https://www.rtrvr.ai/rover/docs/instant-preview-api)
+- [Hosted preview OpenAPI spec](https://raw.githubusercontent.com/rtrvr-ai/rtrvr-cloud-backend/main/docs/rover-instant-preview.openapi.yaml)
+
 ## npm Install
 
 ```bash
