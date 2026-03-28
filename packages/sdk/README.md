@@ -59,6 +59,7 @@ Or use the single-tag shorthand with data attributes:
 <script src="https://rover.rtrvr.ai/embed.js"
   data-site-id="YOUR_SITE_ID"
   data-public-key="pk_site_YOUR_PUBLIC_KEY"
+  data-session-token="rvrsess_YOUR_SHORT_LIVED_SESSION_TOKEN"
   data-allowed-domains="yourdomain.com"
   data-domain-scope-mode="registrable_domain">
 </script>
@@ -66,12 +67,29 @@ Or use the single-tag shorthand with data attributes:
 
 Use `data-domain-scope-mode="host_only"` to require exact host matches. Plain entries such as `example.com` become exact-host rules in `host_only` mode. In the default `registrable_domain` mode, plain entries match the apex host and its subdomains, while `*.example.com` matches subdomains only.
 
+For temporary preview sessions, `data-session-token` can bootstrap Rover without a `publicKey`. If you also have a `sessionId`, add `data-session-id` for a stable runtime boundary.
+
 Common patterns:
 
 - `allowedDomains: ['example.com']` with `registrable_domain` allows `example.com` and all subdomains.
 - `allowedDomains: ['*.example.com']` allows subdomains only, not the apex host.
 - `allowedDomains: ['app.example.com']` with `registrable_domain` allows `app.example.com` and its subdomains, but not sibling hosts.
 - `allowedDomains: ['example.com']` with `host_only` allows only the exact host `example.com`.
+
+## Preview Helpers
+
+The SDK also exports generic helper utilities for live demos and previews:
+
+```ts
+import {
+  attachLaunch,
+  createRoverBookmarklet,
+  createRoverConsoleSnippet,
+  createRoverScriptTagSnippet,
+} from '@rtrvr-ai/rover';
+```
+
+Use `createRoverConsoleSnippet(...)` and `createRoverBookmarklet(...)` to generate one-click bootstrap payloads for a temporary session, and `attachLaunch(...)` when you want to attach a pre-created launch from code.
 
 ## npm Install
 
