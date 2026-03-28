@@ -40,6 +40,13 @@ import {
   type RoverBrowserReceiptRequest,
 } from './receiptLink.js';
 import {
+  createRoverBookmarklet,
+  createRoverConsoleSnippet,
+  createRoverScriptTagSnippet,
+  readRoverScriptDataAttributes,
+  type RoverPreviewAttachLaunch,
+} from './previewBootstrap.js';
+import {
   RoverCloudCheckpointClient,
   type RoverCloudCheckpointPayload,
   type RoverCloudCheckpointState,
@@ -432,6 +439,7 @@ export type RoverInstance = {
   endTask: (options?: { reason?: string }) => void;
   getState: () => any;
   requestSigned: (input: string | URL, init?: RequestInit) => Promise<Response>;
+  attachLaunch: (params: RoverPreviewAttachLaunch) => Promise<RoverLaunchAttachResponse | null>;
   registerPromptContextProvider: (provider: RoverPromptContextProvider) => () => void;
   registerTool: (
     nameOrDef: string | ClientToolDefinition,
@@ -10286,6 +10294,7 @@ export function boot(cfg: RoverInit): RoverInstance {
     endTask,
     getState,
     requestSigned,
+    attachLaunch,
     registerPromptContextProvider,
     registerTool,
     identify,
@@ -10300,7 +10309,7 @@ export function boot(cfg: RoverInit): RoverInstance {
     pendingToolRegistrations.length = 0;
   }
 
-  return instance;
+  return instance!;
 }
 
 export function init(cfg: RoverInit): RoverInstance {
@@ -10736,6 +10745,15 @@ export function send(text: string): void {
   dispatchUserPrompt(text);
 }
 
+export async function attachLaunch(params: RoverPreviewAttachLaunch): Promise<RoverLaunchAttachResponse | null> {
+  if (!currentConfig) return null;
+  await ensureRoverServerRuntime(currentConfig);
+  return roverServerRuntime?.attachLaunch({
+    requestId: params.requestId,
+    attachToken: params.attachToken,
+  }) || null;
+}
+
 export async function requestSigned(input: string | URL, init: RequestInit = {}): Promise<Response> {
   if (!currentConfig) {
     throw new Error('Rover is not booted.');
@@ -10976,6 +10994,7 @@ function normalizeCommandName(command: string): keyof RoverInstance | undefined 
   if (c === 'send') return 'send';
   if (c === 'newTask') return 'newTask';
   if (c === 'endTask') return 'endTask';
+  if (c === 'attachLaunch') return 'attachLaunch';
   if (c === 'getState') return 'getState';
   if (c === 'requestSigned') return 'requestSigned';
   if (c === 'registerPromptContextProvider') return 'registerPromptContextProvider';
@@ -10995,6 +11014,13 @@ export const __roverInternalsForTests = {
   normalizePromptContextEntry,
   buildPublicRunStartedPayload,
   buildPublicRunLifecyclePayload,
+};
+
+export {
+  createRoverBookmarklet,
+  createRoverConsoleSnippet,
+  createRoverScriptTagSnippet,
+  readRoverScriptDataAttributes,
 };
 
 type RoverGlobalFn = ((command: string, ...args: any[]) => any) & Partial<RoverInstance> & { q?: any[]; l?: number };
@@ -11020,6 +11046,7 @@ export function installGlobal(): void {
   apiFn.show = show;
   apiFn.hide = hide;
   apiFn.send = send;
+  apiFn.attachLaunch = attachLaunch;
   apiFn.newTask = newTask;
   apiFn.endTask = endTask;
   apiFn.getState = getState;
@@ -11047,33 +11074,8 @@ export function installGlobal(): void {
         : null;
 
     if (scriptEl) {
-      const dataSiteId = scriptEl.getAttribute('data-site-id');
-      const dataPublicKey = scriptEl.getAttribute('data-public-key');
-
-      if (dataSiteId && dataPublicKey) {
-        const dataConfig: RoverInit = {
-          siteId: dataSiteId,
-          publicKey: dataPublicKey,
-        };
-
-        const dataAllowedDomains = scriptEl.getAttribute('data-allowed-domains');
-        if (dataAllowedDomains) {
-          dataConfig.allowedDomains = dataAllowedDomains.split(',').map((d) => d.trim()).filter(Boolean);
-        }
-
-        const dataDomainScopeMode = scriptEl.getAttribute('data-domain-scope-mode');
-        if (dataDomainScopeMode === 'host_only' || dataDomainScopeMode === 'registrable_domain') {
-          dataConfig.domainScopeMode = dataDomainScopeMode;
-        }
-
-        const dataSiteKeyId = scriptEl.getAttribute('data-site-key-id');
-        if (dataSiteKeyId) dataConfig.siteKeyId = dataSiteKeyId;
-
-        const dataWorkerUrl = scriptEl.getAttribute('data-worker-url');
-        if (dataWorkerUrl) dataConfig.workerUrl = dataWorkerUrl;
-
-        boot(dataConfig);
-      }
+      const dataConfig = readRoverScriptDataAttributes(scriptEl);
+      if (dataConfig) boot(dataConfig as RoverInit);
     }
   }
 }

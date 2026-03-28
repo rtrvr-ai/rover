@@ -43,12 +43,18 @@
       "import": "./dist/rover.js",
       "types": "./dist/index.d.ts"
     },
+    "./preview-bootstrap": {
+      "import": "./dist/previewBootstrap.js",
+      "types": "./dist/previewBootstrap.d.ts"
+    },
     "./embed": "./dist/embed.js",
     "./worker": "./dist/worker/rover-worker.js"
   },
   "files": [
     "dist/rover.js",
     "dist/embed.js",
+    "dist/previewBootstrap.js",
+    "dist/previewBootstrap.d.ts",
     "dist/index.d.ts",
     "dist/worker/rover-worker.js",
     "dist/loader.js",
