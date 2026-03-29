@@ -1,5 +1,11 @@
 # Rover Integration Guide
 
+Before you copy any snippet from this guide, decide which path you are using:
+
+- **Hosted Preview**: signed-in Rover demo path, no Workspace config needed
+- **Try on Other Sites**: get test config JSON from Workspace first, then use Helper / Console / Bookmarklet
+- **Production install**: use the Workspace install snippet on your real site
+
 ## Quick Start
 
 ### Prerequisites
