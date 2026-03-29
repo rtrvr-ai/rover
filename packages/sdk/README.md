@@ -13,6 +13,8 @@ Embed on websites, browser extensions, Electron apps, or any DOM environment.
 
 You need an rtrvr.ai account with available credits. Free accounts get 250 credits/month. [Sign up or manage your plan](https://www.rtrvr.ai/cloud?view=pricing).
 
+Before you test Rover on arbitrary websites, get your site config from Workspace first. Hosted Preview is the only path that does not require Workspace config.
+
 ## Quick Start (Script Tag)
 
 Add this snippet before `</body>` on any page:
@@ -89,9 +91,24 @@ import {
 } from '@rtrvr-ai/rover';
 ```
 
-Use `createRoverConsoleSnippet(...)` and `createRoverBookmarklet(...)` to generate one-click bootstrap payloads for a temporary session, and `attachLaunch(...)` when you want to attach a pre-created launch from code.
+Use `createRoverConsoleSnippet(...)` and `createRoverBookmarklet(...)` to generate one-click bootstrap payloads, and `attachLaunch(...)` when you want to attach a pre-created launch from code.
+
+Before you use any of these helpers on another website:
+
+1. Open Rover Workspace.
+2. Create or rotate a site key so Workspace reveals the full `pk_site_*` value.
+3. Copy the **test config JSON** from Workspace.
+4. Either paste that JSON into the Rover website's "Try on Other Sites" tool, or pass the same values into the SDK helpers below.
 
 ### Which helper to use
+
+| Path | What you need | Best for | Persistence |
+|---|---|---|---|
+| Hosted Preview | Signed-in URL + prompt | Rover-managed demos | Temporary preview session |
+| Preview Helper | Workspace test config JSON or hosted handoff | Multi-page desktop demos | Re-injects after reload/navigation |
+| Console | Workspace test config JSON + generated snippet | Fast DevTools demos | Current page only |
+| Bookmarklet | Workspace test config JSON + generated bookmarklet | Drag-and-click demos | Current page only |
+| Production install | Workspace install snippet | Real site install | Persistent |
 
 - `createRoverConsoleSnippet(...)`
   Best for desktop demos, debugging, and screen-sharing when you can paste into DevTools.
@@ -102,16 +119,17 @@ Use `createRoverConsoleSnippet(...)` and `createRoverBookmarklet(...)` to genera
 - `attachLaunch(...)`
   Best when you already created a launch elsewhere and want Rover to attach to it after boot.
 
-### Example: console snippet
+### Example: console snippet from Workspace config
 
 ```ts
 import { createRoverConsoleSnippet } from '@rtrvr-ai/rover';
 
 const snippet = createRoverConsoleSnippet({
-  siteId: 'preview_site',
-  sessionToken: 'rvrsess_short_lived_token',
+  siteId: 'site_123',
+  publicKey: 'pk_site_123',
+  siteKeyId: 'key_123',
   allowedDomains: ['example.com'],
-  domainScopeMode: 'host_only',
+  domainScopeMode: 'registrable_domain',
   apiBase: 'https://agent.rtrvr.ai',
   openOnInit: true,
   mode: 'full',
@@ -119,16 +137,17 @@ const snippet = createRoverConsoleSnippet({
 });
 ```
 
-### Example: bookmarklet
+### Example: bookmarklet from Workspace config
 
 ```ts
 import { createRoverBookmarklet } from '@rtrvr-ai/rover';
 
 const bookmarklet = createRoverBookmarklet({
-  siteId: 'preview_site',
-  sessionToken: 'rvrsess_short_lived_token',
+  siteId: 'site_123',
+  publicKey: 'pk_site_123',
+  siteKeyId: 'key_123',
   allowedDomains: ['example.com'],
-  domainScopeMode: 'host_only',
+  domainScopeMode: 'registrable_domain',
   apiBase: 'https://agent.rtrvr.ai',
 });
 ```
@@ -180,6 +199,12 @@ Get Workspace config from:
 - [https://www.rtrvr.ai/rover/workspace](https://www.rtrvr.ai/rover/workspace)
 - [https://rover.rtrvr.ai/workspace](https://rover.rtrvr.ai/workspace)
 
+If you want the exact human walkthrough instead of jumping straight into code:
+
+- website guide: [https://www.rtrvr.ai/rover/docs/try-on-other-sites](https://www.rtrvr.ai/rover/docs/try-on-other-sites)
+- repo guide: [../../docs/TRY_ON_OTHER_SITES.md](../../docs/TRY_ON_OTHER_SITES.md)
+- one-click helper path: use the website tool's `Open target with helper` action after pasting the Workspace config
+
 If you want a public extension that can use either config source, see the Preview Helper app:
 
 - [https://github.com/rtrvr-ai/rover/tree/main/apps/preview-helper](https://github.com/rtrvr-ai/rover/tree/main/apps/preview-helper)
@@ -202,6 +227,7 @@ When those are present, the helper can fetch the short-lived preview config from
 - Preview tokens are demo credentials and should be treated as ephemeral.
 - Do not treat preview tokens as a replacement for production Workspace site keys.
 - Keep preview or helper injections scoped to the intended host with `allowedDomains` and the right `domainScopeMode`.
+- Generic `publicKey` config is the normal Workspace path. `sessionToken` is the temporary preview/runtime path.
 
 ### Hosted playground
 

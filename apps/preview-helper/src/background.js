@@ -1,5 +1,8 @@
 import {
   extractPreviewLaunchParams,
+  extractHelperConfigFragment,
+  hasHelperConfigFragment,
+  isHostAllowed,
   normalizeConfig,
   normalizeHost,
   serializeConfigForSeed,
@@ -9,9 +12,14 @@ import {
 
 const inMemoryState = new Map();
 const pendingInjects = new Map();
+const STATUS_KEY_PREFIX = 'rover-preview-helper:status:';
 
 function storageKey(tabId) {
   return `${STORAGE_KEY_PREFIX}${tabId}`;
+}
+
+function statusKey(tabId) {
+  return `${STATUS_KEY_PREFIX}${tabId}`;
 }
 
 async function getSessionValue(key) {
@@ -46,6 +54,10 @@ async function writeState(tabId, state) {
 async function clearState(tabId) {
   inMemoryState.delete(tabId);
   await removeSessionValue(storageKey(tabId));
+}
+
+async function writeStatus(tabId, message) {
+  await setSessionValue(statusKey(tabId), String(message || '').trim());
 }
 
 async function sanitizeTabUrl(tabId, url) {
@@ -164,6 +176,15 @@ async function maybeHydratePreviewFromUrl(tabId, tabUrl) {
   return await injectFromTab(tabId, config);
 }
 
+async function maybeHydrateGenericConfigFromUrl(tabId, tabUrl) {
+  if (!hasHelperConfigFragment(tabUrl)) return null;
+  const rawConfig = extractHelperConfigFragment(tabUrl);
+  if (!rawConfig) return null;
+  const config = normalizeConfig(rawConfig);
+  await sanitizeTabUrl(tabId, tabUrl);
+  return await injectFromTab(tabId, config);
+}
+
 function buildTargetHost(tabUrl, fallbackState) {
   const fromTab = normalizeHost(tabUrl);
   if (fromTab) return fromTab;
@@ -172,7 +193,7 @@ function buildTargetHost(tabUrl, fallbackState) {
 
 async function injectMainWorldState(tabId, state) {
   if (!state) return false;
-  const signature = `${state.siteId}:${state.sessionToken}:${state.launchUrl || state.requestId || ''}:${state.attachToken || ''}`;
+  const signature = `${state.siteId}:${state.publicKey || ''}:${state.sessionToken || ''}:${state.launchUrl || state.requestId || ''}:${state.attachToken || ''}`;
   const existing = pendingInjects.get(tabId);
   if (existing === signature) return true;
   pendingInjects.set(tabId, signature);
@@ -216,14 +237,16 @@ async function injectFromTab(tabId, config) {
   if (currentHost && targetHost && currentHost !== targetHost) {
     throw new Error(`Tab host mismatch. Expected ${targetHost}, got ${currentHost}.`);
   }
-  if (!config.siteId || !config.sessionToken) {
-    throw new Error('siteId and sessionToken are required.');
-  }
-
   const normalized = normalizeConfig({
     ...config,
     targetHost,
   });
+  if (!normalized.siteId || (!normalized.publicKey && !normalized.sessionToken)) {
+    throw new Error('siteId and either publicKey or sessionToken are required.');
+  }
+  if (!isHostAllowed(targetHost, normalized.allowedDomains, normalized.domainScopeMode)) {
+    throw new Error(`This tab host (${targetHost}) is outside allowedDomains. Update your Workspace config or open a matching host.`);
+  }
   const launchUrl = normalized.launchUrl || '';
   const state = {
     ...normalized,
@@ -234,6 +257,7 @@ async function injectFromTab(tabId, config) {
 
   await writeState(tabId, state);
   await injectMainWorldState(tabId, state);
+  await writeStatus(tabId, `Rover injected for ${targetHost}.`);
 
   return state;
 }
@@ -269,12 +293,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         } catch {
           // Fall through to stored-state reconnect.
         }
+        try {
+          const hydrated = await maybeHydrateGenericConfigFromUrl(tabId, pageUrl);
+          if (hydrated) return;
+        } catch (error) {
+          await sanitizeTabUrl(tabId, pageUrl).catch(() => {});
+          await writeStatus(tabId, String(error?.message || error || 'Invalid Rover helper handoff.'));
+        }
       }
       const state = await readState(tabId);
       if (!state) return;
       try {
         const refreshed = await refreshStateFromBackend(tabId, state, pageUrl).catch(() => state);
         await injectMainWorldState(tabId, refreshed || state);
+        await writeStatus(tabId, `Rover reconnected for ${buildTargetHost(pageUrl, refreshed || state) || 'this tab'}.`);
       } catch {
         // Ignore readiness races; tab navigation hooks will retry.
       }

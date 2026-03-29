@@ -28,7 +28,10 @@
   const apiBase = String(state.apiBase || 'https://agent.rtrvr.ai').trim() || 'https://agent.rtrvr.ai';
   const embedUrl = String(state.embedScriptUrl || 'https://rover.rtrvr.ai/embed.js').trim() || 'https://rover.rtrvr.ai/embed.js';
   const siteId = String(state.siteId || '').trim();
+  const publicKey = String(state.publicKey || '').trim();
   const sessionToken = String(state.sessionToken || '').trim();
+  const siteKeyId = String(state.siteKeyId || '').trim();
+  const workerUrl = String(state.workerUrl || '').trim();
   const domainScopeMode = state.domainScopeMode === 'host_only' ? 'host_only' : 'registrable_domain';
   const allowedDomains = allowed.length ? allowed : [location.hostname];
 
@@ -39,15 +42,21 @@
 
   const bootConfig = {
     siteId,
-    sessionToken,
     apiBase,
     allowedDomains,
     domainScopeMode,
-    openOnInit: true,
+    openOnInit: state.openOnInit !== false,
     ui: {
       muted: true,
     },
   };
+  if (publicKey) bootConfig.publicKey = publicKey;
+  if (sessionToken) bootConfig.sessionToken = sessionToken;
+  if (siteKeyId) bootConfig.siteKeyId = siteKeyId;
+  if (workerUrl) bootConfig.workerUrl = workerUrl;
+  if (state.externalNavigationPolicy) bootConfig.externalNavigationPolicy = state.externalNavigationPolicy;
+  if (state.mode) bootConfig.mode = state.mode;
+  if (typeof state.allowActions === 'boolean') bootConfig.allowActions = state.allowActions;
 
   rover('boot', bootConfig);
 

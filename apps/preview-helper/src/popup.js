@@ -21,7 +21,17 @@ async function loadSavedConfig(tabId) {
   const value = stored[key];
   if (value) {
     configEl.value = JSON.stringify(value, null, 2);
-    setStatus('Loaded saved Rover or preview config for this tab.');
+  }
+}
+
+async function loadSavedStatus(tabId) {
+  const key = `rover-preview-helper:status:${tabId}`;
+  const stored = await chrome.storage.session.get(key);
+  const value = String(stored[key] || '').trim();
+  if (value) {
+    setStatus(value, value.toLowerCase().includes('invalid') || value.toLowerCase().includes('failed'));
+  } else {
+    setStatus('Ready. Use Workspace -> Try on Other Sites -> Open target with helper, or paste config JSON below.');
   }
 }
 
@@ -64,6 +74,7 @@ reconnectBtn.addEventListener('click', async () => {
     const tab = await getActiveTab();
     if (tab?.id) {
       await loadSavedConfig(tab.id);
+      await loadSavedStatus(tab.id);
     }
   } catch {
     // Ignore initial load failures.

@@ -2,6 +2,22 @@
 
 Rover supports a preview-first workflow where someone can prove Rover on a live page before installing a production snippet.
 
+There are really three paths:
+
+- **Hosted Preview**
+- **Try on Other Sites from Workspace config**
+- **Production install**
+
+## Path matrix
+
+| Path | What you need | Best for | Persistence | Mobile | Managed by |
+|---|---|---|---|---|---|
+| Hosted Preview | Signed-in URL + prompt | Rover-managed demos | Temporary preview session | Best fallback | Rover |
+| Preview Helper | Workspace test config JSON or hosted handoff | Multi-page desktop demos | Re-injects after reloads/navigation | No | Workspace or Rover |
+| Console | Workspace test config JSON + generated snippet | Fast DevTools demos | Current page only | No | Workspace |
+| Bookmarklet | Workspace test config JSON + generated bookmarklet | Drag-and-click demos | Current page only | Weak | Workspace |
+| Production install | Workspace install snippet | Real site install | Persistent site config | Yes | Workspace |
+
 This flow is intentionally split across two systems:
 
 - **Open-source clients in `rover`**
@@ -59,6 +75,7 @@ Use those values for:
 - production script-tag installs
 - SDK boot config
 - generic Preview Helper JSON config
+- the website "Try on Other Sites" generator
 
 ### 2. Hosted preview handoff config
 
@@ -73,6 +90,47 @@ The hosted website/backend generates:
 - preview attach metadata
 
 The Preview Helper can read those handoff URL params directly and hydrate itself automatically. Console snippets and bookmarklets can also be generated from the same preview record.
+
+For the generic Workspace-config path, the website tool can also open a target page with a helper fragment:
+
+- `#rover_helper_config=<base64url(JSON)>`
+
+The Preview Helper reads that fragment, strips it from the URL, and injects Rover automatically.
+
+## Hosted Preview vs Try on Other Sites vs Production
+
+### Hosted Preview
+
+Use this when:
+
+- you want Rover to create a temporary preview for you
+- you do not want to think about config yet
+- you need a mobile-friendly fallback
+
+Hosted Preview lives on the Rover website and is backed by `/v2/rover/previews`.
+
+### Try on Other Sites
+
+Use this when:
+
+- you already have a real Workspace site
+- you want to test Rover on another website with your own config
+- you want explicit Helper / Console / Bookmarklet artifacts
+
+The clean path is:
+
+1. open Workspace
+2. create or rotate a site key
+3. copy the test config JSON
+4. paste it into the website tool or Preview Helper
+
+### Production install
+
+Use this when:
+
+- you are ready to ship Rover on your real site
+- you need the actual install snippet
+- you want the persistent Workspace-managed key, not a preview token
 
 ## Choose the right client
 
@@ -117,6 +175,7 @@ Tradeoff:
 The hosted website gives you the easiest way to try the full flow:
 
 - playground: [https://www.rtrvr.ai/rover/instant-preview](https://www.rtrvr.ai/rover/instant-preview)
+- try on other sites guide: [https://www.rtrvr.ai/rover/docs/try-on-other-sites](https://www.rtrvr.ai/rover/docs/try-on-other-sites)
 - workspace: [https://www.rtrvr.ai/rover/workspace](https://www.rtrvr.ai/rover/workspace)
 - hosted API docs: [https://www.rtrvr.ai/rover/docs/instant-preview-api](https://www.rtrvr.ai/rover/docs/instant-preview-api)
 - OpenAPI spec: [https://raw.githubusercontent.com/rtrvr-ai/rtrvr-cloud-backend/main/docs/rover-instant-preview.openapi.yaml](https://raw.githubusercontent.com/rtrvr-ai/rtrvr-cloud-backend/main/docs/rover-instant-preview.openapi.yaml)
@@ -124,6 +183,7 @@ The hosted website gives you the easiest way to try the full flow:
 Use the website if you want:
 
 - preview creation handled for you
+- a guided Try on Other Sites generator fed by Workspace config
 - hosted fallback when live attach is not ideal
 - share links and Workspace conversion
 

@@ -164,15 +164,34 @@ See [packages/sdk/README.md](packages/sdk/README.md) for the full SDK surface, a
 
 Rover supports a preview-first workflow before a production install.
 
+Before you try Rover on other sites, get your site config from Workspace.
+
 There are two config sources:
 
 - **Workspace production config**: persistent `siteId`, `publicKey`, and optional `siteKeyId` for a live site install.
 - **Hosted preview handoff config**: short-lived preview identifiers and runtime session tokens created by the hosted preview control plane.
 
+### Path matrix
+
+| Path | What you need | Best for | Persistence | Mobile | Managed by |
+|---|---|---|---|---|---|
+| Hosted Preview | Signed-in URL + prompt | Rover-managed demos | Temporary preview session | Best fallback | Rover |
+| Preview Helper | Workspace test config JSON or hosted handoff | Multi-page desktop demos | Re-injects after reloads/navigation | No | Workspace or Rover |
+| Console | Workspace test config JSON + generated snippet | Fast DevTools demos | Current page only | No | Workspace |
+| Bookmarklet | Workspace test config JSON + generated bookmarklet | Drag-and-click demos | Current page only | Weak | Workspace |
+| Production install | Workspace install snippet | Real site install | Persistent site config | Yes | Workspace |
+
+Notes:
+
+- **Hosted Preview** needs no Workspace config. Rover creates temporary preview state for you.
+- **Try on Other Sites** starts in Workspace, then uses Helper / Console / Bookmarklet on arbitrary sites.
+- **Production install** is the Workspace snippet on your real site, not the same thing as generic testing on other sites.
+
 Client-side preview tooling lives in this open-source repo:
 
 - [Preview Helper App](apps/preview-helper/README.md): MV3 Chrome extension that can inject Rover from generic config JSON or auto-hydrate from hosted preview handoff URLs.
 - [SDK Preview Helpers](packages/sdk/README.md#preview-helpers): `createRoverConsoleSnippet(...)`, `createRoverBookmarklet(...)`, `createRoverScriptTagSnippet(...)`, and `attachLaunch(...)`.
+- [Try on Other Sites](docs/TRY_ON_OTHER_SITES.md): the Workspace-first live-inject walkthrough for Helper, Console, and Bookmarklet flows.
 - [Instant Preview Architecture](docs/INSTANT_PREVIEW.md): how the OSS clients fit with the hosted preview backend and website.
 - [Instant Preview API Docs](https://www.rtrvr.ai/rover/docs/instant-preview-api): signed-in hosted preview route guide with curl examples and field reference.
 - [Instant Preview OpenAPI Spec](https://raw.githubusercontent.com/rtrvr-ai/rtrvr-cloud-backend/main/docs/rover-instant-preview.openapi.yaml): machine-readable hosted preview contract.
@@ -191,19 +210,21 @@ If you want to play with Rover immediately:
 For production or generic helper/SDK usage:
 
 1. Open Rover Workspace.
-2. Create or select a site.
-3. Copy the `siteId`, `publicKey` (`pk_site_*`), and optional `siteKeyId`.
-4. Confirm `allowedDomains` and `domainScopeMode`.
-5. Either copy the Workspace-generated install snippet or map those values into SDK/helper config JSON.
+2. Create or rotate a site key so Workspace reveals the full `pk_site_*` value.
+3. Use `Copy test config JSON` for portable testing on other sites.
+4. Use `Copy install snippet` for your real production site.
+5. If you want the full walkthrough, read [docs/TRY_ON_OTHER_SITES.md](docs/TRY_ON_OTHER_SITES.md).
+6. For the closest thing to one-click Helper injection, open the website tool and use `Open target with helper`.
 
 ### Play via the hosted website
 
 For short-lived demos:
 
 1. Sign in to Rover Instant Preview.
-2. Create a preview for a target URL.
-3. Use the helper handoff, console snippet, or bookmarklet.
-4. Treat preview tokens as temporary demo credentials, not as production site keys.
+2. Choose either Hosted Preview or Try on Other Sites.
+3. Hosted Preview creates a temporary preview for a target URL.
+4. Try on Other Sites expects the config JSON you copied from Workspace.
+5. Treat preview tokens as temporary demo credentials, not as production site keys.
 
 ### Direct hosted preview API
 
