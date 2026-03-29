@@ -160,6 +160,62 @@ See [packages/sdk/README.md](packages/sdk/README.md) for the full SDK surface, a
 
 ---
 
+## Instant Preview & Preview Clients
+
+Rover supports a preview-first workflow before a production install.
+
+There are two config sources:
+
+- **Workspace production config**: persistent `siteId`, `publicKey`, and optional `siteKeyId` for a live site install.
+- **Hosted preview handoff config**: short-lived preview identifiers and runtime session tokens created by the hosted preview control plane.
+
+Client-side preview tooling lives in this open-source repo:
+
+- [Preview Helper App](apps/preview-helper/README.md): MV3 Chrome extension that can inject Rover from generic config JSON or auto-hydrate from hosted preview handoff URLs.
+- [SDK Preview Helpers](packages/sdk/README.md#preview-helpers): `createRoverConsoleSnippet(...)`, `createRoverBookmarklet(...)`, `createRoverScriptTagSnippet(...)`, and `attachLaunch(...)`.
+- [Instant Preview Architecture](docs/INSTANT_PREVIEW.md): how the OSS clients fit with the hosted preview backend and website.
+- [Instant Preview API Docs](https://www.rtrvr.ai/rover/docs/instant-preview-api): signed-in hosted preview route guide with curl examples and field reference.
+- [Instant Preview OpenAPI Spec](https://raw.githubusercontent.com/rtrvr-ai/rtrvr-cloud-backend/main/docs/rover-instant-preview.openapi.yaml): machine-readable hosted preview contract.
+
+Hosted preview creation itself stays outside this repo on purpose. The hosted control plane owns preview auth, short-lived token minting, launch/session persistence, site-key provisioning, and cloud-browser fallback. This repo stays focused on the browser runtime, SDK surface, and public client tools that developers can inspect and extend.
+
+If you want to play with Rover immediately:
+
+- Hosted playground: [rtrvr.ai/rover/instant-preview](https://www.rtrvr.ai/rover/instant-preview)
+- Hosted preview API docs: [rtrvr.ai/rover/docs/instant-preview-api](https://www.rtrvr.ai/rover/docs/instant-preview-api)
+- Workspace config: [rtrvr.ai/rover/workspace](https://www.rtrvr.ai/rover/workspace)
+- Helper source: [apps/preview-helper](apps/preview-helper)
+
+### Get config from Workspace
+
+For production or generic helper/SDK usage:
+
+1. Open Rover Workspace.
+2. Create or select a site.
+3. Copy the `siteId`, `publicKey` (`pk_site_*`), and optional `siteKeyId`.
+4. Confirm `allowedDomains` and `domainScopeMode`.
+5. Either copy the Workspace-generated install snippet or map those values into SDK/helper config JSON.
+
+### Play via the hosted website
+
+For short-lived demos:
+
+1. Sign in to Rover Instant Preview.
+2. Create a preview for a target URL.
+3. Use the helper handoff, console snippet, or bookmarklet.
+4. Treat preview tokens as temporary demo credentials, not as production site keys.
+
+### Direct hosted preview API
+
+If you want to call the hosted preview control plane directly:
+
+- Human docs: [rtrvr.ai/rover/docs/instant-preview-api](https://www.rtrvr.ai/rover/docs/instant-preview-api)
+- OpenAPI spec: [rtrvr-cloud-backend/docs/rover-instant-preview.openapi.yaml](https://raw.githubusercontent.com/rtrvr-ai/rtrvr-cloud-backend/main/docs/rover-instant-preview.openapi.yaml)
+
+Use the hosted API when you want signed-in preview creation, preview tokens, hosted fallback, share links, and Workspace conversion. Use the SDK/helper docs when you want the client-side pieces only.
+
+---
+
 ## Features
 
 - **Browser-first deep links**: trigger tasks via `?rover=` and `?rover_shortcut=`

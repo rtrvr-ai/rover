@@ -1,0 +1,12 @@
+{
+  "name": "@rover/preview-helper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Open-source Rover preview helper Chrome extension",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "clean": "node scripts/clean.mjs",
+    "dev": "node scripts/build.mjs --watch"
+  }
+}

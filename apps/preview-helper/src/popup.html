@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rover Preview Helper</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <div>
+          <div class="eyebrow">Rover</div>
+          <h1>Preview Helper</h1>
+        </div>
+        <p class="subtle">Paste Rover or preview config JSON, or use a hosted preview handoff link.</p>
+      </header>
+
+      <label class="field">
+        <span>Rover or preview config JSON</span>
+        <textarea id="config" spellcheck="false" placeholder='{"siteId":"...","publicKey":"pk_site_..."}
+
+or
+
+{"siteId":"...","sessionToken":"rvrsess_...","launchUrl":"https://example.com?rover_launch=...&rover_attach=..."}'></textarea>
+      </label>
+
+      <p class="hint">Works with Workspace install config and hosted preview helper handoff state.</p>
+
+      <div class="actions">
+        <button id="inject" class="primary">Inject Rover into this tab</button>
+        <button id="reconnect" class="secondary">Reconnect preview</button>
+      </div>
+
+      <p id="status" class="status">Idle.</p>
+    </main>
+    <script type="module" src="./popup.js"></script>
+  </body>
+</html>

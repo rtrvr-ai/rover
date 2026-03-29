@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Rover Preview Helper",
+  "version": "0.1.0",
+  "description": "Inject Rover into a live tab and reconnect preview sessions after navigation.",
+  "action": {
+    "default_title": "Rover Preview Helper",
+    "default_popup": "src/popup.html"
+  },
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "src/content-start.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
+}
