@@ -77,7 +77,7 @@ async function fetchPreviewConfig(params, tabUrl) {
   const response = await fetch(
     `${apiBase}/v2/rover/previews/${encodeURIComponent(params.previewId)}?previewToken=${encodeURIComponent(params.previewToken)}`,
     {
-      credentials: 'include',
+      credentials: 'omit',
       cache: 'no-store',
     },
   );
