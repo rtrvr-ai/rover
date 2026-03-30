@@ -89,11 +89,11 @@ The hosted website/backend generates:
 - short-lived runtime session token
 - preview attach metadata
 
-The Preview Helper can read those handoff URL params directly and hydrate itself automatically. Console snippets and bookmarklets can also be generated from the same preview record.
+The Preview Helper can hydrate from Rover's private helper payload fragment, which carries the same preview identifiers and API base without polluting target-site query params. Legacy query-param handoff still works for compatibility. Console snippets and bookmarklets can also be generated from the same preview record.
 
 For the generic Workspace-config path, the website tool can also open a target page with a helper fragment:
 
-- `#rover_helper_config=<base64url(JSON)>`
+- `#rover_helper_payload=<base64url(JSON)>`
 
 The Preview Helper reads that fragment, strips it from the URL, and injects Rover automatically.
 

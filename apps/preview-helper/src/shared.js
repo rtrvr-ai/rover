@@ -2,7 +2,8 @@ export const STORAGE_KEY_PREFIX = 'rover-preview-helper:tab:';
 export const PREVIEW_ID_PARAM = 'rover_preview_id';
 export const PREVIEW_TOKEN_PARAM = 'rover_preview_token';
 export const PREVIEW_API_PARAM = 'rover_preview_api';
-export const HELPER_CONFIG_FRAGMENT_PARAM = 'rover_helper_config';
+export const HELPER_PAYLOAD_FRAGMENT_PARAM = 'rover_helper_payload';
+export const LEGACY_HELPER_CONFIG_FRAGMENT_PARAM = 'rover_helper_config';
 const DEFAULT_EMBED_SCRIPT_URL = 'https://rover.rtrvr.ai/embed.js';
 const DEFAULT_API_BASE = 'https://agent.rtrvr.ai';
 
@@ -164,13 +165,21 @@ export function extractPreviewLaunchParams(urlString) {
   }
 }
 
+function getHelperFragmentValue(rawHash) {
+  if (!rawHash || !rawHash.includes('=')) return '';
+  const params = new URLSearchParams(rawHash);
+  return String(
+    params.get(HELPER_PAYLOAD_FRAGMENT_PARAM)
+    || params.get(LEGACY_HELPER_CONFIG_FRAGMENT_PARAM)
+    || '',
+  ).trim();
+}
+
 export function hasHelperConfigFragment(urlString) {
   try {
     const url = new URL(urlString);
     const rawHash = String(url.hash || '').replace(/^#/, '').trim();
-    if (!rawHash || !rawHash.includes('=')) return false;
-    const params = new URLSearchParams(rawHash);
-    return Boolean(String(params.get(HELPER_CONFIG_FRAGMENT_PARAM) || '').trim());
+    return Boolean(getHelperFragmentValue(rawHash));
   } catch {
     return false;
   }
@@ -180,9 +189,7 @@ export function extractHelperConfigFragment(urlString) {
   try {
     const url = new URL(urlString);
     const rawHash = String(url.hash || '').replace(/^#/, '').trim();
-    if (!rawHash || !rawHash.includes('=')) return null;
-    const params = new URLSearchParams(rawHash);
-    const encoded = String(params.get(HELPER_CONFIG_FRAGMENT_PARAM) || '').trim();
+    const encoded = getHelperFragmentValue(rawHash);
     if (!encoded) return null;
     const decoded = decodeBase64Url(encoded);
     const parsed = JSON.parse(decoded);
@@ -202,7 +209,8 @@ export function stripPreviewLaunchParams(urlString) {
     const rawHash = String(url.hash || '').replace(/^#/, '').trim();
     if (rawHash && rawHash.includes('=')) {
       const params = new URLSearchParams(rawHash);
-      params.delete(HELPER_CONFIG_FRAGMENT_PARAM);
+      params.delete(HELPER_PAYLOAD_FRAGMENT_PARAM);
+      params.delete(LEGACY_HELPER_CONFIG_FRAGMENT_PARAM);
       const nextHash = params.toString();
       url.hash = nextHash ? nextHash : '';
     }
@@ -255,5 +263,5 @@ export function encodeHelperConfigFragment(config) {
   const bytes = typeof TextEncoder !== 'undefined'
     ? new TextEncoder().encode(json)
     : Uint8Array.from(Buffer.from(json, 'utf8'));
-  return `${HELPER_CONFIG_FRAGMENT_PARAM}=${encodeBase64Url(bytes)}`;
+  return `${HELPER_PAYLOAD_FRAGMENT_PARAM}=${encodeBase64Url(bytes)}`;
 }

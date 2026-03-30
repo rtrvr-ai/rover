@@ -221,9 +221,9 @@ For production or generic helper/SDK usage:
 For short-lived demos:
 
 1. Sign in to Rover Instant Preview.
-2. Choose either Hosted Preview or Try on Other Sites.
-3. Hosted Preview creates a temporary preview for a target URL.
-4. Try on Other Sites expects the config JSON you copied from Workspace.
+2. Choose either `Use Rover temporary demo` or `Use Workspace config`.
+3. The temporary demo path creates short-lived preview state for a target URL and prompt.
+4. The Workspace-config path expects the test config JSON you copied from Workspace.
 5. Treat preview tokens as temporary demo credentials, not as production site keys.
 
 ### Direct hosted preview API
