@@ -31,7 +31,7 @@ async function loadSavedStatus(tabId) {
   if (value) {
     setStatus(value, value.toLowerCase().includes('invalid') || value.toLowerCase().includes('failed'));
   } else {
-    setStatus('Ready. Use Workspace -> Try on Other Sites -> Open target with helper, or paste config JSON below.');
+    setStatus('Ready. Use Workspace -> Live Test -> Use Workspace config -> Open target with helper, or paste config JSON below.');
   }
 }
 

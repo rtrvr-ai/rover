@@ -182,6 +182,17 @@ async function maybeHydrateGenericConfigFromUrl(tabId, tabUrl) {
   if (!rawConfig) return null;
   const config = normalizeConfig(rawConfig);
   await sanitizeTabUrl(tabId, tabUrl);
+  if (config.previewId && config.previewToken) {
+    const previewConfig = await fetchPreviewConfig({
+      previewId: config.previewId,
+      previewToken: config.previewToken,
+      apiBase: config.apiBase,
+    }, tabUrl);
+    return await injectFromTab(tabId, {
+      ...config,
+      ...previewConfig,
+    });
+  }
   return await injectFromTab(tabId, config);
 }
 

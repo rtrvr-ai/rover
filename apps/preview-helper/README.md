@@ -52,13 +52,13 @@ This now works with `publicKey` directly. It is not limited to `sessionToken` an
 
 Use this when you start from the Rover website's Hosted Preview flow.
 
-The helper can auto-hydrate from URL params:
+The helper can auto-hydrate from the temporary handoff payload that Rover puts on the target page URL fragment. That payload contains:
 
 - `rover_preview_id`
 - `rover_preview_token`
 - `rover_preview_api`
 
-You do not need to paste JSON for that path.
+Legacy query-param handoff still works for compatibility, but new Rover links use the fragment payload instead. You do not need to paste JSON for this path.
 
 ## Build and load
 
@@ -84,7 +84,7 @@ pnpm --filter @rover/preview-helper dev
 1. Open [Rover Workspace](https://www.rtrvr.ai/rover/workspace).
 2. Create or rotate a site key so Workspace reveals the full `pk_site_*` value.
 3. Copy the **test config JSON** from the Workspace "Try Rover on Other Sites" card.
-4. Open [Try on Other Sites](https://www.rtrvr.ai/rover/instant-preview?tab=try_on_other_sites).
+4. Open [Live Test](https://www.rtrvr.ai/rover/instant-preview?flow=workspace_config) and stay on the `Use Workspace config` path.
 5. Paste the same JSON there and enter the target site URL.
 6. Click `Open target with helper`.
 7. If Rover does not inject automatically, open the helper popup and paste the same JSON as fallback.
@@ -93,17 +93,17 @@ Use `Reconnect preview` after reloads or navigation.
 
 The website tool opens the target page with a private URL fragment:
 
-- `#rover_helper_config=<base64url(JSON)>`
+- `#rover_helper_payload=<base64url(JSON)>`
 
 The helper reads that fragment, strips it from the URL, and injects Rover automatically.
 
 ### Hosted preview handoff
 
 1. Open [Rover Instant Preview](https://www.rtrvr.ai/rover/instant-preview).
-2. Stay on the Hosted Preview tab and create a preview.
+2. Stay on the `Use Rover temporary demo` path and create a preview.
 3. Choose `Open with helper`.
-4. The helper reads the handoff URL params automatically.
-5. It fetches the preview config, removes the handoff params from the page URL, injects Rover, and keeps reconnecting across navigation.
+4. The helper reads the private handoff fragment automatically.
+5. It fetches the preview config, strips the fragment from the page URL, injects Rover, and keeps reconnecting across navigation.
 
 ## Popup fields
 
@@ -119,7 +119,7 @@ The popup is not asking for the production install snippet. It wants JSON only.
 ## What the helper does
 
 - injects Rover into the active tab from popup JSON config
-- auto-hydrates from hosted preview handoff URL params
+- auto-hydrates from hosted preview handoff fragments
 - refreshes hosted preview state when reconnecting
 - re-injects on reload and history navigation
 - keeps host scoping tied to the intended target host

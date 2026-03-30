@@ -7,7 +7,7 @@ This is the clean path:
 1. Open Rover Workspace.
 2. Create or rotate a Rover site key so Workspace reveals the full `pk_site_*` value.
 3. Copy the **test config JSON** from the Workspace "Try Rover on Other Sites" card.
-4. Paste that JSON into the Rover website tool or the Preview Helper.
+4. Open Rover Live Test on the `Use Workspace config` path and paste that JSON there.
 5. Choose Helper, Console, or Bookmarklet.
 
 This is not the same as Hosted Preview.
@@ -73,7 +73,7 @@ Then:
 1. Create or rotate a Rover site key.
 2. In the setup view, find **Try Rover on Other Sites**.
 3. Click **Copy test config JSON**.
-4. Optionally click **Open Try on Other Sites** to open the website tool with the config prefilled.
+4. Optionally click **Open Live Test** to open the website tool with the config prefilled.
 
 Why create or rotate?
 
@@ -92,7 +92,7 @@ Use this for:
 How to use it:
 
 1. Load the extension from [apps/preview-helper](../apps/preview-helper/README.md).
-2. Open the signed-in website tool at [https://www.rtrvr.ai/rover/instant-preview?tab=try_on_other_sites](https://www.rtrvr.ai/rover/instant-preview?tab=try_on_other_sites).
+2. Open the signed-in website tool at [https://www.rtrvr.ai/rover/instant-preview?flow=workspace_config](https://www.rtrvr.ai/rover/instant-preview?flow=workspace_config).
 3. Paste the same Workspace test config JSON there.
 4. Enter the target site URL.
 5. Click **Open target with helper**.
@@ -101,7 +101,7 @@ How to use it:
 
 The website tool uses a private URL fragment handoff:
 
-- `#rover_helper_config=<base64url(JSON)>`
+- `#rover_helper_payload=<base64url(JSON)>`
 
 That keeps the config out of target-site query params and request logs.
 
@@ -149,7 +149,7 @@ Tradeoff:
 
 The signed-in website tool lives at:
 
-- [https://www.rtrvr.ai/rover/instant-preview?tab=try_on_other_sites](https://www.rtrvr.ai/rover/instant-preview?tab=try_on_other_sites)
+- [https://www.rtrvr.ai/rover/instant-preview?flow=workspace_config](https://www.rtrvr.ai/rover/instant-preview?flow=workspace_config)
 
 It walks through:
 
