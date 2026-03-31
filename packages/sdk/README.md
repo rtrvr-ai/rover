@@ -229,6 +229,17 @@ When those are present, the helper can fetch the short-lived preview config from
 - Keep preview or helper injections scoped to the intended host with `allowedDomains` and the right `domainScopeMode`.
 - Generic `publicKey` config is the normal Workspace path. `sessionToken` is the temporary preview/runtime path.
 
+### Troubleshooting
+
+- **`This API key is missing capability: roverEmbed`**
+  Your Workspace key is not embed-enabled. Rotate or create an embed-ready key, then rebuild the snippet or bookmarklet from the fresh test config JSON.
+- **Console or Bookmarklet worked once, then stopped**
+  Those are current-page-only methods. A full reload drops the injected JavaScript.
+- **A site still blocks Rover after you generated valid output**
+  Some sites enforce strict CSP or reload aggressively. Use the Preview Helper or Hosted Preview instead.
+- **`Open hosted shell` does nothing**
+  Hosted Preview should open Rover's dedicated hosted viewer route, not the launcher page.
+
 ### Hosted playground
 
 If you want the full managed preview flow, including preview creation and Workspace handoff, use the hosted website:

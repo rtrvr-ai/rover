@@ -186,6 +186,18 @@ Notes:
 - **Hosted Preview** needs no Workspace config. Rover creates temporary preview state for you.
 - **Try on Other Sites** starts in Workspace, then uses Helper / Console / Bookmarklet on arbitrary sites.
 - **Production install** is the Workspace snippet on your real site, not the same thing as generic testing on other sites.
+- **Open hosted shell** is a dedicated Rover viewer route for the temporary cloud-browser fallback, not the same as reopening the launcher page.
+
+### Troubleshooting
+
+- **`This API key is missing capability: roverEmbed`**
+  The selected Workspace key is not embed-ready. Go back to Workspace and create or rotate an embed-enabled site key, then copy the fresh test config JSON again.
+- **`Open hosted shell` does nothing**
+  Hosted Preview should open the dedicated hosted viewer route from Live Test. If it still fails, recreate the temporary demo and try again.
+- **Console snippet or Bookmarklet worked once, then stopped**
+  That is expected after a full page reload. Use the Preview Helper for the reliable multi-page desktop path.
+- **Rover still does not appear on a target site**
+  Check that the target host is inside `allowedDomains`. Some sites also block injection with strict CSP rules; use Hosted Preview or the Preview Helper fallback when that happens.
 
 Client-side preview tooling lives in this open-source repo:
 

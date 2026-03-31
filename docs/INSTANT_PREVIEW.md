@@ -108,6 +108,7 @@ Use this when:
 - you need a mobile-friendly fallback
 
 Hosted Preview lives on the Rover website and is backed by `/v2/rover/previews`.
+When you click `Open hosted shell`, Rover should open a dedicated hosted viewer page for the cloud-browser fallback, not the launcher again.
 
 ### Try on Other Sites
 
@@ -225,3 +226,14 @@ Direct references:
 - Workspace site keys are persistent install credentials for a real Rover site.
 - Do not reuse preview tokens as production config.
 - Keep helper injection scoped to intended hosts and respect domain policy.
+
+## Troubleshooting
+
+- **`This API key is missing capability: roverEmbed`**
+  The Workspace key you copied is not embed-enabled. Rotate or create an embed-ready key in Workspace, then copy the new test config JSON.
+- **`Open hosted shell` does nothing**
+  Hosted Preview should open the dedicated hosted viewer route on the Rover website. If it does not, recreate the preview and try again.
+- **Console or Bookmarklet only worked on the first page**
+  That is expected. They are current-page-only methods. Use the Preview Helper for multi-page desktop demos.
+- **A site strips or blocks the inject path**
+  Some sites enforce strict CSP or reload aggressively. Fall back to Hosted Preview or the Preview Helper.
