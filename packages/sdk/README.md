@@ -233,6 +233,8 @@ When those are present, the helper can fetch the short-lived preview config from
 
 - **`This API key is missing capability: roverEmbed`**
   Your Workspace key is not embed-enabled. Rotate or create an embed-ready key, then rebuild the snippet or bookmarklet from the fresh test config JSON.
+- **`React has blocked a javascript: URL`**
+  Delete any old Rover bookmarklet and recreate it from the latest Rover Live Test page. The bookmarklet must be dragged from Rover's dedicated drag control, not clicked on the Rover page itself.
 - **Console or Bookmarklet worked once, then stopped**
   Those are current-page-only methods. A full reload drops the injected JavaScript.
 - **A site still blocks Rover after you generated valid output**
