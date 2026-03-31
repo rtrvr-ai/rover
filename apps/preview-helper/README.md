@@ -144,8 +144,12 @@ The helper uses packaged extension scripts and `chrome.scripting.executeScript(.
 
 - **Pasting the install snippet instead of JSON**
   The helper wants config JSON, not HTML.
+- **`This API key is missing capability: roverEmbed`**
+  The selected Workspace key is not embed-ready. Rotate or create an embed-enabled key in Workspace, then copy the fresh test config JSON again.
 - **Testing on the wrong host**
   If your config says `host_only`, open the exact host in `allowedDomains`.
+- **Expecting `Open hosted shell` to reopen the launcher**
+  Hosted Preview should open Rover's dedicated hosted viewer page for the cloud-browser fallback.
 - **Using preview tokens like production keys**
   Preview tokens are temporary. Workspace keys are persistent.
 - **Expecting mobile parity**

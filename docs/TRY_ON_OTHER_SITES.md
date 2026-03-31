@@ -41,7 +41,10 @@ Workspace exports JSON in this family:
   "externalNavigationPolicy": "open_new_tab_notice",
   "openOnInit": true,
   "mode": "full",
-  "allowActions": true
+  "allowActions": true,
+  "capabilities": {
+    "roverEmbed": true
+  }
 }
 ```
 
@@ -60,6 +63,7 @@ Common optional fields:
 - `openOnInit`
 - `mode`
 - `allowActions`
+- `capabilities.roverEmbed`
 
 ## Step 1: Get the config from Workspace
 
@@ -188,12 +192,18 @@ Docs:
 
 - **“What JSON do I paste?”**
   Use the Workspace test config JSON, not the install snippet and not a random code sample.
+- **`This API key is missing capability: roverEmbed`**
+  Your selected key is not embed-ready. Go back to Workspace and create or rotate a key with Rover embed enabled, then copy the fresh test config JSON.
 - **“The target host is outside allowedDomains.”**
   Fix the site key domain policy in Workspace or test on the right host.
 - **“Rover appears but does not take actions.”**
   Your site is probably in `analytics_only`, `safe` mode, or `allowActions: false`.
+- **“Open hosted shell does nothing.”**
+  That button belongs to Hosted Preview, not this Workspace-config path. If you need Rover-managed fallback, switch to the Hosted Preview branch in Live Test.
 - **“Bookmarklet worked, then stopped after navigation.”**
   That is expected on full reloads. Use the Preview Helper for multi-page demos.
+- **“Console snippet pasted but Rover still did not attach.”**
+  Some sites block injection with strict CSP rules. Try the Preview Helper or Hosted Preview instead.
 - **“Mobile feels broken.”**
   Use Hosted Preview on mobile. Generic Helper / Console / Bookmarklet flows are desktop-first.
 
