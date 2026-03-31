@@ -233,6 +233,8 @@ Direct references:
   The Workspace key you copied is not embed-enabled. Rotate or create an embed-ready key in Workspace, then copy the new test config JSON.
 - **`Open hosted shell` does nothing**
   Hosted Preview should open the dedicated hosted viewer route on the Rover website. If it does not, recreate the preview and try again.
+- **`React has blocked a javascript: URL`**
+  Delete any old Rover bookmarklet and recreate it from the latest Live Test page. Rover's bookmarklet must be dragged from the dedicated drag control, not clicked on the Rover page itself.
 - **Console or Bookmarklet only worked on the first page**
   That is expected. They are current-page-only methods. Use the Preview Helper for multi-page desktop demos.
 - **A site strips or blocks the inject path**

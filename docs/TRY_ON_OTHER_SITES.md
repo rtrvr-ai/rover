@@ -139,7 +139,7 @@ How to use it:
 
 1. Show the bookmarks bar with `Ctrl+Shift+B` or `Cmd+Shift+B`.
 2. Generate the bookmarklet from the website tool or SDK helper.
-3. Drag the Rover button into your bookmarks bar.
+3. Drag the Rover button from Live Test into your bookmarks bar. Do not click it on the Rover page itself.
 4. Open the target website.
 5. Click the Rover bookmark.
 
@@ -199,7 +199,9 @@ Docs:
 - **“Rover appears but does not take actions.”**
   Your site is probably in `analytics_only`, `safe` mode, or `allowActions: false`.
 - **“Open hosted shell does nothing.”**
-  That button belongs to Hosted Preview, not this Workspace-config path. If you need Rover-managed fallback, switch to the Hosted Preview branch in Live Test.
+  That button belongs to Hosted Preview, not this Workspace-config path. If you need Rover-managed fallback, switch to the Hosted Preview branch in Live Test, where Rover shows the hosted browser directly on the page and can also open it full-screen.
+- **`React has blocked a javascript: URL`**
+  You likely dragged an old Rover bookmarklet that was created before the drag-only fix. Delete it and recreate it from the current Live Test page.
 - **“Bookmarklet worked, then stopped after navigation.”**
   That is expected on full reloads. Use the Preview Helper for multi-page demos.
 - **“Console snippet pasted but Rover still did not attach.”**

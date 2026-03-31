@@ -146,6 +146,8 @@ The helper uses packaged extension scripts and `chrome.scripting.executeScript(.
   The helper wants config JSON, not HTML.
 - **`This API key is missing capability: roverEmbed`**
   The selected Workspace key is not embed-ready. Rotate or create an embed-enabled key in Workspace, then copy the fresh test config JSON again.
+- **`React has blocked a javascript: URL`**
+  Delete any old Rover bookmarklet and recreate it from the current Rover Live Test page. The bookmarklet must be dragged from Rover's drag control, not clicked on the Rover page.
 - **Testing on the wrong host**
   If your config says `host_only`, open the exact host in `allowedDomains`.
 - **Expecting `Open hosted shell` to reopen the launcher**
