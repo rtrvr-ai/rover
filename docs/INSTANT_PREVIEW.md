@@ -111,6 +111,7 @@ Hosted Preview lives on the Rover website and is backed by `/v2/rover/previews`.
 When you click `Open hosted shell`, Rover should open a dedicated hosted viewer page for the cloud-browser fallback, not the launcher again.
 Under the hood, Hosted Preview now uses a dedicated Rover-managed hosted-browser session. It is not supposed to piggyback on the generic `/internal/agent` request lifecycle.
 That hosted browser runs on dedicated hosted-preview capacity, not the normal reuse-optimized automation/scrape pool.
+Hosted-preview capacity is opt-in in `rtrvr-web-agent`. `ROVER_HOSTED_POOL_MAX_INSTANCES` defaults to `0`, so a worker only serves hosted browsers if you explicitly allocate hosted-preview capacity.
 Hosted browser ownership is sticky to one worker. If the owner lease goes stale, Rover should fail closed and ask you to recreate the temporary demo instead of pretending another worker can resume the same browser.
 
 ### Try on Other Sites
