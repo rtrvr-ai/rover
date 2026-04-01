@@ -185,10 +185,7 @@ Notes:
 
 - **Hosted Preview** needs no Workspace config. Rover creates temporary preview state for you.
 - **Hosted Preview** now uses dedicated hosted-browser capacity separate from the normal automation/scrape pool, so demo viewers do not starve regular work.
-<<<<<<< HEAD
 - **Hosted Preview capacity is opt-in**. `ROVER_HOSTED_POOL_MAX_INSTANCES` now defaults to `0`, so a deployment only serves hosted browsers if you explicitly allocate hosted-preview capacity.
-=======
->>>>>>> 3a74d43 (adding april fools rolls + hosted prevew rover)
 - **Hosted Preview** is sticky to one worker and one browser. If that owner dies or the lease expires, Rover should fail closed and tell you to recreate the temporary demo.
 - **Try on Other Sites** starts in Workspace, then uses Helper / Console / Bookmarklet on arbitrary sites.
 - **Production install** is the Workspace snippet on your real site, not the same thing as generic testing on other sites.
