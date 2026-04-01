@@ -184,6 +184,7 @@ There are two config sources:
 Notes:
 
 - **Hosted Preview** needs no Workspace config. Rover creates temporary preview state for you.
+
 - **Hosted Preview** now leases from the same shared browser pool as normal automation on that worker. With `POOL_MAX_INSTANCES=1`, Hosted Preview and `/agent` queue behind whichever side currently holds the browser.
 - **Hosted Preview** is sticky to one worker and one browser. If that owner dies or the lease expires, Rover should fail closed and tell you to recreate the temporary demo.
 - **Try on Other Sites** starts in Workspace, then uses Helper / Console / Bookmarklet on arbitrary sites.
