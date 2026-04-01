@@ -59,8 +59,12 @@
     "dist/worker/rover-worker.js",
     "dist/loader.js",
     "dist/loader.d.ts",
+    "dist/rolls-cli.mjs",
     "README.md"
   ],
+  "bin": {
+    "rtrvr-rolls": "./dist/rolls-cli.mjs"
+  },
   "publishConfig": {
     "access": "public"
   },
