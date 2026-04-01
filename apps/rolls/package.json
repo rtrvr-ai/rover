@@ -1,0 +1,29 @@
+{
+  "name": "rtrvr-rolls",
+  "version": "1.0.0",
+  "description": "The world's first agentic restaurant. Order protein-packed rolls from your terminal.",
+  "type": "module",
+  "bin": {
+    "rtrvr-rolls": "./bin/cli.mjs"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "rtrvr",
+    "rover",
+    "cli",
+    "restaurant",
+    "rolls",
+    "april-fools"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AskRtrvr/rover"
+  }
+}
