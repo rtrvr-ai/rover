@@ -184,8 +184,10 @@ There are two config sources:
 Notes:
 
 - **Hosted Preview** needs no Workspace config. Rover creates temporary preview state for you.
+
 - **Hosted Preview** now leases from the same shared browser pool as normal automation on that worker. With `POOL_MAX_INSTANCES=1`, Hosted Preview and `/agent` queue behind whichever side currently holds the browser.
 - **Hosted Preview** is sticky to one worker and one browser. If that owner dies or the lease expires, Rover should fail closed and tell you to recreate the temporary demo.
+- **Hosted Preview** does not try to recycle its browser after close, expiry, or failure. Rover destroys that browser before the shared pool can hand capacity back to the next request.
 - **Try on Other Sites** starts in Workspace, then uses Helper / Console / Bookmarklet on arbitrary sites.
 - **Production install** is the Workspace snippet on your real site, not the same thing as generic testing on other sites.
 - **Live Test** now shows Rover's hosted browser directly on the page for Hosted Preview. `Open hosted shell` is the full-screen version of that same temporary cloud-browser fallback.
@@ -203,6 +205,8 @@ Notes:
   Hosted Preview and normal automation share the same pool. If the only browser on that worker is busy, Hosted Preview waits for it to be released.
 - **Hosted browser says it needs a restart or stale owner**
   Hosted Preview sessions are intentionally fail-closed if their owner worker dies or loses the lease. Recreate the temporary demo instead of waiting for the old browser to recover.
+- **Does Hosted Preview reuse the browser after it closes?**
+  No. Hosted Preview destroys its browser on close, expiry, or failure so the next `/agent` or hosted request does not inherit leftover site state.
 - **`React has blocked a javascript: URL`**
   Delete the old Rover bookmark and recreate it from the latest Live Test page. Rover's bookmarklet must be dragged from the dedicated drag control; it should not be rendered as a normal clickable React link.
 - **Console snippet or Bookmarklet worked once, then stopped**

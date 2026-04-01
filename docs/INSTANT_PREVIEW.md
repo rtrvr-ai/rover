@@ -113,6 +113,7 @@ Under the hood, Hosted Preview now uses a dedicated Rover-managed hosted-browser
 That hosted browser still has its own session/state lifecycle, but it now leases from the same shared browser pool as normal automation on that worker.
 With `POOL_MAX_INSTANCES=1`, Hosted Preview and `/agent` queue behind whichever side currently holds the browser.
 Hosted browser ownership is sticky to one worker. If the owner lease goes stale, Rover should fail closed and ask you to recreate the temporary demo instead of pretending another worker can resume the same browser.
+When a hosted session closes, expires, or fails, Rover destroys that browser instead of trying to recycle it for the next request. That is the current safety posture to avoid storage/cookie bleed between hosted preview and normal automation.
 
 ### Try on Other Sites
 
@@ -243,6 +244,8 @@ Direct references:
   Hosted Preview uses the same shared browser pool as normal automation on that worker. If the only browser is busy, Hosted Preview waits instead of creating a second browser.
 - **Hosted browser says it needs a restart or stale owner**
   Hosted Preview sessions are sticky to one worker. If the worker dies or loses its owner lease, Rover should mark the hosted launch failed and ask you to recreate the temporary demo.
+- **Does Hosted Preview reuse the browser after it closes?**
+  No. Hosted Preview currently destroys the browser on close, expiry, or failure before the shared pool can reuse capacity for the next request.
 - **`React has blocked a javascript: URL`**
   Delete any old Rover bookmarklet and recreate it from the latest Live Test page. Rover's bookmarklet must be dragged from the dedicated drag control, not clicked on the Rover page itself.
 - **Console or Bookmarklet only worked on the first page**

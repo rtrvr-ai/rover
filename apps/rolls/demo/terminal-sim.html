@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>rtrvr rolls — Terminal Demo</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0e0e0e;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 40px;
+  }
+  .window {
+    width: 780px;
+    background: #1a1a19;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 25px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.06);
+  }
+  .titlebar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 16px;
+    background: #222;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .dot { width: 13px; height: 13px; border-radius: 50%; }
+  .dot-r { background: #ff5f57; }
+  .dot-y { background: #febc2e; }
+  .dot-g { background: #28c840; }
+  .titlebar span { margin-left: 10px; font-size: 13px; color: #666; font-family: 'JetBrains Mono', monospace; }
+  .terminal {
+    padding: 20px 24px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 14px;
+    line-height: 1.6;
+    color: #e8e8e8;
+    min-height: 420px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .prompt { color: #6B6B6B; }
+  .cmd { color: #4ade80; }
+  .orange { color: #FF4C00; }
+  .amber { color: #FFB800; }
+  .dim { color: #666; }
+  .bold { font-weight: 700; }
+  .green { color: #4ade80; }
+  .red { color: #ff5f57; }
+  .cyan { color: #5af0e6; }
+  .cursor {
+    display: inline-block;
+    width: 8px;
+    height: 17px;
+    background: #FF4C00;
+    animation: blink 1s step-end infinite;
+    vertical-align: text-bottom;
+    margin-left: 1px;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .selected { color: #FF4C00; font-weight: 700; }
+  .pointer { color: #FF4C00; }
+</style>
+</head>
+<body>
+<div class="window">
+  <div class="titlebar">
+    <div class="dot dot-r"></div>
+    <div class="dot dot-y"></div>
+    <div class="dot dot-g"></div>
+    <span>rtrvr-rolls — zsh</span>
+  </div>
+  <div class="terminal" id="term"></div>
+</div>
+
+<script>
+const term = document.getElementById('term');
+let html = '';
+
+function render(h) { html = h; term.innerHTML = html; }
+function append(h) { html += h; term.innerHTML = html; }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function typeText(text, cls = '', delay = 55) {
+  for (const ch of text) {
+    append(`<span class="${cls}">${ch === ' ' ? ' ' : ch}</span>`);
+    await sleep(delay);
+  }
+}
+
+// ── ASCII logo ──
+const LOGO = [
+  ' ___  _____  ___  _   _  ___   ___   ___  _     _    ',
+  '| _ \\|_   _|| _ \\| | | || _ \\ | _ \\ / _ \\| |   | |   ',
+  '|   /  | |  |   /| |_| ||   / |   /| (_) | |__ | |__ ',
+  '|_|_\\  |_|  |_|_\\ \\___/ |_|_\\ |_|_\\ \\___/|____|____|',
+];
+
+// ── Menu items ──
+const MENU = [
+  { emoji: '🥙', name: 'The Series A Seekh Kebab Roll', price: '$4.20M (pre-revenue)', sub: 'Pre-money valuation: delicious' },
+  { emoji: '🧆', name: 'Pivot Paneer Tikka Roll', price: '2 SAFE notes', sub: 'We were a SaaS company once' },
+  { emoji: '🍳', name: 'The Burn Rate Bhurji Roll', price: '$0 (bootstrapped)', sub: 'Consuming capital, one bite at a time' },
+  { emoji: '🍗', name: 'YC Chicken Tikka Roll', price: '$500K (standard deal)', sub: 'Backed by garlic chutney' },
+  { emoji: '🌯', name: 'Cap Table Kathi Roll', price: '409A pending', sub: 'Ownership is complicated' },
+  { emoji: '🥣', name: 'Runway Extension Raita', price: 'Free (angel round)', sub: "It's a side. Like your consulting gig." },
+];
+
+function renderMenu(sel) {
+  let out = '\n';
+  out += '  ┌───────────────────────────────────────────────┐\n';
+  out += `  │  <span class="bold">THE MENU</span>                <span class="dim">rtrvr rolls  est. 2026</span>  │\n`;
+  out += '  ├───────────────────────────────────────────────┤\n';
+  out += '  │                                               │\n';
+  for (let i = 0; i < MENU.length; i++) {
+    const m = MENU[i];
+    const ptr = i === sel ? '<span class="pointer">❯</span>' : ' ';
+    const nameCls = i === sel ? 'selected' : '';
+    const nameStr = `<span class="${nameCls}">${i === sel ? '<b>' : ''}${m.emoji} ${m.name}${i === sel ? '</b>' : ''}</span>`;
+    out += `  │  ${ptr} ${nameStr}\n`;
+    out += `  │       <span class="amber">${m.price}</span>\n`;
+    out += `  │       <span class="dim">"${m.sub}"</span>\n`;
+    out += '  │                                               │\n';
+  }
+  out += '  │  <span class="dim">↑/↓ to browse  ENTER to order</span>               │\n';
+  out += '  └───────────────────────────────────────────────┤\n';
+  return out;
+}
+
+// ── Order flow messages ──
+const ORDER_MSGS = [
+  { text: 'Booting agent runtime...', cls: 'cyan', delay: 600 },
+  { text: 'Authenticating with rtrvr-rolls-HQ...', cls: 'cyan', delay: 500 },
+  { text: 'Agent connected. Model: gpt-4-turbo-tandoori', cls: 'cyan', delay: 700 },
+  { text: 'Navigating to kitchen API...', cls: 'cyan', delay: 400 },
+  { text: 'Looking up: "YC Chicken Tikka Roll"', cls: 'cyan', delay: 600 },
+  { text: 'Item found. Adding to cart...', cls: 'cyan', delay: 300 },
+  { text: 'Applying coupon: FOUNDER_DISCOUNT_42...', cls: 'cyan', delay: 500 },
+  { text: 'Coupon rejected: "Nice try."', cls: 'red', delay: 800 },
+  { text: 'Processing payment via npm credits...', cls: 'cyan', delay: 600 },
+  { text: 'Error 418: I\'m a teapot.', cls: 'red', delay: 1000 },
+  { text: 'Retrying with backoff + extra masala...', cls: 'cyan', delay: 700 },
+  { text: 'Wait a second...', cls: 'bold', delay: 1200 },
+  { text: '...', cls: 'dim', delay: 800 },
+  { text: 'Hmm...', cls: 'dim', delay: 600 },
+];
+
+// ── Main sequence ──
+async function run() {
+  // Prompt + type command
+  append('<span class="prompt">~ </span><span class="cmd">$ </span>');
+  await typeText('npx -p @rtrvr-ai/rover rtrvr-rolls', 'cmd', 50);
+  await sleep(400);
+
+  // "Installing..."
+  render('<span class="dim">Installing @rtrvr-ai/rover...</span>\n');
+  await sleep(1200);
+
+  // Welcome screen
+  let welcome = '\n';
+  welcome += '  ╔════════════════════════════════════════════════════════╗\n';
+  welcome += '  ║                                                        ║\n';
+  for (const line of LOGO) {
+    welcome += `  ║  <span class="orange">${line}</span>  ║\n`;
+  }
+  welcome += '  ║                                                        ║\n';
+  welcome += '  ║  <span class="bold">   Protein-packed rolls for founders who forgot to eat</span> ║\n';
+  welcome += '  ║  <span class="orange">   The world\'s first agentic restaurant.</span>               ║\n';
+  welcome += '  ║                                                        ║\n';
+  welcome += '  ║  <span class="dim">   Press ENTER to view the menu...</span>                    ║\n';
+  welcome += '  ║                                                        ║\n';
+  welcome += '  ╚════════════════════════════════════════════════════════╝\n';
+  render(welcome);
+  await sleep(2000);
+
+  // Menu — animate selection
+  const selections = [0, 1, 2, 3]; // browse down to YC Chicken Tikka
+  for (let i = 0; i < selections.length; i++) {
+    render(renderMenu(selections[i]));
+    await sleep(i === 0 ? 1200 : 700);
+  }
+  await sleep(800);
+
+  // Order flow
+  const selectedItem = MENU[3];
+  render(`\n<span class="green">$ rover order --item "${selectedItem.name}" --extra-spicy</span>\n\n`);
+  await sleep(400);
+
+  for (const msg of ORDER_MSGS) {
+    const prefix = '<span class="dim">[rover]</span> ';
+    let line = '';
+    // Typewriter for each message
+    for (const ch of msg.text) {
+      line += ch;
+      render(html.split('<!--CUR-->')[0] + prefix + `<span class="${msg.cls}">${line}</span><span class="cursor"></span><!--CUR-->`);
+      await sleep(25);
+    }
+    // Finalize line
+    html = html.split('<!--CUR-->')[0].replace(/<span class="cursor"><\/span>/, '') + prefix + `<span class="${msg.cls}">${msg.text}</span>\n`;
+    render(html);
+    await sleep(msg.delay);
+  }
+
+  await sleep(1000);
+
+  // Reveal
+  let reveal = '\n';
+  reveal += '  ╔════════════════════════════════════════════════════════╗\n';
+  reveal += '  ║                                                        ║\n';
+  reveal += '  ║          <span class="bold orange">🎉  APRIL FOOLS!  🎉</span>                       ║\n';
+  reveal += '  ║                                                        ║\n';
+  reveal += '  ║   rtrvr rolls isn\'t real (yet).                        ║\n';
+  reveal += '  ║   But <span class="bold">Rover</span> is.                                     ║\n';
+  reveal += '  ║                                                        ║\n';
+  reveal += '  ║   Rover is an AI agent that actually browses the web   ║\n';
+  reveal += '  ║   for your users. It clicks, types, navigates, and    ║\n';
+  reveal += '  ║   extracts <span class="dim">— so your users don\'t have to.</span>             ║\n';
+  reveal += '  ║                                                        ║\n';
+  reveal += '  ║   No tandoori required.                                ║\n';
+  reveal += '  ║                                                        ║\n';
+  reveal += '  ║   <span class="green">npm install @rtrvr-ai/rover</span>                        ║\n';
+  reveal += '  ║   <span class="amber">https://rtrvr.ai/rover</span>                             ║\n';
+  reveal += '  ║                                                        ║\n';
+  reveal += '  ║   <span class="dim">── No chickens were harmed.</span>                         ║\n';
+  reveal += '  ║   <span class="dim">   Some VCs were mildly offended. ──</span>                ║\n';
+  reveal += '  ║                                                        ║\n';
+  reveal += '  ╚════════════════════════════════════════════════════════╝\n';
+  render(reveal);
+}
+
+run();
+</script>
+</body>
+</html>
