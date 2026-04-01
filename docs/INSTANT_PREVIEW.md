@@ -109,6 +109,9 @@ Use this when:
 
 Hosted Preview lives on the Rover website and is backed by `/v2/rover/previews`.
 When you click `Open hosted shell`, Rover should open a dedicated hosted viewer page for the cloud-browser fallback, not the launcher again.
+Under the hood, Hosted Preview now uses a dedicated Rover-managed hosted-browser session. It is not supposed to piggyback on the generic `/internal/agent` request lifecycle.
+That hosted browser runs on dedicated hosted-preview capacity, not the normal reuse-optimized automation/scrape pool.
+Hosted browser ownership is sticky to one worker. If the owner lease goes stale, Rover should fail closed and ask you to recreate the temporary demo instead of pretending another worker can resume the same browser.
 
 ### Try on Other Sites
 
@@ -202,7 +205,7 @@ Use it when you want:
 Core route family:
 
 - `POST /v2/rover/previews`
-- `GET /v2/rover/previews/{previewId}`
+- `GET /v2/rover/previews/{previewId}` (`touchHostedSession=1` only from the hosted viewer heartbeat path)
 - `GET /v2/rover/previews/{previewId}/events`
 - `POST /v2/rover/previews/{previewId}/input`
 - `POST /v2/rover/previews/{previewId}/cancel`
@@ -233,6 +236,10 @@ Direct references:
   The Workspace key you copied is not embed-enabled. Rotate or create an embed-ready key in Workspace, then copy the new test config JSON.
 - **`Open hosted shell` does nothing**
   Hosted Preview should open the dedicated hosted viewer route on the Rover website. If it does not, recreate the preview and try again.
+- **Hosted Preview keeps polling `/vnc/sessions` and the browser stays blank**
+  That means the hosted-browser session was never marked viewer-ready. Hosted Preview should first provision a persistent Rover-managed browser session, then run Rover on that same browser. Recreate the preview after deploying the latest backend and website changes.
+- **Hosted browser says it needs a restart or stale owner**
+  Hosted Preview sessions are sticky to one worker. If the worker dies or loses its owner lease, Rover should mark the hosted launch failed and ask you to recreate the temporary demo.
 - **`React has blocked a javascript: URL`**
   Delete any old Rover bookmarklet and recreate it from the latest Live Test page. Rover's bookmarklet must be dragged from the dedicated drag control, not clicked on the Rover page itself.
 - **Console or Bookmarklet only worked on the first page**
