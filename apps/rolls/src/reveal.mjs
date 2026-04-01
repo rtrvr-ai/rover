@@ -16,7 +16,7 @@ export async function showReveal() {
     '',
     `   No tandoori required.`,
     '',
-    green('   npm install @rtrvr-ai/rover'),
+    green('   npx -p @rtrvr-ai/rover rtrvr-rolls'),
     amber('   https://rtrvr.ai/rover'),
     '',
     dim('   \u{2500}\u{2500} No chickens were harmed.'),

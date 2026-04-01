@@ -184,8 +184,7 @@ There are two config sources:
 Notes:
 
 - **Hosted Preview** needs no Workspace config. Rover creates temporary preview state for you.
-- **Hosted Preview** now uses dedicated hosted-browser capacity separate from the normal automation/scrape pool, so demo viewers do not starve regular work.
-- **Hosted Preview capacity is opt-in**. `ROVER_HOSTED_POOL_MAX_INSTANCES` now defaults to `0`, so a deployment only serves hosted browsers if you explicitly allocate hosted-preview capacity.
+- **Hosted Preview** now leases from the same shared browser pool as normal automation on that worker. With `POOL_MAX_INSTANCES=1`, Hosted Preview and `/agent` queue behind whichever side currently holds the browser.
 - **Hosted Preview** is sticky to one worker and one browser. If that owner dies or the lease expires, Rover should fail closed and tell you to recreate the temporary demo.
 - **Try on Other Sites** starts in Workspace, then uses Helper / Console / Bookmarklet on arbitrary sites.
 - **Production install** is the Workspace snippet on your real site, not the same thing as generic testing on other sites.
@@ -200,6 +199,8 @@ Notes:
   Hosted Preview should show Rover's hosted browser inline in Live Test and also open the dedicated hosted viewer route in a new tab. If neither works, recreate the temporary demo and try again.
 - **Hosted Preview keeps polling `/vnc/sessions` and the viewer stays blank**
   Hosted Preview should provision a dedicated Rover-managed browser session first, then run Rover on that same browser. If you only see repeated session polling with a blank viewer, the hosted-browser session never became viewer-ready; recreate the demo after deploying the latest backend and website changes.
+- **Hosted Preview is waiting on another browser task**
+  Hosted Preview and normal automation share the same pool. If the only browser on that worker is busy, Hosted Preview waits for it to be released.
 - **Hosted browser says it needs a restart or stale owner**
   Hosted Preview sessions are intentionally fail-closed if their owner worker dies or loses the lease. Recreate the temporary demo instead of waiting for the old browser to recover.
 - **`React has blocked a javascript: URL`**

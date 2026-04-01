@@ -34,3 +34,6 @@ await build({
 });
 
 console.log('SDK bundled to dist/rover.js');
+
+// 3. Bundle the rolls CLI into a standalone Node script
+await import('./bundle-rolls.mjs');
