@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>rtrvr rolls — Pretext Demo</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Manrope:wght@700;800&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #FAFAF7;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 40px;
+    overflow: hidden;
+  }
+  /* Orbs */
+  .orb {
+    position: fixed;
+    border-radius: 50%;
+    filter: blur(80px);
+    pointer-events: none;
+    animation: orbFloat 20s ease-in-out infinite;
+    opacity: 0.5;
+  }
+  .orb1 { width: 400px; height: 400px; background: rgba(255,76,0,0.08); top: 5%; left: 10%; }
+  .orb2 { width: 300px; height: 300px; background: rgba(255,184,0,0.06); bottom: 10%; right: 10%; animation-delay: -7s; }
+  @keyframes orbFloat {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    33% { transform: translate(30px, -20px) scale(1.05); }
+    66% { transform: translate(-20px, 15px) scale(0.95); }
+  }
+  h3 {
+    font-family: 'Manrope', sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    color: #FF4C00;
+    letter-spacing: 0.1em;
+    margin-bottom: 20px;
+    text-align: center;
+    position: relative;
+    z-index: 1;
+  }
+  .card {
+    position: relative;
+    z-index: 1;
+    width: 820px;
+    max-width: 95vw;
+    background: linear-gradient(135deg, rgba(255,255,255,0.85), rgba(255,252,245,0.9), rgba(255,255,255,0.85));
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(255,76,0,0.08);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 4px 24px rgba(255,76,0,0.04), 0 1px 3px rgba(0,0,0,0.04), inset 0 1px 0 rgba(255,255,255,0.8);
+  }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div class="orb orb1"></div>
+<div class="orb orb2"></div>
+<h3>OUR PHILOSOPHY</h3>
+<div class="card" id="container">
+  <canvas id="canvas"></canvas>
+</div>
+
+<script>
+const PARAGRAPH = "At rtrvr rolls, we believe that the best meals are ordered programmatically. Our chefs are microservices. Our spices are environment variables. Our secret sauce is a well-crafted API call. We serve rolls the way software should be served — fast, reliable, and with zero human interaction. Founded by engineers who were tired of context-switching between VS Code and DoorDash, rtrvr rolls is the future of food. No waiters. No small talk. Just pure, unadulterated sustenance delivered to your terminal. We accept npm credits, GitHub stars, and mass-distributed SAFE notes.";
+
+const FONT_SIZE = 16;
+const LINE_HEIGHT = 26;
+const OBSTACLE_R = 52;
+const OBSTACLE_PAD = 16;
+const CHICKEN_SIZE = 52;
+
+const canvas = document.getElementById('canvas');
+const container = document.getElementById('container');
+const ctx = canvas.getContext('2d');
+
+// Embers
+const embers = [];
+function spawnEmber(cx, cy) {
+  const angle = -Math.PI / 2 + (Math.random() - 0.5) * 1.2;
+  const speed = 0.4 + Math.random() * 1.2;
+  embers.push({
+    x: cx + (Math.random() - 0.5) * 20,
+    y: cy + (Math.random() - 0.5) * 10,
+    vx: Math.cos(angle) * speed + (Math.random() - 0.5) * 0.3,
+    vy: Math.sin(angle) * speed - 0.2,
+    life: 1, maxLife: 40 + Math.random() * 60,
+    size: 1.5 + Math.random() * 3,
+    hue: Math.random() * 40,
+  });
+}
+
+function drawEmbers() {
+  for (let i = embers.length - 1; i >= 0; i--) {
+    const e = embers[i];
+    e.x += e.vx; e.y += e.vy; e.vy -= 0.008; e.vx *= 0.995;
+    e.life -= 1 / e.maxLife;
+    if (e.life <= 0) { embers.splice(i, 1); continue; }
+    const a = e.life * 0.8;
+    ctx.beginPath();
+    ctx.arc(e.x, e.y, e.size * e.life, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,${Math.floor(76 + e.hue * 2.7)},${Math.floor(e.hue * 0.5)},${a})`;
+    ctx.fill();
+  }
+}
+
+function drawFireChicken(x, y, dir, time) {
+  drawEmbers();
+
+  ctx.save();
+  ctx.translate(x, y);
+
+  // Heat haze
+  const haze = ctx.createRadialGradient(0, 0, 0, 0, 0, 70);
+  haze.addColorStop(0, 'rgba(255,76,0,0.12)');
+  haze.addColorStop(0.5, 'rgba(255,120,0,0.06)');
+  haze.addColorStop(1, 'rgba(255,184,0,0)');
+  ctx.fillStyle = haze;
+  ctx.beginPath(); ctx.arc(0, 0, 70, 0, Math.PI * 2); ctx.fill();
+
+  // Flame tongues
+  for (let i = 0; i < 5; i++) {
+    const phase = time * 4 + i * 1.3;
+    const fH = 20 + Math.sin(phase) * 12;
+    const fW = 8 + Math.sin(phase * 1.3) * 4;
+    const ox = Math.sin(time * 3 + i * 2) * 14;
+    const oy = -18 - i * 3;
+
+    ctx.save();
+    ctx.translate(ox, oy);
+    ctx.rotate(Math.sin(phase * 0.7) * 0.2);
+
+    const fg = ctx.createLinearGradient(0, 0, 0, -fH);
+    fg.addColorStop(0, `rgba(255,${50 + i * 20},0,0.5)`);
+    fg.addColorStop(0.4, `rgba(255,${100 + i * 15},0,0.3)`);
+    fg.addColorStop(1, 'rgba(255,200,0,0)');
+
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.bezierCurveTo(-fW, -fH * 0.3, -fW * 0.6, -fH * 0.7, 0, -fH);
+    ctx.bezierCurveTo(fW * 0.6, -fH * 0.7, fW, -fH * 0.3, 0, 0);
+    ctx.fillStyle = fg;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // Core glow
+  const cs = 30 + Math.sin(time * 6) * 3;
+  const cg = ctx.createRadialGradient(0, 0, 0, 0, 0, cs);
+  cg.addColorStop(0, 'rgba(255,220,100,0.25)');
+  cg.addColorStop(0.4, 'rgba(255,120,0,0.15)');
+  cg.addColorStop(1, 'rgba(255,76,0,0)');
+  ctx.fillStyle = cg;
+  ctx.beginPath(); ctx.arc(0, 0, cs, 0, Math.PI * 2); ctx.fill();
+
+  // Chicken
+  ctx.font = `${CHICKEN_SIZE}px serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (dir < 0) ctx.scale(-1, 1);
+  ctx.fillText('🐔', 0, 2);
+  ctx.restore();
+}
+
+function drawTextLine(text, lx, ly, cx, cy) {
+  const mx = lx + ctx.measureText(text).width / 2;
+  const dist = Math.sqrt((mx - cx) ** 2 + (ly - cy) ** 2);
+  const zone = 140;
+  if (dist < zone) {
+    const t = 1 - dist / zone;
+    ctx.fillStyle = `rgb(${Math.floor(107 + 148 * t)},${Math.floor(107 - 40 * t)},${Math.floor(107 - 107 * t)})`;
+  } else {
+    ctx.fillStyle = '#4A4A4A';
+  }
+  ctx.fillText(text, lx, ly);
+}
+
+let chickenX = 100, chickenVX = 0.8, frame = 0;
+const startTime = performance.now();
+
+function resize() {
+  const rect = container.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = rect.width * dpr;
+  canvas.height = 420 * dpr;
+  canvas.style.width = rect.width + 'px';
+  canvas.style.height = '420px';
+  ctx.scale(dpr, dpr);
+}
+resize();
+window.addEventListener('resize', resize);
+
+function draw() {
+  const w = container.getBoundingClientRect().width;
+  const h = 420;
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const time = (performance.now() - startTime) / 1000;
+
+  chickenX += chickenVX;
+  if (chickenX > w - 60) chickenVX = -Math.abs(chickenVX);
+  if (chickenX < 60) chickenVX = Math.abs(chickenVX);
+  const dir = chickenVX > 0 ? 1 : -1;
+  const chickenY = 170 + Math.sin(time * 1.5) * 12;
+
+  frame++;
+  if (frame % 3 === 0) spawnEmber(chickenX, chickenY - 20);
+  if (frame % 5 === 0) spawnEmber(chickenX, chickenY - 10);
+
+  // Text with obstacle avoidance (fallback word-wrap since no pretext in plain HTML)
+  const pad = 24;
+  const totalW = w - pad * 2;
+  const oL = chickenX - OBSTACLE_R - OBSTACLE_PAD;
+  const oR = chickenX + OBSTACLE_R + OBSTACLE_PAD;
+  const oT = chickenY - OBSTACLE_R - OBSTACLE_PAD;
+  const oB = chickenY + OBSTACLE_R + OBSTACLE_PAD;
+
+  ctx.font = `${FONT_SIZE}px JetBrains Mono, monospace`;
+  ctx.textBaseline = 'alphabetic';
+  ctx.textAlign = 'start';
+
+  const words = PARAGRAPH.split(' ');
+  let cur = '', y = LINE_HEIGHT + 8, wi = 0;
+  while (wi < words.length && y < h - 8) {
+    const top = y - LINE_HEIGHT, bot = y;
+    const overlaps = bot >= oT && top <= oB;
+    let lx = pad, avail = totalW;
+    if (overlaps) {
+      if (chickenX < w / 2) { lx = Math.max(pad, oR); avail = w - lx - pad; }
+      else { avail = Math.max(40, oL - pad); }
+    }
+    const test = cur ? cur + ' ' + words[wi] : words[wi];
+    if (ctx.measureText(test).width > avail && cur) {
+      drawTextLine(cur, lx, y, chickenX, chickenY);
+      cur = ''; y += LINE_HEIGHT;
+    } else { cur = test; wi++; }
+  }
+  if (cur) {
+    const top = y - LINE_HEIGHT, bot = y;
+    const overlaps = bot >= oT && top <= oB;
+    let lx = pad;
+    if (overlaps && chickenX < w / 2) lx = Math.max(pad, oR);
+    drawTextLine(cur, lx, y, chickenX, chickenY);
+  }
+
+  drawFireChicken(chickenX, chickenY, dir, time);
+  requestAnimationFrame(draw);
+}
+
+document.fonts.ready.then(() => requestAnimationFrame(draw));
+</script>
+</body>
+</html>
