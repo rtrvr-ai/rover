@@ -43,7 +43,7 @@ export const getToolFunctionDeclarations = (toolFunctions?: {
       }
       functionDeclarations.push({
         name: functionName,
-        description: func.description,
+        description: buildToolDescription(functionName, func),
         parameters: {
           type: Type.OBJECT,
           properties: parameters,
@@ -54,3 +54,22 @@ export const getToolFunctionDeclarations = (toolFunctions?: {
   }
   return functionDeclarations;
 };
+
+function buildToolDescription(functionName: string, func: CustomFunction): string | undefined {
+  const annotations = func && typeof func === 'object' && typeof (func as any).annotations === 'object'
+    ? (func as any).annotations
+    : undefined;
+  const title = typeof (func as any).title === 'string' ? String((func as any).title).trim() : '';
+  const description = typeof func.description === 'string' ? func.description.trim() : '';
+  const whenToUse = typeof annotations?.whenToUse === 'string' ? String(annotations.whenToUse).trim() : '';
+  const whyUse = typeof annotations?.whyUse === 'string' ? String(annotations.whyUse).trim() : '';
+  const examples = Array.isArray(annotations?.examples)
+    ? annotations.examples.map((example: unknown) => String(example || '').trim()).filter(Boolean).slice(0, 3)
+    : [];
+  const parts = [title, description];
+  if (whenToUse) parts.push(`When to use: ${whenToUse}`);
+  if (whyUse) parts.push(`Why use this path: ${whyUse}`);
+  if (examples.length) parts.push(`Examples: ${examples.join(' | ')}`);
+  const joined = parts.filter(Boolean).join(' ').trim();
+  return joined || functionName;
+}

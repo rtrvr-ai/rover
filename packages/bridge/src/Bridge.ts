@@ -530,7 +530,17 @@ export class Bridge {
   }
 
   registerTool(
-    nameOrDef: string | { name: string; description?: string; parameters?: Record<string, any>; required?: string[]; schema?: any; llmCallable?: boolean },
+    nameOrDef: string | {
+      name: string;
+      title?: string;
+      description?: string;
+      parameters?: Record<string, any>;
+      required?: string[];
+      schema?: any;
+      outputSchema?: any;
+      annotations?: Record<string, any>;
+      llmCallable?: boolean;
+    },
     handler?: (args: any) => any | Promise<any>,
   ): void {
     const def = typeof nameOrDef === 'string' ? { name: nameOrDef } : nameOrDef;

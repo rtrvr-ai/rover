@@ -43,6 +43,10 @@
       "import": "./dist/rover.js",
       "types": "./dist/index.d.ts"
     },
+    "./agent-discovery": {
+      "import": "./dist/agentDiscovery.js",
+      "types": "./dist/agentDiscovery.d.ts"
+    },
     "./preview-bootstrap": {
       "import": "./dist/previewBootstrap.js",
       "types": "./dist/previewBootstrap.d.ts"
@@ -52,6 +56,8 @@
   },
   "files": [
     "dist/rover.js",
+    "dist/agentDiscovery.js",
+    "dist/agentDiscovery.d.ts",
     "dist/embed.js",
     "dist/previewBootstrap.js",
     "dist/previewBootstrap.d.ts",
