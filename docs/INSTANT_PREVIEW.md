@@ -108,12 +108,18 @@ Use this when:
 - you need a mobile-friendly fallback
 
 Hosted Preview lives on the Rover website and is backed by `/v2/rover/previews`.
+Hosted Preview is owned by the signed-in tester who creates it. The temporary runtime session is minted under that tester's `uid`, and Hosted Preview consumes that tester's credits rather than any real Workspace `pk_site_*` on the target website.
 When you click `Open hosted shell`, Rover should open a dedicated hosted viewer page for the cloud-browser fallback, not the launcher again.
 Under the hood, Hosted Preview now uses a dedicated Rover-managed hosted-browser session. It is not supposed to piggyback on the generic `/internal/agent` request lifecycle.
+That hosted browser now boots Rover inside the hosted page itself by injecting the same short-lived preview bootstrap used by the other preview clients, and it should re-inject after top-level navigations or reloads.
+Once that hosted page is ready, Rover should auto-run the exact Live Test prompt inside the hosted page. This is meant to feel like a Rover-managed equivalent of `?rover=`, but it does not rely on the target site already being installed.
+Hosted Preview has a hard 12-minute maximum aligned with `/agent`. Viewer heartbeats only refresh a short disconnect grace; they do not extend that absolute expiry.
+Closing the hosted viewer tab triggers a best-effort close request. If that unload signal is missed, the server-side disconnect grace should still close the hosted session quickly.
 That hosted browser still has its own session/state lifecycle, but it now leases from the same shared browser pool as normal automation on that worker.
 With `POOL_MAX_INSTANCES=1`, Hosted Preview and `/agent` queue behind whichever side currently holds the browser.
 Hosted browser ownership is sticky to one worker. If the owner lease goes stale, Rover should fail closed and ask you to recreate the temporary demo instead of pretending another worker can resume the same browser.
 When a hosted session closes, expires, or fails, Rover destroys that browser instead of trying to recycle it for the next request. That is the current safety posture to avoid storage/cookie bleed between hosted preview and normal automation.
+Installed-site deep links like `?rover=` remain the real site-owned browser entrypoint. Hosted Preview should stay separate from that site-key and billing context even if the target site already has Rover installed.
 
 ### Try on Other Sites
 
@@ -238,10 +244,18 @@ Direct references:
   The Workspace key you copied is not embed-enabled. Rotate or create an embed-ready key in Workspace, then copy the new test config JSON.
 - **`Open hosted shell` does nothing**
   Hosted Preview should open the dedicated hosted viewer route on the Rover website. If it does not, recreate the preview and try again.
+- **The hosted browser opens but Rover never appears inside the page**
+  Hosted Preview should inject the short-lived preview bootstrap into the hosted page and re-inject it after top-level navigations. If the browser opens but Rover never boots, recreate the preview after deploying the latest backend and web-agent changes.
 - **Hosted Preview keeps polling `/vnc/sessions` and the browser stays blank**
   That means the hosted-browser session was never marked viewer-ready. Hosted Preview should first provision a persistent Rover-managed browser session, then run Rover on that same browser. Recreate the preview after deploying the latest backend and website changes.
 - **Hosted Preview is waiting for the browser**
   Hosted Preview uses the same shared browser pool as normal automation on that worker. If the only browser is busy, Hosted Preview waits instead of creating a second browser.
+- **Hosted Preview expired while the viewer was still open**
+  That is expected when the hard 12-minute maximum is reached. Viewer heartbeats only refresh the short disconnect grace, not the absolute expiry.
+- **Hosted Preview says you do not have credits**
+  Hosted Preview is billed to the signed-in tester who created the temporary demo. Sign in first, then add credits or upgrade your plan before creating or continuing the preview.
+- **Closing the hosted viewer tab did not close the demo immediately**
+  Rover sends a best-effort close on `pagehide` and `beforeunload`. If that signal is missed, the hosted session should still close after the short disconnect grace.
 - **Hosted browser says it needs a restart or stale owner**
   Hosted Preview sessions are sticky to one worker. If the worker dies or loses its owner lease, Rover should mark the hosted launch failed and ask you to recreate the temporary demo.
 - **Does Hosted Preview reuse the browser after it closes?**
