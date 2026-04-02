@@ -175,7 +175,7 @@ There are two config sources:
 
 | Path | What you need | Best for | Persistence | Mobile | Managed by |
 |---|---|---|---|---|---|
-| Hosted Preview | Signed-in URL + prompt | Rover-managed demos | Temporary preview session | Best fallback | Rover |
+| Hosted Preview | Signed-in URL + prompt | Rover-managed demos | Temporary preview session (12-minute max) | Best fallback | Rover |
 | Preview Helper | Workspace test config JSON or hosted handoff | Multi-page desktop demos | Re-injects after reloads/navigation | No | Workspace or Rover |
 | Console | Workspace test config JSON + generated snippet | Fast DevTools demos | Current page only | No | Workspace |
 | Bookmarklet | Workspace test config JSON + generated bookmarklet | Drag-and-click demos | Current page only | Weak | Workspace |
@@ -184,12 +184,17 @@ There are two config sources:
 Notes:
 
 - **Hosted Preview** needs no Workspace config. Rover creates temporary preview state for you.
-
+- **Hosted Preview** is owned by the signed-in tester who creates it. The temporary runtime session is minted under that tester's `uid`, and Hosted Preview consumes that tester's credits.
+- **Hosted Preview** now boots Rover inside the hosted page itself. The hosted browser is not just a remote shell; Rover injects the preview bootstrap into that page and should reattach after top-level navigations.
+- **Hosted Preview** auto-runs the exact Live Test prompt inside that hosted page once Rover is ready. It is meant to feel like a Rover-managed version of `?rover=`, but it does not depend on the target site already having Rover installed.
+- **Hosted Preview** has a hard 12-minute maximum aligned with `/agent`. Viewer heartbeats only refresh a short disconnect grace and do not extend the hard expiry.
+- **Hosted Preview** sends a best-effort close when the hosted viewer tab unloads. If that signal is missed, Rover should still close the hosted session shortly after the disconnect grace expires.
 - **Hosted Preview** now leases from the same shared browser pool as normal automation on that worker. With `POOL_MAX_INSTANCES=1`, Hosted Preview and `/agent` queue behind whichever side currently holds the browser.
 - **Hosted Preview** is sticky to one worker and one browser. If that owner dies or the lease expires, Rover should fail closed and tell you to recreate the temporary demo.
 - **Hosted Preview** does not try to recycle its browser after close, expiry, or failure. Rover destroys that browser before the shared pool can hand capacity back to the next request.
 - **Try on Other Sites** starts in Workspace, then uses Helper / Console / Bookmarklet on arbitrary sites.
 - **Production install** is the Workspace snippet on your real site, not the same thing as generic testing on other sites.
+- **Installed-site deep links** like `?rover=` remain the real site-owned/browser-first path. Hosted Preview stays separate from that billing and site-key context even if the target site is already installed.
 - **Live Test** now shows Rover's hosted browser directly on the page for Hosted Preview. `Open hosted shell` is the full-screen version of that same temporary cloud-browser fallback.
 - **Bookmarklet** is a drag-only control in Rover's UI. Drag it from Live Test into your bookmarks bar, then click it on the target site.
 
@@ -199,10 +204,18 @@ Notes:
   The selected Workspace key is not embed-ready. Go back to Workspace and create or rotate an embed-enabled site key, then copy the fresh test config JSON again.
 - **`Open hosted shell` does nothing**
   Hosted Preview should show Rover's hosted browser inline in Live Test and also open the dedicated hosted viewer route in a new tab. If neither works, recreate the temporary demo and try again.
+- **The hosted browser opens but Rover never appears inside the page**
+  Hosted Preview should inject the same short-lived preview bootstrap into the hosted page and re-inject it after top-level navigations. If the browser opens but Rover never boots, recreate the demo after deploying the latest backend and web-agent changes.
 - **Hosted Preview keeps polling `/vnc/sessions` and the viewer stays blank**
   Hosted Preview should provision a dedicated Rover-managed browser session first, then run Rover on that same browser. If you only see repeated session polling with a blank viewer, the hosted-browser session never became viewer-ready; recreate the demo after deploying the latest backend and website changes.
 - **Hosted Preview is waiting on another browser task**
   Hosted Preview and normal automation share the same pool. If the only browser on that worker is busy, Hosted Preview waits for it to be released.
+- **Hosted Preview expired while the viewer was still open**
+  That is expected once the hard 12-minute limit is reached. Viewer polling only refreshes the short disconnect grace, not the absolute hosted-preview expiry.
+- **Hosted Preview says it cannot run because there are no credits**
+  Hosted Preview bills the signed-in tester who created the temporary demo. Sign in first, then add credits or upgrade your plan before creating or continuing the demo.
+- **Closing the hosted tab did not close the demo immediately**
+  Rover sends a best-effort close on `pagehide` and `beforeunload`. If the browser or network drops that signal, the hosted session should still close after the short disconnect grace.
 - **Hosted browser says it needs a restart or stale owner**
   Hosted Preview sessions are intentionally fail-closed if their owner worker dies or loses the lease. Recreate the temporary demo instead of waiting for the old browser to recover.
 - **Does Hosted Preview reuse the browser after it closes?**
@@ -250,8 +263,9 @@ For short-lived demos:
 1. Sign in to Rover Instant Preview.
 2. Choose either `Use Rover temporary demo` or `Use Workspace config`.
 3. The temporary demo path creates short-lived preview state for a target URL and prompt.
-4. The Workspace-config path expects the test config JSON you copied from Workspace.
-5. Treat preview tokens as temporary demo credentials, not as production site keys.
+4. Hosted Preview uses the signed-in tester's credits and auto-runs that exact prompt inside Rover's hosted page.
+5. The Workspace-config path expects the test config JSON you copied from Workspace.
+6. Treat preview tokens as temporary demo credentials, not as production site keys.
 
 ### Direct hosted preview API
 
