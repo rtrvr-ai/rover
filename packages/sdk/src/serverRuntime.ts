@@ -304,7 +304,7 @@ function asNumber(value: unknown, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function toBaseUrl(apiBase?: string): string {
+export function toBaseUrl(apiBase?: string): string {
   const fallback = 'https://agent.rtrvr.ai';
   const base = String(apiBase || fallback).trim().replace(/\/+$/, '');
   if (!base) return fallback;

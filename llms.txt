@@ -127,6 +127,7 @@ See `/SKILLS.md` for a copy-paste external-agent prompt plus Node, Python, and s
 - `rover.on(event, handler)` — subscribe to runtime events
 - `rover.identify({ name, email })` — set visitor identity
 - `rover.getState()` — read runtime state
+- `rover.getAgentCard()` — build the current Rover capability card from live shortcuts, explicit tools, and WebMCP metadata
 - `rover.update(config)` — patch config without rebooting
 
 ## Documentation

@@ -47,6 +47,19 @@ import {
   type RoverPreviewAttachLaunch,
 } from './previewBootstrap.js';
 import {
+  createRoverAgentCard,
+  createRoverAgentCardJson,
+  createRoverAgentDiscoveryTags,
+  createRoverServiceDescLinkHeader,
+  createRoverWellKnownAgentCard,
+  DEFAULT_AGENT_CARD_PATH,
+  DEFAULT_LLMS_PATH,
+  ROVER_WEBMCP_DISCOVERY_GLOBAL,
+  type RoverAgentCard,
+  type RoverAgentDiscoveryRuntimeConfig,
+  type RoverAgentDiscoveryToolDefinition,
+} from './agentDiscovery.js';
+import {
   RoverCloudCheckpointClient,
   type RoverCloudCheckpointPayload,
   type RoverCloudCheckpointState,
@@ -236,6 +249,7 @@ export type RoverInit = {
     activation?: 'on_demand';
     idleCloseMs?: number;
   };
+  agentDiscovery?: RoverAgentDiscoveryRuntimeConfig;
   stability?: {
     maxPersistBytes?: number;
     maxSnapshotBytes?: number;
@@ -357,10 +371,13 @@ export type RoverInit = {
 
 export type ClientToolDefinition = {
   name: string;
+  title?: string;
   description?: string;
   parameters?: Record<string, any>;
   required?: string[];
   schema?: any;
+  outputSchema?: any;
+  annotations?: Record<string, any>;
   llmCallable?: boolean;
 };
 
@@ -438,6 +455,7 @@ export type RoverInstance = {
   newTask: (options?: { reason?: string; clearUi?: boolean }) => void;
   endTask: (options?: { reason?: string }) => void;
   getState: () => any;
+  getAgentCard: () => RoverAgentCard | null;
   requestSigned: (input: string | URL, init?: RequestInit) => Promise<Response>;
   attachLaunch: (params: RoverPreviewAttachLaunch) => Promise<RoverLaunchAttachResponse | null>;
   registerPromptContextProvider: (provider: RoverPromptContextProvider) => () => void;
@@ -902,6 +920,58 @@ function on(event: RoverEventName, handler: RoverEventHandler): () => void {
 
 function toToolDef(nameOrDef: string | ClientToolDefinition): ClientToolDefinition {
   return typeof nameOrDef === 'string' ? { name: nameOrDef } : nameOrDef;
+}
+
+function readPublishedWebMCPToolDefinitions(): RoverAgentDiscoveryToolDefinition[] {
+  if (typeof window === 'undefined') return [];
+  const raw = (window as any)[ROVER_WEBMCP_DISCOVERY_GLOBAL];
+  if (!Array.isArray(raw)) return [];
+  const out: RoverAgentDiscoveryToolDefinition[] = [];
+  const seen = new Set<string>();
+  for (const value of raw) {
+    if (!value || typeof value !== 'object') continue;
+    const name = String((value as any).name || '').trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(value as RoverAgentDiscoveryToolDefinition);
+  }
+  return out;
+}
+
+export function getAgentCard(): RoverAgentCard | null {
+  if (!currentConfig || typeof window === 'undefined') return null;
+  const siteUrl = String(currentConfig.agentDiscovery?.siteUrl || `${window.location.origin}/`).trim();
+  const aiAccess = resolveEffectiveAiAccessConfig(currentConfig);
+  const clientTools = bridge?.listClientTools?.() || currentConfig.tools?.client || [];
+  const webmcpTools = readPublishedWebMCPToolDefinitions();
+  return createRoverAgentCard({
+    siteId: currentConfig.siteId,
+    siteUrl,
+    apiBase: currentConfig.apiBase,
+    siteName:
+      String(currentConfig.agentDiscovery?.siteName || currentConfig.ui?.agent?.name || document.title || '').trim()
+      || window.location.hostname,
+    description:
+      String(currentConfig.agentDiscovery?.description || '').trim()
+      || `Structured Rover entrypoints for ${window.location.hostname}. Prefer these explicit Rover skills and tools over brittle DOM automation whenever they match the user's goal.`,
+    version:
+      String(currentConfig.agentDiscovery?.version || backendSiteConfig?.version || '').trim()
+      || undefined,
+    agentCardUrl:
+      String(currentConfig.agentDiscovery?.agentCardUrl || '').trim()
+      || DEFAULT_AGENT_CARD_PATH,
+    llmsUrl:
+      String(currentConfig.agentDiscovery?.llmsUrl || '').trim()
+      || DEFAULT_LLMS_PATH,
+    preferExecution:
+      currentConfig.agentDiscovery?.preferExecution
+      || (aiAccess?.allowCloudBrowser === false ? 'browser' : 'auto'),
+    shortcuts: resolveEffectiveShortcuts(currentConfig),
+    tools: clientTools as RoverAgentDiscoveryToolDefinition[],
+    webmcpTools,
+    additionalSkills: currentConfig.agentDiscovery?.additionalSkills,
+    aiAccess,
+  });
 }
 
 function createId(prefix: string): string {
@@ -7576,6 +7646,22 @@ function sanitizeGreetingConfig(raw: any): RoverGreetingConfig | undefined {
   return Object.keys(next).length ? next : undefined;
 }
 
+function sanitizeShortcutStringList(raw: unknown, options: { maxItems: number; maxChars: number }): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of raw) {
+    const normalized = String(value || '').trim().slice(0, options.maxChars);
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+    if (out.length >= options.maxItems) break;
+  }
+  return out.length ? out : undefined;
+}
+
 function sanitizeShortcut(raw: any): RoverShortcut | null {
   if (!raw || typeof raw !== 'object') return null;
   const id = String(raw.id || '').trim().slice(0, 80);
@@ -7593,6 +7679,30 @@ function sanitizeShortcut(raw: any): RoverShortcut | null {
   if (raw.routing === 'auto' || raw.routing === 'act' || raw.routing === 'planner') sc.routing = raw.routing;
   const order = Number(raw.order);
   if (Number.isFinite(order)) sc.order = Math.trunc(order);
+  const tags = sanitizeShortcutStringList(raw.tags, { maxItems: 16, maxChars: 40 });
+  if (tags) sc.tags = tags;
+  const examples = sanitizeShortcutStringList(raw.examples, { maxItems: 6, maxChars: 220 });
+  if (examples) sc.examples = examples;
+  if (raw.inputSchema && typeof raw.inputSchema === 'object' && !Array.isArray(raw.inputSchema)) {
+    sc.inputSchema = raw.inputSchema;
+  }
+  if (raw.outputSchema && typeof raw.outputSchema === 'object' && !Array.isArray(raw.outputSchema)) {
+    sc.outputSchema = raw.outputSchema;
+  }
+  if (raw.sideEffect === 'none' || raw.sideEffect === 'read' || raw.sideEffect === 'write' || raw.sideEffect === 'transactional') {
+    sc.sideEffect = raw.sideEffect;
+  }
+  if (typeof raw.requiresConfirmation === 'boolean') {
+    sc.requiresConfirmation = raw.requiresConfirmation;
+  }
+  if (
+    raw.preferredInterface === 'task'
+    || raw.preferredInterface === 'shortcut'
+    || raw.preferredInterface === 'client_tool'
+    || raw.preferredInterface === 'webmcp'
+  ) {
+    sc.preferredInterface = raw.preferredInterface;
+  }
   return sc;
 }
 
@@ -8502,7 +8612,8 @@ async function handleBuiltInRoverHandoff(rawArgs: HandoffToolArgs | undefined): 
 
 const BUILT_IN_HANDOFF_TOOL_DEF: ClientToolDefinition = {
   name: 'handoff_to_rover_site',
-  description: 'Delegate part of the current Rover workflow to Rover on another Rover-enabled site and keep following that child task until it completes or asks for more input.',
+  title: 'Delegate To Another Rover Site',
+  description: 'Delegate part of the current workflow to Rover on another Rover-enabled site. Use this when the next step belongs to a different Rover-enabled domain and you want structured handoff state, lineage, and recovery instead of opening the target site and improvising with raw DOM actions.',
   parameters: {
     url: {
       type: 'string',
@@ -8541,6 +8652,29 @@ const BUILT_IN_HANDOFF_TOOL_DEF: ClientToolDefinition = {
       type: 'string',
       description: 'Answer to send when resuming a delegated task that is waiting for user input.',
     },
+  },
+  outputSchema: {
+    type: 'object',
+    properties: {
+      success: { type: 'boolean', description: 'Whether the delegated Rover task completed or reached a stable state.' },
+      status: { type: 'string', description: 'Current delegated task status.' },
+      summary: { type: 'string', description: 'High-level summary of what the delegated site returned.' },
+      task: { type: 'string', description: 'Canonical delegated task URL.' },
+      workflow: { type: 'string', description: 'Canonical workflow URL spanning the parent and child tasks.' },
+    },
+  },
+  annotations: {
+    category: 'delegation',
+    priority: 'secondary',
+    sideEffect: 'transactional',
+    requiresConfirmation: true,
+    preferredInterface: 'client_tool',
+    whenToUse: 'Use this when the user goal crosses into another Rover-enabled site or domain-specific workflow.',
+    whyUse: 'The explicit Rover handoff preserves workflow lineage, structured continuation, and final results better than navigating away and reconstructing the state through generic DOM automation.',
+    examples: [
+      'Delegate checkout financing to a Rover-enabled lender site.',
+      'Continue identity verification on a partner site without losing workflow state.',
+    ],
   },
   llmCallable: true,
 };
@@ -10293,6 +10427,7 @@ export function boot(cfg: RoverInit): RoverInstance {
     newTask,
     endTask,
     getState,
+    getAgentCard,
     requestSigned,
     attachLaunch,
     registerPromptContextProvider,
@@ -10387,6 +10522,10 @@ export function update(cfg: Partial<RoverInit>): void {
       idleCloseMs: normalizeTransportIdleCloseMs(
         cfg.transport?.idleCloseMs ?? currentConfig.transport?.idleCloseMs,
       ),
+    },
+    agentDiscovery: {
+      ...currentConfig.agentDiscovery,
+      ...cfg.agentDiscovery,
     },
     stability: {
       ...currentConfig.stability,
@@ -10996,6 +11135,7 @@ function normalizeCommandName(command: string): keyof RoverInstance | undefined 
   if (c === 'endTask') return 'endTask';
   if (c === 'attachLaunch') return 'attachLaunch';
   if (c === 'getState') return 'getState';
+  if (c === 'getAgentCard') return 'getAgentCard';
   if (c === 'requestSigned') return 'requestSigned';
   if (c === 'registerPromptContextProvider') return 'registerPromptContextProvider';
   if (c === 'registerTool') return 'registerTool';
@@ -11017,9 +11157,14 @@ export const __roverInternalsForTests = {
 };
 
 export {
+  createRoverAgentCard,
+  createRoverAgentCardJson,
+  createRoverAgentDiscoveryTags,
   createRoverBookmarklet,
   createRoverConsoleSnippet,
+  createRoverServiceDescLinkHeader,
   createRoverScriptTagSnippet,
+  createRoverWellKnownAgentCard,
   readRoverScriptDataAttributes,
 };
 
@@ -11050,6 +11195,7 @@ export function installGlobal(): void {
   apiFn.newTask = newTask;
   apiFn.endTask = endTask;
   apiFn.getState = getState;
+  apiFn.getAgentCard = getAgentCard;
   apiFn.requestSigned = requestSigned;
   apiFn.registerPromptContextProvider = registerPromptContextProvider;
   apiFn.registerTool = registerTool;

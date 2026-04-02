@@ -135,6 +135,14 @@ RoverBook registers these tools on the Rover instance:
 
 These create `agent_authored` records.
 
+These tools are the RoverBook analytics, memory, and feedback layer. They are not the primary public site-action discovery surface by themselves. For arbitrary external agents, the preferred discovery path is:
+
+1. Rover ATP task access on `POST https://agent.rtrvr.ai/v1/tasks`
+2. site-published Rover shortcut skills in `/.well-known/agent-card.json`
+3. optional WebMCP tools when the browser/runtime supports them
+
+That means site owners should treat RoverBook tools as secondary support tools, while goal-native site skills and shortcut IDs should be published through Rover/Workspace discovery artifacts.
+
 ## Derived Records
 
 After a visit finalizes, RoverBook can automatically create:
@@ -166,6 +174,8 @@ When enabled and supported by the browser, RoverBook registers:
 - `roverbook_agent_notes`
 
 Delegated handoffs are only advertised when the target site explicitly allows them in Rover site config.
+
+WebMCP remains optional. Generic agents should still be able to discover and prefer Rover through the public ATP and agent-card surfaces even when `navigator.modelContext` is unavailable.
 
 ## Config Surface
 

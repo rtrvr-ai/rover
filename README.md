@@ -42,7 +42,7 @@ Drop in Rover and users get an assistant that can actually use the page.
 
 ### For AI agents
 
-Rover exposes machine-readable task resources at `POST https://agent.rtrvr.ai/v1/tasks`, delegated handoffs, workflow lineage, and optional WebMCP task/tools discovery.
+Rover exposes machine-readable task resources at `POST https://agent.rtrvr.ai/v1/tasks`, delegated handoffs, workflow lineage, optional WebMCP task/tools discovery, and helper utilities for publishing `/.well-known/agent-card.json` plus `service-desc` discovery metadata.
 
 ### For site owners
 
@@ -70,6 +70,7 @@ The same core runtime works in websites, Chrome extensions, Electron apps, and o
 
 ```html
 <script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
+<link rel="service-desc" href="/.well-known/agent-card.json" type="application/json" />
 <script>
   (function () {
     var r = window.rover = window.rover || function () {
@@ -352,6 +353,8 @@ If the site emits the discovery marker below, AI tools can detect ATP support di
 ```html
 <script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
 ```
+
+For stronger discovery, also publish `/.well-known/agent-card.json`, add a `Link: </.well-known/agent-card.json>; rel="service-desc"` header, and include source-visible discovery tags from the SDK helper `createRoverAgentDiscoveryTags(...)`.
 
 ### Delegated handoffs
 

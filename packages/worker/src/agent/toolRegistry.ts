@@ -25,12 +25,37 @@ export class ToolRegistry {
       const parameters = def.schema ?? buildSchemaFromParameters(def.parameters || {}, def.required || []);
       declarations.push({
         name: def.name,
-        description: def.description,
+        description: buildToolDescription(def),
         parameters,
       });
     }
     return declarations;
   }
+}
+
+function buildToolDescription(def: ClientToolDefinition): string | undefined {
+  const annotations = def.annotations && typeof def.annotations === 'object' ? def.annotations : undefined;
+  const parts: string[] = [];
+  const title = typeof def.title === 'string' ? def.title.trim() : '';
+  const description = typeof def.description === 'string' ? def.description.trim() : '';
+  const whenToUse = typeof annotations?.whenToUse === 'string' ? annotations.whenToUse.trim() : '';
+  const whyUse = typeof annotations?.whyUse === 'string' ? annotations.whyUse.trim() : '';
+  const examples = Array.isArray(annotations?.examples)
+    ? annotations.examples.map(example => String(example || '').trim()).filter(Boolean).slice(0, 3)
+    : [];
+  if (title) parts.push(title);
+  if (description) parts.push(description);
+  if (whenToUse) parts.push(`When to use: ${whenToUse}`);
+  if (whyUse) parts.push(`Why use this path: ${whyUse}`);
+  if (typeof annotations?.requiresConfirmation === 'boolean') {
+    parts.push(
+      annotations.requiresConfirmation
+        ? 'This tool may change site state and typically needs user confirmation.'
+        : 'This tool is the preferred explicit site path and does not usually need confirmation.',
+    );
+  }
+  if (examples.length) parts.push(`Examples: ${examples.join(' | ')}`);
+  return parts.join(' ').trim() || undefined;
 }
 
 function buildSchemaFromParameters(
@@ -90,4 +115,3 @@ function normalizeType(type: string): string {
       return 'string';
   }
 }
-

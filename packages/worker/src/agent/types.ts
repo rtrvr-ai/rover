@@ -76,10 +76,13 @@ export type FunctionDeclaration = {
 
 export type ClientToolDefinition = {
   name: string;
+  title?: string;
   description?: string;
   parameters?: Record<string, any>;
   required?: string[];
   schema?: GeminiSchema;
+  outputSchema?: GeminiSchema;
+  annotations?: Record<string, any>;
   llmCallable?: boolean;
   mcpUrl?: string;
 };

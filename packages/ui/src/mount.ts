@@ -16,6 +16,13 @@ export type RoverShortcut = {
   enabled?: boolean;
   order?: number;
   routing?: 'auto' | 'act' | 'planner';
+  tags?: string[];
+  examples?: string[];
+  inputSchema?: Record<string, any>;
+  outputSchema?: Record<string, any>;
+  sideEffect?: 'none' | 'read' | 'write' | 'transactional';
+  requiresConfirmation?: boolean;
+  preferredInterface?: 'task' | 'shortcut' | 'client_tool' | 'webmcp';
 };
 
 export type RoverAskUserQuestion = {

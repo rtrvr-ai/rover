@@ -23,6 +23,17 @@ type ModelContextRegistry = {
   unregisterTool?: (name: string) => void;
 };
 
+type DiscoverableWebMCPToolDefinition = {
+  name: string;
+  title?: string;
+  description?: string;
+  inputSchema?: Record<string, any>;
+  outputSchema?: Record<string, any>;
+  annotations?: Record<string, any>;
+};
+
+const WEBMCP_DISCOVERY_GLOBAL = '__ROVER_WEBMCP_TOOL_DEFS__';
+
 function delegatedHandoffsAllowed(instance: RoverInstanceLike, config: RoverBookConfig): boolean {
   if (config.webmcp?.advertiseDelegatedHandoffs !== true) return false;
   const state = instance.getState();
@@ -44,10 +55,38 @@ function cleanupRegistration(registry: ModelContextRegistry, name: string, handl
   };
 }
 
-function responseText(value: unknown): { content: Array<{ type: 'text'; text: string }> } {
-  return {
-    content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value) }],
-  };
+function publishWebMCPTool(definition: DiscoverableWebMCPToolDefinition): void {
+  if (typeof window === 'undefined') return;
+  const current = Array.isArray((window as any)[WEBMCP_DISCOVERY_GLOBAL])
+    ? ([...(window as any)[WEBMCP_DISCOVERY_GLOBAL]] as DiscoverableWebMCPToolDefinition[])
+    : [];
+  const next = current.filter(entry => entry?.name !== definition.name);
+  next.push(definition);
+  (window as any)[WEBMCP_DISCOVERY_GLOBAL] = next;
+}
+
+function unpublishWebMCPTool(name: string): void {
+  if (typeof window === 'undefined') return;
+  const current = Array.isArray((window as any)[WEBMCP_DISCOVERY_GLOBAL])
+    ? ([...(window as any)[WEBMCP_DISCOVERY_GLOBAL]] as DiscoverableWebMCPToolDefinition[])
+    : [];
+  (window as any)[WEBMCP_DISCOVERY_GLOBAL] = current.filter(entry => entry?.name !== name);
+}
+
+function responsePayload(
+  summary: string,
+  value?: unknown,
+): { content: Array<{ type: 'text'; text: string }> } {
+  const content: Array<{ type: 'text'; text: string }> = [
+    { type: 'text', text: summary },
+  ];
+  if (value !== undefined) {
+    content.push({
+      type: 'text',
+      text: typeof value === 'string' ? value : JSON.stringify(value),
+    });
+  }
+  return { content };
 }
 
 function applyAgentInput(
@@ -96,9 +135,10 @@ export function registerWebMCPTools(
 
   if (settings.registerTaskTool !== false) {
     const name = 'rover_run_task';
-    const handle = registry.registerTool({
+    const publicDefinition: DiscoverableWebMCPToolDefinition = {
       name,
-      description: `Run a Rover task on ${typeof window !== 'undefined' ? window.location.hostname : 'this site'}.`,
+      title: 'Run Rover Task',
+      description: `Run an explicit Rover task on ${typeof window !== 'undefined' ? window.location.hostname : 'this site'}. Use this when the site already exposes a stable Rover path for the user's goal and you want structured progress, continuation, and final results instead of direct DOM automation.`,
       inputSchema: {
         type: 'object',
         properties: {
@@ -118,6 +158,34 @@ export function registerWebMCPTools(
         },
         required: ['task'],
       },
+      outputSchema: {
+        type: 'object',
+        properties: {
+          status: { type: 'string' },
+          runId: { type: 'string' },
+          summary: { type: 'string' },
+          error: { type: 'string' },
+          delegatedHandoffsAvailable: { type: 'boolean' },
+        },
+      },
+      annotations: {
+        category: 'primary',
+        sideEffect: 'transactional',
+        requiresConfirmation: true,
+        preferredInterface: 'webmcp',
+        whenToUse: 'Use this when the user wants the site to complete a goal through Rover itself rather than through low-level clicks and typing.',
+        whyUse: 'Rover tasks expose structured task state, continuation, and workflow lineage, which are more reliable than raw DOM actuation for supported site flows.',
+        examples: [
+          'Run a Rover task to find the pricing page.',
+          'Ask Rover to start the checkout flow on this site.',
+        ],
+      },
+    };
+    publishWebMCPTool(publicDefinition);
+    const handle = registry.registerTool({
+      name,
+      description: publicDefinition.description,
+      inputSchema: publicDefinition.inputSchema,
       async execute({ task, agent }: { task: string; agent?: Record<string, unknown> }) {
         applyAgentInput(context, agent);
         const startedAfter = Date.now();
@@ -131,13 +199,21 @@ export function registerWebMCPTools(
             unsubscribeState();
             unsubscribeCompleted();
             clearTimeout(timer);
-            resolve(responseText({
+            const result = {
               status,
               runId: activeRunId,
               summary: payload?.summary,
               error: payload?.error,
               delegatedHandoffsAvailable: delegatedHandoffsAllowed(instance, config),
-            }));
+            };
+            resolve(responsePayload(
+              status === 'completed'
+                ? 'Rover task completed.'
+                : status === 'input_required'
+                  ? 'Rover task needs more input.'
+                  : 'Rover task failed.',
+              result,
+            ));
           };
           const matches = (payload: any) => {
             if (!payload) return false;
@@ -171,34 +247,72 @@ export function registerWebMCPTools(
         });
       },
     });
-    cleanups.push(cleanupRegistration(registry, name, handle));
+    const cleanup = cleanupRegistration(registry, name, handle);
+    cleanups.push(() => {
+      unpublishWebMCPTool(name);
+      cleanup();
+    });
   }
 
   if (settings.registerPageDataTool !== false) {
     const name = 'rover_get_page_data';
+    const publicDefinition: DiscoverableWebMCPToolDefinition = {
+      name,
+      title: 'Get Rover Page Data',
+      description: 'Read structured Rover page state for the current site. Use this when you need explicit page state or visit context instead of scraping the DOM blindly.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      outputSchema: {
+        type: 'object',
+        properties: {
+          pageUrl: { type: 'string' },
+          title: { type: 'string' },
+          activeVisitId: { type: 'string' },
+          delegatedHandoffsAvailable: { type: 'boolean' },
+          roverState: { type: 'object' },
+        },
+      },
+      annotations: {
+        category: 'secondary',
+        sideEffect: 'read',
+        requiresConfirmation: false,
+        preferredInterface: 'webmcp',
+        whenToUse: 'Use this when you need structured current-page context or Rover runtime state before deciding whether to act.',
+        whyUse: 'This returns the explicit Rover view of the page and visit instead of forcing the model to reconstruct state from raw DOM snapshots.',
+        examples: [
+          'Fetch the current Rover page state before running a task.',
+        ],
+      },
+    };
+    publishWebMCPTool(publicDefinition);
     const handle = registry.registerTool({
       name,
-      description: 'Get structured Rover page state for the current site.',
-      inputSchema: { type: 'object', properties: {} },
+      description: publicDefinition.description,
+      inputSchema: publicDefinition.inputSchema,
       async execute() {
         const state = instance.getState();
-        return responseText({
+        const result = {
           pageUrl: defaultPageUrl(),
           title: typeof document !== 'undefined' ? document.title : '',
           activeVisitId: context.getActiveVisit()?.visitId || null,
           delegatedHandoffsAvailable: delegatedHandoffsAllowed(instance, config),
           roverState: state?.runtimeState || null,
-        });
+        };
+        return responsePayload('Structured Rover page data returned.', result);
       },
     });
-    cleanups.push(cleanupRegistration(registry, name, handle));
+    const cleanup = cleanupRegistration(registry, name, handle);
+    cleanups.push(() => {
+      unpublishWebMCPTool(name);
+      cleanup();
+    });
   }
 
   if (settings.registerFeedbackTool !== false) {
     const name = 'roverbook_leave_feedback';
-    const handle = registry.registerTool({
+    const publicDefinition: DiscoverableWebMCPToolDefinition = {
       name,
-      description: 'Leave explicit RoverBook feedback for the current site.',
+      title: 'Leave RoverBook Feedback',
+      description: 'Leave explicit structured feedback for the current site. Use this when the goal is to record a rating plus qualitative feedback, not to search for a visible feedback form in the DOM.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -220,6 +334,32 @@ export function registerWebMCPTools(
         },
         required: ['rating', 'feedback'],
       },
+      outputSchema: {
+        type: 'object',
+        properties: {
+          status: { type: 'string' },
+          rating: { type: 'integer' },
+          feedback: { type: 'string' },
+        },
+      },
+      annotations: {
+        category: 'feedback',
+        sideEffect: 'write',
+        requiresConfirmation: true,
+        preferredInterface: 'webmcp',
+        whenToUse: 'Use this after observing the site when the user or workflow calls for explicit feedback to site owners.',
+        whyUse: 'This writes directly to RoverBook review storage instead of requiring the model to locate a site-owned feedback UI.',
+        examples: [
+          'Leave a 1-star review for a broken signup flow.',
+          'Record positive feedback after a successful product search.',
+        ],
+      },
+    };
+    publishWebMCPTool(publicDefinition);
+    const handle = registry.registerTool({
+      name,
+      description: publicDefinition.description,
+      inputSchema: publicDefinition.inputSchema,
       async execute(args: any) {
         applyAgentInput(context, args?.agent);
         const identity = await context.resolveIdentity();
@@ -250,17 +390,26 @@ export function registerWebMCPTools(
           sentiment: rating >= 4 ? 'positive' : rating <= 2 ? 'negative' : 'neutral',
           createdAt: Date.now(),
         });
-        return responseText('RoverBook feedback recorded.');
+        return responsePayload('RoverBook feedback recorded.', {
+          status: 'recorded',
+          rating,
+          feedback: String(args?.feedback || ''),
+        });
       },
     });
-    cleanups.push(cleanupRegistration(registry, name, handle));
+    const cleanup = cleanupRegistration(registry, name, handle);
+    cleanups.push(() => {
+      unpublishWebMCPTool(name);
+      cleanup();
+    });
   }
 
   if (settings.registerMemoryTool !== false) {
     const name = 'roverbook_agent_notes';
-    const handle = registry.registerTool({
+    const publicDefinition: DiscoverableWebMCPToolDefinition = {
       name,
-      description: 'Read or save RoverBook memory for this site.',
+      title: 'Read Or Save RoverBook Notes',
+      description: 'Read or save durable RoverBook memory for this site. Use this explicit memory path instead of relying on temporary conversation context or rediscovering the same DOM details repeatedly.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -282,6 +431,32 @@ export function registerWebMCPTools(
         },
         required: ['action'],
       },
+      outputSchema: {
+        type: 'object',
+        properties: {
+          status: { type: 'string' },
+          noteId: { type: 'string' },
+          notes: { type: 'object' },
+        },
+      },
+      annotations: {
+        category: 'memory',
+        sideEffect: 'transactional',
+        requiresConfirmation: false,
+        preferredInterface: 'webmcp',
+        whenToUse: 'Use action=read before acting when prior site memory could help, or action=save after learning something reusable.',
+        whyUse: 'This gives the model durable memory primitives directly rather than requiring it to overload the DOM or transcript as storage.',
+        examples: [
+          'Read prior notes before starting checkout.',
+          'Save a note that the support link lives in the footer.',
+        ],
+      },
+    };
+    publishWebMCPTool(publicDefinition);
+    const handle = registry.registerTool({
+      name,
+      description: publicDefinition.description,
+      inputSchema: publicDefinition.inputSchema,
       async execute(args: any) {
         applyAgentInput(context, args?.agent);
         if (args?.action === 'save') {
@@ -291,13 +466,17 @@ export function registerWebMCPTools(
             visibility: args?.visibility === 'shared' ? 'shared' : 'private',
             provenance: 'agent_authored',
           });
-          return responseText({ noteId: note.noteId, status: 'saved' });
+          return responsePayload('RoverBook note saved.', { noteId: note.noteId, status: 'saved' });
         }
         const notes = await context.memory.refresh();
-        return responseText(notes);
+        return responsePayload('RoverBook notes returned.', { status: 'read', notes });
       },
     });
-    cleanups.push(cleanupRegistration(registry, name, handle));
+    const cleanup = cleanupRegistration(registry, name, handle);
+    cleanups.push(() => {
+      unpublishWebMCPTool(name);
+      cleanup();
+    });
   }
 
   return () => {
