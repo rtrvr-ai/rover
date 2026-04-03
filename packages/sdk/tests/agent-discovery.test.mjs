@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   createRoverAgentCard,
+  createRoverAgentDiscoverySnapshot,
   createRoverAgentDiscoveryTags,
   createRoverServiceDescLinkHeader,
   createRoverWellKnownAgentCard,
@@ -103,6 +104,68 @@ test('agent card maps shortcuts and explicit tools into published skills', () =>
 
   const webmcpTool = card.skills.find(skill => skill.id === 'rover_run_task');
   assert.equal(webmcpTool.preferredInterface, 'webmcp');
+});
+
+test('agent discovery snapshot normalizes callable Rover surfaces from the published card', () => {
+  const card = createRoverAgentCard({
+    siteUrl: 'https://example.com/',
+    siteName: 'Example Store',
+    apiBase: 'https://agent.rtrvr.ai',
+    aiAccess: {
+      enabled: true,
+      allowPromptLaunch: true,
+      allowShortcutLaunch: true,
+      allowCloudBrowser: true,
+      allowDelegatedHandoffs: true,
+    },
+    shortcuts: [
+      {
+        id: 'checkout_flow',
+        label: 'Checkout Flow',
+        prompt: 'start checkout',
+        routing: 'act',
+      },
+    ],
+    webmcpTools: [
+      {
+        name: 'rover_run_task',
+        title: 'Run Rover Task',
+        description: 'Run a structured Rover task on this site.',
+        schema: {
+          type: 'object',
+          properties: {
+            task: { type: 'string' },
+          },
+          required: ['task'],
+        },
+        annotations: {
+          preferredInterface: 'webmcp',
+        },
+      },
+    ],
+  });
+
+  const snapshot = createRoverAgentDiscoverySnapshot(card);
+  assert.equal(snapshot.roverEnabled, true);
+  assert.equal(snapshot.taskEndpoint, 'https://agent.rtrvr.ai/v1/tasks');
+  assert.equal(snapshot.workflowEndpoint, 'https://agent.rtrvr.ai/v1/workflows');
+  assert.equal(snapshot.webmcpAvailable, true);
+  assert.equal(snapshot.skills[0].id, 'checkout_flow');
+  assert.equal(snapshot.skills[0].taskPayload.shortcut, 'checkout_flow');
+});
+
+test('agent card disables public task capability when ai access is off', () => {
+  const card = createRoverAgentCard({
+    siteUrl: 'https://example.com/',
+    siteName: 'Example Store',
+    aiAccess: {
+      enabled: false,
+    },
+  });
+
+  assert.equal(card.capabilities.publicTasks, false);
+  assert.equal(card.capabilities.stateTransitions, false);
+  assert.equal(card.interfaces.find(entry => entry.type === 'task')?.available, false);
 });
 
 test('discovery tags include marker, service description, and inline agent card', () => {

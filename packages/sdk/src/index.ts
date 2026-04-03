@@ -47,15 +47,23 @@ import {
   type RoverPreviewAttachLaunch,
 } from './previewBootstrap.js';
 import {
+  createRoverOwnerInstallBundle,
+  type RoverOwnerInstallBootConfig,
+  type RoverOwnerInstallBundle,
+  type RoverOwnerInstallBundleInput,
+  type RoverOwnerInstallRoverBookConfig,
+} from './ownerInstall.js';
+import {
+  buildRoverAgentDiscoveryPayloads,
   createRoverAgentCard,
   createRoverAgentCardJson,
   createRoverAgentDiscoveryTags,
   createRoverServiceDescLinkHeader,
   createRoverWellKnownAgentCard,
   DEFAULT_AGENT_CARD_PATH,
-  DEFAULT_LLMS_PATH,
   ROVER_WEBMCP_DISCOVERY_GLOBAL,
   type RoverAgentCard,
+  type RoverAgentDiscoveryConfig,
   type RoverAgentDiscoveryRuntimeConfig,
   type RoverAgentDiscoveryToolDefinition,
 } from './agentDiscovery.js';
@@ -529,6 +537,12 @@ const RECEIPT_CLAIM_RETRY_MS = 350;
 const RECEIPT_CLAIM_WAIT_MS = 10_000;
 const DEFAULT_ACTION_TIMEOUT_MS = 30_000;
 const HANDOFF_TOOL_POLL_SLICE_SECONDS = 20;
+const ROVER_AGENT_DISCOVERY_ATTR = 'data-rover-agent-discovery';
+const ROVER_AGENT_DISCOVERY_CUE_ID = 'rover-agent-discovery-cue';
+const ROVER_AGENT_DISCOVERY_CUE_STYLE_ID = 'rover-agent-discovery-cue-style';
+const ROVER_AGENT_DISCOVERY_CUE_TEXT = 'AI actions with Rover';
+const ROVER_AGENT_DISCOVERY_CUE_ARIA_LABEL = 'AI actions available with Rover';
+const ROVER_AGENT_DISCOVERY_CHANGE_EVENT = 'rover:agent-discovery-changed';
 
 type TelemetryEventName = RoverEventName | RoverVoiceTelemetryEventName;
 
@@ -649,6 +663,7 @@ type ActiveLaunchBinding = {
   detail?: 'sanitized' | 'full' | 'debug';
   executionTarget?: 'browser_attach' | 'cloud_browser';
   runId?: string;
+  promptDispatchState?: 'pending' | 'started' | 'failed';
   ingestInFlight?: boolean;
   pendingEvents: RoverLaunchIngestEvent[];
   lastNeedsInputSignature?: string;
@@ -657,6 +672,54 @@ type ActiveLaunchBinding = {
 };
 let activeLaunchBinding: ActiveLaunchBinding | null = null;
 let launchEventFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function sanitizeLaunchBinding(
+  raw: PersistedRuntimeState['launchBinding'] | null | undefined,
+): PersistedRuntimeState['launchBinding'] | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const requestId = typeof raw.requestId === 'string' ? raw.requestId.trim() : '';
+  if (!requestId) return undefined;
+  const executionTarget =
+    raw.executionTarget === 'browser_attach' || raw.executionTarget === 'cloud_browser'
+      ? raw.executionTarget
+      : undefined;
+  const promptDispatchState =
+    raw.promptDispatchState === 'pending' || raw.promptDispatchState === 'started' || raw.promptDispatchState === 'failed'
+      ? raw.promptDispatchState
+      : undefined;
+  return {
+    requestId,
+    status: typeof raw.status === 'string' ? raw.status.trim() || undefined : undefined,
+    executionTarget,
+    runId: typeof raw.runId === 'string' ? raw.runId.trim() || undefined : undefined,
+    promptDispatchState,
+    attachedAt: Number(raw.attachedAt) || undefined,
+  };
+}
+
+function buildPersistedLaunchBinding(
+  binding: ActiveLaunchBinding | null | undefined = activeLaunchBinding,
+): PersistedRuntimeState['launchBinding'] | undefined {
+  if (!binding) return undefined;
+  return sanitizeLaunchBinding({
+    requestId: binding.requestId,
+    status: binding.status,
+    executionTarget: binding.executionTarget,
+    runId: binding.runId,
+    promptDispatchState: binding.promptDispatchState,
+    attachedAt: binding.attachCompletedAt,
+  });
+}
+
+function syncRuntimeLaunchBinding(): void {
+  if (!runtimeState) return;
+  runtimeState.launchBinding = buildPersistedLaunchBinding();
+  persistRuntimeState();
+}
+
+function getLaunchBindingSnapshot(): PersistedRuntimeState['launchBinding'] | undefined {
+  return buildPersistedLaunchBinding() || sanitizeLaunchBinding(runtimeState?.launchBinding);
+}
 
 function addTrackedListener(
   target: EventTarget,
@@ -939,39 +1002,203 @@ function readPublishedWebMCPToolDefinitions(): RoverAgentDiscoveryToolDefinition
 }
 
 export function getAgentCard(): RoverAgentCard | null {
-  if (!currentConfig || typeof window === 'undefined') return null;
-  const siteUrl = String(currentConfig.agentDiscovery?.siteUrl || `${window.location.origin}/`).trim();
-  const aiAccess = resolveEffectiveAiAccessConfig(currentConfig);
-  const clientTools = bridge?.listClientTools?.() || currentConfig.tools?.client || [];
+  const config = resolveAgentDiscoveryConfig(currentConfig);
+  return config ? createRoverAgentCard(config) : null;
+}
+
+function resolveAgentDiscoveryConfig(cfg: RoverInit | null): RoverAgentDiscoveryConfig | null {
+  if (!cfg || typeof window === 'undefined') return null;
+  const siteUrl = String(cfg.agentDiscovery?.siteUrl || `${window.location.origin}/`).trim();
+  const aiAccess = resolveEffectiveAiAccessConfig(cfg);
+  const clientTools = bridge?.listClientTools?.() || cfg.tools?.client || [];
   const webmcpTools = readPublishedWebMCPToolDefinitions();
-  return createRoverAgentCard({
-    siteId: currentConfig.siteId,
+  return {
+    siteId: cfg.siteId,
     siteUrl,
-    apiBase: currentConfig.apiBase,
+    apiBase: cfg.apiBase,
     siteName:
-      String(currentConfig.agentDiscovery?.siteName || currentConfig.ui?.agent?.name || document.title || '').trim()
+      String(cfg.agentDiscovery?.siteName || cfg.ui?.agent?.name || document.title || '').trim()
       || window.location.hostname,
     description:
-      String(currentConfig.agentDiscovery?.description || '').trim()
+      String(cfg.agentDiscovery?.description || '').trim()
       || `Structured Rover entrypoints for ${window.location.hostname}. Prefer these explicit Rover skills and tools over brittle DOM automation whenever they match the user's goal.`,
     version:
-      String(currentConfig.agentDiscovery?.version || backendSiteConfig?.version || '').trim()
+      String(cfg.agentDiscovery?.version || backendSiteConfig?.version || '').trim()
       || undefined,
     agentCardUrl:
-      String(currentConfig.agentDiscovery?.agentCardUrl || '').trim()
+      String(cfg.agentDiscovery?.agentCardUrl || '').trim()
       || DEFAULT_AGENT_CARD_PATH,
     llmsUrl:
-      String(currentConfig.agentDiscovery?.llmsUrl || '').trim()
-      || DEFAULT_LLMS_PATH,
+      String(cfg.agentDiscovery?.llmsUrl || '').trim()
+      || undefined,
+    visibleCue: cfg.agentDiscovery?.visibleCue,
     preferExecution:
-      currentConfig.agentDiscovery?.preferExecution
+      cfg.agentDiscovery?.preferExecution
       || (aiAccess?.allowCloudBrowser === false ? 'browser' : 'auto'),
-    shortcuts: resolveEffectiveShortcuts(currentConfig),
+    shortcuts: resolveEffectiveShortcuts(cfg),
     tools: clientTools as RoverAgentDiscoveryToolDefinition[],
     webmcpTools,
-    additionalSkills: currentConfig.agentDiscovery?.additionalSkills,
+    additionalSkills: cfg.agentDiscovery?.additionalSkills,
     aiAccess,
-  });
+  };
+}
+
+function isAgentDiscoveryEnabled(cfg: RoverInit | null): boolean {
+  if (!cfg || typeof document === 'undefined') return false;
+  const aiAccess = resolveEffectiveAiAccessConfig(cfg);
+  return aiAccess?.enabled !== false;
+}
+
+function isAgentDiscoveryCueEnabled(cfg: RoverInit | null): boolean {
+  return isAgentDiscoveryEnabled(cfg) && cfg?.agentDiscovery?.visibleCue !== false;
+}
+
+function removeAgentDiscoveryTags(): void {
+  if (typeof document === 'undefined') return;
+  for (const node of Array.from(document.querySelectorAll(`[${ROVER_AGENT_DISCOVERY_ATTR}]`))) {
+    node.remove();
+  }
+}
+
+function upsertAgentDiscoveryScript(kind: string, type: string, value: string): void {
+  const head = document.head || document.documentElement;
+  if (!head) return;
+  let node = document.querySelector(`script[${ROVER_AGENT_DISCOVERY_ATTR}="${kind}"]`) as HTMLScriptElement | null;
+  if (!node) {
+    node = document.createElement('script');
+    node.setAttribute(ROVER_AGENT_DISCOVERY_ATTR, kind);
+    node.type = type;
+    head.appendChild(node);
+  } else if (node.type !== type) {
+    node.type = type;
+  }
+  if (node.textContent !== value) node.textContent = value;
+}
+
+function upsertAgentDiscoveryLink(kind: string, rel: string, href: string, type: string): void {
+  const head = document.head || document.documentElement;
+  if (!head) return;
+  let node = document.querySelector(`link[${ROVER_AGENT_DISCOVERY_ATTR}="${kind}"]`) as HTMLLinkElement | null;
+  if (!node) {
+    node = document.createElement('link');
+    node.setAttribute(ROVER_AGENT_DISCOVERY_ATTR, kind);
+    head.appendChild(node);
+  }
+  node.rel = rel;
+  node.href = href;
+  node.type = type;
+}
+
+function syncAgentDiscoveryTags(cfg: RoverInit | null): void {
+  if (typeof document === 'undefined') return;
+  if (!isAgentDiscoveryEnabled(cfg)) {
+    removeAgentDiscoveryTags();
+    return;
+  }
+  const config = resolveAgentDiscoveryConfig(cfg);
+  if (!config) {
+    removeAgentDiscoveryTags();
+    return;
+  }
+  const { cardJson, llmsUrl, marker, serviceDescHref } = buildRoverAgentDiscoveryPayloads(config);
+  upsertAgentDiscoveryScript('marker', 'application/agent+json', JSON.stringify(marker));
+  upsertAgentDiscoveryLink('service-desc', 'service-desc', serviceDescHref, 'application/json');
+  if (llmsUrl) {
+    upsertAgentDiscoveryLink('service-doc', 'service-doc', llmsUrl, 'text/markdown');
+  } else {
+    document.querySelector(`link[${ROVER_AGENT_DISCOVERY_ATTR}="service-doc"]`)?.remove();
+  }
+  upsertAgentDiscoveryScript('agent-card', 'application/agent-card+json', cardJson);
+}
+
+function ensureAgentDiscoveryCueStyle(): void {
+  if (typeof document === 'undefined') return;
+  if (document.getElementById(ROVER_AGENT_DISCOVERY_CUE_STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = ROVER_AGENT_DISCOVERY_CUE_STYLE_ID;
+  style.textContent = `
+    #${ROVER_AGENT_DISCOVERY_CUE_ID} {
+      position: fixed;
+      right: 104px;
+      bottom: 24px;
+      z-index: 2147483645;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      max-width: min(320px, calc(100vw - 132px));
+      padding: 10px 14px;
+      border: 1px solid rgba(0, 0, 0, 0.12);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.96);
+      color: #171717;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
+      font: 600 13px/1.2 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0.01em;
+      cursor: pointer;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+    #${ROVER_AGENT_DISCOVERY_CUE_ID}[hidden] {
+      display: none !important;
+    }
+    #${ROVER_AGENT_DISCOVERY_CUE_ID}:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.18);
+    }
+    #${ROVER_AGENT_DISCOVERY_CUE_ID}:focus-visible {
+      outline: 2px solid rgba(255, 76, 0, 0.9);
+      outline-offset: 2px;
+    }
+    @media (max-width: 720px) {
+      #${ROVER_AGENT_DISCOVERY_CUE_ID} {
+        right: 16px;
+        bottom: 94px;
+        max-width: min(84vw, 320px);
+        font-size: 12px;
+      }
+    }
+  `;
+  (document.head || document.documentElement)?.appendChild(style);
+}
+
+function removeAgentDiscoveryCue(): void {
+  if (typeof document === 'undefined') return;
+  document.getElementById(ROVER_AGENT_DISCOVERY_CUE_ID)?.remove();
+  document.getElementById(ROVER_AGENT_DISCOVERY_CUE_STYLE_ID)?.remove();
+}
+
+function ensureAgentDiscoveryCue(): HTMLButtonElement | null {
+  if (typeof document === 'undefined') return null;
+  ensureAgentDiscoveryCueStyle();
+  let cue = document.getElementById(ROVER_AGENT_DISCOVERY_CUE_ID) as HTMLButtonElement | null;
+  if (cue) return cue;
+  cue = document.createElement('button');
+  cue.id = ROVER_AGENT_DISCOVERY_CUE_ID;
+  cue.type = 'button';
+  cue.textContent = ROVER_AGENT_DISCOVERY_CUE_TEXT;
+  cue.setAttribute('aria-label', ROVER_AGENT_DISCOVERY_CUE_ARIA_LABEL);
+  cue.setAttribute('data-rover-discovery-cue', 'true');
+  cue.addEventListener('click', () => open());
+  (document.body || document.documentElement)?.appendChild(cue);
+  return cue;
+}
+
+function syncAgentDiscoveryCue(cfg: RoverInit | null): void {
+  if (typeof document === 'undefined') return;
+  if (!isAgentDiscoveryCueEnabled(cfg)) {
+    removeAgentDiscoveryCue();
+    return;
+  }
+  const cue = ensureAgentDiscoveryCue();
+  if (!cue) return;
+  const hidden = runtimeState?.uiHidden === true || runtimeState?.uiOpen === true;
+  cue.hidden = hidden;
+  cue.setAttribute('aria-hidden', hidden ? 'true' : 'false');
+}
+
+function syncAgentDiscoverySurfaces(cfg: RoverInit | null): void {
+  syncAgentDiscoveryTags(cfg);
+  syncAgentDiscoveryCue(cfg);
 }
 
 function createId(prefix: string): string {
@@ -1278,6 +1505,7 @@ function applyToolRegistration(registration: ToolRegistration): void {
   if (!bridge || !worker) return;
   bridge.registerTool(registration.def, registration.handler);
   worker.postMessage({ type: 'register_tool', tool: registration.def });
+  syncAgentDiscoveryTags(currentConfig);
 }
 
 function getRuntimeStateLegacyKey(siteId: string): string {
@@ -1460,6 +1688,7 @@ function createDefaultRuntimeState(sessionId: string, rid: string): PersistedRun
     activeTask: createDefaultTaskState(),
     taskTabScope: undefined,
     lastRoutingDecision: undefined,
+    launchBinding: undefined,
     updatedAt: Date.now(),
     // v2 multi-task fields
     tasks: {},
@@ -3360,6 +3589,7 @@ function normalizePersistedState(raw: PersistedRuntimeState | null, sessionId: s
             ts: Number(raw.lastRoutingDecision.ts) || Date.now(),
           }
         : undefined,
+    launchBinding: sanitizeLaunchBinding((raw as any).launchBinding),
     updatedAt: Number(raw.updatedAt) || Date.now(),
     // v2 multi-task fields — either restore or migrate
     tasks: raw.tasks && typeof raw.tasks === 'object' ? raw.tasks : {},
@@ -7055,6 +7285,12 @@ function handleWorkerMessage(msg: any): void {
       immediate: true,
       runId: typeof msg.runId === 'string' ? msg.runId : undefined,
     });
+    if (activeLaunchBinding) {
+      activeLaunchBinding.status = 'running';
+      activeLaunchBinding.runId = typeof msg.runId === 'string' && msg.runId ? msg.runId : activeLaunchBinding.runId;
+      activeLaunchBinding.promptDispatchState = 'started';
+      syncRuntimeLaunchBinding();
+    }
     emit('run_started', buildPublicRunStartedPayload(msg));
     return;
   }
@@ -7332,6 +7568,16 @@ function handleWorkerMessage(msg: any): void {
       if (launchQuestions.length) {
         maybeEmitLaunchNeedsInput(launchQuestions);
       }
+    }
+    if (activeLaunchBinding) {
+      activeLaunchBinding.status = launchTransitionStatus;
+      activeLaunchBinding.runId = completedRunId || activeLaunchBinding.runId;
+      if (launchTransitionStatus === 'failed') {
+        activeLaunchBinding.promptDispatchState = 'failed';
+      } else if (launchTransitionStatus === 'running' || launchTransitionStatus === 'awaiting_user' || launchTransitionStatus === 'completed') {
+        activeLaunchBinding.promptDispatchState = 'started';
+      }
+      syncRuntimeLaunchBinding();
     }
     if (isTerminalRunCompletion) {
       finalizeLaunchObservationForRun(completedRunId);
@@ -8006,6 +8252,21 @@ function handleLaunchAttachFailure(
   }
 }
 
+function shouldDispatchLaunchInputForResponse(
+  response: RoverLaunchAttachResponse | RoverTaskBrowserClaimResponse,
+): boolean {
+  const requestId = String(response.requestId || '').trim();
+  if (!requestId) return false;
+  const existing = getLaunchBindingSnapshot();
+  if (existing?.requestId !== requestId) {
+    return !String(response.runId || '').trim();
+  }
+  if (existing.promptDispatchState === 'started') return false;
+  if (existing.promptDispatchState === 'failed') return true;
+  if (String(existing.runId || '').trim() && String(response.runId || '').trim()) return false;
+  return !String(response.runId || '').trim();
+}
+
 function dispatchLaunchInput(response: RoverLaunchAttachResponse | RoverTaskBrowserClaimResponse): void {
   const input = response.input;
   if (!input || typeof input.prompt !== 'string' || !input.prompt.trim()) {
@@ -8018,6 +8279,13 @@ function dispatchLaunchInput(response: RoverLaunchAttachResponse | RoverTaskBrow
       requestId: response.requestId,
       detail: response.detail,
     });
+  }
+  if (activeLaunchBinding) {
+    activeLaunchBinding.status = response.status || activeLaunchBinding.status;
+    activeLaunchBinding.executionTarget = response.executionTarget || activeLaunchBinding.executionTarget;
+    activeLaunchBinding.runId = String(response.runId || activeLaunchBinding.runId || '').trim() || undefined;
+    activeLaunchBinding.promptDispatchState = 'pending';
+    syncRuntimeLaunchBinding();
   }
   open();
   try {
@@ -8037,6 +8305,12 @@ function dispatchLaunchInput(response: RoverLaunchAttachResponse | RoverTaskBrow
         inputKind: input.kind,
       });
     }
+    if (activeLaunchBinding) {
+      activeLaunchBinding.promptDispatchState = 'started';
+      activeLaunchBinding.status = response.status === 'awaiting_user' ? 'awaiting_user' : (response.status || 'running');
+      activeLaunchBinding.runId = String(response.runId || activeLaunchBinding.runId || '').trim() || undefined;
+      syncRuntimeLaunchBinding();
+    }
   } catch (error: any) {
     if (isHostedCloudLaunch) {
       recordTelemetryEvent('status', {
@@ -8045,6 +8319,11 @@ function dispatchLaunchInput(response: RoverLaunchAttachResponse | RoverTaskBrow
         detail: response.detail,
         message: String(error?.message || 'launch_prompt_dispatch_failed'),
       });
+    }
+    if (activeLaunchBinding) {
+      activeLaunchBinding.promptDispatchState = 'failed';
+      activeLaunchBinding.status = 'failed';
+      syncRuntimeLaunchBinding();
     }
     throw error;
   }
@@ -8123,10 +8402,16 @@ function maybeHandleLaunchAttach(
         detail: response.detail,
         executionTarget: response.executionTarget,
         runId: response.runId,
+        promptDispatchState: shouldDispatchLaunchInputForResponse(response) ? 'pending' : 'started',
         pendingEvents: [],
         attachCompletedAt: Date.now(),
       };
-      dispatchLaunchInput(response);
+      syncRuntimeLaunchBinding();
+      if (shouldDispatchLaunchInputForResponse(response)) {
+        dispatchLaunchInput(response);
+      } else {
+        open();
+      }
       enqueueLaunchRuntimeEvent('state_transition', {
         status: response.status === 'awaiting_user' ? 'awaiting_user' : 'running',
         executionTarget: response.executionTarget,
@@ -9060,6 +9345,7 @@ function applyEffectiveSiteConfig(cfg: RoverInit): void {
   ui?.setShortcuts(getRenderableShortcuts(merged));
   ui?.setVoiceConfig(resolveEffectiveVoiceConfig(cfg));
   syncEffectivePageCaptureConfig(cfg);
+  syncAgentDiscoverySurfaces(cfg);
   maybeHandleBrowserReceipt('site_config');
   maybeHandleLaunchAttach('site_config');
   maybeHandleDeepLink('site_config');
@@ -9164,6 +9450,11 @@ export function identify(visitor: { name?: string; email?: string }): void {
 
 function createRuntime(cfg: RoverInit): void {
   setupSessionCoordinator(cfg);
+  if (typeof window !== 'undefined') {
+    addTrackedListener(window, ROVER_AGENT_DISCOVERY_CHANGE_EVENT, () => {
+      syncAgentDiscoveryTags(currentConfig);
+    });
+  }
   if (sessionCoordinator) {
     const initialRole = resolveEffectiveExecutionMode(sessionCoordinator.getRole());
     currentMode = initialRole;
@@ -10746,6 +11037,8 @@ export function update(cfg: Partial<RoverInit>): void {
 }
 
 export function shutdown(): void {
+  removeAgentDiscoveryCue();
+  removeAgentDiscoveryTags();
   clearPreservedWidgetOpenGuard();
   hideTaskSuggestion();
   persistRuntimeStateImmediate();
@@ -10878,6 +11171,7 @@ export function open(): void {
     runtimeState.uiOpen = true;
     persistRuntimeState();
   }
+  syncAgentDiscoveryCue(currentConfig);
 }
 
 export function close(): void {
@@ -10887,6 +11181,7 @@ export function close(): void {
     runtimeState.uiOpen = false;
     persistRuntimeState();
   }
+  syncAgentDiscoveryCue(currentConfig);
 }
 
 export function show(): void {
@@ -10895,6 +11190,7 @@ export function show(): void {
     runtimeState.uiHidden = false;
     persistRuntimeState();
   }
+  syncAgentDiscoveryCue(currentConfig);
 }
 
 export function hide(): void {
@@ -10905,6 +11201,7 @@ export function hide(): void {
     runtimeState.uiOpen = false;
     persistRuntimeState();
   }
+  syncAgentDiscoveryCue(currentConfig);
 }
 
 export function send(text: string): void {
@@ -10915,10 +11212,35 @@ export function send(text: string): void {
 export async function attachLaunch(params: RoverPreviewAttachLaunch): Promise<RoverLaunchAttachResponse | null> {
   if (!currentConfig) return null;
   await ensureRoverServerRuntime(currentConfig);
-  return roverServerRuntime?.attachLaunch({
+  const response = await roverServerRuntime?.attachLaunch({
     requestId: params.requestId,
     attachToken: params.attachToken,
   }) || null;
+  if (!response) return null;
+
+  const existingBinding = activeLaunchBinding?.requestId === response.requestId ? activeLaunchBinding : null;
+  activeLaunchBinding = {
+    requestId: response.requestId,
+    attachToken: params.attachToken,
+    handleKey: existingBinding?.handleKey || `direct_attach:${response.requestId}`,
+    status: response.status,
+    detail: response.detail,
+    executionTarget: response.executionTarget,
+    runId: response.runId,
+    promptDispatchState: shouldDispatchLaunchInputForResponse(response) ? 'pending' : 'started',
+    pendingEvents: existingBinding?.pendingEvents || [],
+    ingestInFlight: existingBinding?.ingestInFlight || false,
+    lastNeedsInputSignature: existingBinding?.lastNeedsInputSignature,
+    finalObservationRunId: existingBinding?.finalObservationRunId,
+    attachCompletedAt: Date.now(),
+  };
+  syncRuntimeLaunchBinding();
+  if (shouldDispatchLaunchInputForResponse(response)) {
+    dispatchLaunchInput(response);
+  } else {
+    open();
+  }
+  return response;
 }
 
 export async function requestSigned(input: string | URL, init: RequestInit = {}): Promise<Response> {
@@ -11122,14 +11444,19 @@ export function endTask(options?: { reason?: string }): void {
 export function getState(): any {
   const currentAgentAttribution = readRuntimeAgentAttribution(getRuntimeSessionToken());
   const runtimeSnapshot = runtimeState ? cloneRuntimeStateForCheckpoint(runtimeState) : null;
+  const launchBinding = getLaunchBindingSnapshot();
   if (runtimeSnapshot && currentAgentAttribution) {
     (runtimeSnapshot as any).currentAgentAttribution = currentAgentAttribution;
+  }
+  if (runtimeSnapshot) {
+    (runtimeSnapshot as any).launchBinding = launchBinding;
   }
   return {
     mode: currentMode,
     runtimeId,
     runtimeState: runtimeSnapshot,
     sharedState: sessionCoordinator?.getState() || null,
+    launchBinding,
     pendingTaskSuggestion,
     currentAgentAttribution,
   };
@@ -11190,10 +11517,18 @@ export {
   createRoverAgentDiscoveryTags,
   createRoverBookmarklet,
   createRoverConsoleSnippet,
+  createRoverOwnerInstallBundle,
   createRoverServiceDescLinkHeader,
   createRoverScriptTagSnippet,
   createRoverWellKnownAgentCard,
   readRoverScriptDataAttributes,
+};
+
+export type {
+  RoverOwnerInstallBootConfig,
+  RoverOwnerInstallBundle,
+  RoverOwnerInstallBundleInput,
+  RoverOwnerInstallRoverBookConfig,
 };
 
 type RoverGlobalFn = ((command: string, ...args: any[]) => any) & Partial<RoverInstance> & { q?: any[]; l?: number };

@@ -1,5 +1,7 @@
 import type { RoverShortcut } from '@rover/ui';
 import { toBaseUrl } from './serverRuntime.js';
+import { createRoverAgentDiscoverySnapshot } from '@rover/shared/lib/agent-discovery.js';
+import type { RoverAgentDiscoverySnapshot } from '@rover/shared/lib/types/index.js';
 
 export const DEFAULT_AGENT_CARD_PATH = '/.well-known/agent-card.json';
 export const DEFAULT_LLMS_PATH = '/llms.txt';
@@ -121,6 +123,7 @@ export type RoverAgentDiscoveryConfig = {
   version?: string;
   agentCardUrl?: string;
   llmsUrl?: string;
+  visibleCue?: boolean;
   preferExecution?: RoverDiscoveryExecutionPreference;
   shortcuts?: RoverShortcut[];
   tools?: RoverAgentDiscoveryToolDefinition[];
@@ -515,7 +518,7 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
   const taskEndpoint = buildTaskEndpoint(config.apiBase);
   const workflowEndpoint = buildWorkflowEndpoint(config.apiBase);
   const serviceDescUrl = text(config.agentCardUrl) || DEFAULT_AGENT_CARD_PATH;
-  const llmsUrl = text(config.llmsUrl) || DEFAULT_LLMS_PATH;
+  const llmsUrl = text(config.llmsUrl);
   const promptLaunchEnabled = config.aiAccess?.enabled !== false && config.aiAccess?.allowPromptLaunch !== false;
   const shortcutLaunchEnabled = config.aiAccess?.enabled !== false && config.aiAccess?.allowShortcutLaunch !== false;
   const cloudBrowserAllowed = config.aiAccess?.allowCloudBrowser !== false;
@@ -555,9 +558,9 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
     defaultInputModes: ['text/plain', 'application/json'],
     defaultOutputModes: ['text/plain', 'application/json'],
     capabilities: {
-      streaming: true,
-      publicTasks: true,
-      stateTransitions: true,
+      streaming: promptLaunchEnabled || shortcutLaunchEnabled,
+      publicTasks: promptLaunchEnabled || shortcutLaunchEnabled,
+      stateTransitions: promptLaunchEnabled || shortcutLaunchEnabled,
       delegatedHandoffs,
       webmcp: webmcpSkills.length > 0,
     },
@@ -601,7 +604,7 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
         taskEndpoint,
         workflowEndpoint,
         serviceDescUrl,
-        llmsUrl,
+        ...(llmsUrl ? { llmsUrl } : {}),
         preferredExecution: config.preferExecution || 'auto',
         promptLaunchEnabled,
         shortcutLaunchEnabled,
@@ -627,6 +630,46 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
         },
       },
     },
+  };
+}
+
+export function buildRoverAgentDiscoveryPayloads(config: RoverAgentDiscoveryConfig): {
+  card: RoverAgentCard;
+  cardJson: string;
+  serviceDescHref: string;
+  llmsUrl?: string;
+  marker: {
+    task?: string;
+    card: string;
+    site?: string;
+    workflow?: string;
+    preferExecution?: RoverDiscoveryExecutionPreference;
+    skills: Array<{ id: string; name: string }>;
+  };
+  markerJson: string;
+} {
+  const cardJson = createRoverAgentCardJson(config);
+  const card = createRoverAgentCard(config);
+  const inlineCardUrl = buildInlineDataUrl(cardJson);
+  const serviceDescHref = text(config.agentCardUrl) || inlineCardUrl;
+  const marker = {
+    task: card.extensions?.rover.taskEndpoint,
+    card: serviceDescHref,
+    site: card.extensions?.rover.siteUrl,
+    workflow: card.extensions?.rover.workflowEndpoint,
+    preferExecution: card.extensions?.rover.preferredExecution,
+    skills: card.skills.slice(0, 24).map(skill => ({
+      id: skill.id,
+      name: skill.name,
+    })),
+  };
+  return {
+    card,
+    cardJson,
+    serviceDescHref,
+    llmsUrl: text(config.llmsUrl || card.extensions?.rover.llmsUrl) || undefined,
+    marker,
+    markerJson: escapeScriptJson(JSON.stringify(marker)),
   };
 }
 
@@ -659,31 +702,18 @@ export function createRoverServiceDescLinkHeader(config: {
 }
 
 export function createRoverAgentDiscoveryTags(config: RoverAgentDiscoveryConfig): string {
-  const cardJson = createRoverAgentCardJson(config);
-  const card = createRoverAgentCard(config);
-  const inlineCardUrl = buildInlineDataUrl(cardJson);
-  const serviceDescHref = text(config.agentCardUrl) || inlineCardUrl;
-  const marker = {
-    task: card.extensions?.rover.taskEndpoint,
-    card: serviceDescHref,
-    site: card.extensions?.rover.siteUrl,
-    workflow: card.extensions?.rover.workflowEndpoint,
-    preferExecution: card.extensions?.rover.preferredExecution,
-    skills: card.skills.slice(0, 24).map(skill => ({
-      id: skill.id,
-      name: skill.name,
-    })),
-  };
-  const markerJson = escapeScriptJson(JSON.stringify(marker));
+  const { cardJson, llmsUrl, markerJson, serviceDescHref } = buildRoverAgentDiscoveryPayloads(config);
   const escapedCardJson = escapeScriptJson(cardJson);
   const lines = [
     `<script type="application/agent+json">${markerJson}</script>`,
     `<link rel="service-desc" href="${escapeHtmlAttr(serviceDescHref)}" type="application/json" />`,
   ];
-  const llmsUrl = text(config.llmsUrl);
   if (llmsUrl) {
     lines.push(`<link rel="service-doc" href="${escapeHtmlAttr(llmsUrl)}" type="text/markdown" />`);
   }
   lines.push(`<script type="application/agent-card+json">${escapedCardJson}</script>`);
   return lines.join('\n');
 }
+
+export { createRoverAgentDiscoverySnapshot };
+export type { RoverAgentDiscoverySnapshot };

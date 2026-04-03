@@ -6,6 +6,7 @@
   },
   "include": [
     "index.mts",
+    "lib/agent-discovery.ts",
     "lib/system-tools/**/*.ts",
     "lib/page/index.ts",
     "lib/page/time-utils.ts",

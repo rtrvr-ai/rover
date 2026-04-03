@@ -25,6 +25,7 @@ export type RoverPreviewBootstrapConfig = {
 export type RoverScriptAttributeSource = Pick<HTMLScriptElement, 'getAttribute'>;
 
 const DEFAULT_EMBED_SCRIPT_URL = 'https://rover.rtrvr.ai/embed.js';
+const DEFAULT_AGENT_BASE = 'https://agent.rtrvr.ai';
 
 function toStringValue(value: unknown): string {
   return String(value || '').trim();
@@ -36,6 +37,13 @@ function escapeHtmlAttr(value: string): string {
     .replace(/"/g, '&quot;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+function escapeScriptJson(value: string): string {
+  return value
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026');
 }
 
 function parseBooleanAttr(value: string | null): boolean | undefined {
@@ -165,7 +173,14 @@ export function createRoverScriptTagSnippet(config: RoverPreviewBootstrapConfig)
   if (typeof normalized.openOnInit === 'boolean') attrs.push(`data-open-on-init="${escapeHtmlAttr(String(normalized.openOnInit))}"`);
   if (normalized.mode) attrs.push(`data-mode="${escapeHtmlAttr(normalized.mode)}"`);
   if (typeof normalized.allowActions === 'boolean') attrs.push(`data-allow-actions="${escapeHtmlAttr(String(normalized.allowActions))}"`);
-  return `<script ${attrs.join(' ')}></script>`;
+  const taskEndpoint = `${toStringValue(normalized.apiBase) || DEFAULT_AGENT_BASE}/v1/tasks`;
+  const markerJson = escapeScriptJson(JSON.stringify({ task: taskEndpoint }));
+  return [
+    `<script type="application/agent+json" data-rover-agent-discovery="marker">${markerJson}</script>`,
+    '<link rel="service-desc" href="/.well-known/agent-card.json" type="application/json" data-rover-agent-discovery="service-desc" />',
+    '<link rel="service-doc" href="/llms.txt" type="text/markdown" data-rover-agent-discovery="service-doc" />',
+    `<script ${attrs.join(' ')}></script>`,
+  ].join('\n');
 }
 
 export function readRoverScriptDataAttributes(

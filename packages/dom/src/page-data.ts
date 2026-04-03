@@ -4,6 +4,7 @@ import {
   DEFAULT_PAGE_CONFIG,
   GOOGLE_SHEET_MIME_TYPE,
   PDF_MIME_TYPE,
+  createRoverAgentDiscoverySnapshot,
   getEmbeddedPdfEl,
   isCurrentDocumentPdf,
   GOOGLE_DOC_MIME_TYPE,
@@ -124,6 +125,18 @@ function buildElementLinkRecord(nodes: Record<number, SemanticNode>): Record<num
   return record;
 }
 
+function readRoverAgentDiscoverySnapshot(doc: Document): PageData['agentDiscovery'] {
+  try {
+    const win = doc.defaultView || globalWindowSafe;
+    const rover = (win as any)?.rover;
+    const getAgentCard = rover && typeof rover.getAgentCard === 'function' ? rover.getAgentCard.bind(rover) : null;
+    if (!getAgentCard) return undefined;
+    return createRoverAgentDiscoverySnapshot(getAgentCard());
+  } catch {
+    return undefined;
+  }
+}
+
 export async function buildPageData(
   root: Element,
   instrumentation: InstrumentationController,
@@ -135,10 +148,12 @@ export async function buildPageData(
 
   const analysis = analyzeDocumentStructure(rawContentType, doc);
   const contentType = resolveContentType(analysis.documentType, rawContentType);
+  const agentDiscovery = readRoverAgentDiscoverySnapshot(doc);
   const pageMetadata: PageData = {
     url: doc.URL,
     title: doc.title,
     contentType,
+    agentDiscovery,
   };
 
   const globalDeadline = getGlobalDeadline(pageConfig);

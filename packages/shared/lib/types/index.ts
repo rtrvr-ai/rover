@@ -60,6 +60,9 @@ export interface PageData {
   /** Extraction metadata */
   metadata?: PageDataMetadata;
 
+  /** Structured Rover discovery information for this page, when available */
+  agentDiscovery?: RoverAgentDiscoverySnapshot;
+
   /** Any errors encountered during extraction */
   error?: string;
 
@@ -102,6 +105,38 @@ export interface PageDataMetadata {
     waitedMs?: number;
     reasons?: string[];
   };
+}
+
+export type RoverDiscoveryExecutionPreference = 'auto' | 'browser' | 'cloud';
+
+export type RoverDiscoverySkillInterface = 'task' | 'shortcut' | 'client_tool' | 'webmcp';
+
+export type RoverDiscoverySkillSource = 'shortcut' | 'client_tool' | 'webmcp' | 'additional';
+
+export interface RoverAgentDiscoverySkillSnapshot {
+  id: string;
+  name: string;
+  preferredInterface?: RoverDiscoverySkillInterface;
+  source?: RoverDiscoverySkillSource;
+  deepLink?: string;
+  toolName?: string;
+  taskPayload?: Record<string, unknown>;
+}
+
+export interface RoverAgentDiscoverySnapshot {
+  roverEnabled: boolean;
+  siteUrl: string;
+  taskEndpoint: string;
+  workflowEndpoint: string;
+  serviceDescUrl?: string;
+  llmsUrl?: string;
+  preferredExecution: RoverDiscoveryExecutionPreference;
+  promptLaunchEnabled: boolean;
+  shortcutLaunchEnabled: boolean;
+  delegatedHandoffs: boolean;
+  webmcpAvailable: boolean;
+  skills: RoverAgentDiscoverySkillSnapshot[];
+  instructions: string[];
 }
 
 // Update ExtensionCommand type:
