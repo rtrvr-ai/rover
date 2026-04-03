@@ -33,6 +33,71 @@ type DiscoverableWebMCPToolDefinition = {
 };
 
 const WEBMCP_DISCOVERY_GLOBAL = '__ROVER_WEBMCP_TOOL_DEFS__';
+const ROVER_AGENT_DISCOVERY_CHANGE_EVENT = 'rover:agent-discovery-changed';
+
+function text(value: unknown, max = 0): string {
+  const out = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!max || out.length <= max) return out;
+  return out.slice(0, max).trim();
+}
+
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+function createAgentDiscoverySnapshot(cardLike: unknown): Record<string, unknown> | undefined {
+  const card = asObject(cardLike);
+  if (!card) return undefined;
+  const rover = asObject(asObject(card.extensions)?.rover);
+  if (!rover) return undefined;
+  const siteUrl = text(rover.siteUrl, 2048);
+  const taskEndpoint = text(rover.taskEndpoint || card.url, 2048);
+  const workflowEndpoint = text(rover.workflowEndpoint, 2048);
+  if (!siteUrl || !taskEndpoint || !workflowEndpoint) return undefined;
+  const promptLaunchEnabled = rover.promptLaunchEnabled === true;
+  const shortcutLaunchEnabled = rover.shortcutLaunchEnabled === true;
+  const delegatedHandoffs = rover.delegatedHandoffs === true;
+  const webmcpAvailable = asObject(rover.webmcp)?.available === true;
+  const skills = Array.isArray(card.skills)
+    ? card.skills
+        .map(entry => {
+          const skill = asObject(entry);
+          if (!skill) return null;
+          const skillRover = asObject(skill.rover);
+          const id = text(skill.id, 120);
+          const name = text(skill.name, 180);
+          if (!id || !name) return null;
+          return {
+            id,
+            name,
+            preferredInterface: text(skill.preferredInterface, 40) || undefined,
+            source: text(skillRover?.source, 40) || undefined,
+            deepLink: text(skillRover?.deepLink, 2048) || undefined,
+            toolName: text(skillRover?.toolName, 120) || undefined,
+            taskPayload: asObject(asObject(skillRover?.task)?.payload),
+          };
+        })
+        .filter(Boolean)
+    : [];
+  const instructions = Array.isArray(rover.instructions)
+    ? rover.instructions.map(value => text(value, 280)).filter(Boolean)
+    : [];
+  return {
+    roverEnabled: promptLaunchEnabled || shortcutLaunchEnabled || webmcpAvailable,
+    siteUrl,
+    taskEndpoint,
+    workflowEndpoint,
+    serviceDescUrl: text(rover.serviceDescUrl, 2048) || undefined,
+    llmsUrl: text(rover.llmsUrl, 2048) || undefined,
+    preferredExecution: text(rover.preferredExecution, 40) || 'auto',
+    promptLaunchEnabled,
+    shortcutLaunchEnabled,
+    delegatedHandoffs,
+    webmcpAvailable,
+    skills,
+    instructions,
+  };
+}
 
 function delegatedHandoffsAllowed(instance: RoverInstanceLike, config: RoverBookConfig): boolean {
   if (config.webmcp?.advertiseDelegatedHandoffs !== true) return false;
@@ -63,6 +128,7 @@ function publishWebMCPTool(definition: DiscoverableWebMCPToolDefinition): void {
   const next = current.filter(entry => entry?.name !== definition.name);
   next.push(definition);
   (window as any)[WEBMCP_DISCOVERY_GLOBAL] = next;
+  window.dispatchEvent(new CustomEvent(ROVER_AGENT_DISCOVERY_CHANGE_EVENT));
 }
 
 function unpublishWebMCPTool(name: string): void {
@@ -71,6 +137,7 @@ function unpublishWebMCPTool(name: string): void {
     ? ([...(window as any)[WEBMCP_DISCOVERY_GLOBAL]] as DiscoverableWebMCPToolDefinition[])
     : [];
   (window as any)[WEBMCP_DISCOVERY_GLOBAL] = current.filter(entry => entry?.name !== name);
+  window.dispatchEvent(new CustomEvent(ROVER_AGENT_DISCOVERY_CHANGE_EVENT));
 }
 
 function responsePayload(
@@ -268,6 +335,7 @@ export function registerWebMCPTools(
           title: { type: 'string' },
           activeVisitId: { type: 'string' },
           delegatedHandoffsAvailable: { type: 'boolean' },
+          agentDiscovery: { type: 'object' },
           roverState: { type: 'object' },
         },
       },
@@ -295,6 +363,7 @@ export function registerWebMCPTools(
           title: typeof document !== 'undefined' ? document.title : '',
           activeVisitId: context.getActiveVisit()?.visitId || null,
           delegatedHandoffsAvailable: delegatedHandoffsAllowed(instance, config),
+          agentDiscovery: createAgentDiscoverySnapshot(instance.getAgentCard?.()),
           roverState: state?.runtimeState || null,
         };
         return responsePayload('Structured Rover page data returned.', result);

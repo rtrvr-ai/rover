@@ -51,6 +51,10 @@
       "import": "./dist/previewBootstrap.js",
       "types": "./dist/previewBootstrap.d.ts"
     },
+    "./owner-install": {
+      "import": "./dist/ownerInstall.js",
+      "types": "./dist/ownerInstall.d.ts"
+    },
     "./embed": "./dist/embed.js",
     "./worker": "./dist/worker/rover-worker.js"
   },
@@ -59,6 +63,8 @@
     "dist/agentDiscovery.js",
     "dist/agentDiscovery.d.ts",
     "dist/embed.js",
+    "dist/ownerInstall.js",
+    "dist/ownerInstall.d.ts",
     "dist/previewBootstrap.js",
     "dist/previewBootstrap.d.ts",
     "dist/index.d.ts",

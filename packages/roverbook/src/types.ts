@@ -40,6 +40,7 @@ export interface RoverInstanceLike {
   on(event: string, handler: (payload?: any) => void | Promise<void>): () => void;
   registerTool(nameOrDef: string | RoverToolDefinition, handler: (args: any) => any | Promise<any>): void;
   getState(): any;
+  getAgentCard?: () => unknown;
   send(text: string): void;
   identify(visitor: { name?: string; email?: string }): void;
   requestSigned(input: string | URL, init?: RequestInit): Promise<Response>;

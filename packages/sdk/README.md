@@ -89,6 +89,7 @@ import {
   createRoverAgentDiscoveryTags,
   createRoverBookmarklet,
   createRoverConsoleSnippet,
+  createRoverOwnerInstallBundle,
   createRoverServiceDescLinkHeader,
   createRoverScriptTagSnippet,
 } from '@rtrvr-ai/rover';
@@ -119,6 +120,8 @@ Before you use any of these helpers on another website:
   Best for quick one-click demos across many pages, with the same current-page limitations as manual injection.
 - `createRoverScriptTagSnippet(...)`
   Best for generating an actual snippet from known config values such as Workspace `siteId` and `publicKey`.
+- `createRoverOwnerInstallBundle(...)`
+  Best for canonical owner-facing install output when you need a body-safe runtime snippet plus separate head discovery HTML, well-known card JSON, and optional `llms.txt`.
 - `createRoverAgentCardJson(...)`, `createRoverAgentDiscoveryTags(...)`, `createRoverServiceDescLinkHeader(...)`
   Best for publishing source-visible discovery metadata so arbitrary agents can find Rover skills before falling back to DOM automation.
 - `attachLaunch(...)`
@@ -170,6 +173,36 @@ const snippet = createRoverScriptTagSnippet({
   domainScopeMode: 'registrable_domain',
   apiBase: 'https://agent.rtrvr.ai',
 });
+```
+
+### Example: canonical owner install bundle
+
+```ts
+import { createRoverOwnerInstallBundle } from '@rtrvr-ai/rover';
+
+const bundle = createRoverOwnerInstallBundle({
+  bootConfig: {
+    siteId: 'site_123',
+    publicKey: 'pk_site_123',
+    siteKeyId: 'key_123',
+    allowedDomains: ['example.com'],
+    domainScopeMode: 'registrable_domain',
+  },
+  discovery: {
+    siteId: 'site_123',
+    siteUrl: 'https://example.com/',
+    siteName: 'Example Store',
+    agentCardUrl: '/.well-known/agent-card.json',
+    llmsUrl: '/llms.txt',
+  },
+  emitLlmsTxt: true,
+});
+
+bundle.bodyInstallHtml;     // paste before </body>
+bundle.headDiscoveryHtml;   // place in <head> or managed head custom code
+bundle.agentCardJson;       // publish at /.well-known/agent-card.json
+bundle.serviceDescLinkHeader;
+bundle.llmsTxt;
 ```
 
 ### Example: attach a pre-created launch

@@ -72,6 +72,7 @@ export type RoverLaunchAttachResponse = {
   input?: RoverLaunchInputSpec;
   sessionId?: string;
   runId?: string;
+  promptDispatchState?: 'pending' | 'started' | 'failed';
 };
 
 export type RoverTaskBrowserClaimResponse = {

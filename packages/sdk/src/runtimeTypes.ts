@@ -224,6 +224,14 @@ export type PersistedRuntimeState = {
     reason?: string;
     ts: number;
   };
+  launchBinding?: {
+    requestId: string;
+    status?: string;
+    executionTarget?: 'browser_attach' | 'cloud_browser';
+    runId?: string;
+    promptDispatchState?: 'pending' | 'started' | 'failed';
+    attachedAt?: number;
+  };
   visitor?: { name?: string; email?: string };
   updatedAt: number;
 };
