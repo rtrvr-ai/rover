@@ -8011,15 +8011,43 @@ function dispatchLaunchInput(response: RoverLaunchAttachResponse | RoverTaskBrow
   if (!input || typeof input.prompt !== 'string' || !input.prompt.trim()) {
     throw new Error('Launch attach response did not include a prompt.');
   }
-  open();
-  if (input.kind === 'shortcut') {
-    dispatchUserPrompt(input.prompt, {
-      reason: 'launch_shortcut',
-      routing: input.routing,
+  const isHostedCloudLaunch = response.executionTarget === 'cloud_browser';
+  if (isHostedCloudLaunch) {
+    recordTelemetryEvent('status', {
+      event: 'hosted_launch_attached',
+      requestId: response.requestId,
+      detail: response.detail,
     });
-    return;
   }
-  dispatchUserPrompt(input.prompt, { reason: 'launch_prompt' });
+  open();
+  try {
+    if (input.kind === 'shortcut') {
+      dispatchUserPrompt(input.prompt, {
+        reason: 'launch_shortcut',
+        routing: input.routing,
+      });
+    } else {
+      dispatchUserPrompt(input.prompt, { reason: 'launch_prompt' });
+    }
+    if (isHostedCloudLaunch) {
+      recordTelemetryEvent('status', {
+        event: 'hosted_launch_prompt_dispatched',
+        requestId: response.requestId,
+        detail: response.detail,
+        inputKind: input.kind,
+      });
+    }
+  } catch (error: any) {
+    if (isHostedCloudLaunch) {
+      recordTelemetryEvent('status', {
+        event: 'hosted_launch_prompt_failed',
+        requestId: response.requestId,
+        detail: response.detail,
+        message: String(error?.message || 'launch_prompt_dispatch_failed'),
+      });
+    }
+    throw error;
+  }
 }
 
 function maybeHandleLaunchAttach(
