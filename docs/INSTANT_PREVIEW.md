@@ -125,16 +125,18 @@ Installed-site deep links like `?rover=` remain the real site-owned browser entr
 
 Use this when:
 
-- you already have a real Workspace site
-- you want to test Rover on another website with your own config
+- you want one reusable signed-in test config for Helper / Console / Bookmarklet
+- you may still want to validate an exact Workspace site key as an advanced path
 - you want explicit Helper / Console / Bookmarklet artifacts
 
 The clean path is:
 
-1. open Workspace
-2. create or rotate a site key
-3. copy the test config JSON
-4. paste it into the website tool or Preview Helper
+1. open Live Test on the reusable test-config path
+2. let Rover auto-load or create the wildcard tester config
+3. enter the target URL
+4. choose Helper, Console, or Bookmarklet
+
+Use Workspace Install & Test only when you need the advanced exact site-scoped config path.
 
 ### Production install
 
@@ -195,7 +197,8 @@ The hosted website gives you the easiest way to try the full flow:
 Use the website if you want:
 
 - preview creation handled for you
-- a guided Try on Other Sites generator fed by Workspace config
+- a reusable wildcard test config managed for you
+- an advanced exact site-config path fed by Workspace Install & Test
 - hosted fallback when live attach is not ideal
 - share links and Workspace conversion
 

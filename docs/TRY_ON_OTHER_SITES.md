@@ -1,18 +1,21 @@
 # Try on Other Sites
 
-Before you try Rover on other sites, get your site config from Workspace.
+Before you try Rover on other sites, start with Rover's reusable test config unless you specifically need exact site policy.
 
-This is the clean path:
+This is the default path:
 
-1. Open Rover Workspace.
-2. Create or rotate a Rover site key so Workspace reveals the full `pk_site_*` value.
-3. Copy the **test config JSON** from the Workspace "Try Rover on Other Sites" card.
-4. Open Rover Live Test on the `Use Workspace config` path and paste that JSON there.
+1. Sign in to Rover Live Test.
+2. Open the `Use reusable test config` path.
+3. Rover auto-loads or creates one wildcard tester config for your account.
+4. Enter the target URL.
 5. Choose Helper, Console, or Bookmarklet.
+
+Use the exact site-scoped Workspace config only when you want to validate the real allowed-domain policy of a specific site key.
 
 This is not the same as Hosted Preview.
 
-- **Try on Other Sites** uses your real Workspace config.
+- **Try on Other Sites** now defaults to a tester-owned reusable wildcard config.
+- **Exact site-scoped config** is the advanced path for validating one real Workspace site key.
 - **Hosted Preview** creates a temporary demo record and temporary preview tokens for you.
 - **Production install** uses the install snippet on your real site.
 
@@ -21,12 +24,17 @@ This is not the same as Hosted Preview.
 | Path | What you need | Best for | Persistence | Mobile |
 |---|---|---|---|---|
 | Hosted Preview | Signed-in URL + prompt | Rover-managed demos | Temporary preview session | Best fallback |
-| Preview Helper | Workspace test config JSON or hosted handoff | Multi-page desktop demos | Re-injects after reloads/navigation | No |
-| Console | Workspace test config JSON + generated snippet | Fast DevTools demos | Current page only | No |
-| Bookmarklet | Workspace test config JSON + generated bookmarklet | Drag-and-click demos | Current page only | Weak |
+| Preview Helper | Reusable test config, exact site-scoped config, or hosted handoff | Multi-page desktop demos | Re-injects after reloads/navigation | No |
+| Console | Reusable test config or exact site-scoped config + generated snippet | Fast DevTools demos | Current page only | No |
+| Bookmarklet | Reusable test config or exact site-scoped config + generated bookmarklet | Drag-and-click demos | Current page only | Weak |
 | Production install | Workspace install snippet | Your real live site | Persistent | Yes |
 
-## The exact config shape
+## Reusable config vs exact site config
+
+- **Reusable test config**: wildcard `allowedDomains: ["*"]`, signed-in tester owned, 90-day TTL, powers Helper / Console / Bookmarklet by default.
+- **Exact site-scoped config**: real Workspace site key plus real allowed domains, preserved as the advanced validation path.
+
+Both shapes use the same JSON family:
 
 Workspace exports JSON in this family:
 
@@ -65,7 +73,16 @@ Common optional fields:
 - `allowActions`
 - `capabilities.roverEmbed`
 
-## Step 1: Get the config from Workspace
+## Step 1: Choose the config source
+
+### Default: reusable test config
+
+1. Open [https://www.rtrvr.ai/rover/instant-preview?flow=workspace_config](https://www.rtrvr.ai/rover/instant-preview?flow=workspace_config).
+2. Sign in.
+3. Let Rover auto-load or create the reusable wildcard config.
+4. Note the expiry, then use **Renew 90 days** or **Revoke** when needed.
+
+### Advanced: exact site-scoped Workspace config
 
 Open one of:
 
@@ -76,12 +93,12 @@ Then:
 
 1. Create or rotate a Rover site key.
 2. In the setup view, find **Try Rover on Other Sites**.
-3. Click **Copy test config JSON**.
-4. Optionally click **Open Live Test** to open the website tool with the config prefilled.
+3. Click **Copy exact config JSON**.
+4. Optionally click **Open Live Test with exact config** to open the website tool with that JSON prefilled.
 
 Why create or rotate?
 
-Workspace only shows the full public `pk_site_*` value when it is issued. That value is required for the generic Helper / Console / Bookmarklet path.
+Workspace only shows the full public `pk_site_*` value when it is issued. That value is required for the advanced exact site-config path.
 
 ## Step 2: Choose the right testing method
 
@@ -97,7 +114,7 @@ How to use it:
 
 1. Load the extension from [apps/preview-helper](../apps/preview-helper/README.md).
 2. Open the signed-in website tool at [https://www.rtrvr.ai/rover/instant-preview?flow=workspace_config](https://www.rtrvr.ai/rover/instant-preview?flow=workspace_config).
-3. Paste the same Workspace test config JSON there.
+3. Use the reusable test config by default, or open the advanced exact site-config section if you want to paste the Workspace JSON there.
 4. Enter the target site URL.
 5. Click **Open target with helper**.
 6. If Rover does not inject, paste the fallback helper JSON into the popup and click `Inject Rover into this tab`.
