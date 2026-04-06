@@ -1,6 +1,6 @@
 # Rover Preview Helper
 
-Open-source Chrome extension for injecting Rover into the current tab and keeping it alive across reloads or navigation.
+Open-source Chrome extension for injecting Rover into the current tab and keeping it alive across reloads or navigation when you do not want to edit the site code directly.
 
 Before you use this helper on arbitrary websites, get your config from Workspace.
 
@@ -13,16 +13,16 @@ Before you use this helper on arbitrary websites, get your config from Workspace
 | Path | What you need | Best for | Persistence |
 |---|---|---|---|
 | Hosted Preview | Signed-in URL + prompt | Rover-managed demos | Temporary preview session |
-| Preview Helper | Workspace test config JSON or hosted handoff | Multi-page desktop demos | Re-injects after reload/navigation |
-| Console | Workspace test config JSON + generated snippet | Fast DevTools demos | Current page only |
-| Bookmarklet | Workspace test config JSON + generated bookmarklet | Drag-and-click demos | Current page only |
+| Preview Helper | Reusable test config, exact site-scoped config, or hosted handoff | Multi-page desktop demos | Re-injects after reload/navigation |
+| Console | Reusable test config or exact site-scoped config + generated snippet | Fast DevTools demos | Current page only |
+| Bookmarklet | Reusable test config or exact site-scoped config + generated bookmarklet | Drag-and-click demos | Current page only |
 | Production install | Workspace install snippet | Real site install | Persistent |
 
 ## The two supported input modes
 
-### 1. Generic Workspace config
+### 1. Generic reusable or exact config
 
-Use this when you want to test Rover on some other website with your own real site config.
+Use this when you want to test Rover on some other website without editing that site's code first.
 
 Required:
 
@@ -79,17 +79,15 @@ pnpm --filter @rover/preview-helper dev
 
 ## The clean first-run flow
 
-### Workspace-config testing on other sites
+### Live Test helper path
 
-1. Open [Rover Workspace](https://www.rtrvr.ai/rover/workspace).
-2. Create or rotate a site key so Workspace reveals the full `pk_site_*` value.
-3. Copy the **test config JSON** from the Workspace "Try Rover on Other Sites" card.
-4. Open [Live Test](https://www.rtrvr.ai/rover/instant-preview?flow=workspace_config) and stay on the `Use Workspace config` path.
-5. Paste the same JSON there and enter the target site URL.
-6. Click `Open target with helper`.
-7. If Rover does not inject automatically, open the helper popup and paste the same JSON as fallback.
+1. Open [Live Test](https://www.rtrvr.ai/rover/instant-preview?flow=workspace_config).
+2. Stay on the reusable test-config path unless you explicitly need the advanced exact site-scoped config.
+3. Enter the target site URL in the Preview Helper section.
+4. Click `Open target with helper`.
+5. If Rover does not inject automatically, open the helper popup and paste the fallback helper JSON.
 
-Use `Reconnect preview` after reloads or navigation.
+Use `Reconnect preview` after reloads or navigation. Generic helper sessions keep re-injecting in the same tab while later pages still match `allowedDomains`.
 
 The website tool opens the target page with a private URL fragment:
 
@@ -122,7 +120,8 @@ The popup is not asking for the production install snippet. It wants JSON only.
 - auto-hydrates from hosted preview handoff fragments
 - refreshes hosted preview state when reconnecting
 - re-injects on reload and history navigation
-- keeps host scoping tied to the intended target host
+- keeps hosted handoff scoping tied to the intended target host
+- lets generic reusable/exact configs keep re-injecting while later pages stay inside `allowedDomains`
 - rejects tabs whose host is outside the config's `allowedDomains`
 
 ## What it does not do

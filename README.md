@@ -177,6 +177,7 @@ There are two config sources:
 | Path | What you need | Best for | Persistence | Mobile | Managed by |
 |---|---|---|---|---|---|
 | Hosted Preview | Signed-in URL + prompt | Rover-managed demos | Temporary preview session (12-minute max) | Best fallback | Rover |
+| Script tag | Reusable test config or exact site-scoped config + generated snippet | Installing Rover on another site's code | Persistent where installed | Yes | Workspace |
 | Preview Helper | Reusable test config, exact site-scoped config, or hosted handoff | Multi-page desktop demos | Re-injects after reloads/navigation | No | Workspace or Rover |
 | Console | Reusable test config or exact site-scoped config + generated snippet | Fast DevTools demos | Current page only | No | Workspace |
 | Bookmarklet | Reusable test config or exact site-scoped config + generated bookmarklet | Drag-and-click demos | Current page only | Weak | Workspace |
@@ -193,13 +194,14 @@ Notes:
 - **Hosted Preview** now leases from the same shared browser pool as normal automation on that worker. With `POOL_MAX_INSTANCES=1`, Hosted Preview and `/agent` queue behind whichever side currently holds the browser.
 - **Hosted Preview** is sticky to one worker and one browser. If that owner dies or the lease expires, Rover should fail closed and tell you to recreate the temporary demo.
 - **Hosted Preview** does not try to recycle its browser after close, expiry, or failure. Rover destroys that browser before the shared pool can hand capacity back to the next request.
-- **Reusable test config** is the default Helper / Console / Bookmarklet path in Live Test. Rover creates one signed-in wildcard config for you, shows its expiry, and lets you renew or revoke it from Workspace Install & Test.
+- **Reusable test config** is the default script-tag / Preview Helper / Console / Bookmarklet path in Live Test. Rover creates one signed-in wildcard config for you, shows its expiry, and lets you renew or revoke it from Workspace Install & Test.
 - **Exact site-scoped test config** remains available as the advanced path when you want to validate the real allowed-domain policy of one Workspace site key.
 - **Try on Other Sites** still lives under Workspace Install & Test and Live Test, but manual JSON paste is now the advanced exact-policy path rather than the default.
 - **Production install** is the Workspace snippet on your real site, not the same thing as generic testing on other sites.
 - **Installed-site deep links** like `?rover=` remain the real site-owned/browser-first path. Hosted Preview stays separate from that billing and site-key context even if the target site is already installed.
 - **Live Test** now shows Rover's hosted browser directly on the page for Hosted Preview. `Open hosted shell` is the full-screen version of that same temporary cloud-browser fallback.
-- **Bookmarklet** is a drag-only control in Rover's UI. Drag it from Live Test into your bookmarks bar, then click it on the target site.
+- **Script tag** is the main "install on another site" path in Live Test when you can edit the target site's code.
+- **Bookmarklet** is a drag-only current-page test control in Rover's UI. Drag it from Live Test into your bookmarks bar, then click it on the target site.
 
 ### Troubleshooting
 
@@ -234,7 +236,7 @@ Client-side preview tooling lives in this open-source repo:
 
 - [Preview Helper App](apps/preview-helper/README.md): MV3 Chrome extension that can inject Rover from generic config JSON or auto-hydrate from hosted preview handoff URLs.
 - [SDK Preview Helpers](packages/sdk/README.md#preview-helpers): `createRoverConsoleSnippet(...)`, `createRoverBookmarklet(...)`, `createRoverScriptTagSnippet(...)`, and `attachLaunch(...)`.
-- [Try on Other Sites](docs/TRY_ON_OTHER_SITES.md): the Workspace-first live-inject walkthrough for Helper, Console, and Bookmarklet flows.
+- [Try on Other Sites](docs/TRY_ON_OTHER_SITES.md): the reusable-config walkthrough for script tag install plus Helper, Console, and Bookmarklet testing flows.
 - [Instant Preview Architecture](docs/INSTANT_PREVIEW.md): how the OSS clients fit with the hosted preview backend and website.
 - [Instant Preview API Docs](https://www.rtrvr.ai/rover/docs/instant-preview-api): signed-in hosted preview route guide with curl examples and field reference.
 - [Instant Preview OpenAPI Spec](https://raw.githubusercontent.com/rtrvr-ai/rtrvr-cloud-backend/main/docs/rover-instant-preview.openapi.yaml): machine-readable hosted preview contract.
@@ -267,7 +269,7 @@ For short-lived demos:
 2. Choose either `Use Rover temporary demo` or `Use reusable test config`.
 3. The temporary demo path creates short-lived preview state for a target URL and prompt.
 4. Hosted Preview uses the signed-in tester's credits and auto-runs that exact prompt inside Rover's hosted page.
-5. The reusable test-config path auto-loads or creates your wildcard tester config for Helper / Console / Bookmarklet. Use the advanced exact site-config section only when you want to validate a real Workspace site key.
+5. The reusable test-config path auto-loads or creates your wildcard tester config for script tag plus Preview Helper / Console / Bookmarklet. Use the advanced exact site-config section only when you want to validate a real Workspace site key.
 6. Treat preview tokens as temporary demo credentials, not as production site keys.
 
 ### Direct hosted preview API

@@ -154,15 +154,16 @@ async function refreshStateFromBackend(tabId, state, tabUrl, options = {}) {
     apiBase: state.apiBase,
   }, tabUrl || state.targetUrl || '');
   const targetHost = buildTargetHost(tabUrl || refreshed.targetUrl || state.targetUrl, refreshed) || state.targetHost;
+  const shouldLockTargetHost = Boolean(refreshed.previewId && refreshed.previewToken);
   const nextState = normalizeConfig({
     ...state,
     ...refreshed,
-    targetHost,
+    targetHost: shouldLockTargetHost ? targetHost : '',
     configRefreshedAt: Date.now(),
   });
   const persistedState = {
     ...nextState,
-    targetHost,
+    targetHost: shouldLockTargetHost ? targetHost : '',
   };
   await writeState(tabId, persistedState);
   return persistedState;
@@ -200,6 +201,19 @@ function buildTargetHost(tabUrl, fallbackState) {
   const fromTab = normalizeHost(tabUrl);
   if (fromTab) return fromTab;
   return String(fallbackState?.targetHost || '').toLowerCase();
+}
+
+function shouldLockStateToTargetHost(state) {
+  return Boolean(state?.previewId && state?.previewToken);
+}
+
+function canReinjectStateOnUrl(state, url) {
+  const host = normalizeHost(url);
+  if (!host) return false;
+  if (shouldLockStateToTargetHost(state)) {
+    return !state.targetHost || state.targetHost === host;
+  }
+  return isHostAllowed(host, state.allowedDomains, state.domainScopeMode);
 }
 
 async function injectMainWorldState(tabId, state) {
@@ -241,16 +255,17 @@ async function injectFromTab(tabId, config) {
   const currentUrl = String(tab.url || '');
   const currentHost = normalizeHost(currentUrl);
   const targetHost = buildTargetHost(currentUrl, config);
+  const shouldLockTargetHost = shouldLockStateToTargetHost(config);
 
   if (!targetHost) {
     throw new Error('Target host is required to inject Rover.');
   }
-  if (currentHost && targetHost && currentHost !== targetHost) {
+  if (shouldLockTargetHost && currentHost && targetHost && currentHost !== targetHost) {
     throw new Error(`Tab host mismatch. Expected ${targetHost}, got ${currentHost}.`);
   }
   const normalized = normalizeConfig({
     ...config,
-    targetHost,
+    targetHost: shouldLockTargetHost ? targetHost : '',
   });
   if (!normalized.siteId || (!normalized.publicKey && !normalized.sessionToken)) {
     throw new Error('siteId and either publicKey or sessionToken are required.');
@@ -261,7 +276,7 @@ async function injectFromTab(tabId, config) {
   const launchUrl = normalized.launchUrl || '';
   const state = {
     ...normalized,
-    targetHost,
+    targetHost: shouldLockTargetHost ? targetHost : '',
     launchUrl,
     bootstrapId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
   };
@@ -314,6 +329,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       const state = await readState(tabId);
       if (!state) return;
+      if (pageUrl && !canReinjectStateOnUrl(state, pageUrl)) return;
       try {
         const refreshed = await refreshStateFromBackend(tabId, state, pageUrl).catch(() => state);
         await injectMainWorldState(tabId, refreshed || state);
@@ -378,10 +394,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     }
     const state = await readState(tabId);
     if (!state) return;
-    const host = normalizeHost(url);
-    if (state.targetHost && host && state.targetHost !== host) {
-      return;
-    }
+    if (!canReinjectStateOnUrl(state, url)) return;
     if (changeInfo.status === 'loading' || changeInfo.status === 'complete') {
       const refreshed = await refreshStateFromBackend(tabId, state, url).catch(() => state);
       await injectMainWorldState(tabId, refreshed || state);
@@ -400,8 +413,7 @@ chrome.webNavigation.onHistoryStateUpdated.addListener(details => {
     }
     const state = await readState(details.tabId);
     if (!state) return;
-    const host = normalizeHost(details.url || '');
-    if (state.targetHost && host && state.targetHost !== host) return;
+    if (!canReinjectStateOnUrl(state, details.url || '')) return;
     const refreshed = await refreshStateFromBackend(details.tabId, state, details.url || '').catch(() => state);
     await injectMainWorldState(details.tabId, refreshed || state);
   })();
@@ -418,8 +430,7 @@ chrome.webNavigation.onCompleted.addListener(details => {
     }
     const state = await readState(details.tabId);
     if (!state) return;
-    const host = normalizeHost(details.url || '');
-    if (state.targetHost && host && state.targetHost !== host) return;
+    if (!canReinjectStateOnUrl(state, details.url || '')) return;
     const refreshed = await refreshStateFromBackend(details.tabId, state, details.url || '').catch(() => state);
     await injectMainWorldState(details.tabId, refreshed || state);
   })();

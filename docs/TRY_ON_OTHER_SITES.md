@@ -7,8 +7,8 @@ This is the default path:
 1. Sign in to Rover Live Test.
 2. Open the `Use reusable test config` path.
 3. Rover auto-loads or creates one wildcard tester config for your account.
-4. Enter the target URL.
-5. Choose Helper, Console, or Bookmarklet.
+4. Use the generated script tag when you can edit the target site's code.
+5. Use Preview Helper, Bookmarklet, or Console when you want to test without editing the site first.
 
 Use the exact site-scoped Workspace config only when you want to validate the real allowed-domain policy of a specific site key.
 
@@ -24,6 +24,7 @@ This is not the same as Hosted Preview.
 | Path | What you need | Best for | Persistence | Mobile |
 |---|---|---|---|---|
 | Hosted Preview | Signed-in URL + prompt | Rover-managed demos | Temporary preview session | Best fallback |
+| Script tag | Reusable test config or exact site-scoped config + generated snippet | Installing Rover on another site's code | Persistent where installed | Yes |
 | Preview Helper | Reusable test config, exact site-scoped config, or hosted handoff | Multi-page desktop demos | Re-injects after reloads/navigation | No |
 | Console | Reusable test config or exact site-scoped config + generated snippet | Fast DevTools demos | Current page only | No |
 | Bookmarklet | Reusable test config or exact site-scoped config + generated bookmarklet | Drag-and-click demos | Current page only | Weak |
@@ -31,7 +32,7 @@ This is not the same as Hosted Preview.
 
 ## Reusable config vs exact site config
 
-- **Reusable test config**: wildcard `allowedDomains: ["*"]`, signed-in tester owned, 90-day TTL, powers Helper / Console / Bookmarklet by default.
+- **Reusable test config**: wildcard `allowedDomains: ["*"]`, signed-in tester owned, 90-day TTL, powers script tag plus Preview Helper / Console / Bookmarklet by default.
 - **Exact site-scoped config**: real Workspace site key plus real allowed domains, preserved as the advanced validation path.
 
 Both shapes use the same JSON family:
@@ -100,14 +101,29 @@ Why create or rotate?
 
 Workspace only shows the full public `pk_site_*` value when it is issued. That value is required for the advanced exact site-config path.
 
-## Step 2: Choose the right testing method
+## Step 2: Choose the right path
+
+### Script tag
+
+Use this for:
+
+- installing Rover on another site's code
+- persistent cross-page testing when you can edit the site
+- the closest path to a real install without using your production Workspace snippet
+
+How to use it:
+
+1. Generate the script tag from Live Test or the SDK helper.
+2. Paste it into the target site's code, template, head, or body.
+3. Reload the target site.
+4. Rover stays available on later pages because the site now loads Rover directly.
 
 ### Preview Helper
 
 Use this for:
 
 - multi-page desktop demos
-- reloads and navigation
+- reloads and navigation when you do not want to edit the site
 - the most reliable live-inject path
 
 How to use it:
@@ -115,10 +131,10 @@ How to use it:
 1. Load the extension from [apps/preview-helper](../apps/preview-helper/README.md).
 2. Open the signed-in website tool at [https://www.rtrvr.ai/rover/instant-preview?flow=workspace_config](https://www.rtrvr.ai/rover/instant-preview?flow=workspace_config).
 3. Use the reusable test config by default, or open the advanced exact site-config section if you want to paste the Workspace JSON there.
-4. Enter the target site URL.
+4. Enter the target site URL in the Preview Helper section.
 5. Click **Open target with helper**.
 6. If Rover does not inject, paste the fallback helper JSON into the popup and click `Inject Rover into this tab`.
-7. Use `Reconnect preview` after reloads or navigation if needed.
+7. Use `Reconnect preview` after reloads or navigation if needed. Generic helper sessions keep re-injecting while later pages still match `allowedDomains`.
 
 The website tool uses a private URL fragment handoff:
 
@@ -174,9 +190,9 @@ The signed-in website tool lives at:
 
 It walks through:
 
-1. paste test config JSON
-2. enter target URL
-3. choose Helper / Console / Bookmarklet
+1. reusable or exact config selection
+2. script-tag install output for sites you can edit
+3. Preview Helper / Bookmarklet / Console testing tools for sites you do not want to edit
 4. copy or drag the generated artifact
 5. read the “Why this may not work” notes before assuming Rover is broken
 
@@ -220,7 +236,7 @@ Docs:
 - **`React has blocked a javascript: URL`**
   You likely dragged an old Rover bookmarklet that was created before the drag-only fix. Delete it and recreate it from the current Live Test page.
 - **“Bookmarklet worked, then stopped after navigation.”**
-  That is expected on full reloads. Use the Preview Helper for multi-page demos.
+  That is expected on full reloads. Use the Preview Helper for sticky no-code desktop testing, or use the script tag if you can edit the target site.
 - **“Console snippet pasted but Rover still did not attach.”**
   Some sites block injection with strict CSP rules. Try the Preview Helper or Hosted Preview instead.
 - **“Mobile feels broken.”**
