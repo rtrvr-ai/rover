@@ -125,16 +125,16 @@ Installed-site deep links like `?rover=` remain the real site-owned browser entr
 
 Use this when:
 
-- you want one reusable signed-in test config for Helper / Console / Bookmarklet
+- you want one reusable signed-in test config for script tag plus Preview Helper / Console / Bookmarklet
 - you may still want to validate an exact Workspace site key as an advanced path
-- you want explicit Helper / Console / Bookmarklet artifacts
+- you want explicit install/test artifacts without manual JSON handling
 
 The clean path is:
 
 1. open Live Test on the reusable test-config path
 2. let Rover auto-load or create the wildcard tester config
-3. enter the target URL
-4. choose Helper, Console, or Bookmarklet
+3. use the script tag when you can edit the target site
+4. use Preview Helper, Console, or Bookmarklet when you want to test without editing the site
 
 Use Workspace Install & Test only when you need the advanced exact site-scoped config path.
 
@@ -147,6 +147,18 @@ Use this when:
 - you want the persistent Workspace-managed key, not a preview token
 
 ## Choose the right client
+
+### Script tag
+
+Best for:
+
+- installing Rover on another site's code
+- persistent cross-page behavior
+- the primary "put this on the site" path in Live Test
+
+Tradeoff:
+
+- requires editing the target site's code/template/head/body
 
 ### Console snippet
 
@@ -177,7 +189,7 @@ Tradeoff:
 Best for:
 
 - multi-page live demos
-- reinjection across reload/navigation
+- reinjection across reload/navigation when you do not want to edit site code
 - developers who want to inspect and extend the preview workflow
 
 Tradeoff:

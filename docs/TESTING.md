@@ -3,7 +3,7 @@
 Before you test Rover on arbitrary sites, decide which path you are validating:
 
 - **Hosted Preview**: Rover-managed demo path, no Workspace config needed
-- **Try on Other Sites**: get test config JSON from Workspace first, then use Helper / Console / Bookmarklet
+- **Try on Other Sites**: use the reusable test config for script tag install or Helper / Console / Bookmarklet testing
 - **Production install**: use the Workspace install snippet on your real site
 
 ## Architecture Overview
