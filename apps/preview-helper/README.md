@@ -41,7 +41,8 @@ Reusable wildcard config (recommended for testing):
   "openOnInit": true,
   "mode": "full",
   "allowActions": true,
-  "capabilities": { "roverEmbed": true }
+  "capabilities": { "roverEmbed": true },
+  "ui": { "voice": { "enabled": true } }
 }
 ```
 
@@ -58,7 +59,8 @@ Exact site-scoped config (when you need policy-accurate domain validation):
   "externalNavigationPolicy": "open_new_tab_notice",
   "openOnInit": true,
   "mode": "full",
-  "allowActions": true
+  "allowActions": true,
+  "ui": { "voice": { "enabled": true } }
 }
 ```
 
