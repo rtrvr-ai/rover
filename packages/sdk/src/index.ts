@@ -10872,6 +10872,7 @@ function createRuntime(cfg: RoverInit): void {
         runtimeState.uiHidden = false;
         persistRuntimeState();
       }
+      syncAgentDiscoverySurfaces(currentConfig);
       emit('open');
     },
     onClose: () => {
@@ -10879,6 +10880,7 @@ function createRuntime(cfg: RoverInit): void {
         runtimeState.uiOpen = false;
         persistRuntimeState();
       }
+      syncAgentDiscoverySurfaces(currentConfig);
       emit('close');
     },
   });
