@@ -205,6 +205,12 @@ const VOICE_INITIAL_SPEECH_GRACE_MS = 5000;
 const VOICE_MAX_SESSION_MS = 60000;
 const VOICE_MAX_PRE_SPEECH_RESTARTS = 3;
 const VOICE_RESTART_DELAY_MS = 160;
+export const ROVER_WIDGET_MOBILE_BREAKPOINT_PX = 640;
+export const ROVER_WIDGET_LAUNCHER_DESKTOP_INSET_PX = 20;
+export const ROVER_WIDGET_LAUNCHER_MOBILE_INSET_PX = 14;
+export const ROVER_WIDGET_LAUNCHER_DESKTOP_SIZE_PX = 58;
+export const ROVER_WIDGET_LAUNCHER_MOBILE_SIZE_PX = 52;
+const ROVER_WIDGET_LAUNCHER_STACK_GAP_PX = 10;
 const PANEL_DESKTOP_DEFAULT_WIDTH = 460;
 const PANEL_DESKTOP_DEFAULT_HEIGHT = 680;
 const PANEL_DESKTOP_MIN_WIDTH = 360;
@@ -1216,10 +1222,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
     /* ── Step 4: Launcher Enhancement ── */
     .launcher {
       position: fixed;
-      right: calc(20px + env(safe-area-inset-right));
-      bottom: calc(20px + env(safe-area-inset-bottom));
-      width: 58px;
-      height: 58px;
+      right: calc(${ROVER_WIDGET_LAUNCHER_DESKTOP_INSET_PX}px + env(safe-area-inset-right));
+      bottom: calc(${ROVER_WIDGET_LAUNCHER_DESKTOP_INSET_PX}px + env(safe-area-inset-bottom));
+      width: ${ROVER_WIDGET_LAUNCHER_DESKTOP_SIZE_PX}px;
+      height: ${ROVER_WIDGET_LAUNCHER_DESKTOP_SIZE_PX}px;
       border-radius: 18px;
       border: 1.5px solid var(--rv-accent-border);
       background: linear-gradient(140deg, var(--rv-accent), #FF7A39);
@@ -2742,8 +2748,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
     .greetingBubble {
       position: fixed;
-      right: 20px;
-      bottom: 88px;
+      right: calc(${ROVER_WIDGET_LAUNCHER_DESKTOP_INSET_PX}px + env(safe-area-inset-right));
+      bottom: calc(${ROVER_WIDGET_LAUNCHER_DESKTOP_INSET_PX + ROVER_WIDGET_LAUNCHER_DESKTOP_SIZE_PX + ROVER_WIDGET_LAUNCHER_STACK_GAP_PX}px + env(safe-area-inset-bottom));
       max-width: 220px;
       padding: 9px 24px 9px 12px;
       background:
@@ -2843,12 +2849,12 @@ export function mountWidget(opts: MountOptions): RoverUi {
     }
 
     /* ── Step 14: Mobile Responsive ── */
-    @media (max-width: 640px) {
+    @media (max-width: ${ROVER_WIDGET_MOBILE_BREAKPOINT_PX}px) {
       .launcher {
-        right: calc(14px + env(safe-area-inset-right));
-        bottom: calc(14px + env(safe-area-inset-bottom));
-        width: 52px;
-        height: 52px;
+        right: calc(${ROVER_WIDGET_LAUNCHER_MOBILE_INSET_PX}px + env(safe-area-inset-right));
+        bottom: calc(${ROVER_WIDGET_LAUNCHER_MOBILE_INSET_PX}px + env(safe-area-inset-bottom));
+        width: ${ROVER_WIDGET_LAUNCHER_MOBILE_SIZE_PX}px;
+        height: ${ROVER_WIDGET_LAUNCHER_MOBILE_SIZE_PX}px;
         border-radius: var(--rv-radius-lg);
       }
 
@@ -2944,8 +2950,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
       }
 
       .greetingBubble {
-        right: calc(14px + env(safe-area-inset-right));
-        bottom: calc(76px + env(safe-area-inset-bottom));
+        right: calc(${ROVER_WIDGET_LAUNCHER_MOBILE_INSET_PX}px + env(safe-area-inset-right));
+        bottom: calc(${ROVER_WIDGET_LAUNCHER_MOBILE_INSET_PX + ROVER_WIDGET_LAUNCHER_MOBILE_SIZE_PX + ROVER_WIDGET_LAUNCHER_STACK_GAP_PX}px + env(safe-area-inset-bottom));
         max-width: 190px;
         padding: 8px 22px 8px 10px;
       }

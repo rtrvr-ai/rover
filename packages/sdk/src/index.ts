@@ -3,6 +3,11 @@ import { sanitizeRoverPageCaptureConfig } from '@rover/shared/lib/page/index.js'
 import type { PageConfig, RoverPageCaptureConfig, ToolOutput } from '@rover/shared/lib/types/index.js';
 import {
   mountWidget,
+  ROVER_WIDGET_LAUNCHER_DESKTOP_INSET_PX,
+  ROVER_WIDGET_LAUNCHER_DESKTOP_SIZE_PX,
+  ROVER_WIDGET_LAUNCHER_MOBILE_INSET_PX,
+  ROVER_WIDGET_LAUNCHER_MOBILE_SIZE_PX,
+  ROVER_WIDGET_MOBILE_BREAKPOINT_PX,
   type ConversationListItem,
   type RoverAskUserAnswerMeta,
   type RoverAskUserQuestion,
@@ -552,6 +557,8 @@ const ROVER_AGENT_DISCOVERY_CUE_TEXT = 'AI ready';
 const ROVER_AGENT_DISCOVERY_CUE_ARIA_LABEL = 'AI-ready path available on this page';
 const ROVER_AGENT_DISCOVERY_KEYBOARD_SHORTCUT = 'Alt+Shift+A';
 const ROVER_AGENT_DISCOVERY_CHANGE_EVENT = 'rover:agent-discovery-changed';
+const ROVER_AGENT_DISCOVERY_CUE_MIN_HEIGHT_PX = 28;
+const ROVER_AGENT_DISCOVERY_CUE_LAUNCHER_GAP_PX = 12;
 
 type TelemetryEventName = RoverEventName | RoverVoiceTelemetryEventName;
 
@@ -1300,13 +1307,17 @@ function ensureAgentDiscoveryInteractionListeners(): void {
 function ensureAgentDiscoveryCueStyle(): void {
   if (typeof document === 'undefined') return;
   if (document.getElementById(ROVER_AGENT_DISCOVERY_CUE_STYLE_ID)) return;
+  const desktopDockRight = `calc(${ROVER_WIDGET_LAUNCHER_DESKTOP_INSET_PX + ROVER_WIDGET_LAUNCHER_DESKTOP_SIZE_PX + ROVER_AGENT_DISCOVERY_CUE_LAUNCHER_GAP_PX}px + env(safe-area-inset-right))`;
+  const desktopDockBottom = `calc(${ROVER_WIDGET_LAUNCHER_DESKTOP_INSET_PX + Math.round((ROVER_WIDGET_LAUNCHER_DESKTOP_SIZE_PX - ROVER_AGENT_DISCOVERY_CUE_MIN_HEIGHT_PX) / 2)}px + env(safe-area-inset-bottom))`;
+  const mobileDockRight = `calc(${ROVER_WIDGET_LAUNCHER_MOBILE_INSET_PX + ROVER_WIDGET_LAUNCHER_MOBILE_SIZE_PX + ROVER_AGENT_DISCOVERY_CUE_LAUNCHER_GAP_PX}px + env(safe-area-inset-right))`;
+  const mobileDockBottom = `calc(${ROVER_WIDGET_LAUNCHER_MOBILE_INSET_PX + Math.round((ROVER_WIDGET_LAUNCHER_MOBILE_SIZE_PX - ROVER_AGENT_DISCOVERY_CUE_MIN_HEIGHT_PX) / 2)}px + env(safe-area-inset-bottom))`;
   const style = document.createElement('style');
   style.id = ROVER_AGENT_DISCOVERY_CUE_STYLE_ID;
   style.textContent = `
     #${ROVER_AGENT_DISCOVERY_CUE_ID} {
       position: fixed;
-      right: 24px;
-      bottom: 24px;
+      right: ${desktopDockRight};
+      bottom: ${desktopDockBottom};
       z-index: 2147483645;
       display: inline-flex;
       align-items: center;
@@ -1493,8 +1504,6 @@ function ensureAgentDiscoveryCueStyle(): void {
     }
     @media (max-width: 720px) {
       #${ROVER_AGENT_DISCOVERY_CUE_ID} {
-        right: 16px;
-        bottom: 16px;
         max-width: min(88px, calc(100vw - 32px));
       }
       #${ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID},
@@ -1507,6 +1516,12 @@ function ensureAgentDiscoveryCueStyle(): void {
       }
       #${ROVER_AGENT_DISCOVERY_LANDMARK_ID}[data-rover-debug="true"] {
         bottom: 88px;
+      }
+    }
+    @media (max-width: ${ROVER_WIDGET_MOBILE_BREAKPOINT_PX}px) {
+      #${ROVER_AGENT_DISCOVERY_CUE_ID} {
+        right: ${mobileDockRight};
+        bottom: ${mobileDockBottom};
       }
     }
   `;
