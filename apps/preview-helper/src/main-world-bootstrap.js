@@ -50,6 +50,20 @@
       muted: true,
     },
   };
+  if (state.ui && typeof state.ui === 'object') {
+    const voice = state.ui.voice;
+    if (voice && typeof voice === 'object') {
+      const nextVoice = {};
+      if (typeof voice.enabled === 'boolean') nextVoice.enabled = voice.enabled;
+      const language = String(voice.language || '').trim();
+      if (language) nextVoice.language = language;
+      const autoStopMs = Number(voice.autoStopMs);
+      if (Number.isFinite(autoStopMs)) nextVoice.autoStopMs = autoStopMs;
+      if (Object.keys(nextVoice).length > 0) {
+        bootConfig.ui.voice = nextVoice;
+      }
+    }
+  }
   if (publicKey) bootConfig.publicKey = publicKey;
   if (sessionToken) bootConfig.sessionToken = sessionToken;
   if (siteKeyId) bootConfig.siteKeyId = siteKeyId;

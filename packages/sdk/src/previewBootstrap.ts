@@ -3,6 +3,16 @@ export type RoverPreviewAttachLaunch = {
   attachToken: string;
 };
 
+export type RoverPreviewBootstrapVoiceConfig = {
+  enabled?: boolean;
+  language?: string;
+  autoStopMs?: number;
+};
+
+export type RoverPreviewBootstrapUiConfig = {
+  voice?: RoverPreviewBootstrapVoiceConfig;
+};
+
 export type RoverPreviewBootstrapConfig = {
   scriptUrl?: string;
   siteId: string;
@@ -19,6 +29,7 @@ export type RoverPreviewBootstrapConfig = {
   openOnInit?: boolean;
   mode?: 'safe' | 'full';
   allowActions?: boolean;
+  ui?: RoverPreviewBootstrapUiConfig;
   attachLaunch?: RoverPreviewAttachLaunch;
 };
 
@@ -26,6 +37,8 @@ export type RoverScriptAttributeSource = Pick<HTMLScriptElement, 'getAttribute'>
 
 const DEFAULT_EMBED_SCRIPT_URL = 'https://rover.rtrvr.ai/embed.js';
 const DEFAULT_AGENT_BASE = 'https://agent.rtrvr.ai';
+const VOICE_AUTO_STOP_MIN_MS = 800;
+const VOICE_AUTO_STOP_MAX_MS = 5000;
 
 function toStringValue(value: unknown): string {
   return String(value || '').trim();
@@ -63,11 +76,41 @@ function parseCsvList(value: string | null): string[] | undefined {
   return Array.from(new Set(items));
 }
 
+function parseIntegerAttr(value: string | null): number | undefined {
+  const parsed = Number(toStringValue(value));
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : undefined;
+}
+
+function normalizeVoiceConfig(value: RoverPreviewBootstrapVoiceConfig | undefined): RoverPreviewBootstrapVoiceConfig | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const voice: RoverPreviewBootstrapVoiceConfig = {};
+  if (typeof value.enabled === 'boolean') voice.enabled = value.enabled;
+  const language = toStringValue(value.language).replace(/[^a-zA-Z0-9-]/g, '').slice(0, 48);
+  if (language) voice.language = language;
+  const autoStopMs = Number(value.autoStopMs);
+  if (Number.isFinite(autoStopMs)) {
+    voice.autoStopMs = Math.max(VOICE_AUTO_STOP_MIN_MS, Math.min(VOICE_AUTO_STOP_MAX_MS, Math.trunc(autoStopMs)));
+  }
+  return Object.keys(voice).length ? voice : undefined;
+}
+
+function normalizeUiConfig(value: RoverPreviewBootstrapUiConfig | undefined): RoverPreviewBootstrapUiConfig | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const ui: RoverPreviewBootstrapUiConfig = {};
+  const voice = normalizeVoiceConfig(value.voice);
+  if (voice) ui.voice = voice;
+  return Object.keys(ui).length ? ui : undefined;
+}
+
 function normalizeBootstrapConfig(config: RoverPreviewBootstrapConfig): Required<Pick<RoverPreviewBootstrapConfig, 'scriptUrl'>> & RoverPreviewBootstrapConfig {
-  return {
+  const next: Required<Pick<RoverPreviewBootstrapConfig, 'scriptUrl'>> & RoverPreviewBootstrapConfig = {
     ...config,
     scriptUrl: toStringValue(config.scriptUrl) || DEFAULT_EMBED_SCRIPT_URL,
   };
+  const ui = normalizeUiConfig(config.ui);
+  if (ui) next.ui = ui;
+  else delete next.ui;
+  return next;
 }
 
 function buildBootstrapPayload(config: RoverPreviewBootstrapConfig): Record<string, unknown> {
@@ -88,6 +131,7 @@ function buildBootstrapPayload(config: RoverPreviewBootstrapConfig): Record<stri
   if (typeof normalized.openOnInit === 'boolean') payload.openOnInit = normalized.openOnInit;
   if (normalized.mode) payload.mode = normalized.mode;
   if (typeof normalized.allowActions === 'boolean') payload.allowActions = normalized.allowActions;
+  if (normalized.ui?.voice) payload.ui = { voice: normalized.ui.voice };
   return payload;
 }
 
@@ -173,6 +217,9 @@ export function createRoverScriptTagSnippet(config: RoverPreviewBootstrapConfig)
   if (typeof normalized.openOnInit === 'boolean') attrs.push(`data-open-on-init="${escapeHtmlAttr(String(normalized.openOnInit))}"`);
   if (normalized.mode) attrs.push(`data-mode="${escapeHtmlAttr(normalized.mode)}"`);
   if (typeof normalized.allowActions === 'boolean') attrs.push(`data-allow-actions="${escapeHtmlAttr(String(normalized.allowActions))}"`);
+  if (typeof normalized.ui?.voice?.enabled === 'boolean') attrs.push(`data-voice-enabled="${escapeHtmlAttr(String(normalized.ui.voice.enabled))}"`);
+  if (normalized.ui?.voice?.language) attrs.push(`data-voice-language="${escapeHtmlAttr(normalized.ui.voice.language)}"`);
+  if (typeof normalized.ui?.voice?.autoStopMs === 'number') attrs.push(`data-voice-auto-stop-ms="${escapeHtmlAttr(String(normalized.ui.voice.autoStopMs))}"`);
   const taskEndpoint = `${toStringValue(normalized.apiBase) || DEFAULT_AGENT_BASE}/v1/tasks`;
   const markerJson = escapeScriptJson(JSON.stringify({ task: taskEndpoint }));
   return [
@@ -237,6 +284,19 @@ export function readRoverScriptDataAttributes(
 
   const allowActions = parseBooleanAttr(scriptEl.getAttribute('data-allow-actions'));
   if (typeof allowActions === 'boolean') config.allowActions = allowActions;
+
+  const voiceEnabled = parseBooleanAttr(scriptEl.getAttribute('data-voice-enabled'));
+  const voiceLanguage = toStringValue(scriptEl.getAttribute('data-voice-language'));
+  const voiceAutoStopMs = parseIntegerAttr(scriptEl.getAttribute('data-voice-auto-stop-ms'));
+  if (typeof voiceEnabled === 'boolean' || voiceLanguage || typeof voiceAutoStopMs === 'number') {
+    config.ui = {
+      voice: {
+        ...(typeof voiceEnabled === 'boolean' ? { enabled: voiceEnabled } : {}),
+        ...(voiceLanguage ? { language: voiceLanguage } : {}),
+        ...(typeof voiceAutoStopMs === 'number' ? { autoStopMs: voiceAutoStopMs } : {}),
+      },
+    };
+  }
 
   return config;
 }
