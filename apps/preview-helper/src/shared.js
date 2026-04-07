@@ -6,6 +6,8 @@ export const HELPER_PAYLOAD_FRAGMENT_PARAM = 'rover_helper_payload';
 export const LEGACY_HELPER_CONFIG_FRAGMENT_PARAM = 'rover_helper_config';
 const DEFAULT_EMBED_SCRIPT_URL = 'https://rover.rtrvr.ai/embed.js';
 const DEFAULT_API_BASE = 'https://agent.rtrvr.ai';
+const VOICE_AUTO_STOP_MIN_MS = 800;
+const VOICE_AUTO_STOP_MAX_MS = 5000;
 
 export function readCurrentTabId(tabId) {
   const value = Number(tabId);
@@ -27,6 +29,38 @@ export function normalizeAllowedDomains(value) {
   const raw = String(value || '').trim();
   if (!raw) return [];
   return raw.split(',').map(item => item.trim()).filter(Boolean);
+}
+
+function normalizeVoiceConfig(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value;
+  const voice = {};
+  if (typeof raw.enabled === 'boolean') {
+    voice.enabled = raw.enabled;
+  }
+  const language = String(raw.language || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9-]/g, '')
+    .slice(0, 48);
+  if (language) {
+    voice.language = language;
+  }
+  const autoStopMs = Number(raw.autoStopMs);
+  if (Number.isFinite(autoStopMs)) {
+    voice.autoStopMs = Math.max(VOICE_AUTO_STOP_MIN_MS, Math.min(VOICE_AUTO_STOP_MAX_MS, Math.trunc(autoStopMs)));
+  }
+  return Object.keys(voice).length ? voice : undefined;
+}
+
+function normalizeUiConfig(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  const raw = value;
+  const ui = {};
+  const voice = normalizeVoiceConfig(raw.voice);
+  if (voice) {
+    ui.voice = voice;
+  }
+  return Object.keys(ui).length ? ui : undefined;
 }
 
 function encodeBase64Url(bytes) {
@@ -122,6 +156,7 @@ export function normalizeConfig(input = {}) {
   const allowActions = typeof input.allowActions === 'boolean' ? input.allowActions : undefined;
   const previewLabel = String(input.previewLabel || 'Rover Preview').trim();
   const configRefreshedAt = Number(input.configRefreshedAt);
+  const ui = normalizeUiConfig(input.ui);
 
   return {
     previewId,
@@ -144,6 +179,7 @@ export function normalizeConfig(input = {}) {
     openOnInit,
     mode,
     allowActions,
+    ui,
     previewLabel,
     configRefreshedAt: Number.isFinite(configRefreshedAt) ? configRefreshedAt : 0,
   };
@@ -252,6 +288,7 @@ export function serializeConfigForSeed(config) {
     openOnInit: config.openOnInit,
     mode: config.mode,
     allowActions: config.allowActions,
+    ui: config.ui,
     previewLabel: config.previewLabel,
     targetHost: config.targetHost,
     bootstrapId: config.bootstrapId,

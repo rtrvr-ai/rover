@@ -21,6 +21,13 @@ test('normalizeConfig keeps Workspace publicKey config fields', () => {
     externalNavigationPolicy: 'allow',
     mode: 'full',
     allowActions: true,
+    ui: {
+      voice: {
+        enabled: true,
+        language: 'en-US',
+        autoStopMs: 2800,
+      },
+    },
   });
 
   assert.equal(config.siteId, 'site_123');
@@ -32,6 +39,13 @@ test('normalizeConfig keeps Workspace publicKey config fields', () => {
   assert.equal(config.externalNavigationPolicy, 'allow');
   assert.equal(config.mode, 'full');
   assert.equal(config.allowActions, true);
+  assert.deepEqual(config.ui, {
+    voice: {
+      enabled: true,
+      language: 'en-US',
+      autoStopMs: 2800,
+    },
+  });
 });
 
 test('isHostAllowed allows any host with wildcard *', () => {
