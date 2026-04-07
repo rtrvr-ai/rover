@@ -4,14 +4,30 @@ import { createRoverAgentDiscoverySnapshot } from '@rover/shared/lib/agent-disco
 import type { RoverAgentDiscoverySnapshot } from '@rover/shared/lib/types/index.js';
 
 export const DEFAULT_AGENT_CARD_PATH = '/.well-known/agent-card.json';
+export const DEFAULT_ROVER_SITE_PATH = '/.well-known/rover-site.json';
 export const DEFAULT_LLMS_PATH = '/llms.txt';
 export const ROVER_WEBMCP_DISCOVERY_GLOBAL = '__ROVER_WEBMCP_TOOL_DEFS__';
+export const ROVER_DISCOVERY_ACTION_SHEET_MAX_ACTIONS = 3;
 
 type JsonSchema = Record<string, any>;
 
 export type RoverDiscoveryExecutionPreference = 'auto' | 'browser' | 'cloud';
+export type RoverDiscoverySurfaceMode = 'silent' | 'beacon' | 'integrated' | 'debug';
+export type RoverDiscoverySurfaceBranding = 'site' | 'co' | 'rover';
+export type RoverDiscoveryHostSurface = 'auto' | 'existing-assistant' | 'floating-corner' | 'inline-primary';
+export type RoverDiscoveryActionReveal = 'click' | 'focus' | 'keyboard' | 'agent-handshake';
+export type RoverCapabilityResultMode = 'text' | 'markdown' | 'json' | 'observation' | 'artifacts';
 export type RoverSkillSideEffect = 'none' | 'read' | 'write' | 'transactional';
 export type RoverSkillInterface = 'task' | 'shortcut' | 'client_tool' | 'webmcp';
+
+export type RoverDiscoverySurfacePolicy = {
+  mode?: RoverDiscoverySurfaceMode;
+  branding?: RoverDiscoverySurfaceBranding;
+  hostSurface?: RoverDiscoveryHostSurface;
+  actionReveal?: RoverDiscoveryActionReveal;
+  beaconLabel?: string;
+  agentModeEntryHints?: string[];
+};
 
 export type RoverToolAnnotations = {
   category?: string;
@@ -64,6 +80,88 @@ export type RoverPublicSkillDefinition = {
   };
 };
 
+export type RoverCapabilityRecord = {
+  capabilityId: string;
+  version: string;
+  label: string;
+  description: string;
+  inputSchema?: JsonSchema;
+  outputSchema?: JsonSchema;
+  sideEffect?: RoverSkillSideEffect;
+  requiresConfirmation?: boolean;
+  preferredInterface?: RoverSkillInterface;
+  allowedExecutionModes: RoverDiscoveryExecutionPreference[];
+  resultModes: RoverCapabilityResultMode[];
+  pageScope?: string[];
+  analyticsTags?: string[];
+  rover?: RoverPublicSkillDefinition['rover'];
+};
+
+export type RoverPageDefinition = {
+  pageId: string;
+  route?: string;
+  label?: string;
+  capabilityIds?: string[];
+  entityHints?: string[];
+  formHints?: string[];
+  visibleCueLabel?: string;
+  beaconLabel?: string;
+  discoveryMode?: RoverDiscoverySurfaceMode;
+  hostSurface?: RoverDiscoveryHostSurface;
+  actionReveal?: RoverDiscoveryActionReveal;
+  agentModeEntryHints?: string[];
+  capabilitySummary?: string[];
+};
+
+export type RoverSiteProfile = {
+  identity: {
+    siteId?: string;
+    name: string;
+    description: string;
+    siteUrl: string;
+    version: string;
+  };
+  actions: RoverCapabilityRecord[];
+  pages: RoverPageDefinition[];
+  policies: {
+    preferredExecution: RoverDiscoveryExecutionPreference;
+    promptLaunchEnabled: boolean;
+    shortcutLaunchEnabled: boolean;
+    cloudBrowserAllowed: boolean;
+    delegatedHandoffs: boolean;
+  };
+  auth: {
+    taskEndpoint: string;
+    workflowEndpoint: string;
+    acceptsHttpMessageSignatures: boolean;
+    supportsUnsignedSelfReportedIdentity: boolean;
+  };
+  analytics: {
+    layer: 'roverbook';
+    taskIdField: 'taskId';
+    workflowIdField: 'workflowId';
+    capabilityIdField: 'capabilityId';
+    pageIdField: 'pageId';
+  };
+  currentPage?: RoverPageDefinition;
+  display: {
+    mode: RoverDiscoverySurfaceMode;
+    branding: RoverDiscoverySurfaceBranding;
+    hostSurface: RoverDiscoveryHostSurface;
+    actionReveal: RoverDiscoveryActionReveal;
+    beaconLabel?: string;
+    agentModeEntryHints: string[];
+    compactActionMaxActions: number;
+  };
+  artifacts: {
+    agentCardUrl: string;
+    roverSiteUrl: string;
+    llmsUrl?: string;
+    siteUrl: string;
+  };
+  interfaces?: RoverAgentCard['interfaces'];
+};
+
 export type RoverAgentCard = {
   name: string;
   description: string;
@@ -92,6 +190,7 @@ export type RoverAgentCard = {
       taskEndpoint: string;
       workflowEndpoint: string;
       serviceDescUrl: string;
+      roverSiteUrl: string;
       llmsUrl?: string;
       preferredExecution: RoverDiscoveryExecutionPreference;
       promptLaunchEnabled: boolean;
@@ -99,6 +198,18 @@ export type RoverAgentCard = {
       cloudBrowserAllowed: boolean;
       delegatedHandoffs: boolean;
       instructions: string[];
+      capabilitiesGraph: RoverCapabilityRecord[];
+      pages: RoverPageDefinition[];
+      currentPage?: RoverPageDefinition;
+      discoverySurface: {
+        mode: RoverDiscoverySurfaceMode;
+        branding: RoverDiscoverySurfaceBranding;
+        hostSurface: RoverDiscoveryHostSurface;
+        actionReveal: RoverDiscoveryActionReveal;
+        beaconLabel?: string;
+        agentModeEntryHints: string[];
+        compactActionMaxActions: number;
+      };
       shortcuts: Array<{
         id: string;
         label: string;
@@ -115,6 +226,7 @@ export type RoverAgentCard = {
 };
 
 export type RoverAgentDiscoveryConfig = {
+  enabled?: boolean;
   siteUrl: string;
   siteId?: string;
   apiBase?: string;
@@ -122,13 +234,19 @@ export type RoverAgentDiscoveryConfig = {
   description?: string;
   version?: string;
   agentCardUrl?: string;
+  roverSiteUrl?: string;
   llmsUrl?: string;
   visibleCue?: boolean;
+  discoverySurface?: RoverDiscoverySurfacePolicy;
+  hostSurfaceSelector?: string;
   preferExecution?: RoverDiscoveryExecutionPreference;
   shortcuts?: RoverShortcut[];
   tools?: RoverAgentDiscoveryToolDefinition[];
   webmcpTools?: RoverAgentDiscoveryToolDefinition[];
   additionalSkills?: RoverPublicSkillDefinition[];
+  capabilities?: RoverCapabilityRecord[];
+  pages?: RoverPageDefinition[];
+  pageContext?: Omit<RoverPageDefinition, 'capabilityIds'> & { capabilityIds?: string[] };
   aiAccess?: {
     enabled?: boolean;
     allowPromptLaunch?: boolean;
@@ -220,6 +338,279 @@ function normalizeSiteUrl(siteUrl: string): string {
   } catch {
     return text(siteUrl) || 'https://example.com/';
   }
+}
+
+function normalizeRoutePath(value: unknown): string | undefined {
+  const raw = text(value, 512);
+  if (!raw) return undefined;
+  if (raw === '*' || raw === '/*') return '*';
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      return new URL(raw).pathname || '/';
+    } catch {
+      return undefined;
+    }
+  }
+  return raw.startsWith('/') ? raw : `/${raw}`;
+}
+
+function normalizeResultModes(input: unknown): RoverCapabilityResultMode[] {
+  if (!Array.isArray(input)) return [];
+  const out: RoverCapabilityResultMode[] = [];
+  const seen = new Set<string>();
+  for (const value of input) {
+    const mode =
+      value === 'text'
+      || value === 'markdown'
+      || value === 'json'
+      || value === 'observation'
+      || value === 'artifacts'
+        ? value
+        : undefined;
+    if (!mode || seen.has(mode)) continue;
+    seen.add(mode);
+    out.push(mode);
+  }
+  return out;
+}
+
+type ResolvedDiscoverySurfacePolicy = {
+  mode: RoverDiscoverySurfaceMode;
+  branding: RoverDiscoverySurfaceBranding;
+  hostSurface: RoverDiscoveryHostSurface;
+  actionReveal: RoverDiscoveryActionReveal;
+  beaconLabel?: string;
+  agentModeEntryHints: string[];
+};
+
+function normalizeDiscoveryMode(
+  value: unknown,
+  fallback: RoverDiscoverySurfaceMode = 'beacon',
+): RoverDiscoverySurfaceMode {
+  return value === 'silent' || value === 'beacon' || value === 'integrated' || value === 'debug'
+    ? value
+    : fallback;
+}
+
+function normalizeDiscoveryBranding(
+  value: unknown,
+  fallback: RoverDiscoverySurfaceBranding = 'site',
+): RoverDiscoverySurfaceBranding {
+  return value === 'site' || value === 'co' || value === 'rover'
+    ? value
+    : fallback;
+}
+
+function normalizeHostSurface(
+  value: unknown,
+  fallback: RoverDiscoveryHostSurface = 'auto',
+): RoverDiscoveryHostSurface {
+  return value === 'auto'
+    || value === 'existing-assistant'
+    || value === 'floating-corner'
+    || value === 'inline-primary'
+    ? value
+    : fallback;
+}
+
+function normalizeActionReveal(
+  value: unknown,
+  fallback: RoverDiscoveryActionReveal = 'click',
+): RoverDiscoveryActionReveal {
+  return value === 'click'
+    || value === 'focus'
+    || value === 'keyboard'
+    || value === 'agent-handshake'
+    ? value
+    : fallback;
+}
+
+function defaultAgentModeEntryHints(
+  policy: Pick<ResolvedDiscoverySurfacePolicy, 'hostSurface' | 'mode'>,
+): string[] {
+  if (policy.mode === 'silent') {
+    return [
+      'Read rover-site.json, the page manifest, or the well-known agent card before falling back to raw DOM guesses.',
+    ];
+  }
+  if (policy.hostSurface === 'existing-assistant' || policy.mode === 'integrated') {
+    return [
+      'Use the site assistant or chat entrypoint first when it is present on the page.',
+      'Prefer Rover task and shortcut surfaces over selector or screenshot guessing once the assistant surface is active.',
+    ];
+  }
+  return [
+    'Use the page beacon or task endpoint before attempting generic DOM automation.',
+    'When Rover is already active, prefer the current-page actions over screenshot loops.',
+  ];
+}
+
+function resolveDiscoverySurfacePolicy(config: RoverAgentDiscoveryConfig): ResolvedDiscoverySurfacePolicy {
+  const input = config.discoverySurface || {};
+  const mode = normalizeDiscoveryMode(
+    input.mode,
+    config.visibleCue === false ? 'silent' : 'beacon',
+  );
+  const hostSurface = normalizeHostSurface(input.hostSurface, 'auto');
+  const actionReveal = normalizeActionReveal(input.actionReveal, 'click');
+  const beaconLabel = text(
+    input.beaconLabel
+    || config.pageContext?.beaconLabel
+    || config.pageContext?.visibleCueLabel,
+    180,
+  ) || undefined;
+  const seed = {
+    mode,
+    branding: normalizeDiscoveryBranding(input.branding, 'site'),
+    hostSurface,
+    actionReveal,
+    beaconLabel,
+    agentModeEntryHints: uniqueStrings(input.agentModeEntryHints, { max: 8, maxLen: 240 }),
+  };
+  return {
+    ...seed,
+    agentModeEntryHints: seed.agentModeEntryHints.length ? seed.agentModeEntryHints : defaultAgentModeEntryHints(seed),
+  };
+}
+
+export function sanitizeRoverAgentDiscoveryRuntimeConfig(raw: unknown): RoverAgentDiscoveryRuntimeConfig | undefined {
+  const input = asObject<Record<string, unknown>>(raw);
+  if (!input) return undefined;
+  const surfaceInput = asObject<Record<string, unknown>>(input.discoverySurface);
+  const discoverySurface: RoverDiscoverySurfacePolicy = {};
+  if (surfaceInput) {
+    const mode = normalizeDiscoveryMode(surfaceInput.mode, 'beacon');
+    if (surfaceInput.mode === 'silent' || surfaceInput.mode === 'beacon' || surfaceInput.mode === 'integrated' || surfaceInput.mode === 'debug') {
+      discoverySurface.mode = mode;
+    }
+    if (surfaceInput.branding === 'site' || surfaceInput.branding === 'co' || surfaceInput.branding === 'rover') {
+      discoverySurface.branding = surfaceInput.branding;
+    }
+    if (
+      surfaceInput.hostSurface === 'auto'
+      || surfaceInput.hostSurface === 'existing-assistant'
+      || surfaceInput.hostSurface === 'floating-corner'
+      || surfaceInput.hostSurface === 'inline-primary'
+    ) {
+      discoverySurface.hostSurface = surfaceInput.hostSurface;
+    }
+    if (
+      surfaceInput.actionReveal === 'click'
+      || surfaceInput.actionReveal === 'focus'
+      || surfaceInput.actionReveal === 'keyboard'
+      || surfaceInput.actionReveal === 'agent-handshake'
+    ) {
+      discoverySurface.actionReveal = surfaceInput.actionReveal;
+    }
+    const beaconLabel = text(
+      surfaceInput.beaconLabel
+      || surfaceInput.visibleCueLabel,
+      180,
+    ) || undefined;
+    if (beaconLabel) discoverySurface.beaconLabel = beaconLabel;
+    const agentModeEntryHints = uniqueStrings(surfaceInput.agentModeEntryHints, { max: 8, maxLen: 240 });
+    if (agentModeEntryHints.length > 0) discoverySurface.agentModeEntryHints = agentModeEntryHints;
+  }
+  const next: RoverAgentDiscoveryRuntimeConfig = {};
+  if (typeof input.enabled === 'boolean') next.enabled = input.enabled;
+  else if (typeof input.visibleCue === 'boolean') next.enabled = input.visibleCue;
+  if (typeof input.siteUrl === 'string' && text(input.siteUrl)) next.siteUrl = text(input.siteUrl);
+  if (typeof input.siteId === 'string' && text(input.siteId, 160)) next.siteId = text(input.siteId, 160);
+  if (typeof input.apiBase === 'string' && text(input.apiBase, 240)) next.apiBase = text(input.apiBase, 240);
+  if (typeof input.siteName === 'string' && text(input.siteName, 160)) next.siteName = text(input.siteName, 160);
+  if (typeof input.description === 'string' && text(input.description, 400)) next.description = text(input.description, 400);
+  if (typeof input.version === 'string' && text(input.version, 120)) next.version = text(input.version, 120);
+  if (typeof input.agentCardUrl === 'string' && text(input.agentCardUrl, 240)) next.agentCardUrl = text(input.agentCardUrl, 240);
+  if (typeof input.roverSiteUrl === 'string' && text(input.roverSiteUrl, 240)) next.roverSiteUrl = text(input.roverSiteUrl, 240);
+  if (typeof input.llmsUrl === 'string' && text(input.llmsUrl, 240)) next.llmsUrl = text(input.llmsUrl, 240);
+  if (typeof input.visibleCue === 'boolean') next.visibleCue = input.visibleCue;
+  if (typeof input.hostSurfaceSelector === 'string' && text(input.hostSurfaceSelector, 240)) {
+    next.hostSurfaceSelector = text(input.hostSurfaceSelector, 240);
+  }
+  if (input.preferExecution === 'auto' || input.preferExecution === 'browser' || input.preferExecution === 'cloud') {
+    next.preferExecution = input.preferExecution;
+  }
+  if (Object.keys(discoverySurface).length > 0) next.discoverySurface = discoverySurface;
+  return Object.keys(next).length ? next : undefined;
+}
+
+function defaultAllowedExecutionModes(preferred: RoverDiscoveryExecutionPreference): RoverDiscoveryExecutionPreference[] {
+  if (preferred === 'browser') return ['browser'];
+  if (preferred === 'cloud') return ['cloud'];
+  return ['auto', 'browser', 'cloud'];
+}
+
+function normalizeCapabilityRecord(
+  value: unknown,
+  defaults: {
+    version: string;
+    allowedExecutionModes: RoverDiscoveryExecutionPreference[];
+    resultModes: RoverCapabilityResultMode[];
+  },
+): RoverCapabilityRecord | null {
+  const capability = asObject<Record<string, any>>(value);
+  if (!capability) return null;
+  const capabilityId = text(capability.capabilityId || capability.id, 120);
+  const label = text(capability.label || capability.name, 180);
+  const description = text(capability.description, 480);
+  if (!capabilityId || !label || !description) return null;
+  const allowedExecutionModes = Array.isArray(capability.allowedExecutionModes)
+    ? capability.allowedExecutionModes.filter((mode): mode is RoverDiscoveryExecutionPreference => mode === 'auto' || mode === 'browser' || mode === 'cloud')
+    : [];
+  const resultModes = normalizeResultModes(capability.resultModes);
+  return {
+    capabilityId,
+    version: text(capability.version, 80) || defaults.version,
+    label,
+    description,
+    inputSchema: normalizeSchema(capability.inputSchema),
+    outputSchema: normalizeSchema(capability.outputSchema),
+    sideEffect:
+      capability.sideEffect === 'none'
+      || capability.sideEffect === 'read'
+      || capability.sideEffect === 'write'
+      || capability.sideEffect === 'transactional'
+        ? capability.sideEffect
+        : undefined,
+    requiresConfirmation: typeof capability.requiresConfirmation === 'boolean' ? capability.requiresConfirmation : undefined,
+    preferredInterface: normalizeAnnotations({ preferredInterface: capability.preferredInterface }).preferredInterface,
+    allowedExecutionModes: allowedExecutionModes.length ? allowedExecutionModes : defaults.allowedExecutionModes,
+    resultModes: resultModes.length ? resultModes : defaults.resultModes,
+    pageScope: uniqueStrings(capability.pageScope, { max: 24, maxLen: 80 }),
+    analyticsTags: uniqueStrings(capability.analyticsTags, { max: 24, maxLen: 64 }),
+    rover: asObject<Record<string, any>>(capability.rover) ? { ...(capability.rover as RoverPublicSkillDefinition['rover']) } : undefined,
+  };
+}
+
+function normalizePageDefinition(
+  value: unknown,
+  defaults?: Partial<ResolvedDiscoverySurfacePolicy>,
+): RoverPageDefinition | null {
+  const page = asObject<Record<string, any>>(value);
+  if (!page) return null;
+  const pageId = text(page.pageId || page.id, 120);
+  if (!pageId) return null;
+  const beaconLabel = text(page.beaconLabel || page.visibleCueLabel || defaults?.beaconLabel, 180) || undefined;
+  return {
+    pageId,
+    route: normalizeRoutePath(page.route),
+    label: text(page.label, 180) || undefined,
+    capabilityIds: uniqueStrings(page.capabilityIds, { max: 48, maxLen: 120 }),
+    entityHints: uniqueStrings(page.entityHints, { max: 24, maxLen: 120 }),
+    formHints: uniqueStrings(page.formHints, { max: 24, maxLen: 120 }),
+    visibleCueLabel: beaconLabel,
+    beaconLabel,
+    discoveryMode: normalizeDiscoveryMode(page.discoveryMode, defaults?.mode || 'beacon'),
+    hostSurface: normalizeHostSurface(page.hostSurface, defaults?.hostSurface || 'auto'),
+    actionReveal: normalizeActionReveal(page.actionReveal, defaults?.actionReveal || 'click'),
+    agentModeEntryHints: uniqueStrings(
+      Array.isArray(page.agentModeEntryHints) && page.agentModeEntryHints.length
+        ? page.agentModeEntryHints
+        : defaults?.agentModeEntryHints,
+      { max: 8, maxLen: 240 },
+    ),
+    capabilitySummary: uniqueStrings(page.capabilitySummary, { max: 12, maxLen: 180 }),
+  };
 }
 
 function buildTaskEndpoint(apiBase?: string): string {
@@ -494,6 +885,201 @@ function dedupeSkills(skills: RoverPublicSkillDefinition[]): RoverPublicSkillDef
   return out;
 }
 
+function dedupeCapabilities(capabilities: RoverCapabilityRecord[]): RoverCapabilityRecord[] {
+  const out: RoverCapabilityRecord[] = [];
+  const seen = new Set<string>();
+  for (const capability of capabilities) {
+    const key = text(capability.capabilityId, 120);
+    if (!key || seen.has(key.toLowerCase())) continue;
+    seen.add(key.toLowerCase());
+    out.push({
+      ...capability,
+      capabilityId: key,
+      pageScope: uniqueStrings(capability.pageScope, { max: 24, maxLen: 80 }),
+      analyticsTags: uniqueStrings(capability.analyticsTags, { max: 24, maxLen: 64 }),
+      allowedExecutionModes: Array.from(new Set(capability.allowedExecutionModes || [])),
+      resultModes: Array.from(new Set(capability.resultModes || [])),
+    });
+  }
+  return out;
+}
+
+function dedupePages(
+  pages: RoverPageDefinition[],
+  defaults?: Partial<ResolvedDiscoverySurfacePolicy>,
+): RoverPageDefinition[] {
+  const out: RoverPageDefinition[] = [];
+  const seen = new Set<string>();
+  for (const page of pages) {
+    const pageId = text(page.pageId, 120);
+    if (!pageId || seen.has(pageId.toLowerCase())) continue;
+    seen.add(pageId.toLowerCase());
+    const beaconLabel = text(page.beaconLabel || page.visibleCueLabel || defaults?.beaconLabel, 180) || undefined;
+    out.push({
+      pageId,
+      route: normalizeRoutePath(page.route),
+      label: text(page.label, 180) || undefined,
+      capabilityIds: uniqueStrings(page.capabilityIds, { max: 48, maxLen: 120 }),
+      entityHints: uniqueStrings(page.entityHints, { max: 24, maxLen: 120 }),
+      formHints: uniqueStrings(page.formHints, { max: 24, maxLen: 120 }),
+      visibleCueLabel: beaconLabel,
+      beaconLabel,
+      discoveryMode: normalizeDiscoveryMode(page.discoveryMode, defaults?.mode || 'beacon'),
+      hostSurface: normalizeHostSurface(page.hostSurface, defaults?.hostSurface || 'auto'),
+      actionReveal: normalizeActionReveal(page.actionReveal, defaults?.actionReveal || 'click'),
+      agentModeEntryHints: uniqueStrings(
+        Array.isArray(page.agentModeEntryHints) && page.agentModeEntryHints.length
+          ? page.agentModeEntryHints
+          : defaults?.agentModeEntryHints,
+        { max: 8, maxLen: 240 },
+      ),
+      capabilitySummary: uniqueStrings(page.capabilitySummary, { max: 12, maxLen: 180 }),
+    });
+  }
+  return out;
+}
+
+function applyPageCapabilitySummary(
+  page: RoverPageDefinition,
+  capabilities: RoverCapabilityRecord[],
+  defaults: ResolvedDiscoverySurfacePolicy,
+): RoverPageDefinition {
+  const capabilityIds = uniqueStrings(page.capabilityIds, { max: 48, maxLen: 120 });
+  const capabilitySummary = uniqueStrings(
+    Array.isArray(page.capabilitySummary) && page.capabilitySummary.length
+      ? page.capabilitySummary
+      : capabilityIds
+          .map(capabilityId => capabilities.find(capability => capability.capabilityId === capabilityId)?.label)
+          .filter((value): value is string => !!value),
+    { max: 12, maxLen: 180 },
+  );
+  const beaconLabel = text(page.beaconLabel || page.visibleCueLabel || defaults.beaconLabel, 180) || undefined;
+  const agentModeEntryHints = uniqueStrings(
+    Array.isArray(page.agentModeEntryHints) && page.agentModeEntryHints.length
+      ? page.agentModeEntryHints
+      : defaults.agentModeEntryHints,
+    { max: 8, maxLen: 240 },
+  );
+  return {
+    ...page,
+    capabilityIds,
+    visibleCueLabel: beaconLabel,
+    beaconLabel,
+    discoveryMode: normalizeDiscoveryMode(page.discoveryMode, defaults.mode),
+    hostSurface: normalizeHostSurface(page.hostSurface, defaults.hostSurface),
+    actionReveal: normalizeActionReveal(page.actionReveal, defaults.actionReveal),
+    agentModeEntryHints,
+    capabilitySummary,
+  };
+}
+
+function buildCapabilityFromSkill(
+  skill: RoverPublicSkillDefinition,
+  config: RoverAgentDiscoveryConfig,
+): RoverCapabilityRecord {
+  const preferredExecution = config.preferExecution || 'auto';
+  return {
+    capabilityId: skill.id,
+    version: text(config.version, 80) || '1.0.0',
+    label: skill.name,
+    description: skill.description,
+    inputSchema: normalizeSchema(skill.inputSchema),
+    outputSchema: normalizeSchema(skill.outputSchema) || { ...DEFAULT_SKILL_OUTPUT_SCHEMA },
+    sideEffect: skill.sideEffect,
+    requiresConfirmation: skill.requiresConfirmation,
+    preferredInterface: skill.preferredInterface,
+    allowedExecutionModes: defaultAllowedExecutionModes(preferredExecution),
+    resultModes: ['text', 'json', 'observation', 'artifacts'],
+    pageScope: uniqueStrings(skill.rover?.shortcutId ? ['site', skill.rover.shortcutId] : ['site'], { max: 8, maxLen: 80 }),
+    analyticsTags: uniqueStrings(skill.tags, { max: 24, maxLen: 64 }),
+    rover: skill.rover ? { ...skill.rover } : undefined,
+  };
+}
+
+function resolveCurrentPageDefinition(
+  config: RoverAgentDiscoveryConfig,
+  capabilities: RoverCapabilityRecord[],
+  discoverySurface: ResolvedDiscoverySurfacePolicy,
+): RoverPageDefinition {
+  const siteUrl = normalizeSiteUrl(config.siteUrl);
+  let pathname = '/';
+  try {
+    pathname = new URL(siteUrl).pathname || '/';
+  } catch {
+    pathname = '/';
+  }
+  const normalizedCurrent = normalizePageDefinition({
+    pageId:
+      config.pageContext?.pageId
+      || pathname.replace(/^\/+|\/+$/g, '').replace(/[^a-z0-9/_-]+/gi, '-').replace(/\//g, '__')
+      || 'home',
+    route: config.pageContext?.route || pathname,
+    label: config.pageContext?.label,
+    capabilityIds: config.pageContext?.capabilityIds,
+    entityHints: config.pageContext?.entityHints,
+    formHints: config.pageContext?.formHints,
+    visibleCueLabel: config.pageContext?.visibleCueLabel,
+    beaconLabel: config.pageContext?.beaconLabel,
+    discoveryMode: config.pageContext?.discoveryMode,
+    hostSurface: config.pageContext?.hostSurface,
+    actionReveal: config.pageContext?.actionReveal,
+    agentModeEntryHints: config.pageContext?.agentModeEntryHints,
+    capabilitySummary: config.pageContext?.capabilitySummary,
+  }, discoverySurface);
+  return normalizedCurrent || {
+    pageId: 'home',
+    route: pathname,
+    label: undefined,
+    capabilityIds: capabilities.slice(0, 12).map(capability => capability.capabilityId),
+    entityHints: [],
+    formHints: [],
+    visibleCueLabel: discoverySurface.beaconLabel,
+    beaconLabel: discoverySurface.beaconLabel,
+    discoveryMode: discoverySurface.mode,
+    hostSurface: discoverySurface.hostSurface,
+    actionReveal: discoverySurface.actionReveal,
+    agentModeEntryHints: discoverySurface.agentModeEntryHints,
+    capabilitySummary: capabilities.slice(0, 6).map(capability => capability.label),
+  };
+}
+
+function buildCapabilityGraph(
+  config: RoverAgentDiscoveryConfig,
+  skills: RoverPublicSkillDefinition[],
+  discoverySurface: ResolvedDiscoverySurfacePolicy,
+): { capabilities: RoverCapabilityRecord[]; pages: RoverPageDefinition[]; currentPage: RoverPageDefinition } {
+  const derivedCapabilities = skills.map(skill => buildCapabilityFromSkill(skill, config));
+  const explicitCapabilities = (config.capabilities || [])
+    .map(capability => normalizeCapabilityRecord(capability, {
+      version: text(config.version, 80) || '1.0.0',
+      allowedExecutionModes: defaultAllowedExecutionModes(config.preferExecution || 'auto'),
+      resultModes: ['text', 'json', 'observation', 'artifacts'],
+    }))
+    .filter((capability): capability is RoverCapabilityRecord => !!capability);
+  const capabilities = dedupeCapabilities([
+    ...explicitCapabilities,
+    ...derivedCapabilities,
+  ]);
+  const currentPage = resolveCurrentPageDefinition(config, capabilities, discoverySurface);
+  const explicitPages = (config.pages || [])
+    .map(page => normalizePageDefinition(page, discoverySurface))
+    .filter((page): page is RoverPageDefinition => !!page);
+  if (!currentPage.capabilityIds?.length) {
+    currentPage.capabilityIds = capabilities.slice(0, 12).map(capability => capability.capabilityId);
+  }
+  const pages = dedupePages([
+    ...explicitPages,
+    currentPage,
+  ], discoverySurface).map(page => applyPageCapabilitySummary(page, capabilities, discoverySurface));
+  const resolvedCurrentPage = pages.find(page => page.pageId === currentPage.pageId)
+    || applyPageCapabilitySummary(currentPage, capabilities, discoverySurface);
+  return {
+    capabilities,
+    pages,
+    currentPage: resolvedCurrentPage,
+  };
+}
+
 function escapeHtmlAttr(value: string): string {
   return value
     .replace(/&/g, '&amp;')
@@ -518,6 +1104,7 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
   const taskEndpoint = buildTaskEndpoint(config.apiBase);
   const workflowEndpoint = buildWorkflowEndpoint(config.apiBase);
   const serviceDescUrl = text(config.agentCardUrl) || DEFAULT_AGENT_CARD_PATH;
+  const roverSiteUrl = text(config.roverSiteUrl) || DEFAULT_ROVER_SITE_PATH;
   const llmsUrl = text(config.llmsUrl);
   const promptLaunchEnabled = config.aiAccess?.enabled !== false && config.aiAccess?.allowPromptLaunch !== false;
   const shortcutLaunchEnabled = config.aiAccess?.enabled !== false && config.aiAccess?.allowShortcutLaunch !== false;
@@ -538,6 +1125,27 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
     ...toolSkills,
     ...webmcpSkills,
   ]);
+  const discoverySurface = resolveDiscoverySurfacePolicy(config);
+  const capabilityGraph = buildCapabilityGraph(config, skills, discoverySurface);
+  const effectiveDiscoverySurface = {
+    mode: normalizeDiscoveryMode(capabilityGraph.currentPage.discoveryMode, discoverySurface.mode),
+    branding: discoverySurface.branding,
+    hostSurface: normalizeHostSurface(capabilityGraph.currentPage.hostSurface, discoverySurface.hostSurface),
+    actionReveal: normalizeActionReveal(capabilityGraph.currentPage.actionReveal, discoverySurface.actionReveal),
+    beaconLabel: text(
+      capabilityGraph.currentPage.beaconLabel
+      || capabilityGraph.currentPage.visibleCueLabel
+      || discoverySurface.beaconLabel,
+      180,
+    ) || undefined,
+    agentModeEntryHints: uniqueStrings(
+      capabilityGraph.currentPage.agentModeEntryHints?.length
+        ? capabilityGraph.currentPage.agentModeEntryHints
+        : discoverySurface.agentModeEntryHints,
+      { max: 8, maxLen: 240 },
+    ),
+    compactActionMaxActions: ROVER_DISCOVERY_ACTION_SHEET_MAX_ACTIONS,
+  };
   const siteName =
     text(config.siteName, 120)
     || (() => {
@@ -604,6 +1212,7 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
         taskEndpoint,
         workflowEndpoint,
         serviceDescUrl,
+        roverSiteUrl,
         ...(llmsUrl ? { llmsUrl } : {}),
         preferredExecution: config.preferExecution || 'auto',
         promptLaunchEnabled,
@@ -615,6 +1224,10 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
           'Use POST /v1/tasks when you need structured progress, continuation input, or a stable final result channel.',
           'Fall back to generic DOM automation only when no matching Rover shortcut or explicit tool exists for the requested outcome.',
         ],
+        capabilitiesGraph: capabilityGraph.capabilities,
+        pages: capabilityGraph.pages,
+        currentPage: capabilityGraph.currentPage,
+        discoverySurface: effectiveDiscoverySurface,
         shortcuts: (config.shortcuts || [])
           .filter(shortcut => shortcut.enabled !== false)
           .map(shortcut => ({
@@ -633,40 +1246,129 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
   };
 }
 
+export function createRoverSiteProfile(config: RoverAgentDiscoveryConfig): RoverSiteProfile {
+  const card = createRoverAgentCard(config);
+  const rover = card.extensions?.rover;
+  return {
+    identity: {
+      siteId: rover?.siteId,
+      name: card.name,
+      description: card.description,
+      siteUrl: rover?.siteUrl || normalizeSiteUrl(config.siteUrl),
+      version: card.version,
+    },
+    actions: rover?.capabilitiesGraph || [],
+    pages: rover?.pages || [],
+    policies: {
+      preferredExecution: rover?.preferredExecution || 'auto',
+      promptLaunchEnabled: rover?.promptLaunchEnabled !== false,
+      shortcutLaunchEnabled: rover?.shortcutLaunchEnabled !== false,
+      cloudBrowserAllowed: rover?.cloudBrowserAllowed !== false,
+      delegatedHandoffs: rover?.delegatedHandoffs === true,
+    },
+    auth: {
+      taskEndpoint: rover?.taskEndpoint || buildTaskEndpoint(config.apiBase),
+      workflowEndpoint: rover?.workflowEndpoint || buildWorkflowEndpoint(config.apiBase),
+      acceptsHttpMessageSignatures: true,
+      supportsUnsignedSelfReportedIdentity: true,
+    },
+    analytics: {
+      layer: 'roverbook',
+      taskIdField: 'taskId',
+      workflowIdField: 'workflowId',
+      capabilityIdField: 'capabilityId',
+      pageIdField: 'pageId',
+    },
+    currentPage: rover?.currentPage,
+    display: {
+      mode: rover?.discoverySurface.mode || 'beacon',
+      branding: rover?.discoverySurface.branding || 'site',
+      hostSurface: rover?.discoverySurface.hostSurface || 'auto',
+      actionReveal: rover?.discoverySurface.actionReveal || 'click',
+      beaconLabel: rover?.discoverySurface.beaconLabel,
+      agentModeEntryHints: rover?.discoverySurface.agentModeEntryHints || [],
+      compactActionMaxActions: rover?.discoverySurface.compactActionMaxActions || ROVER_DISCOVERY_ACTION_SHEET_MAX_ACTIONS,
+    },
+    artifacts: {
+      agentCardUrl: rover?.serviceDescUrl || text(config.agentCardUrl) || DEFAULT_AGENT_CARD_PATH,
+      roverSiteUrl: rover?.roverSiteUrl || text(config.roverSiteUrl) || DEFAULT_ROVER_SITE_PATH,
+      ...(rover?.llmsUrl ? { llmsUrl: rover.llmsUrl } : {}),
+      siteUrl: rover?.siteUrl || normalizeSiteUrl(config.siteUrl),
+    },
+    interfaces: card.interfaces,
+  };
+}
+
 export function buildRoverAgentDiscoveryPayloads(config: RoverAgentDiscoveryConfig): {
   card: RoverAgentCard;
   cardJson: string;
   serviceDescHref: string;
+  roverSite: RoverSiteProfile;
+  roverSiteJson: string;
+  roverSiteHref: string;
+  pageManifest: RoverPageDefinition;
+  pageManifestJson: string;
   llmsUrl?: string;
   marker: {
     task?: string;
     card: string;
+    roverSite: string;
     site?: string;
     workflow?: string;
+    page?: string;
     preferExecution?: RoverDiscoveryExecutionPreference;
+    discoveryMode?: RoverDiscoverySurfaceMode;
+    hostSurface?: RoverDiscoveryHostSurface;
+    actionReveal?: RoverDiscoveryActionReveal;
+    beaconLabel?: string;
     skills: Array<{ id: string; name: string }>;
+    capabilities: Array<{ capabilityId: string; label: string }>;
   };
   markerJson: string;
 } {
   const cardJson = createRoverAgentCardJson(config);
   const card = createRoverAgentCard(config);
+  const roverSite = createRoverSiteProfile(config);
+  const roverSiteJson = JSON.stringify(roverSite, null, 2);
   const inlineCardUrl = buildInlineDataUrl(cardJson);
   const serviceDescHref = text(config.agentCardUrl) || inlineCardUrl;
+  const roverSiteHref = text(config.roverSiteUrl) || DEFAULT_ROVER_SITE_PATH;
+  const pageManifest = card.extensions?.rover.currentPage || {
+    pageId: 'home',
+    route: '/',
+    capabilityIds: [],
+  };
+  const pageManifestJson = JSON.stringify(pageManifest, null, 2);
   const marker = {
     task: card.extensions?.rover.taskEndpoint,
     card: serviceDescHref,
+    roverSite: roverSiteHref,
     site: card.extensions?.rover.siteUrl,
     workflow: card.extensions?.rover.workflowEndpoint,
+    page: pageManifest.pageId,
     preferExecution: card.extensions?.rover.preferredExecution,
+    discoveryMode: card.extensions?.rover.discoverySurface.mode,
+    hostSurface: card.extensions?.rover.discoverySurface.hostSurface,
+    actionReveal: card.extensions?.rover.discoverySurface.actionReveal,
+    beaconLabel: card.extensions?.rover.discoverySurface.beaconLabel,
     skills: card.skills.slice(0, 24).map(skill => ({
       id: skill.id,
       name: skill.name,
+    })),
+    capabilities: (card.extensions?.rover.capabilitiesGraph || []).slice(0, 24).map(capability => ({
+      capabilityId: capability.capabilityId,
+      label: capability.label,
     })),
   };
   return {
     card,
     cardJson,
     serviceDescHref,
+    roverSite,
+    roverSiteJson,
+    roverSiteHref,
+    pageManifest,
+    pageManifestJson,
     llmsUrl: text(config.llmsUrl || card.extensions?.rover.llmsUrl) || undefined,
     marker,
     markerJson: escapeScriptJson(JSON.stringify(marker)),
@@ -687,6 +1389,20 @@ export function createRoverWellKnownAgentCard(
   return createRoverAgentCardJson(config, options);
 }
 
+export function createRoverSiteProfileJson(
+  config: RoverAgentDiscoveryConfig,
+  options?: { pretty?: boolean },
+): string {
+  return JSON.stringify(createRoverSiteProfile(config), null, options?.pretty === false ? undefined : 2);
+}
+
+export function createRoverWellKnownSiteProfile(
+  config: RoverAgentDiscoveryConfig,
+  options?: { pretty?: boolean },
+): string {
+  return createRoverSiteProfileJson(config, options);
+}
+
 export function createRoverServiceDescLinkHeader(config: {
   agentCardUrl?: string;
   llmsUrl?: string;
@@ -702,8 +1418,17 @@ export function createRoverServiceDescLinkHeader(config: {
 }
 
 export function createRoverAgentDiscoveryTags(config: RoverAgentDiscoveryConfig): string {
-  const { cardJson, llmsUrl, markerJson, serviceDescHref } = buildRoverAgentDiscoveryPayloads(config);
+  const {
+    cardJson,
+    llmsUrl,
+    markerJson,
+    pageManifestJson,
+    roverSiteJson,
+    serviceDescHref,
+  } = buildRoverAgentDiscoveryPayloads(config);
   const escapedCardJson = escapeScriptJson(cardJson);
+  const escapedRoverSiteJson = escapeScriptJson(roverSiteJson);
+  const escapedPageManifestJson = escapeScriptJson(pageManifestJson);
   const lines = [
     `<script type="application/agent+json">${markerJson}</script>`,
     `<link rel="service-desc" href="${escapeHtmlAttr(serviceDescHref)}" type="application/json" />`,
@@ -711,6 +1436,8 @@ export function createRoverAgentDiscoveryTags(config: RoverAgentDiscoveryConfig)
   if (llmsUrl) {
     lines.push(`<link rel="service-doc" href="${escapeHtmlAttr(llmsUrl)}" type="text/markdown" />`);
   }
+  lines.push(`<script type="application/rover-site+json">${escapedRoverSiteJson}</script>`);
+  lines.push(`<script type="application/rover-page+json">${escapedPageManifestJson}</script>`);
   lines.push(`<script type="application/agent-card+json">${escapedCardJson}</script>`);
   return lines.join('\n');
 }

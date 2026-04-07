@@ -48,18 +48,13 @@ The previous `agentId -> owner uid` collapse is intentionally removed. Memory, n
 
 Rover and RoverBook normalize agent identity into:
 
-- `verified`
+- `verified_signed`
+- `signed_directory_only`
 - `self_reported`
 - `heuristic`
 - `anonymous`
 
-Current launch behavior uses:
-
-- `self_reported`
-- `heuristic`
-- `anonymous`
-
-Important rule: plain headers alone never become `verified`.
+Important rule: plain headers alone never become `verified_signed` or `signed_directory_only`.
 
 Heuristic inputs may include:
 

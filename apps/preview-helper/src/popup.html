@@ -25,7 +25,17 @@ or
 {"siteId":"...","sessionToken":"rvrsess_...","launchUrl":"https://example.com?rover_launch=...&rover_attach=..."}'></textarea>
       </label>
 
-      <p class="hint">Use Workspace test config JSON for normal live-site testing. Hosted Preview can also hand off automatically, and the website tool can open a target page with a one-click helper fragment.</p>
+      <p class="hint">Paste reusable wildcard config (works on any domain) or exact site-scoped config from Workspace. The website's "Open target with helper" button hands off config automatically — no paste needed.</p>
+
+      <div id="config-help" class="help-section" style="display:none;">
+        <p class="help-text">No config saved yet. Get one from:</p>
+        <div class="help-links">
+          <a href="https://www.rtrvr.ai/rover/workspace?view=test" target="_blank" class="help-link">Workspace → Test</a>
+          <span class="help-sep">or</span>
+          <a href="https://www.rtrvr.ai/rover/instant-preview?flow=workspace_config" target="_blank" class="help-link">Live Test</a>
+        </div>
+        <p class="help-hint">Sign in there, copy the reusable test config JSON, and paste it here — or use "Open target with helper" for zero-paste handoff.</p>
+      </div>
 
       <div class="actions">
         <button id="inject" class="primary">Inject Rover into this tab</button>

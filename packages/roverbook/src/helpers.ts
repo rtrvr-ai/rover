@@ -121,7 +121,10 @@ export function toErrorMessage(error: unknown): string {
 export function normalizeAgentTrust(value: unknown): AgentIdentityTrust | undefined {
   switch (asString(value)) {
     case 'verified':
-      return 'verified';
+    case 'verified_signed':
+      return 'verified_signed';
+    case 'signed_directory_only':
+      return 'signed_directory_only';
     case 'self_reported':
       return 'self_reported';
     case 'heuristic':

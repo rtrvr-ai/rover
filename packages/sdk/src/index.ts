@@ -58,10 +58,16 @@ import {
   createRoverAgentCard,
   createRoverAgentCardJson,
   createRoverAgentDiscoveryTags,
+  createRoverSiteProfile,
+  createRoverSiteProfileJson,
   createRoverServiceDescLinkHeader,
   createRoverWellKnownAgentCard,
+  createRoverWellKnownSiteProfile,
   DEFAULT_AGENT_CARD_PATH,
+  DEFAULT_ROVER_SITE_PATH,
+  ROVER_DISCOVERY_ACTION_SHEET_MAX_ACTIONS,
   ROVER_WEBMCP_DISCOVERY_GLOBAL,
+  sanitizeRoverAgentDiscoveryRuntimeConfig,
   type RoverAgentCard,
   type RoverAgentDiscoveryConfig,
   type RoverAgentDiscoveryRuntimeConfig,
@@ -540,8 +546,11 @@ const HANDOFF_TOOL_POLL_SLICE_SECONDS = 20;
 const ROVER_AGENT_DISCOVERY_ATTR = 'data-rover-agent-discovery';
 const ROVER_AGENT_DISCOVERY_CUE_ID = 'rover-agent-discovery-cue';
 const ROVER_AGENT_DISCOVERY_CUE_STYLE_ID = 'rover-agent-discovery-cue-style';
-const ROVER_AGENT_DISCOVERY_CUE_TEXT = 'AI actions with Rover';
-const ROVER_AGENT_DISCOVERY_CUE_ARIA_LABEL = 'AI actions available with Rover';
+const ROVER_AGENT_DISCOVERY_LANDMARK_ID = 'rover-agent-discovery-landmark';
+const ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID = 'rover-agent-discovery-actions';
+const ROVER_AGENT_DISCOVERY_CUE_TEXT = 'AI ready';
+const ROVER_AGENT_DISCOVERY_CUE_ARIA_LABEL = 'AI-ready path available on this page';
+const ROVER_AGENT_DISCOVERY_KEYBOARD_SHORTCUT = 'Alt+Shift+A';
 const ROVER_AGENT_DISCOVERY_CHANGE_EVENT = 'rover:agent-discovery-changed';
 
 type TelemetryEventName = RoverEventName | RoverVoiceTelemetryEventName;
@@ -672,6 +681,9 @@ type ActiveLaunchBinding = {
 };
 let activeLaunchBinding: ActiveLaunchBinding | null = null;
 let launchEventFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let agentDiscoveryActionSheetOpen = false;
+let agentDiscoveryExplicitHandshake = false;
+let agentDiscoveryInteractionListenersInstalled = false;
 
 function sanitizeLaunchBinding(
   raw: PersistedRuntimeState['launchBinding'] | null | undefined,
@@ -814,7 +826,7 @@ type RoverRuntimeAgentAttribution = {
   agentName?: string;
   agentVendor?: string;
   agentModel?: string;
-  agentTrust?: 'verified' | 'self_reported' | 'heuristic' | 'anonymous';
+  agentTrust?: 'verified_signed' | 'signed_directory_only' | 'self_reported' | 'heuristic' | 'anonymous';
   agentSource?:
     | 'public_task_agent'
     | 'handoff_agent'
@@ -1008,37 +1020,48 @@ export function getAgentCard(): RoverAgentCard | null {
 
 function resolveAgentDiscoveryConfig(cfg: RoverInit | null): RoverAgentDiscoveryConfig | null {
   if (!cfg || typeof window === 'undefined') return null;
+  const effectiveDiscovery = resolveEffectiveAgentDiscoveryRuntimeConfig(cfg);
+  if (effectiveDiscovery?.enabled === false) return null;
   const siteUrl = String(cfg.agentDiscovery?.siteUrl || `${window.location.origin}/`).trim();
   const aiAccess = resolveEffectiveAiAccessConfig(cfg);
   const clientTools = bridge?.listClientTools?.() || cfg.tools?.client || [];
   const webmcpTools = readPublishedWebMCPToolDefinitions();
   return {
     siteId: cfg.siteId,
-    siteUrl,
+    siteUrl: String(effectiveDiscovery?.siteUrl || siteUrl).trim(),
     apiBase: cfg.apiBase,
     siteName:
-      String(cfg.agentDiscovery?.siteName || cfg.ui?.agent?.name || document.title || '').trim()
+      String(effectiveDiscovery?.siteName || cfg.ui?.agent?.name || document.title || '').trim()
       || window.location.hostname,
     description:
-      String(cfg.agentDiscovery?.description || '').trim()
+      String(effectiveDiscovery?.description || '').trim()
       || `Structured Rover entrypoints for ${window.location.hostname}. Prefer these explicit Rover skills and tools over brittle DOM automation whenever they match the user's goal.`,
     version:
-      String(cfg.agentDiscovery?.version || backendSiteConfig?.version || '').trim()
+      String(effectiveDiscovery?.version || backendSiteConfig?.version || '').trim()
       || undefined,
     agentCardUrl:
-      String(cfg.agentDiscovery?.agentCardUrl || '').trim()
+      String(effectiveDiscovery?.agentCardUrl || '').trim()
       || DEFAULT_AGENT_CARD_PATH,
+    roverSiteUrl:
+      String(effectiveDiscovery?.roverSiteUrl || '').trim()
+      || DEFAULT_ROVER_SITE_PATH,
     llmsUrl:
-      String(cfg.agentDiscovery?.llmsUrl || '').trim()
+      String(effectiveDiscovery?.llmsUrl || '').trim()
       || undefined,
-    visibleCue: cfg.agentDiscovery?.visibleCue,
+    enabled: effectiveDiscovery?.enabled,
+    visibleCue: effectiveDiscovery?.visibleCue,
+    discoverySurface: effectiveDiscovery?.discoverySurface,
+    hostSurfaceSelector: effectiveDiscovery?.hostSurfaceSelector,
     preferExecution:
-      cfg.agentDiscovery?.preferExecution
+      effectiveDiscovery?.preferExecution
       || (aiAccess?.allowCloudBrowser === false ? 'browser' : 'auto'),
     shortcuts: resolveEffectiveShortcuts(cfg),
     tools: clientTools as RoverAgentDiscoveryToolDefinition[],
     webmcpTools,
-    additionalSkills: cfg.agentDiscovery?.additionalSkills,
+    additionalSkills: effectiveDiscovery?.additionalSkills,
+    capabilities: effectiveDiscovery?.capabilities,
+    pages: effectiveDiscovery?.pages,
+    pageContext: effectiveDiscovery?.pageContext,
     aiAccess,
   };
 }
@@ -1046,11 +1069,15 @@ function resolveAgentDiscoveryConfig(cfg: RoverInit | null): RoverAgentDiscovery
 function isAgentDiscoveryEnabled(cfg: RoverInit | null): boolean {
   if (!cfg || typeof document === 'undefined') return false;
   const aiAccess = resolveEffectiveAiAccessConfig(cfg);
-  return aiAccess?.enabled !== false;
+  if (aiAccess?.enabled === false) return false;
+  return resolveEffectiveAgentDiscoveryRuntimeConfig(cfg)?.enabled !== false;
 }
 
 function isAgentDiscoveryCueEnabled(cfg: RoverInit | null): boolean {
-  return isAgentDiscoveryEnabled(cfg) && cfg?.agentDiscovery?.visibleCue !== false;
+  const config = resolveAgentDiscoveryConfig(cfg);
+  if (!config) return false;
+  const payloads = buildRoverAgentDiscoveryPayloads(config);
+  return payloads.card.extensions?.rover.discoverySurface.mode !== 'silent';
 }
 
 function removeAgentDiscoveryTags(): void {
@@ -1100,7 +1127,14 @@ function syncAgentDiscoveryTags(cfg: RoverInit | null): void {
     removeAgentDiscoveryTags();
     return;
   }
-  const { cardJson, llmsUrl, marker, serviceDescHref } = buildRoverAgentDiscoveryPayloads(config);
+  const {
+    cardJson,
+    llmsUrl,
+    marker,
+    pageManifestJson,
+    roverSiteJson,
+    serviceDescHref,
+  } = buildRoverAgentDiscoveryPayloads(config);
   upsertAgentDiscoveryScript('marker', 'application/agent+json', JSON.stringify(marker));
   upsertAgentDiscoveryLink('service-desc', 'service-desc', serviceDescHref, 'application/json');
   if (llmsUrl) {
@@ -1108,7 +1142,159 @@ function syncAgentDiscoveryTags(cfg: RoverInit | null): void {
   } else {
     document.querySelector(`link[${ROVER_AGENT_DISCOVERY_ATTR}="service-doc"]`)?.remove();
   }
+  upsertAgentDiscoveryScript('rover-site', 'application/rover-site+json', roverSiteJson);
+  upsertAgentDiscoveryScript('page', 'application/rover-page+json', pageManifestJson);
   upsertAgentDiscoveryScript('agent-card', 'application/agent-card+json', cardJson);
+}
+
+function escapeHtml(value: string): string {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function resolveAgentDiscoveryBeaconLabel(state: {
+  page?: { beaconLabel?: string; visibleCueLabel?: string } | null;
+  policy?: { beaconLabel?: string; branding?: string } | null;
+}): string {
+  const explicit = String(
+    state.page?.beaconLabel
+    || state.page?.visibleCueLabel
+    || state.policy?.beaconLabel
+    || '',
+  ).trim();
+  if (explicit) return explicit;
+  if (state.policy?.branding === 'rover') return 'Rover AI';
+  if (state.policy?.branding === 'co') return 'AI with Rover';
+  return ROVER_AGENT_DISCOVERY_CUE_TEXT;
+}
+
+function formatAgentDiscoveryAriaLabel(label: string): string {
+  const trimmed = String(label || '').trim();
+  if (!trimmed) return ROVER_AGENT_DISCOVERY_CUE_ARIA_LABEL;
+  return `${trimmed}. ${ROVER_AGENT_DISCOVERY_CUE_ARIA_LABEL}`;
+}
+
+function isAgentDiscoveryAgentModeActive(): boolean {
+  return !!(
+    agentDiscoveryExplicitHandshake
+    || runtimeState?.uiOpen
+    || activePublicTaskContext
+    || activeLaunchBinding?.requestId
+  );
+}
+
+function clearAgentDiscoveryHostSurfaceBindings(): void {
+  if (typeof document === 'undefined') return;
+  for (const node of Array.from(document.querySelectorAll('[data-rover-discovery-host="true"]'))) {
+    node.removeAttribute('data-rover-discovery-host');
+    node.removeAttribute('data-rover-discovery-mode');
+    node.removeAttribute('data-rover-host-surface');
+    node.removeAttribute('data-rover-discovery-branding');
+    node.removeAttribute('data-rover-current-page');
+    node.removeAttribute('data-rover-capability-count');
+  }
+}
+
+function findAgentDiscoveryHostSurfaceTarget(
+  config: RoverAgentDiscoveryConfig,
+  policy: { hostSurface?: string } | null | undefined,
+): HTMLElement | null {
+  if (typeof document === 'undefined') return null;
+  if (policy?.hostSurface === 'floating-corner') return null;
+  const selectors = [
+    String(config.hostSurfaceSelector || '').trim(),
+    '[data-rover-host-surface]',
+    '[data-rover-assistant-surface]',
+    '[data-rover-chat-surface]',
+  ].filter(Boolean);
+  for (const selector of selectors) {
+    try {
+      const node = document.querySelector(selector);
+      if (node instanceof HTMLElement) return node;
+    } catch {
+      // Ignore invalid selectors from best-effort owner config.
+    }
+  }
+  return null;
+}
+
+function resolveAgentDiscoveryRenderState(cfg: RoverInit | null):
+  | {
+      config: RoverAgentDiscoveryConfig;
+      payloads: ReturnType<typeof buildRoverAgentDiscoveryPayloads>;
+      page: NonNullable<ReturnType<typeof buildRoverAgentDiscoveryPayloads>['pageManifest']>;
+      policy: NonNullable<NonNullable<RoverAgentCard['extensions']>['rover']['discoverySurface']>;
+      visibleCapabilities: Array<NonNullable<RoverAgentCard['extensions']>['rover']['capabilitiesGraph'][number]>;
+      hostSurfaceTarget: HTMLElement | null;
+      integratedHost: boolean;
+      agentModeActive: boolean;
+      hidden: boolean;
+      beaconLabel: string;
+    }
+  | null {
+  if (!isAgentDiscoveryEnabled(cfg)) return null;
+  const config = resolveAgentDiscoveryConfig(cfg);
+  if (!config) return null;
+  const payloads = buildRoverAgentDiscoveryPayloads(config);
+  const page = payloads.pageManifest;
+  const policy = payloads.card.extensions?.rover.discoverySurface;
+  if (!policy) return null;
+  const graph = payloads.roverSite.actions || [];
+  const visibleCapabilities = (page.capabilityIds || [])
+    .map(capabilityId => graph.find(capability => capability.capabilityId === capabilityId))
+    .filter((capability): capability is NonNullable<typeof graph[number]> => !!capability);
+  const hostSurfaceTarget = findAgentDiscoveryHostSurfaceTarget(config, policy);
+  const integratedHost = !!hostSurfaceTarget
+    && policy.mode !== 'debug'
+    && (policy.mode === 'integrated' || policy.hostSurface !== 'floating-corner');
+  const hidden = runtimeState?.uiHidden === true || runtimeState?.uiOpen === true;
+  const beaconLabel = resolveAgentDiscoveryBeaconLabel({ page, policy });
+  return {
+    config,
+    payloads,
+    page,
+    policy,
+    visibleCapabilities,
+    hostSurfaceTarget,
+    integratedHost,
+    agentModeActive: isAgentDiscoveryAgentModeActive(),
+    hidden,
+    beaconLabel,
+  };
+}
+
+function ensureAgentDiscoveryInteractionListeners(): void {
+  if (typeof document === 'undefined' || agentDiscoveryInteractionListenersInstalled) return;
+  agentDiscoveryInteractionListenersInstalled = true;
+  addTrackedListener(document, 'keydown', ((event: Event) => {
+    const keyboardEvent = event as KeyboardEvent;
+    if (keyboardEvent.key === 'Escape' && agentDiscoveryActionSheetOpen) {
+      agentDiscoveryActionSheetOpen = false;
+      syncAgentDiscoverySurfaces(currentConfig);
+      return;
+    }
+    if (!keyboardEvent.altKey || !keyboardEvent.shiftKey || keyboardEvent.key.toLowerCase() !== 'a') return;
+    const state = resolveAgentDiscoveryRenderState(currentConfig);
+    if (!state || state.policy.mode === 'silent' || state.integratedHost) return;
+    keyboardEvent.preventDefault();
+    agentDiscoveryExplicitHandshake = true;
+    agentDiscoveryActionSheetOpen = !agentDiscoveryActionSheetOpen;
+    syncAgentDiscoverySurfaces(currentConfig);
+  }) as EventListener, true);
+  addTrackedListener(document, 'pointerdown', ((event: Event) => {
+    if (!agentDiscoveryActionSheetOpen) return;
+    const pointerEvent = event as PointerEvent;
+    const target = pointerEvent.target as Node | null;
+    if (!target) return;
+    const cue = document.getElementById(ROVER_AGENT_DISCOVERY_CUE_ID);
+    const sheet = document.getElementById(ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID);
+    if (cue?.contains(target) || sheet?.contains(target)) return;
+    agentDiscoveryActionSheetOpen = false;
+    syncAgentDiscoverySurfaces(currentConfig);
+  }) as EventListener, true);
 }
 
 function ensureAgentDiscoveryCueStyle(): void {
@@ -1119,86 +1305,458 @@ function ensureAgentDiscoveryCueStyle(): void {
   style.textContent = `
     #${ROVER_AGENT_DISCOVERY_CUE_ID} {
       position: fixed;
-      right: 104px;
+      right: 24px;
       bottom: 24px;
       z-index: 2147483645;
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      max-width: min(320px, calc(100vw - 132px));
-      padding: 10px 14px;
-      border: 1px solid rgba(0, 0, 0, 0.12);
+      gap: 6px;
+      min-height: 28px;
+      max-width: min(88px, calc(100vw - 32px));
+      padding: 6px 10px;
+      border: 1px solid var(--rover-discovery-border, rgba(0, 0, 0, 0.12));
       border-radius: 999px;
-      background: rgba(255, 255, 255, 0.96);
-      color: #171717;
-      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
-      font: 600 13px/1.2 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--rover-discovery-bg, rgba(255, 255, 255, 0.96));
+      color: var(--rover-discovery-color, #171717);
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
+      font: 600 11px/1.1 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       letter-spacing: 0.01em;
       cursor: pointer;
       backdrop-filter: blur(12px);
       -webkit-backdrop-filter: blur(12px);
+      transition: transform 120ms ease, box-shadow 120ms ease;
     }
     #${ROVER_AGENT_DISCOVERY_CUE_ID}[hidden] {
       display: none !important;
     }
     #${ROVER_AGENT_DISCOVERY_CUE_ID}:hover {
       transform: translateY(-1px);
-      box-shadow: 0 16px 36px rgba(0, 0, 0, 0.18);
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.16);
     }
     #${ROVER_AGENT_DISCOVERY_CUE_ID}:focus-visible {
-      outline: 2px solid rgba(255, 76, 0, 0.9);
+      outline: 2px solid var(--rover-discovery-accent, rgba(255, 76, 0, 0.9));
       outline-offset: 2px;
+    }
+    #${ROVER_AGENT_DISCOVERY_CUE_ID} .rover-discovery-mark {
+      width: 12px;
+      height: 12px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 2px;
+      flex: none;
+    }
+    #${ROVER_AGENT_DISCOVERY_CUE_ID} .rover-discovery-mark span {
+      display: block;
+      width: 100%;
+      height: 100%;
+      border-radius: 999px;
+      background: var(--rover-discovery-accent, #FF4C00);
+    }
+    #${ROVER_AGENT_DISCOVERY_CUE_ID} .rover-discovery-mark span:nth-child(2) {
+      opacity: 0.7;
+    }
+    #${ROVER_AGENT_DISCOVERY_CUE_ID} .rover-discovery-mark span:nth-child(3) {
+      grid-column: 1 / span 2;
+      width: 8px;
+      justify-self: center;
+      opacity: 0.46;
+    }
+    #${ROVER_AGENT_DISCOVERY_CUE_ID} .rover-discovery-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #${ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID} {
+      position: fixed;
+      right: 24px;
+      bottom: 60px;
+      z-index: 2147483644;
+      width: min(280px, calc(100vw - 32px));
+      padding: 12px;
+      border: 1px solid var(--rover-discovery-border, rgba(0, 0, 0, 0.12));
+      border-radius: 16px;
+      background: var(--rover-discovery-bg, rgba(255, 255, 255, 0.98));
+      color: var(--rover-discovery-color, #171717);
+      box-shadow: 0 14px 36px rgba(0, 0, 0, 0.16);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+    #${ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID}[hidden] {
+      display: none !important;
+    }
+    #${ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID} h2 {
+      margin: 0 0 4px;
+      font: 700 12px/1.25 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    #${ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID} p {
+      margin: 0 0 10px;
+      color: rgba(23, 23, 23, 0.7);
+      font: 500 11px/1.4 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    #${ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID} .rover-discovery-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    #${ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID} .rover-discovery-action {
+      width: 100%;
+      display: block;
+      padding: 9px 10px;
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.88);
+      color: inherit;
+      text-align: left;
+      cursor: pointer;
+      font: 600 12px/1.3 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    #${ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID} .rover-discovery-action:hover {
+      border-color: rgba(0, 0, 0, 0.14);
+      transform: translateY(-1px);
+    }
+    #${ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID} .rover-discovery-action-copy {
+      display: block;
+      margin-top: 3px;
+      font: 500 11px/1.35 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: rgba(23, 23, 23, 0.64);
+    }
+    #${ROVER_AGENT_DISCOVERY_LANDMARK_ID} {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    #${ROVER_AGENT_DISCOVERY_LANDMARK_ID}[hidden] {
+      display: none !important;
+    }
+    #${ROVER_AGENT_DISCOVERY_LANDMARK_ID}[data-rover-debug="true"] {
+      position: fixed;
+      right: 24px;
+      bottom: 96px;
+      z-index: 2147483643;
+      width: min(320px, calc(100vw - 32px));
+      height: auto;
+      padding: 12px 14px;
+      margin: 0;
+      overflow: visible;
+      clip: auto;
+      white-space: normal;
+      border: 1px solid var(--rover-discovery-border, rgba(0, 0, 0, 0.12));
+      border-radius: 16px;
+      background: var(--rover-discovery-bg, rgba(255, 255, 255, 0.96));
+      color: var(--rover-discovery-color, #171717);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.14);
+      font: 500 12px/1.4 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+    #${ROVER_AGENT_DISCOVERY_LANDMARK_ID} strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 12px;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      color: rgba(23, 23, 23, 0.78);
+    }
+    #${ROVER_AGENT_DISCOVERY_LANDMARK_ID} .rover-discovery-summary {
+      display: block;
+      margin-bottom: 8px;
+      color: rgba(23, 23, 23, 0.74);
+    }
+    #${ROVER_AGENT_DISCOVERY_LANDMARK_ID} ol {
+      margin: 0;
+      padding-left: 18px;
+    }
+    #${ROVER_AGENT_DISCOVERY_LANDMARK_ID} li + li {
+      margin-top: 8px;
+    }
+    #${ROVER_AGENT_DISCOVERY_LANDMARK_ID} .rover-discovery-capability-label {
+      display: inline-block;
+      font-weight: 600;
+    }
+    #${ROVER_AGENT_DISCOVERY_LANDMARK_ID} .rover-discovery-capability-copy {
+      display: block;
+      margin-top: 2px;
+      color: rgba(23, 23, 23, 0.68);
+    }
+    #${ROVER_AGENT_DISCOVERY_LANDMARK_ID} code {
+      font: 600 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: rgba(0, 0, 0, 0.06);
+      border-radius: 6px;
+      padding: 1px 5px;
+      margin-left: 4px;
     }
     @media (max-width: 720px) {
       #${ROVER_AGENT_DISCOVERY_CUE_ID} {
         right: 16px;
-        bottom: 94px;
-        max-width: min(84vw, 320px);
-        font-size: 12px;
+        bottom: 16px;
+        max-width: min(88px, calc(100vw - 32px));
+      }
+      #${ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID},
+      #${ROVER_AGENT_DISCOVERY_LANDMARK_ID}[data-rover-debug="true"] {
+        right: 16px;
+        width: min(280px, calc(100vw - 32px));
+      }
+      #${ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID} {
+        bottom: 52px;
+      }
+      #${ROVER_AGENT_DISCOVERY_LANDMARK_ID}[data-rover-debug="true"] {
+        bottom: 88px;
       }
     }
   `;
   (document.head || document.documentElement)?.appendChild(style);
 }
 
-function removeAgentDiscoveryCue(): void {
+function removeAgentDiscoveryVisuals(): void {
   if (typeof document === 'undefined') return;
   document.getElementById(ROVER_AGENT_DISCOVERY_CUE_ID)?.remove();
+  document.getElementById(ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID)?.remove();
+  agentDiscoveryActionSheetOpen = false;
+}
+
+function removeAgentDiscoveryLandmark(): void {
+  if (typeof document === 'undefined') return;
+  document.getElementById(ROVER_AGENT_DISCOVERY_LANDMARK_ID)?.remove();
+}
+
+function removeAgentDiscoverySurfaceStyle(): void {
+  if (typeof document === 'undefined') return;
   document.getElementById(ROVER_AGENT_DISCOVERY_CUE_STYLE_ID)?.remove();
 }
 
 function ensureAgentDiscoveryCue(): HTMLButtonElement | null {
   if (typeof document === 'undefined') return null;
+  ensureAgentDiscoveryInteractionListeners();
   ensureAgentDiscoveryCueStyle();
   let cue = document.getElementById(ROVER_AGENT_DISCOVERY_CUE_ID) as HTMLButtonElement | null;
   if (cue) return cue;
   cue = document.createElement('button');
   cue.id = ROVER_AGENT_DISCOVERY_CUE_ID;
   cue.type = 'button';
-  cue.textContent = ROVER_AGENT_DISCOVERY_CUE_TEXT;
-  cue.setAttribute('aria-label', ROVER_AGENT_DISCOVERY_CUE_ARIA_LABEL);
   cue.setAttribute('data-rover-discovery-cue', 'true');
-  cue.addEventListener('click', () => open());
+  cue.addEventListener('click', () => {
+    const state = resolveAgentDiscoveryRenderState(currentConfig);
+    if (!state) return;
+    agentDiscoveryExplicitHandshake = true;
+    if (!state.visibleCapabilities.length || state.policy.mode === 'debug') {
+      agentDiscoveryActionSheetOpen = false;
+      open();
+      return;
+    }
+    agentDiscoveryActionSheetOpen = !agentDiscoveryActionSheetOpen;
+    syncAgentDiscoverySurfaces(currentConfig);
+  });
+  cue.addEventListener('focus', () => {
+    const state = resolveAgentDiscoveryRenderState(currentConfig);
+    if (!state || state.policy.actionReveal !== 'focus' || state.hidden) return;
+    agentDiscoveryExplicitHandshake = true;
+    agentDiscoveryActionSheetOpen = true;
+    syncAgentDiscoverySurfaces(currentConfig);
+  });
   (document.body || document.documentElement)?.appendChild(cue);
   return cue;
 }
 
+function ensureAgentDiscoveryActionSheet(): HTMLElement | null {
+  if (typeof document === 'undefined') return null;
+  ensureAgentDiscoveryInteractionListeners();
+  ensureAgentDiscoveryCueStyle();
+  let sheet = document.getElementById(ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID) as HTMLElement | null;
+  if (sheet) return sheet;
+  sheet = document.createElement('section');
+  sheet.id = ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID;
+  sheet.setAttribute('role', 'dialog');
+  sheet.setAttribute('aria-modal', 'false');
+  sheet.setAttribute('aria-label', 'Rover actions');
+  sheet.hidden = true;
+  (document.body || document.documentElement)?.appendChild(sheet);
+  return sheet;
+}
+
+function ensureAgentDiscoveryLandmark(): HTMLElement | null {
+  if (typeof document === 'undefined') return null;
+  ensureAgentDiscoveryCueStyle();
+  let landmark = document.getElementById(ROVER_AGENT_DISCOVERY_LANDMARK_ID) as HTMLElement | null;
+  if (landmark) return landmark;
+  landmark = document.createElement('aside');
+  landmark.id = ROVER_AGENT_DISCOVERY_LANDMARK_ID;
+  landmark.setAttribute('role', 'complementary');
+  landmark.setAttribute('aria-label', ROVER_AGENT_DISCOVERY_CUE_ARIA_LABEL);
+  (document.body || document.documentElement)?.appendChild(landmark);
+  return landmark;
+}
+
+function syncAgentDiscoveryHostSurface(cfg: RoverInit | null): void {
+  clearAgentDiscoveryHostSurfaceBindings();
+  const state = resolveAgentDiscoveryRenderState(cfg);
+  if (!state?.hostSurfaceTarget) return;
+  state.hostSurfaceTarget.setAttribute('data-rover-discovery-host', 'true');
+  state.hostSurfaceTarget.setAttribute('data-rover-discovery-mode', state.policy.mode);
+  state.hostSurfaceTarget.setAttribute('data-rover-host-surface', state.policy.hostSurface);
+  state.hostSurfaceTarget.setAttribute('data-rover-discovery-branding', state.policy.branding);
+  state.hostSurfaceTarget.setAttribute('data-rover-current-page', state.page.pageId);
+  state.hostSurfaceTarget.setAttribute('data-rover-capability-count', String(state.visibleCapabilities.length));
+}
+
+function syncAgentDiscoveryLandmark(cfg: RoverInit | null): void {
+  if (typeof document === 'undefined') return;
+  if (!isAgentDiscoveryEnabled(cfg)) {
+    removeAgentDiscoveryLandmark();
+    return;
+  }
+  const state = resolveAgentDiscoveryRenderState(cfg);
+  if (!state) return;
+  const landmark = ensureAgentDiscoveryLandmark();
+  if (!landmark) return;
+  const debug = state.policy.mode === 'debug';
+  landmark.hidden = false;
+  landmark.setAttribute('aria-label', formatAgentDiscoveryAriaLabel(state.beaconLabel));
+  landmark.setAttribute('data-rover-debug', debug ? 'true' : 'false');
+  landmark.setAttribute('data-rover-discovery-mode', state.policy.mode);
+  landmark.setAttribute('data-rover-host-surface', state.policy.hostSurface);
+  landmark.setAttribute('data-rover-current-page', state.page.pageId);
+  if (!state.visibleCapabilities.length) {
+    landmark.innerHTML = [
+      `<strong>${escapeHtml(state.beaconLabel)}</strong>`,
+      '<div class="rover-discovery-summary">Rover is published on this page and ready through the task protocol, page manifest, and semantic surface.</div>',
+    ].join('');
+    return;
+  }
+  const items = state.visibleCapabilities.slice(0, 6).map(capability => {
+    const description = String(capability.description || 'Rover action available on this page.').trim();
+    return [
+      `<li data-rover-capability-id="${escapeHtml(capability.capabilityId)}">`,
+      `<span class="rover-discovery-capability-label">${escapeHtml(capability.label)}</span>`,
+      debug ? `<code>${escapeHtml(capability.capabilityId)}</code>` : '',
+      `<span class="rover-discovery-capability-copy">${escapeHtml(description)}</span>`,
+      '</li>',
+    ].join('');
+  }).join('');
+  landmark.innerHTML = [
+    `<strong>${escapeHtml(state.beaconLabel)}</strong>`,
+    `<div class="rover-discovery-summary">${escapeHtml(
+      state.page.capabilitySummary?.length
+        ? state.page.capabilitySummary.join(' • ')
+        : 'Current-page Rover actions are available.',
+    )}</div>`,
+    `<ol>${items}</ol>`,
+  ].join('');
+}
+
 function syncAgentDiscoveryCue(cfg: RoverInit | null): void {
   if (typeof document === 'undefined') return;
-  if (!isAgentDiscoveryCueEnabled(cfg)) {
-    removeAgentDiscoveryCue();
+  const state = resolveAgentDiscoveryRenderState(cfg);
+  if (!state || state.policy.mode === 'silent' || state.integratedHost) {
+    removeAgentDiscoveryVisuals();
     return;
   }
   const cue = ensureAgentDiscoveryCue();
   if (!cue) return;
-  const hidden = runtimeState?.uiHidden === true || runtimeState?.uiOpen === true;
-  cue.hidden = hidden;
-  cue.setAttribute('aria-hidden', hidden ? 'true' : 'false');
+  cue.innerHTML = `<span class="rover-discovery-mark" aria-hidden="true"><span></span><span></span><span></span></span><span class="rover-discovery-label">${escapeHtml(state.beaconLabel)}</span>`;
+  cue.setAttribute('aria-label', formatAgentDiscoveryAriaLabel(state.beaconLabel));
+  cue.setAttribute('aria-describedby', ROVER_AGENT_DISCOVERY_LANDMARK_ID);
+  cue.setAttribute('aria-haspopup', state.visibleCapabilities.length ? 'dialog' : 'false');
+  cue.setAttribute('aria-expanded', agentDiscoveryActionSheetOpen ? 'true' : 'false');
+  cue.setAttribute('aria-keyshortcuts', ROVER_AGENT_DISCOVERY_KEYBOARD_SHORTCUT);
+  cue.setAttribute('title', `${state.beaconLabel} (${ROVER_AGENT_DISCOVERY_KEYBOARD_SHORTCUT})`);
+  cue.setAttribute('data-rover-discovery-mode', state.policy.mode);
+  cue.setAttribute('data-rover-host-surface', state.policy.hostSurface);
+  cue.setAttribute('data-rover-branding', state.policy.branding);
+  cue.hidden = state.hidden;
+  cue.setAttribute('aria-hidden', state.hidden ? 'true' : 'false');
+}
+
+function syncAgentDiscoveryActionSheet(cfg: RoverInit | null): void {
+  if (typeof document === 'undefined') return;
+  const state = resolveAgentDiscoveryRenderState(cfg);
+  if (!state || state.policy.mode === 'silent' || state.integratedHost || state.policy.mode === 'debug') {
+    document.getElementById(ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID)?.remove();
+    agentDiscoveryActionSheetOpen = false;
+    return;
+  }
+  const shouldShow = !state.hidden
+    && state.visibleCapabilities.length > 0
+    && (agentDiscoveryActionSheetOpen || (state.policy.actionReveal === 'agent-handshake' && state.agentModeActive));
+  if (!shouldShow) {
+    document.getElementById(ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID)?.remove();
+    agentDiscoveryActionSheetOpen = false;
+    return;
+  }
+  const sheet = ensureAgentDiscoveryActionSheet();
+  if (!sheet) return;
+  const visibleActions = state.visibleCapabilities.slice(0, ROVER_DISCOVERY_ACTION_SHEET_MAX_ACTIONS);
+  const trailingActionLabel = state.visibleCapabilities.length > ROVER_DISCOVERY_ACTION_SHEET_MAX_ACTIONS ? 'More actions' : 'Open Rover';
+  sheet.hidden = false;
+  sheet.setAttribute('data-rover-discovery-mode', state.policy.mode);
+  sheet.setAttribute('data-rover-current-page', state.page.pageId);
+  sheet.innerHTML = [
+    `<h2>${escapeHtml(state.beaconLabel)}</h2>`,
+    `<p>${escapeHtml(
+      state.page.capabilitySummary?.length
+        ? state.page.capabilitySummary.join(' • ')
+        : 'Current-page Rover actions are available.',
+    )}</p>`,
+    '<div class="rover-discovery-actions">',
+    ...visibleActions.map(capability => [
+      `<button type="button" class="rover-discovery-action" data-rover-discovery-action="capability" data-rover-capability-id="${escapeHtml(capability.capabilityId)}">`,
+      escapeHtml(capability.label),
+      `<span class="rover-discovery-action-copy">${escapeHtml(String(capability.description || 'Open Rover on this action.').trim())}</span>`,
+      '</button>',
+    ].join('')),
+    `<button type="button" class="rover-discovery-action" data-rover-discovery-action="open">${escapeHtml(trailingActionLabel)}</button>`,
+    '</div>',
+  ].join('');
+  for (const button of Array.from(sheet.querySelectorAll('[data-rover-discovery-action]'))) {
+    button.addEventListener('click', () => {
+      agentDiscoveryExplicitHandshake = true;
+      const action = (button as HTMLElement).getAttribute('data-rover-discovery-action');
+      if (action === 'capability') {
+        const capabilityId = String((button as HTMLElement).getAttribute('data-rover-capability-id') || '').trim();
+        const freshState = resolveAgentDiscoveryRenderState(currentConfig);
+        const capability = freshState?.visibleCapabilities.find(entry => entry.capabilityId === capabilityId);
+        agentDiscoveryActionSheetOpen = false;
+        open();
+        if (capability?.rover?.prompt) {
+          dispatchUserPrompt(capability.rover.prompt, {
+            reason: 'agent_discovery_surface',
+            routing:
+              capability.rover.routing === 'act' || capability.rover.routing === 'planner'
+                ? capability.rover.routing
+                : 'auto',
+          });
+        } else if (capability) {
+          appendUiMessage('system', `Rover can help with "${capability.label}" from this page. Continue in the assistant to execute it safely.`, true);
+        }
+        syncAgentDiscoverySurfaces(currentConfig);
+        return;
+      }
+      agentDiscoveryActionSheetOpen = false;
+      open();
+      syncAgentDiscoverySurfaces(currentConfig);
+    });
+  }
 }
 
 function syncAgentDiscoverySurfaces(cfg: RoverInit | null): void {
+  if (!isAgentDiscoveryEnabled(cfg)) {
+    removeAgentDiscoveryTags();
+    removeAgentDiscoveryVisuals();
+    removeAgentDiscoveryLandmark();
+    removeAgentDiscoverySurfaceStyle();
+    clearAgentDiscoveryHostSurfaceBindings();
+    return;
+  }
   syncAgentDiscoveryTags(cfg);
+  syncAgentDiscoveryHostSurface(cfg);
   syncAgentDiscoveryCue(cfg);
+  syncAgentDiscoveryActionSheet(cfg);
+  syncAgentDiscoveryLandmark(cfg);
 }
 
 function createId(prefix: string): string {
@@ -2021,11 +2579,14 @@ function readRuntimeAgentAttribution(token?: string): RoverRuntimeAgentAttributi
       agentVendor,
       agentModel,
       agentTrust:
-        agentTrust === 'verified'
+        agentTrust === 'verified_signed'
+        || agentTrust === 'signed_directory_only'
         || agentTrust === 'self_reported'
         || agentTrust === 'heuristic'
         || agentTrust === 'anonymous'
           ? agentTrust
+          : agentTrust === 'verified'
+            ? 'verified_signed'
           : undefined,
       agentSource:
         agentSource === 'public_task_agent'
@@ -2220,6 +2781,7 @@ async function ensureRoverServerRuntime(cfg: RoverInit): Promise<void> {
             aiAccess: sanitizeAiAccessConfig(session.siteConfig.aiAccess),
             limits: sanitizeSiteConfigLimits(session.siteConfig.limits),
             pageConfig: sanitizeResolvedPageCaptureConfig(session.siteConfig.pageConfig),
+            agentDiscovery: sanitizeRoverAgentDiscoveryRuntimeConfig(session.siteConfig.agentDiscovery),
             version: session.siteConfig.version != null ? String(session.siteConfig.version) : undefined,
           };
           backendSiteConfig = resolvedSiteConfig;
@@ -7703,6 +8265,7 @@ type RoverResolvedSiteConfig = {
   aiAccess?: RoverAiAccessConfig;
   limits?: RoverShortcutLimits;
   pageConfig?: RoverPageCaptureConfig;
+  agentDiscovery?: RoverAgentDiscoveryRuntimeConfig;
   version?: string;
 };
 
@@ -7774,6 +8337,30 @@ function sanitizeAiAccessConfig(raw: unknown): RoverAiAccessConfig | undefined {
   return Object.keys(next).length ? next : undefined;
 }
 
+function resolveEffectiveAgentDiscoveryRuntimeConfig(cfg: RoverInit | null): RoverAgentDiscoveryRuntimeConfig | undefined {
+  if (!cfg) return undefined;
+  const fromBackend = sanitizeRoverAgentDiscoveryRuntimeConfig(backendSiteConfig?.agentDiscovery);
+  const fromInit = cfg.agentDiscovery ? { ...cfg.agentDiscovery } : undefined;
+  if (!fromBackend && !fromInit) return undefined;
+  const merged: RoverAgentDiscoveryRuntimeConfig = {
+    ...(fromBackend || {}),
+    ...(fromInit || {}),
+  };
+  if (fromBackend?.discoverySurface || fromInit?.discoverySurface) {
+    merged.discoverySurface = {
+      ...(fromBackend?.discoverySurface || {}),
+      ...(fromInit?.discoverySurface || {}),
+    };
+  }
+  if (fromBackend?.pageContext || fromInit?.pageContext) {
+    merged.pageContext = {
+      ...(fromBackend?.pageContext as any || {}),
+      ...(fromInit?.pageContext || {}),
+    };
+  }
+  return Object.keys(merged).length ? merged : undefined;
+}
+
 function resolveEffectivePageCaptureConfig(cfg: RoverInit | null): RoverPageCaptureConfig | undefined {
   if (!cfg) return undefined;
   const fromBackend = sanitizeResolvedPageCaptureConfig(backendSiteConfig?.pageConfig);
@@ -7830,6 +8417,7 @@ function getCachedSiteConfig(siteId: string): RoverResolvedSiteConfig | null {
         aiAccess: sanitizeAiAccessConfig(parsed.data.aiAccess),
         limits: sanitizeSiteConfigLimits(parsed.data.limits),
         pageConfig: sanitizeResolvedPageCaptureConfig(parsed.data.pageConfig),
+        agentDiscovery: sanitizeRoverAgentDiscoveryRuntimeConfig(parsed.data.agentDiscovery),
         version: typeof parsed.version === 'string' ? parsed.version : undefined,
       };
     }
@@ -8591,6 +9179,7 @@ function bindPublicTaskContext(input: {
     runId: String(input.runId || runtimeState?.pendingRun?.id || '').trim() || undefined,
     updatedAt: Date.now(),
   };
+  syncAgentDiscoverySurfaces(currentConfig);
 }
 
 function getCurrentPublicTaskBoundaryId(): string {
@@ -9396,6 +9985,7 @@ async function fetchBackendSiteConfig(cfg: RoverInit): Promise<RoverResolvedSite
     aiAccess: sanitizeAiAccessConfig(payload.aiAccess),
     limits: sanitizeSiteConfigLimits(payload.limits),
     pageConfig: sanitizeResolvedPageCaptureConfig(payload.pageConfig),
+    agentDiscovery: sanitizeRoverAgentDiscoveryRuntimeConfig(payload.agentDiscovery),
     version: payload.version != null ? String(payload.version) : undefined,
   };
 }
@@ -11037,7 +11627,10 @@ export function update(cfg: Partial<RoverInit>): void {
 }
 
 export function shutdown(): void {
-  removeAgentDiscoveryCue();
+  removeAgentDiscoveryVisuals();
+  removeAgentDiscoveryLandmark();
+  removeAgentDiscoverySurfaceStyle();
+  clearAgentDiscoveryHostSurfaceBindings();
   removeAgentDiscoveryTags();
   clearPreservedWidgetOpenGuard();
   hideTaskSuggestion();
@@ -11096,6 +11689,8 @@ export function shutdown(): void {
   browserReceiptLastHandledKey = '';
   browserReceiptClaimInFlightKey = '';
   activePublicTaskContext = null;
+  agentDiscoveryActionSheetOpen = false;
+  agentDiscoveryExplicitHandshake = false;
   promptContextProviders.clear();
   builtInToolsRegistered = false;
   agentNavigationPending = false;
@@ -11158,12 +11753,16 @@ export function shutdown(): void {
   // Reset boot guards so ensureUnloadHandler() can re-register on next boot
   unloadHandlerInstalled = false;
   visibilitySyncInstalled = false;
+  agentDiscoveryInteractionListenersInstalled = false;
+  agentDiscoveryActionSheetOpen = false;
+  agentDiscoveryExplicitHandshake = false;
   _booted = false;
 }
 
 export function open(): void {
   greetingDismissed = true;
   clearGreetingTimers();
+  agentDiscoveryExplicitHandshake = true;
   ui?.show();
   ui?.open();
   if (runtimeState) {
@@ -11171,7 +11770,7 @@ export function open(): void {
     runtimeState.uiOpen = true;
     persistRuntimeState();
   }
-  syncAgentDiscoveryCue(currentConfig);
+  syncAgentDiscoverySurfaces(currentConfig);
 }
 
 export function close(): void {
@@ -11181,7 +11780,7 @@ export function close(): void {
     runtimeState.uiOpen = false;
     persistRuntimeState();
   }
-  syncAgentDiscoveryCue(currentConfig);
+  syncAgentDiscoverySurfaces(currentConfig);
 }
 
 export function show(): void {
@@ -11190,7 +11789,7 @@ export function show(): void {
     runtimeState.uiHidden = false;
     persistRuntimeState();
   }
-  syncAgentDiscoveryCue(currentConfig);
+  syncAgentDiscoverySurfaces(currentConfig);
 }
 
 export function hide(): void {
@@ -11201,7 +11800,7 @@ export function hide(): void {
     runtimeState.uiOpen = false;
     persistRuntimeState();
   }
-  syncAgentDiscoveryCue(currentConfig);
+  syncAgentDiscoverySurfaces(currentConfig);
 }
 
 export function send(text: string): void {
@@ -11518,9 +12117,12 @@ export {
   createRoverBookmarklet,
   createRoverConsoleSnippet,
   createRoverOwnerInstallBundle,
+  createRoverSiteProfile,
+  createRoverSiteProfileJson,
   createRoverServiceDescLinkHeader,
   createRoverScriptTagSnippet,
   createRoverWellKnownAgentCard,
+  createRoverWellKnownSiteProfile,
   readRoverScriptDataAttributes,
 };
 

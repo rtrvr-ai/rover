@@ -109,9 +109,59 @@ export interface PageDataMetadata {
 
 export type RoverDiscoveryExecutionPreference = 'auto' | 'browser' | 'cloud';
 
+export type RoverDiscoveryResultMode = 'text' | 'markdown' | 'json' | 'observation' | 'artifacts';
+
 export type RoverDiscoverySkillInterface = 'task' | 'shortcut' | 'client_tool' | 'webmcp';
 
 export type RoverDiscoverySkillSource = 'shortcut' | 'client_tool' | 'webmcp' | 'additional';
+
+export type RoverDiscoverySurfaceMode = 'silent' | 'beacon' | 'integrated' | 'debug';
+
+export type RoverDiscoverySurfaceBranding = 'site' | 'co' | 'rover';
+
+export type RoverDiscoveryHostSurface = 'auto' | 'existing-assistant' | 'floating-corner' | 'inline-primary';
+
+export type RoverDiscoveryActionReveal = 'click' | 'focus' | 'keyboard' | 'agent-handshake';
+
+export interface RoverAgentDiscoverySurfaceSnapshot {
+  mode: RoverDiscoverySurfaceMode;
+  branding: RoverDiscoverySurfaceBranding;
+  hostSurface: RoverDiscoveryHostSurface;
+  actionReveal: RoverDiscoveryActionReveal;
+  beaconLabel?: string;
+  agentModeEntryHints?: string[];
+}
+
+export interface RoverAgentDiscoveryCapabilitySnapshot {
+  capabilityId: string;
+  version?: string;
+  label: string;
+  description?: string;
+  preferredInterface?: RoverDiscoverySkillInterface;
+  source?: RoverDiscoverySkillSource;
+  resultModes?: RoverDiscoveryResultMode[];
+  pageScope?: string[];
+  analyticsTags?: string[];
+  deepLink?: string;
+  toolName?: string;
+  taskPayload?: Record<string, unknown>;
+}
+
+export interface RoverAgentDiscoveryPageSnapshot {
+  pageId: string;
+  route?: string;
+  label?: string;
+  capabilityIds: string[];
+  entityHints?: string[];
+  formHints?: string[];
+  visibleCueLabel?: string;
+  beaconLabel?: string;
+  discoveryMode?: RoverDiscoverySurfaceMode;
+  hostSurface?: RoverDiscoveryHostSurface;
+  actionReveal?: RoverDiscoveryActionReveal;
+  agentModeEntryHints?: string[];
+  capabilitySummary?: string[];
+}
 
 export interface RoverAgentDiscoverySkillSnapshot {
   id: string;
@@ -130,12 +180,17 @@ export interface RoverAgentDiscoverySnapshot {
   workflowEndpoint: string;
   serviceDescUrl?: string;
   llmsUrl?: string;
+  roverSiteUrl?: string;
   preferredExecution: RoverDiscoveryExecutionPreference;
   promptLaunchEnabled: boolean;
   shortcutLaunchEnabled: boolean;
   delegatedHandoffs: boolean;
   webmcpAvailable: boolean;
   skills: RoverAgentDiscoverySkillSnapshot[];
+  discoverySurface?: RoverAgentDiscoverySurfaceSnapshot;
+  capabilities?: RoverAgentDiscoveryCapabilitySnapshot[];
+  pages?: RoverAgentDiscoveryPageSnapshot[];
+  page?: RoverAgentDiscoveryPageSnapshot;
   instructions: string[];
 }
 

@@ -138,8 +138,9 @@ These create `agent_authored` records.
 These tools are the RoverBook analytics, memory, and feedback layer. They are not the primary public site-action discovery surface by themselves. For arbitrary external agents, the preferred discovery path is:
 
 1. Rover ATP task access on `POST https://agent.rtrvr.ai/v1/tasks`
-2. site-published Rover shortcut skills in `/.well-known/agent-card.json`
-3. optional WebMCP tools when the browser/runtime supports them
+2. the site-published rich profile in `/.well-known/rover-site.json`
+3. site-published Rover shortcut skills in `/.well-known/agent-card.json`
+4. optional WebMCP tools when the browser/runtime supports them
 
 That means site owners should treat RoverBook tools as secondary support tools, while goal-native site skills and shortcut IDs should be published through Rover/Workspace discovery artifacts.
 
@@ -163,6 +164,16 @@ The collector is designed to survive real browsing behavior:
 - `sessionStorage` queue recovery after navigation or reload
 
 All writes go through `rover.requestSigned(...)`, so the backend can verify Rover session claims before accepting data.
+
+Stored RoverBook provenance for Rover-mediated traffic includes:
+
+- `discoverySurface`
+- `capabilityId`
+- `pageId`
+- `executionPath`
+- `requestedResultModes`
+- `workflowId`
+- `userPresent`
 
 ## WebMCP
 

@@ -30,6 +30,23 @@ export type RoverServerAiAccessConfig = {
   debugStreaming?: boolean;
 };
 
+export type RoverServerAgentDiscoveryConfig = {
+  enabled?: boolean;
+  preferExecution?: 'auto' | 'browser' | 'cloud';
+  agentCardUrl?: string;
+  roverSiteUrl?: string;
+  llmsUrl?: string;
+  hostSurfaceSelector?: string;
+  discoverySurface?: {
+    mode?: 'silent' | 'beacon' | 'integrated' | 'debug';
+    branding?: 'site' | 'co' | 'rover';
+    hostSurface?: 'auto' | 'existing-assistant' | 'floating-corner' | 'inline-primary';
+    actionReveal?: 'click' | 'focus' | 'keyboard' | 'agent-handshake';
+    beaconLabel?: string;
+    agentModeEntryHints?: string[];
+  };
+};
+
 export type RoverServerSiteConfig = {
   shortcuts?: Array<Record<string, unknown>>;
   greeting?: {
@@ -45,6 +62,7 @@ export type RoverServerSiteConfig = {
   voice?: RoverServerVoiceConfig;
   aiAccess?: RoverServerAiAccessConfig;
   pageConfig?: RoverPageCaptureConfig | null;
+  agentDiscovery?: RoverServerAgentDiscoveryConfig | null;
   version?: string | number;
 };
 

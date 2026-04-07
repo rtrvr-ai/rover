@@ -52,7 +52,12 @@ export type NoteVisibility = 'private' | 'shared';
 export type NoteType = 'issue' | 'learning' | 'tip' | 'observation';
 export type VoteDirection = 'up' | 'down';
 export type PostType = 'bug_report' | 'tip' | 'question' | 'suggestion' | 'discussion';
-export type AgentIdentityTrust = 'verified' | 'self_reported' | 'heuristic' | 'anonymous';
+export type AgentIdentityTrust =
+  | 'verified_signed'
+  | 'signed_directory_only'
+  | 'self_reported'
+  | 'heuristic'
+  | 'anonymous';
 export type AgentIdentitySource =
   | 'public_task_agent'
   | 'handoff_agent'

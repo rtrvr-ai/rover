@@ -1,7 +1,15 @@
 import type {
+  RoverAgentDiscoverySurfaceSnapshot,
+  RoverAgentDiscoveryCapabilitySnapshot,
+  RoverAgentDiscoveryPageSnapshot,
   RoverAgentDiscoverySkillSnapshot,
+  RoverDiscoveryActionReveal,
+  RoverDiscoveryHostSurface,
+  RoverDiscoverySurfaceBranding,
+  RoverDiscoverySurfaceMode,
   RoverAgentDiscoverySnapshot,
   RoverDiscoveryExecutionPreference,
+  RoverDiscoveryResultMode,
   RoverDiscoverySkillInterface,
   RoverDiscoverySkillSource,
 } from './types/index.js';
@@ -56,9 +64,49 @@ function normalizeSource(value: unknown): RoverDiscoverySkillSource | undefined 
     : undefined;
 }
 
+function normalizeDiscoveryMode(value: unknown): RoverDiscoverySurfaceMode | undefined {
+  return value === 'silent' || value === 'beacon' || value === 'integrated' || value === 'debug'
+    ? value
+    : undefined;
+}
+
+function normalizeDiscoveryBranding(value: unknown): RoverDiscoverySurfaceBranding | undefined {
+  return value === 'site' || value === 'co' || value === 'rover'
+    ? value
+    : undefined;
+}
+
+function normalizeHostSurface(value: unknown): RoverDiscoveryHostSurface | undefined {
+  return value === 'auto'
+    || value === 'existing-assistant'
+    || value === 'floating-corner'
+    || value === 'inline-primary'
+    ? value
+    : undefined;
+}
+
+function normalizeActionReveal(value: unknown): RoverDiscoveryActionReveal | undefined {
+  return value === 'click'
+    || value === 'focus'
+    || value === 'keyboard'
+    || value === 'agent-handshake'
+    ? value
+    : undefined;
+}
+
 function normalizeTaskPayload(value: unknown): Record<string, unknown> | undefined {
   const object = asObject(value);
   return object ? { ...object } : undefined;
+}
+
+function normalizeResultMode(value: unknown): RoverDiscoveryResultMode | undefined {
+  return value === 'text'
+    || value === 'markdown'
+    || value === 'json'
+    || value === 'observation'
+    || value === 'artifacts'
+    ? value
+    : undefined;
 }
 
 function normalizeSkill(value: unknown): RoverAgentDiscoverySkillSnapshot | null {
@@ -79,6 +127,75 @@ function normalizeSkill(value: unknown): RoverAgentDiscoverySkillSnapshot | null
   };
 }
 
+function normalizeCapability(value: unknown): RoverAgentDiscoveryCapabilitySnapshot | null {
+  const capability = asObject(value);
+  if (!capability) return null;
+  const rover = asObject(capability.rover);
+  const capabilityId = text(capability.capabilityId || capability.id, 120);
+  const label = text(capability.label || capability.name, 180);
+  if (!capabilityId || !label) return null;
+  const resultModes = Array.isArray(capability.resultModes)
+    ? capability.resultModes
+        .map(entry => normalizeResultMode(entry))
+        .filter((entry): entry is RoverDiscoveryResultMode => !!entry)
+    : [];
+  return {
+    capabilityId,
+    version: text(capability.version, 80) || undefined,
+    label,
+    description: text(capability.description, 320) || undefined,
+    preferredInterface: normalizePreferredInterface(capability.preferredInterface),
+    source: normalizeSource(rover?.source),
+    ...(resultModes.length ? { resultModes } : {}),
+    pageScope: uniqueStrings(capability.pageScope, { max: 24, maxLen: 80 }),
+    analyticsTags: uniqueStrings(capability.analyticsTags, { max: 24, maxLen: 64 }),
+    deepLink: text(rover?.deepLink, 2048) || undefined,
+    toolName: text(rover?.toolName, 120) || undefined,
+    taskPayload: normalizeTaskPayload(asObject(rover?.task)?.payload),
+  };
+}
+
+function normalizeDiscoverySurface(value: unknown): RoverAgentDiscoverySurfaceSnapshot | undefined {
+  const surface = asObject(value);
+  if (!surface) return undefined;
+  const mode = normalizeDiscoveryMode(surface.mode);
+  const branding = normalizeDiscoveryBranding(surface.branding);
+  const hostSurface = normalizeHostSurface(surface.hostSurface);
+  const actionReveal = normalizeActionReveal(surface.actionReveal);
+  if (!mode || !branding || !hostSurface || !actionReveal) return undefined;
+  return {
+    mode,
+    branding,
+    hostSurface,
+    actionReveal,
+    beaconLabel: text(surface.beaconLabel, 180) || undefined,
+    agentModeEntryHints: uniqueStrings(surface.agentModeEntryHints, { max: 8, maxLen: 240 }),
+  };
+}
+
+function normalizePage(value: unknown): RoverAgentDiscoveryPageSnapshot | null {
+  const page = asObject(value);
+  if (!page) return null;
+  const pageId = text(page.pageId || page.id, 120);
+  if (!pageId) return null;
+  const beaconLabel = text(page.beaconLabel || page.visibleCueLabel, 180) || undefined;
+  return {
+    pageId,
+    route: text(page.route, 512) || undefined,
+    label: text(page.label, 180) || undefined,
+    capabilityIds: uniqueStrings(page.capabilityIds, { max: 48, maxLen: 120 }),
+    entityHints: uniqueStrings(page.entityHints, { max: 24, maxLen: 120 }),
+    formHints: uniqueStrings(page.formHints, { max: 24, maxLen: 120 }),
+    visibleCueLabel: beaconLabel,
+    beaconLabel,
+    discoveryMode: normalizeDiscoveryMode(page.discoveryMode),
+    hostSurface: normalizeHostSurface(page.hostSurface),
+    actionReveal: normalizeActionReveal(page.actionReveal),
+    agentModeEntryHints: uniqueStrings(page.agentModeEntryHints, { max: 8, maxLen: 240 }),
+    capabilitySummary: uniqueStrings(page.capabilitySummary, { max: 12, maxLen: 180 }),
+  };
+}
+
 export function createRoverAgentDiscoverySnapshot(cardLike: unknown): RoverAgentDiscoverySnapshot | undefined {
   const card = asObject(cardLike);
   if (!card) return undefined;
@@ -96,11 +213,23 @@ export function createRoverAgentDiscoverySnapshot(cardLike: unknown): RoverAgent
   const delegatedHandoffs = bool(rover.delegatedHandoffs);
   const webmcp = asObject(rover.webmcp);
   const webmcpAvailable = bool(webmcp?.available);
+  const discoverySurface = normalizeDiscoverySurface(rover.discoverySurface);
   const skills = Array.isArray(card.skills)
     ? card.skills
         .map(entry => normalizeSkill(entry))
         .filter((entry): entry is RoverAgentDiscoverySkillSnapshot => !!entry)
     : [];
+  const capabilities = Array.isArray(rover.capabilitiesGraph)
+    ? rover.capabilitiesGraph
+        .map(entry => normalizeCapability(entry))
+        .filter((entry): entry is RoverAgentDiscoveryCapabilitySnapshot => !!entry)
+    : [];
+  const pages = Array.isArray(rover.pages)
+    ? rover.pages
+        .map(entry => normalizePage(entry))
+        .filter((entry): entry is RoverAgentDiscoveryPageSnapshot => !!entry)
+    : [];
+  const page = normalizePage(rover.currentPage);
   const instructions = uniqueStrings(rover.instructions, { max: 12, maxLen: 280 });
 
   return {
@@ -110,12 +239,17 @@ export function createRoverAgentDiscoverySnapshot(cardLike: unknown): RoverAgent
     workflowEndpoint,
     serviceDescUrl: text(rover.serviceDescUrl, 2048) || undefined,
     llmsUrl: text(rover.llmsUrl, 2048) || undefined,
+    roverSiteUrl: text(rover.roverSiteUrl, 2048) || undefined,
     preferredExecution: normalizeExecutionPreference(rover.preferredExecution),
     promptLaunchEnabled,
     shortcutLaunchEnabled,
     delegatedHandoffs,
     webmcpAvailable,
     skills,
+    ...(discoverySurface ? { discoverySurface } : {}),
+    ...(capabilities.length ? { capabilities } : {}),
+    ...(pages.length ? { pages } : {}),
+    ...(page ? { page } : {}),
     instructions,
   };
 }

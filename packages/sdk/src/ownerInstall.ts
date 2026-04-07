@@ -2,11 +2,16 @@ import type { RoverPageCaptureConfig } from '@rover/shared/lib/types/index.js';
 import type { RoverShortcut, RoverVoiceConfig } from '@rover/ui';
 import {
   DEFAULT_AGENT_CARD_PATH,
+  DEFAULT_ROVER_SITE_PATH,
   createRoverAgentCard,
   createRoverAgentCardJson,
+  createRoverSiteProfile,
+  createRoverSiteProfileJson,
   createRoverServiceDescLinkHeader,
   type RoverAgentCard,
   type RoverAgentDiscoveryConfig,
+  type RoverAgentDiscoveryRuntimeConfig,
+  type RoverSiteProfile,
 } from './agentDiscovery.js';
 
 const DEFAULT_EMBED_SCRIPT_URL = 'https://rover.rtrvr.ai/embed.js';
@@ -108,6 +113,7 @@ export type RoverOwnerInstallBootConfig = {
       scrapeMode?: 'off' | 'on_demand';
     };
   };
+  agentDiscovery?: RoverAgentDiscoveryRuntimeConfig;
   siteMode?: 'agent' | 'analytics_only' | string;
 };
 
@@ -135,12 +141,17 @@ export type RoverOwnerInstallBundleMetadata = {
   roverBookEnabled: boolean;
   roverBookScriptUrl?: string;
   publishedAgentCardUrl?: string;
+  publishedRoverSiteUrl?: string;
   publishedLlmsUrl?: string;
   serviceDescLinkTag?: string;
   serviceDocLinkTag?: string;
   markerJson?: string;
   markerScript?: string;
   inlineAgentCardScript?: string;
+  roverSiteJson?: string;
+  inlineRoverSiteScript?: string;
+  pageManifestJson?: string;
+  pageManifestScript?: string;
 };
 
 export type RoverOwnerInstallBundle = {
@@ -148,6 +159,8 @@ export type RoverOwnerInstallBundle = {
   headDiscoveryHtml: string;
   agentCard?: RoverAgentCard;
   agentCardJson?: string;
+  roverSite?: RoverSiteProfile;
+  roverSiteJson?: string;
   serviceDescLinkHeader?: string;
   llmsTxt?: string;
   metadata: RoverOwnerInstallBundleMetadata;
@@ -200,7 +213,7 @@ function normalizeAttachMaxAttempts(value: unknown): number {
 }
 
 function discoveryEnabled(config?: RoverAgentDiscoveryConfig | null): config is RoverAgentDiscoveryConfig {
-  return !!config && config.aiAccess?.enabled !== false;
+  return !!config && config.enabled !== false && config.aiAccess?.enabled !== false;
 }
 
 function llmsEnabled(input: RoverOwnerInstallBundleInput, config?: RoverAgentDiscoveryConfig | null): boolean {
@@ -212,12 +225,26 @@ function buildOwnerMarker(card: RoverAgentCard, publishedAgentCardUrl: string): 
   return {
     task: card.extensions?.rover.taskEndpoint,
     card: publishedAgentCardUrl,
+    roverSite: card.extensions?.rover.roverSiteUrl,
     site: card.extensions?.rover.siteUrl,
     workflow: card.extensions?.rover.workflowEndpoint,
+    page: card.extensions?.rover.currentPage?.pageId,
     preferExecution: card.extensions?.rover.preferredExecution,
+    display: card.extensions?.rover.discoverySurface
+      ? {
+          mode: card.extensions.rover.discoverySurface.mode,
+          hostSurface: card.extensions.rover.discoverySurface.hostSurface,
+          actionReveal: card.extensions.rover.discoverySurface.actionReveal,
+          beaconLabel: card.extensions.rover.discoverySurface.beaconLabel,
+        }
+      : undefined,
     skills: card.skills.slice(0, 24).map(skill => ({
       id: skill.id,
       name: skill.name,
+    })),
+    capabilities: (card.extensions?.rover.capabilitiesGraph || []).slice(0, 24).map(capability => ({
+      capabilityId: capability.capabilityId,
+      label: capability.label,
     })),
   };
 }
@@ -311,6 +338,7 @@ export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInpu
   const bootConfig = input.bootConfig;
   const discoveryConfig = discoveryEnabled(input.discovery) ? input.discovery : null;
   const publishedAgentCardUrl = discoveryConfig ? text(discoveryConfig.agentCardUrl) || DEFAULT_AGENT_CARD_PATH : '';
+  const publishedRoverSiteUrl = discoveryConfig ? text(discoveryConfig.roverSiteUrl) || DEFAULT_ROVER_SITE_PATH : '';
   const publishLlmsTxt = llmsEnabled(input, discoveryConfig);
   const publishedLlmsUrl = discoveryConfig ? text(discoveryConfig.llmsUrl) : '';
   const embedScriptUrl = text(input.embedScriptUrl) || DEFAULT_EMBED_SCRIPT_URL;
@@ -321,11 +349,18 @@ export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInpu
 
   const agentCard = discoveryConfig ? createRoverAgentCard(discoveryConfig) : undefined;
   const agentCardJson = discoveryConfig ? createRoverAgentCardJson(discoveryConfig) : undefined;
+  const roverSite = discoveryConfig ? createRoverSiteProfile(discoveryConfig) : undefined;
+  const roverSiteJson = discoveryConfig ? createRoverSiteProfileJson(discoveryConfig) : undefined;
+  const pageManifestJson = discoveryConfig
+    ? JSON.stringify(agentCard?.extensions?.rover.currentPage || null, null, 2)
+    : undefined;
   const marker = agentCard && publishedAgentCardUrl
     ? buildOwnerMarker(agentCard, publishedAgentCardUrl)
     : undefined;
   const markerJson = marker ? escapeScriptJson(JSON.stringify(marker)) : undefined;
   const escapedAgentCardJson = agentCardJson ? escapeScriptJson(agentCardJson) : undefined;
+  const escapedRoverSiteJson = roverSiteJson ? escapeScriptJson(roverSiteJson) : undefined;
+  const escapedPageManifestJson = pageManifestJson ? escapeScriptJson(pageManifestJson) : undefined;
   const serviceDescLinkTag = discoveryConfig && publishedAgentCardUrl
     ? `<link rel="service-desc" href="${escapeHtmlAttr(publishedAgentCardUrl)}" type="application/json" />`
     : undefined;
@@ -336,6 +371,12 @@ export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInpu
   const bodyLines: string[] = [];
   if (markerJson) {
     bodyLines.push(`<script type="application/agent+json" data-rover-agent-discovery="marker">${markerJson}</script>`);
+  }
+  if (escapedRoverSiteJson) {
+    bodyLines.push(`<script type="application/rover-site+json" data-rover-agent-discovery="rover-site">${escapedRoverSiteJson}</script>`);
+  }
+  if (escapedPageManifestJson) {
+    bodyLines.push(`<script type="application/rover-page+json" data-rover-agent-discovery="page">${escapedPageManifestJson}</script>`);
   }
   if (escapedAgentCardJson) {
     bodyLines.push(`<script type="application/agent-card+json" data-rover-agent-discovery="agent-card">${escapedAgentCardJson}</script>`);
@@ -361,6 +402,8 @@ export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInpu
     headDiscoveryHtml: [serviceDescLinkTag, serviceDocLinkTag].filter(Boolean).join('\n'),
     agentCard,
     agentCardJson,
+    roverSite,
+    roverSiteJson,
     serviceDescLinkHeader: discoveryConfig
       ? createRoverServiceDescLinkHeader({
           agentCardUrl: publishedAgentCardUrl || DEFAULT_AGENT_CARD_PATH,
@@ -375,6 +418,7 @@ export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInpu
       roverBookEnabled,
       roverBookScriptUrl: roverBookScriptUrl || undefined,
       publishedAgentCardUrl: publishedAgentCardUrl || undefined,
+      publishedRoverSiteUrl: publishedRoverSiteUrl || undefined,
       publishedLlmsUrl: publishedLlmsUrl || undefined,
       serviceDescLinkTag,
       serviceDocLinkTag,
@@ -384,6 +428,14 @@ export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInpu
         : undefined,
       inlineAgentCardScript: escapedAgentCardJson
         ? `<script type="application/agent-card+json" data-rover-agent-discovery="agent-card">${escapedAgentCardJson}</script>`
+        : undefined,
+      roverSiteJson,
+      inlineRoverSiteScript: escapedRoverSiteJson
+        ? `<script type="application/rover-site+json" data-rover-agent-discovery="rover-site">${escapedRoverSiteJson}</script>`
+        : undefined,
+      pageManifestJson,
+      pageManifestScript: escapedPageManifestJson
+        ? `<script type="application/rover-page+json" data-rover-agent-discovery="page">${escapedPageManifestJson}</script>`
         : undefined,
     },
   };

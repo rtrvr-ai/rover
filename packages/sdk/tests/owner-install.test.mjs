@@ -11,6 +11,16 @@ test('owner install bundle splits body runtime HTML from head discovery HTML', (
       siteKeyId: 'key_123',
       allowedDomains: ['example.com'],
       domainScopeMode: 'registrable_domain',
+      agentDiscovery: {
+        enabled: true,
+        roverSiteUrl: '/.well-known/rover-site.json',
+        discoverySurface: {
+          mode: 'integrated',
+          hostSurface: 'existing-assistant',
+          actionReveal: 'agent-handshake',
+          beaconLabel: 'Use AI',
+        },
+      },
     },
     embedScriptUrl: 'https://rover.rtrvr.ai/embed.js?v=key_123',
     roverBook: {
@@ -44,10 +54,14 @@ test('owner install bundle splits body runtime HTML from head discovery HTML', (
 
   assert.match(bundle.bodyInstallHtml, /application\/agent\+json/);
   assert.match(bundle.bodyInstallHtml, /application\/agent-card\+json/);
+  assert.match(bundle.bodyInstallHtml, /application\/rover-site\+json/);
+  assert.match(bundle.bodyInstallHtml, /application\/rover-page\+json/);
   assert.doesNotMatch(bundle.bodyInstallHtml, /rel="service-desc"/);
   assert.match(bundle.bodyInstallHtml, /embed\.js\?v=key_123/);
   assert.match(bundle.bodyInstallHtml, /roverbook\.js\?v=key_123/);
   assert.match(bundle.bodyInstallHtml, /enableRoverBook/);
+  assert.match(bundle.bodyInstallHtml, /"agentDiscovery"/);
+  assert.match(bundle.bodyInstallHtml, /"mode": "integrated"/);
 
   assert.match(bundle.headDiscoveryHtml, /rel="service-desc"/);
   assert.match(bundle.headDiscoveryHtml, /rel="service-doc"/);
@@ -57,6 +71,12 @@ test('owner install bundle splits body runtime HTML from head discovery HTML', (
   );
   assert.match(bundle.llmsTxt || '', /book_demo: Book Demo/);
   assert.equal(bundle.agentCard?.name, 'Example Store');
+  assert.equal(bundle.agentCard?.extensions?.rover?.discoverySurface?.mode, 'beacon');
+  assert.equal(bundle.roverSite?.identity.siteId, 'site_123');
+  assert.equal(bundle.roverSite?.display?.mode, 'beacon');
+  assert.equal(bundle.roverSite?.display?.compactActionMaxActions, 3);
+  assert.equal(bundle.roverSite?.artifacts.roverSiteUrl, '/.well-known/rover-site.json');
+  assert.match(bundle.roverSiteJson || '', /"siteId": "site_123"/);
 });
 
 test('owner install bundle keeps runtime install valid when public discovery is disabled', () => {
@@ -82,4 +102,26 @@ test('owner install bundle keeps runtime install valid when public discovery is 
   assert.equal(bundle.serviceDescLinkHeader, undefined);
   assert.equal(bundle.llmsTxt, undefined);
   assert.match(bundle.bodyInstallHtml, /rover\('boot'/);
+});
+
+test('owner install bundle respects explicit discovery disable even when ai access is enabled', () => {
+  const bundle = createRoverOwnerInstallBundle({
+    bootConfig: {
+      siteId: 'site_789',
+      publicKey: 'pk_site_789',
+    },
+    discovery: {
+      enabled: false,
+      siteId: 'site_789',
+      siteUrl: 'https://example.com/',
+      siteName: 'Example Store',
+      aiAccess: {
+        enabled: true,
+      },
+    },
+  });
+
+  assert.doesNotMatch(bundle.bodyInstallHtml, /application\/agent\+json/);
+  assert.equal(bundle.agentCardJson, undefined);
+  assert.equal(bundle.roverSiteJson, undefined);
 });

@@ -34,6 +34,13 @@ test('normalizeConfig keeps Workspace publicKey config fields', () => {
   assert.equal(config.allowActions, true);
 });
 
+test('isHostAllowed allows any host with wildcard *', () => {
+  assert.ok(isHostAllowed('www.rtrvr.ai', ['*'], 'registrable_domain'));
+  assert.ok(isHostAllowed('anything.example.com', ['*'], 'host_only'));
+  assert.ok(isHostAllowed('localhost', ['*'], 'host_only'));
+  assert.ok(isHostAllowed('some-random-site.org', ['*', 'example.com'], 'registrable_domain'));
+});
+
 test('isHostAllowed respects host_only and registrable domain rules', () => {
   assert.equal(isHostAllowed('example.com', ['example.com'], 'host_only'), true);
   assert.equal(isHostAllowed('shop.example.com', ['example.com'], 'host_only'), false);
