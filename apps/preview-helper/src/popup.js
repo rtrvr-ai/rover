@@ -4,6 +4,7 @@ const configEl = document.getElementById('config');
 const statusEl = document.getElementById('status');
 const injectBtn = document.getElementById('inject');
 const reconnectBtn = document.getElementById('reconnect');
+const helpEl = document.getElementById('config-help');
 
 async function getActiveTab() {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -69,12 +70,36 @@ reconnectBtn.addEventListener('click', async () => {
   }
 });
 
+async function loadPersistedConfig() {
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: 'ROVER_PREVIEW_HELPER_GET_PERSISTED_CONFIG',
+    });
+    if (response?.ok && response.config) {
+      configEl.value = JSON.stringify(response.config, null, 2);
+      setStatus('Loaded your last-used config. Click "Inject Rover into this tab" to use it here.');
+      return true;
+    }
+  } catch { /* ignore */ }
+  return false;
+}
+
+configEl.addEventListener('input', () => {
+  if (helpEl && configEl.value.trim()) helpEl.style.display = 'none';
+});
+
 (async () => {
   try {
     const tab = await getActiveTab();
     if (tab?.id) {
       await loadSavedConfig(tab.id);
       await loadSavedStatus(tab.id);
+    }
+    if (!configEl.value.trim()) {
+      const loaded = await loadPersistedConfig();
+      if (!loaded && helpEl) {
+        helpEl.style.display = 'block';
+      }
     }
   } catch {
     // Ignore initial load failures.

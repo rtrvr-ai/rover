@@ -31,6 +31,10 @@ importers:
         specifier: ^5.4.1
         version: 5.4.21(@types/node@20.19.33)
 
+  apps/preview-helper: {}
+
+  apps/rolls: {}
+
   packages/a11y-tree:
     devDependencies:
       '@rover/tsconfig':

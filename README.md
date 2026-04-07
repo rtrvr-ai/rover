@@ -42,7 +42,7 @@ Drop in Rover and users get an assistant that can actually use the page.
 
 ### For AI agents
 
-Rover exposes machine-readable task resources at `POST https://agent.rtrvr.ai/v1/tasks`, delegated handoffs, workflow lineage, optional WebMCP task/tools discovery, and helper utilities for publishing `/.well-known/agent-card.json` plus `service-desc` discovery metadata.
+Rover exposes machine-readable task resources at `POST https://agent.rtrvr.ai/v1/tasks`, delegated handoffs, workflow lineage, optional WebMCP task/tools discovery, and helper utilities for publishing `/.well-known/rover-site.json`, `/.well-known/agent-card.json`, and `service-desc` discovery metadata.
 
 ### For site owners
 
@@ -70,7 +70,6 @@ The same core runtime works in websites, Chrome extensions, Electron apps, and o
 
 ```html
 <script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
-<link rel="service-desc" href="/.well-known/agent-card.json" type="application/json" />
 <script>
   (function () {
     var r = window.rover = window.rover || function () {
@@ -90,6 +89,8 @@ The same core runtime works in websites, Chrome extensions, Electron apps, and o
 </script>
 <script src="https://rover.rtrvr.ai/embed.js?v=YOUR_SITE_KEY_ID" async></script>
 ```
+
+Publish head tags and well-known discovery files separately from the body snippet. The Workspace-generated install bundle already splits body runtime HTML from head discovery HTML for you.
 
 Get your `siteId`, `publicKey`, and optional `siteKeyId` from Workspace:
 
@@ -317,7 +318,7 @@ Content-Type: application/json
 
 {
   "url": "https://example.com",
-  "prompt": "find the pricing page",
+  "goal": "Find the pricing page",
   "agent": {
     "key": "gpt-5.4-demo-agent",
     "name": "GPT-5.4 Demo Agent",
@@ -358,7 +359,7 @@ If the site emits the discovery marker below, AI tools can detect ATP support di
 <script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
 ```
 
-For stronger discovery, also publish `/.well-known/agent-card.json`, add a `Link: </.well-known/agent-card.json>; rel="service-desc"` header, and include source-visible discovery tags from the SDK helper `createRoverAgentDiscoveryTags(...)`.
+For stronger discovery, publish `/.well-known/rover-site.json` as Rover's authoritative rich profile, publish `/.well-known/agent-card.json` as the broad interop card, add a `Link: </.well-known/agent-card.json>; rel="service-desc"` header for generic agents, and include source-visible discovery tags from the SDK helper `createRoverAgentDiscoveryTags(...)`.
 
 ### Delegated handoffs
 
@@ -385,7 +386,7 @@ When a caller does not send explicit `agent` metadata, Rover can still attribute
 - `Signature-Input`
 - `X-RTRVR-Client-Id`
 
-Those inputs help grouping and labeling, but they do **not** imply verified identity by themselves.
+Those inputs help grouping and labeling, but they do **not** imply `verified_signed` or `signed_directory_only` by themselves.
 
 ### Browser-first path
 
@@ -467,19 +468,21 @@ Rover and RoverBook use a tiered attribution model for visiting agents.
 
 Resolution order:
 
-1. verified signal
+1. verified signed signal
 2. explicit `agent` metadata on public tasks, handoffs, or WebMCP tools
 3. heuristic attribution from headers / user-agent
 4. advanced owner `identityResolver`
 5. anonymous fallback
 
-Current launch behavior emits:
+Trust tiers are:
 
+- `verified_signed`
+- `signed_directory_only`
 - `self_reported`
 - `heuristic`
 - `anonymous`
 
-`verified` remains reserved for a real verifier and is intentionally not inferred from unsigned headers alone.
+Unsigned headers never escalate above `heuristic`. `verified_signed` requires real signed verification, and `signed_directory_only` is reserved for directory-backed discovery without full signed request verification.
 
 Memory keys resolve as:
 
@@ -508,7 +511,11 @@ RoverBook is explicit about what it can and cannot see:
 
 ### Verified agent identity
 
-Support stronger verified attribution tiers when real signature-backed or bot-auth verification is available. Headers alone will continue to stay heuristic.
+Continue aligning Rover attribution with real signature-backed and bot-auth verification while keeping unsigned headers in `heuristic`.
+
+### Open compatibility suite
+
+Ship Rover's discovery ladder publicly: `silent`, `beacon`, `integrated`, and `debug`, plus compatibility tests across raw HTTP agents, agent-card consumers, DOM/a11y agents, screenshot/VLM agents, and WebMCP-capable browsers.
 
 ### Richer experiment and workflow analytics
 

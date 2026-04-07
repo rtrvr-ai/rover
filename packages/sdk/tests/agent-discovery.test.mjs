@@ -7,6 +7,8 @@ import {
   createRoverAgentDiscoveryTags,
   createRoverServiceDescLinkHeader,
   createRoverWellKnownAgentCard,
+  createRoverWellKnownSiteProfile,
+  sanitizeRoverAgentDiscoveryRuntimeConfig,
 } from '../dist/agentDiscovery.js';
 
 test('agent card maps shortcuts and explicit tools into published skills', () => {
@@ -89,6 +91,9 @@ test('agent card maps shortcuts and explicit tools into published skills', () =>
   assert.equal(card.capabilities.delegatedHandoffs, true);
   assert.equal(card.capabilities.webmcp, true);
   assert.equal(card.extensions.rover.preferredExecution, 'cloud');
+  assert.equal(card.extensions.rover.discoverySurface.mode, 'beacon');
+  assert.equal(card.extensions.rover.discoverySurface.branding, 'site');
+  assert.equal(card.extensions.rover.discoverySurface.compactActionMaxActions, 3);
   assert.equal(card.skills.length, 3);
 
   const checkoutSkill = card.skills.find(skill => skill.id === 'start_checkout');
@@ -111,6 +116,7 @@ test('agent discovery snapshot normalizes callable Rover surfaces from the publi
     siteUrl: 'https://example.com/',
     siteName: 'Example Store',
     apiBase: 'https://agent.rtrvr.ai',
+    roverSiteUrl: '/.well-known/rover-site.json',
     aiAccess: {
       enabled: true,
       allowPromptLaunch: true,
@@ -143,6 +149,21 @@ test('agent discovery snapshot normalizes callable Rover surfaces from the publi
         },
       },
     ],
+    pages: [
+      {
+        pageId: 'checkout',
+        route: '/checkout',
+        label: 'Checkout',
+        capabilityIds: ['checkout_flow'],
+        visibleCueLabel: 'AI actions available',
+      },
+    ],
+    pageContext: {
+      pageId: 'checkout',
+      route: '/checkout',
+      capabilityIds: ['checkout_flow'],
+      visibleCueLabel: 'AI actions available',
+    },
   });
 
   const snapshot = createRoverAgentDiscoverySnapshot(card);
@@ -150,6 +171,11 @@ test('agent discovery snapshot normalizes callable Rover surfaces from the publi
   assert.equal(snapshot.taskEndpoint, 'https://agent.rtrvr.ai/v1/tasks');
   assert.equal(snapshot.workflowEndpoint, 'https://agent.rtrvr.ai/v1/workflows');
   assert.equal(snapshot.webmcpAvailable, true);
+  assert.equal(snapshot.roverSiteUrl, '/.well-known/rover-site.json');
+  assert.equal(snapshot.discoverySurface?.mode, 'beacon');
+  assert.equal(snapshot.page?.beaconLabel, 'AI actions available');
+  assert.equal(snapshot.capabilities[0].capabilityId, 'checkout_flow');
+  assert.equal(snapshot.page?.pageId, 'checkout');
   assert.equal(snapshot.skills[0].id, 'checkout_flow');
   assert.equal(snapshot.skills[0].taskPayload.shortcut, 'checkout_flow');
 });
@@ -168,6 +194,36 @@ test('agent card disables public task capability when ai access is off', () => {
   assert.equal(card.interfaces.find(entry => entry.type === 'task')?.available, false);
 });
 
+test('agent discovery runtime config sanitizer preserves supported beacon-first fields', () => {
+  const config = sanitizeRoverAgentDiscoveryRuntimeConfig({
+    enabled: false,
+    roverSiteUrl: '/.well-known/rover-site.json',
+    hostSurfaceSelector: '[data-assistant]',
+    discoverySurface: {
+      mode: 'integrated',
+      branding: 'site',
+      hostSurface: 'existing-assistant',
+      actionReveal: 'agent-handshake',
+      visibleCueLabel: 'Use AI',
+      agentModeEntryHints: ['Open the assistant first.', 'Open the assistant first.', 'Then use Rover actions.'],
+    },
+  });
+
+  assert.deepEqual(config, {
+    enabled: false,
+    roverSiteUrl: '/.well-known/rover-site.json',
+    hostSurfaceSelector: '[data-assistant]',
+    discoverySurface: {
+      mode: 'integrated',
+      branding: 'site',
+      hostSurface: 'existing-assistant',
+      actionReveal: 'agent-handshake',
+      beaconLabel: 'Use AI',
+      agentModeEntryHints: ['Open the assistant first.', 'Then use Rover actions.'],
+    },
+  });
+});
+
 test('discovery tags include marker, service description, and inline agent card', () => {
   const html = createRoverAgentDiscoveryTags({
     siteUrl: 'https://example.com/',
@@ -184,6 +240,8 @@ test('discovery tags include marker, service description, and inline agent card'
   assert.match(html, /application\/agent\+json/);
   assert.match(html, /rel="service-desc"/);
   assert.match(html, /application\/agent-card\+json/);
+  assert.match(html, /application\/rover-site\+json/);
+  assert.match(html, /application\/rover-page\+json/);
   assert.match(html, /checkout_flow/);
 });
 
@@ -203,4 +261,35 @@ test('well-known card helper and Link header helper produce deployable outputs',
     linkHeader,
     '</.well-known/agent-card.json>; rel="service-desc"; type="application/json", </llms.txt>; rel="service-doc"; type="text/markdown"',
   );
+});
+
+test('well-known rover-site profile compiles the capability graph and page inventory', () => {
+  const json = createRoverWellKnownSiteProfile({
+    siteId: 'site_123',
+    siteUrl: 'https://example.com/',
+    siteName: 'Example Store',
+    apiBase: 'https://agent.rtrvr.ai',
+    shortcuts: [
+      {
+        id: 'checkout_flow',
+        label: 'Checkout Flow',
+        prompt: 'start checkout',
+      },
+    ],
+    pages: [
+      {
+        pageId: 'checkout',
+        route: '/checkout',
+        capabilityIds: ['checkout_flow'],
+      },
+    ],
+  });
+  const parsed = JSON.parse(json);
+
+  assert.equal(parsed.identity.siteId, 'site_123');
+  assert.equal(parsed.actions[0].capabilityId, 'checkout_flow');
+  assert.equal(parsed.pages[0].pageId, 'checkout');
+  assert.equal(parsed.display.mode, 'beacon');
+  assert.equal(parsed.currentPage.pageId, 'home');
+  assert.equal(parsed.artifacts.roverSiteUrl, '/.well-known/rover-site.json');
 });

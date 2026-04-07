@@ -13,6 +13,20 @@ import {
 const inMemoryState = new Map();
 const pendingInjects = new Map();
 const STATUS_KEY_PREFIX = 'rover-preview-helper:status:';
+const PERSISTED_CONFIG_KEY = 'rover-preview-helper:last-config';
+
+async function persistConfig(config) {
+  const toStore = { ...config };
+  delete toStore.bootstrapId;
+  delete toStore.targetHost;
+  delete toStore.configRefreshedAt;
+  await chrome.storage.local.set({ [PERSISTED_CONFIG_KEY]: toStore });
+}
+
+async function getPersistedConfig() {
+  const stored = await chrome.storage.local.get(PERSISTED_CONFIG_KEY);
+  return stored[PERSISTED_CONFIG_KEY] || null;
+}
 
 function storageKey(tabId) {
   return `${STORAGE_KEY_PREFIX}${tabId}`;
@@ -282,6 +296,7 @@ async function injectFromTab(tabId, config) {
   };
 
   await writeState(tabId, state);
+  await persistConfig(state);
   await injectMainWorldState(tabId, state);
   await writeStatus(tabId, `Rover injected for ${targetHost}.`);
 
@@ -339,6 +354,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     })();
     return;
+  }
+
+  if (message.type === 'ROVER_PREVIEW_HELPER_GET_PERSISTED_CONFIG') {
+    void (async () => {
+      const config = await getPersistedConfig();
+      sendResponse({ ok: true, config });
+    })().catch(error => {
+      sendResponse({ ok: false, error: String(error?.message || error) });
+    });
+    return true;
   }
 
   if (message.type === 'ROVER_PREVIEW_HELPER_SET_CONFIG') {

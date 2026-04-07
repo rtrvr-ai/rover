@@ -82,6 +82,7 @@ export function isHostAllowed(host, allowedDomains, domainScopeMode = 'registrab
   if (!patterns.length) return true;
 
   return patterns.some(pattern => {
+    if (pattern === '*') return true;
     if (pattern.startsWith('=')) {
       return normalizedHost === pattern.slice(1);
     }

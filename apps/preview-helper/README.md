@@ -22,14 +22,30 @@ Before you use this helper on arbitrary websites, get your config from Workspace
 
 ### 1. Generic reusable or exact config
 
-Use this when you want to test Rover on some other website without editing that site's code first.
+Use this when you want to test Rover on some other website without editing that site's code first. The **reusable wildcard config** is the recommended path — it works on any domain.
 
 Required:
 
 - `siteId`
 - either `publicKey` or `sessionToken`
 
-Typical Workspace JSON:
+Reusable wildcard config (recommended for testing):
+
+```json
+{
+  "siteId": "rover-live-test-config-...",
+  "publicKey": "pk_site_...",
+  "siteKeyId": "...",
+  "allowedDomains": ["*"],
+  "domainScopeMode": "registrable_domain",
+  "openOnInit": true,
+  "mode": "full",
+  "allowActions": true,
+  "capabilities": { "roverEmbed": true }
+}
+```
+
+Exact site-scoped config (when you need policy-accurate domain validation):
 
 ```json
 {
@@ -46,7 +62,15 @@ Typical Workspace JSON:
 }
 ```
 
-This now works with `publicKey` directly. It is not limited to `sessionToken` anymore.
+This works with `publicKey` directly. It is not limited to `sessionToken` anymore.
+
+### Wildcard configs
+
+Setting `allowedDomains: ["*"]` means the config works on any domain. This is the default for reusable test configs created by Workspace and Live Test. You do not need to know the target domain ahead of time.
+
+### Config persistence
+
+The helper remembers your last-used config across browser sessions. After the first handoff via "Open target with helper" or a manual paste, subsequent sessions reuse the saved config automatically. You only need to paste or handoff once.
 
 ### 2. Hosted preview handoff
 
@@ -76,6 +100,11 @@ For local iteration:
 ```bash
 pnpm --filter @rover/preview-helper dev
 ```
+
+## Getting your config
+
+- [Workspace → Test](https://www.rtrvr.ai/rover/workspace?view=test): copy the reusable wildcard test config JSON.
+- [Live Test](https://www.rtrvr.ai/rover/instant-preview?flow=workspace_config): paste config and use "Open target with helper" for zero-paste handoff.
 
 ## The clean first-run flow
 
@@ -147,8 +176,8 @@ The helper uses packaged extension scripts and `chrome.scripting.executeScript(.
   The selected Workspace key is not embed-ready. Rotate or create an embed-enabled key in Workspace, then copy the fresh test config JSON again.
 - **`React has blocked a javascript: URL`**
   Delete any old Rover bookmarklet and recreate it from the current Rover Live Test page. The bookmarklet must be dragged from Rover's drag control, not clicked on the Rover page.
-- **Testing on the wrong host**
-  If your config says `host_only`, open the exact host in `allowedDomains`.
+- **Testing on the wrong host with exact site-scoped config**
+  If your config uses exact `allowedDomains` (not `["*"]`) and says `host_only`, open the exact host listed. Switch to the reusable wildcard config for unrestricted testing.
 - **Expecting `Open hosted shell` to reopen the launcher**
   Hosted Preview should open Rover's dedicated hosted viewer page for the cloud-browser fallback.
 - **Using preview tokens like production keys**

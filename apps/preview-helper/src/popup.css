@@ -107,6 +107,26 @@ button {
   color: var(--text);
 }
 
+.help-section {
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.15);
+  font-size: 12px;
+  margin-top: 10px;
+}
+.help-text { margin: 0 0 6px; color: var(--text); }
+.help-links { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.help-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 12px;
+}
+.help-link:hover { text-decoration: underline; }
+.help-sep { color: var(--muted); font-size: 11px; }
+.help-hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
+
 .status {
   min-height: 20px;
   margin: 14px 0 0;
