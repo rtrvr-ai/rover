@@ -9,15 +9,26 @@
   <body>
     <main class="shell">
       <header class="header">
-        <div>
-          <div class="eyebrow">Rover</div>
-          <h1>Preview Helper</h1>
+        <div class="headerRow">
+          <div>
+            <div class="eyebrow">Rover</div>
+            <h1>Preview Helper</h1>
+          </div>
+          <div id="tab-badge" class="tabBadge" style="display:none;">Rover tab</div>
         </div>
         <p class="subtle">Best flow: Workspace -> Live Test -> Use Workspace config -> Open target with helper. JSON paste is the fallback.</p>
       </header>
 
+      <section id="tab-card" class="tabCard" style="display:none;">
+        <div class="tabCardHeader">
+          <div class="eyebrow">Rover</div>
+          <strong>This tab</strong>
+        </div>
+        <div id="tab-summary" class="tabSummary"></div>
+      </section>
+
       <label class="field">
-        <span>Rover or preview config JSON</span>
+        <span>Saved Rover config JSON</span>
         <textarea id="config" spellcheck="false" placeholder='{"siteId":"...","publicKey":"pk_site_..."}
 
 or
@@ -25,7 +36,7 @@ or
 {"siteId":"...","sessionToken":"rvrsess_...","launchUrl":"https://example.com?rover_launch=...&rover_attach=..."}'></textarea>
       </label>
 
-      <p class="hint">Paste reusable wildcard config (works on any domain) or exact site-scoped config from Workspace. The website's "Open target with helper" button hands off config automatically — no paste needed.</p>
+      <p class="hint">This editor is your saved reusable config. It stays the same across tabs. Tab-specific Rover runtime state is shown separately above.</p>
 
       <div id="config-help" class="help-section" style="display:none;">
         <p class="help-text">No config saved yet. Get one from:</p>
