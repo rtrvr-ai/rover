@@ -14,6 +14,8 @@ import type {
 } from '../types.js';
 import {
   sanitizeText,
+  PANEL_DESKTOP_DEFAULT_WIDTH,
+  PANEL_DESKTOP_DEFAULT_HEIGHT,
   PANEL_DESKTOP_MIN_WIDTH,
   PANEL_DESKTOP_MIN_HEIGHT,
   PANEL_DESKTOP_MAX_WIDTH,
@@ -262,6 +264,73 @@ export function createWindow(opts: WindowOptions): WindowComponent {
     : 1;
   let liveSheetHeight: number | null = null;
 
+  // ── Desktop Resize Handle (drag-to-resize) ──
+  if (panelResizable) {
+    let isResizing = false;
+    let startX = 0;
+    let startY = 0;
+    let startW = 0;
+    let startH = 0;
+    let startLeft = 0;
+
+    resizeHandle.addEventListener('pointerdown', (e: PointerEvent) => {
+      if (viewportMetrics.layout !== 'desktop') return;
+      e.preventDefault();
+      e.stopPropagation();
+      isResizing = true;
+      const rect = panel.getBoundingClientRect();
+      startX = e.clientX;
+      startY = e.clientY;
+      startW = rect.width;
+      startH = rect.height;
+      startLeft = rect.left;
+      resizeHandle.setPointerCapture(e.pointerId);
+      panel.style.transition = 'none';
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = 'nwse-resize';
+    });
+
+    resizeHandle.addEventListener('pointermove', (e: PointerEvent) => {
+      if (!isResizing) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      // Bottom-left handle: left movement = wider, down movement = taller
+      const clamped = clampDesktopPanelState(
+        { width: startW - dx, height: startH + dy },
+        viewportMetrics,
+      );
+      // Keep centered both horizontally and vertically
+      const safeInset = experience.shell?.safeAreaInsetPx ?? PANEL_DESKTOP_MARGIN;
+      panel.style.width = `${clamped.width}px`;
+      panel.style.height = `${clamped.height}px`;
+      panel.style.left = `${Math.max(safeInset, Math.round((viewportMetrics.width - clamped.width) / 2))}px`;
+      panel.style.top = `${Math.max(safeInset, Math.round((viewportMetrics.height - clamped.height) / 2))}px`;
+    });
+
+    const endResize = (e: PointerEvent): void => {
+      if (!isResizing) return;
+      isResizing = false;
+      resizeHandle.releasePointerCapture(e.pointerId);
+      panel.style.transition = '';
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      // Persist final dimensions and re-center
+      const rect = panel.getBoundingClientRect();
+      currentDesktopPanelState = clampDesktopPanelState(
+        { width: rect.width, height: rect.height },
+        viewportMetrics,
+      );
+      panelStorageState = { ...panelStorageState, desktop: currentDesktopPanelState };
+      writePanelStorageState(panelStorageKey, panelStorageState);
+      // Re-center both horizontally and vertically
+      const safeInset = experience.shell?.safeAreaInsetPx ?? PANEL_DESKTOP_MARGIN;
+      panel.style.left = `${Math.max(safeInset, Math.round((viewportMetrics.width - currentDesktopPanelState.width) / 2))}px`;
+      panel.style.top = `${Math.max(safeInset, Math.round((viewportMetrics.height - currentDesktopPanelState.height) / 2))}px`;
+    };
+    resizeHandle.addEventListener('pointerup', endResize);
+    resizeHandle.addEventListener('pointercancel', endResize);
+  }
+
   function applyLayout(): void {
     const nextMetrics = getViewportMetrics();
     const layoutChanged = nextMetrics.storageKey !== activeLayoutKey;
@@ -283,12 +352,12 @@ export function createWindow(opts: WindowOptions): WindowComponent {
       const desktopSize = experience.shell?.desktopSize || 'stage';
       const desktopHeight = experience.shell?.desktopHeight || 'tall';
       const targetWidth = clampNumber(
-        desktopSize === 'compact' ? 640 : desktopSize === 'cinema' ? 1080 : 860,
+        desktopSize === 'compact' ? PANEL_DESKTOP_MIN_WIDTH : desktopSize === 'cinema' ? PANEL_DESKTOP_MAX_WIDTH : PANEL_DESKTOP_DEFAULT_WIDTH,
         PANEL_DESKTOP_MIN_WIDTH,
         Math.max(PANEL_DESKTOP_MIN_WIDTH, Math.min(PANEL_DESKTOP_MAX_WIDTH, nextMetrics.width - (safeInset * 2))),
       );
       const targetHeight = clampNumber(
-        desktopHeight === 'full' ? nextMetrics.height - (safeInset * 2) : Math.min(540, nextMetrics.height - (safeInset * 2)),
+        desktopHeight === 'full' ? nextMetrics.height - (safeInset * 2) : Math.min(PANEL_DESKTOP_DEFAULT_HEIGHT, nextMetrics.height - (safeInset * 2)),
         PANEL_DESKTOP_MIN_HEIGHT,
         Math.max(PANEL_DESKTOP_MIN_HEIGHT, nextMetrics.height - (safeInset * 2)),
       );

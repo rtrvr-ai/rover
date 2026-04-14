@@ -166,9 +166,16 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
     opts.onVoiceStart();
   });
 
-  textarea.addEventListener('input', () => {
+  function syncTextareaHeight(): void {
     textarea.style.height = 'auto';
-    textarea.style.height = `${Math.min(96, Math.max(44, textarea.scrollHeight))}px`;
+    const h = Math.min(96, Math.max(44, textarea.scrollHeight));
+    textarea.style.height = `${h}px`;
+    const bar = textarea.closest('.inputBarComposerSlot')?.closest('.inputBar') as HTMLElement | null;
+    if (bar) bar.classList.toggle('expanded-text', h > 44);
+  }
+
+  textarea.addEventListener('input', () => {
+    syncTextareaHeight();
   });
 
   textarea.addEventListener('keydown', (e) => {
@@ -274,8 +281,7 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
     },
     setText(value: string) {
       textarea.value = value;
-      textarea.style.height = 'auto';
-      textarea.style.height = `${Math.min(96, Math.max(44, textarea.scrollHeight))}px`;
+      syncTextareaHeight();
     },
     setStaticPlaceholder(text: string) {
       textarea.placeholder = text;

@@ -7,8 +7,9 @@ export const inputBarStyles = `
       transform: translateX(-50%);
       max-width: 640px;
       width: calc(100vw - 32px);
-      height: 60px;
+      min-height: 60px;
       border-radius: 999px;
+      transition: border-radius 200ms ease;
       display: none;
       align-items: center;
       gap: 8px;
@@ -55,12 +56,12 @@ export const inputBarStyles = `
     }
 
     .inputBarExpand {
-      width: 28px;
-      height: 28px;
-      min-width: 28px;
-      border-radius: 999px;
-      border: 1px solid var(--rv-border);
-      background: var(--rv-surface);
+      width: 36px;
+      height: 36px;
+      min-width: 36px;
+      border-radius: 50%;
+      border: none;
+      background: transparent;
       cursor: pointer;
       display: grid;
       place-items: center;
@@ -69,8 +70,8 @@ export const inputBarStyles = `
       transition: background 150ms ease, color 150ms ease;
     }
     .inputBarExpand:hover {
-      background: var(--rv-bg-alt);
-      color: var(--rv-text);
+      background: rgba(255, 76, 0, 0.07);
+      color: var(--rv-accent);
     }
 
     .inputBarComposerSlot {
@@ -102,7 +103,7 @@ export const inputBarStyles = `
       min-width: 0;
       width: 100%;
       min-height: 40px;
-      max-height: 40px;
+      max-height: 96px;
       padding: 8px 10px;
       font-size: 14px;
       resize: none;
@@ -110,6 +111,19 @@ export const inputBarStyles = `
       border: none;
       background: transparent;
       box-shadow: none;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 76, 0, 0.18) transparent;
+    }
+    .inputBarComposerSlot .composer textarea::-webkit-scrollbar {
+      width: 4px;
+    }
+    .inputBarComposerSlot .composer textarea::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .inputBarComposerSlot .composer textarea::-webkit-scrollbar-thumb {
+      background: rgba(255, 76, 0, 0.18);
+      border-radius: 999px;
     }
     .inputBarComposerSlot .attachmentStrip {
       display: none;
@@ -121,7 +135,7 @@ export const inputBarStyles = `
       height: 36px;
       width: 36px;
       min-width: 36px;
-      border-radius: 999px;
+      border-radius: 50%;
       border: none;
       background: transparent;
       box-shadow: none;
@@ -133,11 +147,29 @@ export const inputBarStyles = `
       color: var(--rv-accent);
       background: rgba(255, 76, 0, 0.07);
     }
+    .inputBarComposerSlot .voiceBtn {
+      height: 36px;
+      width: 36px;
+      min-width: 36px;
+      border-radius: 50%;
+      border: none;
+      background: transparent;
+      box-shadow: none;
+      color: var(--rv-text-secondary);
+    }
+    .inputBarComposerSlot .voiceBtn:hover {
+      color: var(--rv-accent);
+      background: rgba(255, 76, 0, 0.07);
+    }
+    .inputBarComposerSlot .voiceBtn.active {
+      color: var(--rv-accent);
+      background: var(--rv-accent-soft);
+    }
     .inputBarComposerSlot .sendBtn {
       height: 36px;
       width: 36px;
       min-width: 36px;
-      border-radius: 999px;
+      border-radius: 50%;
     }
 
     .inputBar.running {
@@ -162,10 +194,10 @@ export const inputBarStyles = `
     }
 
     .inputBarClose {
-      width: 28px;
-      height: 28px;
-      min-width: 28px;
-      border-radius: 999px;
+      width: 36px;
+      height: 36px;
+      min-width: 36px;
+      border-radius: 50%;
       border: none;
       background: transparent;
       cursor: pointer;
@@ -177,8 +209,15 @@ export const inputBarStyles = `
       padding: 0;
     }
     .inputBarClose:hover {
-      background: var(--rv-bg-alt);
-      color: var(--rv-text);
+      background: rgba(255, 76, 0, 0.07);
+      color: var(--rv-accent);
+    }
+
+    /* ── Expanded text state (textarea grew beyond single line) ── */
+    .inputBar.expanded-text {
+      border-radius: 28px;
+      align-items: flex-end;
+      padding-bottom: 10px;
     }
 
     /* Minimize button in header */
