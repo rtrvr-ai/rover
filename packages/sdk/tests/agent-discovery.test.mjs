@@ -194,6 +194,30 @@ test('agent card disables public task capability when ai access is off', () => {
   assert.equal(card.interfaces.find(entry => entry.type === 'task')?.available, false);
 });
 
+test('agent card keeps longer shortcut prompts while still bounding them', () => {
+  const acceptedPrompt = 'A'.repeat(2000);
+  const trimmedPrompt = 'B'.repeat(2005);
+  const card = createRoverAgentCard({
+    siteUrl: 'https://example.com/',
+    siteName: 'Example Store',
+    shortcuts: [
+      {
+        id: 'accepted',
+        label: 'Accepted',
+        prompt: acceptedPrompt,
+      },
+      {
+        id: 'trimmed',
+        label: 'Trimmed',
+        prompt: trimmedPrompt,
+      },
+    ],
+  });
+
+  assert.equal(card.extensions.rover.shortcuts[0].prompt.length, 2000);
+  assert.equal(card.extensions.rover.shortcuts[1].prompt.length, 2000);
+});
+
 test('agent discovery runtime config sanitizer preserves supported beacon-first fields', () => {
   const config = sanitizeRoverAgentDiscoveryRuntimeConfig({
     enabled: false,

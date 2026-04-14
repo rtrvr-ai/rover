@@ -8,6 +8,7 @@ export const DEFAULT_ROVER_SITE_PATH = '/.well-known/rover-site.json';
 export const DEFAULT_LLMS_PATH = '/llms.txt';
 export const ROVER_WEBMCP_DISCOVERY_GLOBAL = '__ROVER_WEBMCP_TOOL_DEFS__';
 export const ROVER_DISCOVERY_ACTION_SHEET_MAX_ACTIONS = 3;
+const ROVER_DISCOVERY_SHORTCUT_PROMPT_MAX_CHARS = 2000;
 
 type JsonSchema = Record<string, any>;
 
@@ -752,15 +753,36 @@ function buildToolDescription(
   return parts.join(' ').trim();
 }
 
+function normalizePublishedShortcut(shortcut: RoverShortcut): {
+  id: string;
+  label: string;
+  prompt: string;
+  description?: string;
+  routing?: 'auto' | 'act' | 'planner';
+} | null {
+  const id = text(shortcut.id, 80);
+  const label = text(shortcut.label, 120);
+  const prompt = text(shortcut.prompt, ROVER_DISCOVERY_SHORTCUT_PROMPT_MAX_CHARS);
+  if (!id || !label || !prompt || shortcut.enabled === false) return null;
+
+  const description = text(shortcut.description, 320);
+  return {
+    id,
+    label,
+    prompt,
+    ...(description ? { description } : {}),
+    ...(shortcut.routing ? { routing: shortcut.routing } : {}),
+  };
+}
+
 function buildShortcutSkill(
   shortcut: RoverShortcut,
   config: RoverAgentDiscoveryConfig,
   taskEndpoint: string,
 ): RoverPublicSkillDefinition | null {
-  const id = text(shortcut.id, 80);
-  const label = text(shortcut.label, 120);
-  const prompt = text(shortcut.prompt, 700);
-  if (!id || !label || !prompt || shortcut.enabled === false) return null;
+  const publishedShortcut = normalizePublishedShortcut(shortcut);
+  if (!publishedShortcut) return null;
+  const { id, label, prompt } = publishedShortcut;
 
   const tags = uniqueStrings([...(shortcut.tags || []), 'shortcut', 'rover'], { max: 16, maxLen: 40 });
   const examples = uniqueStrings([...(shortcut.examples || []), prompt], { max: 6, maxLen: 220 });
@@ -1229,14 +1251,8 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
         currentPage: capabilityGraph.currentPage,
         discoverySurface: effectiveDiscoverySurface,
         shortcuts: (config.shortcuts || [])
-          .filter(shortcut => shortcut.enabled !== false)
-          .map(shortcut => ({
-            id: shortcut.id,
-            label: shortcut.label,
-            ...(shortcut.description ? { description: shortcut.description } : {}),
-            prompt: shortcut.prompt,
-            ...(shortcut.routing ? { routing: shortcut.routing } : {}),
-          })),
+          .map(shortcut => normalizePublishedShortcut(shortcut))
+          .filter((shortcut): shortcut is NonNullable<typeof shortcut> => !!shortcut),
         webmcp: {
           available: webmcpSkills.length > 0,
           tools: webmcpSkills.map(skill => skill.id),
