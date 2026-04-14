@@ -30,11 +30,11 @@ export const ROVER_WIDGET_LAUNCHER_MOBILE_SIZE_PX = 52;
 export const ROVER_WIDGET_LAUNCHER_STACK_GAP_PX = 10;
 
 // Panel constants
-export const PANEL_DESKTOP_DEFAULT_WIDTH = 860;
-export const PANEL_DESKTOP_DEFAULT_HEIGHT = 540;
+export const PANEL_DESKTOP_DEFAULT_WIDTH = 960;
+export const PANEL_DESKTOP_DEFAULT_HEIGHT = 600;
 export const PANEL_DESKTOP_MIN_WIDTH = 640;
 export const PANEL_DESKTOP_MIN_HEIGHT = 400;
-export const PANEL_DESKTOP_MAX_WIDTH = 1080;
+export const PANEL_DESKTOP_MAX_WIDTH = 1200;
 
 // Input bar constants
 export const INPUT_BAR_MAX_WIDTH = 640;

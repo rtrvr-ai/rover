@@ -26,11 +26,11 @@ export const windowStyles = `
       position: fixed;
       left: 0;
       top: 0;
-      width: 860px;
-      height: 540px;
+      width: 960px;
+      height: 600px;
       min-width: 640px;
       min-height: 400px;
-      max-width: min(1080px, calc(100vw - 16px));
+      max-width: min(1200px, calc(100vw - 16px));
       max-height: calc(100vh - 16px);
       background:
         radial-gradient(120% 80% at 100% 0%, rgba(255, 76, 0, 0.05), transparent 52%),
@@ -1203,7 +1203,8 @@ export const windowStyles = `
       display: block;
     }
 
-    .resizeHandle:hover {
+    .resizeHandle:hover,
+    .resizeHandle:active {
       opacity: 1 !important;
       border-color: var(--rv-accent);
     }

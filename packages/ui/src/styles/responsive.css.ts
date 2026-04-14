@@ -160,7 +160,7 @@ export const responsiveStyles = `
       /* Input bar mobile */
       .inputBar {
         max-width: calc(100vw - 16px);
-        height: 56px;
+        min-height: 56px;
         bottom: 16px;
       }
     }
