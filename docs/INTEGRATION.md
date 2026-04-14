@@ -495,7 +495,8 @@ When `tools.web.scrapeMode` is `on_demand`, ensure your Rover site key includes 
 | `ui.mascot.disabled` | `boolean` | `false` | Disable mascot video |
 | `ui.mascot.mp4Url` | `string` | default | Custom mascot MP4 URL |
 | `ui.mascot.webmUrl` | `string` | default | Custom mascot WebM URL |
-| `ui.muted` | `boolean` | `true` | Start with media muted on first load; stored browser preference wins after the user toggles sound |
+| `ui.mascot.soundEnabled` | `boolean` | `false` | Owner gate for mascot sound. Rover keeps mascot audio unavailable unless this is explicitly `true`; legacy `ui.muted: false` still enables sound for backward compatibility. |
+| `ui.muted` | `boolean` | `true` | Initial mute state only when mascot sound is enabled. Visitor preference is stored per Rover site after they toggle sound. |
 | `ui.thoughtStyle` | `'concise_cards' \| 'minimal'` | `'concise_cards'` | Thought rendering preference |
 | `ui.panel.resizable` | `boolean` | `true` | Enables desktop freeform resizing plus phone/tablet snap-height resizing with per-device memory |
 | `ui.showTaskControls` | `boolean` | `true` | Show new/end task controls |
@@ -504,7 +505,7 @@ When `tools.web.scrapeMode` is `on_demand`, ensure your Rover site key includes 
 | `ui.voice` | `{ enabled?: boolean; language?: string; autoStopMs?: number }` | - | Browser dictation on supported Chromium browsers. Transcript fills the draft live, Rover waits for post-speech silence before stopping, and the user manually sends. |
 | `pageConfig` | `RoverPageCaptureConfig` | - | Optional per-site page-capture overrides such as `disableAutoScroll`, settle timing, and sparse-tree retry settings |
 
-With site keys (or a valid `rvrsess_*` token), Rover fetches cloud site config via `POST /v2/rover/session/open` (shortcuts + greeting + voice + aiAccess + pageConfig).
+With site keys (or a valid `rvrsess_*` token), Rover fetches cloud site config via `POST /v2/rover/session/open` (shortcuts + `businessType` + sparse `siteConfig.experience` overrides + legacy voice compatibility + `aiAccess` + `pageConfig`).
 If boot config and cloud config define the same field, boot config takes precedence.
 `deepLink` remains boot/runtime only and is not stored in cloud site config.
 
@@ -646,7 +647,30 @@ Runtime semantics:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `agentDiscovery` | `{ enabled?, siteName?, description?, version?, siteUrl?, agentCardUrl?, roverSiteUrl?, llmsUrl?, hostSurfaceSelector?, preferExecution?, discoverySurface?, additionalSkills? }` | - | Optional overrides for Rover's generated discovery surfaces. `rover-site.json` is the authoritative rich profile, `agent-card.json` is the interop card, and `discoverySurface` controls the beacon-first visual ladder including `beaconLabel`. |
+| `agentDiscovery` | `{ enabled?, siteName?, description?, version?, siteUrl?, agentCardUrl?, roverSiteUrl?, llmsUrl?, hostSurfaceSelector?, preferExecution?, discoverySurface?, additionalSkills? }` | - | Optional overrides for Rover's generated discovery surfaces. `rover-site.json` is the authoritative rich profile, `agent-card.json` is the interop card, and `discoverySurface.beaconLabel` now feeds the visible seed/presence CTA text in production. |
+
+---
+
+## Business Type
+
+Set `businessType` in the Rover Workspace site config to tune the composer's rotating placeholder hints and fallback quick actions to your site's context:
+
+| Value | Best for |
+|---|---|
+| `ecommerce` | Online stores, marketplaces |
+| `travel` | Airlines, hotels, booking platforms |
+| `saas` | Software products, dashboards |
+| `finance` | Banking, fintech, insurance |
+| `healthcare` | Clinics, telemedicine, pharmacies |
+| `real_estate` | Property listings, agents |
+| `restaurant` | Restaurants, food ordering |
+| `education` | EdTech, online courses, tutoring |
+| `support` | Customer support, IT helpdesks |
+| `legal` | Law firms, legal services |
+| `automotive` | Car dealerships, auto service |
+| `general` | Default — sensible all-purpose hints |
+
+If omitted, Rover defaults to `general`.
 
 ---
 

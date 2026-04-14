@@ -256,7 +256,7 @@ init({
 - Check responses include `success: true` and run/session identifiers (`sessionId`, `runId`, `epoch`).
 
 **Elements tab:**
-- Look for `#rover-widget-root` on `<html>` element
+- Look for a `div#rover-widget-root` appended under `<body>` (or `<html>` if `body` is unavailable during early mount)
 - Expand its Shadow DOM (closed, but visible in DevTools)
 - Check `.panel.open` class for visibility
 

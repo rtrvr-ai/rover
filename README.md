@@ -10,6 +10,8 @@
 
 Rover is the DOM-native execution engine. It reads the live page, plans the next action, and executes directly in the browser. No screenshots, no VMs, no RAG glue.
 
+Rover V3 lives on the page surface itself: a minimized seed/presence CTA, an attachment-capable input bar, and a centered transparent action stage that stays out of the way while live DOM actions run.
+
 RoverBook now ships as the AX layer on top of Rover:
 
 - agent analytics and visit replays
@@ -107,6 +109,9 @@ Workspace site mode now controls whether the generated snippet is:
 
 - **Full Rover agent**: action-capable Rover runtime
 - **RoverBook analytics-only**: RoverBook enabled with action tools disabled
+
+Workspace also persists `businessType`, `aiAccess`, and sparse `siteConfig.experience` overrides. Runtime defaults still own the visible seed/presence cue, centered stage, transparent live-action mode, and two-card live stream unless the site owner explicitly overrides them.
+Mascot sound is now owner-gated: leave it off by default, enable `ui.mascot.soundEnabled` only when you want site visitors to control mascot audio, and use `ui.muted` only for the initial mute state after sound is enabled.
 
 Script-tag installs do not need a custom `identityResolver` to attribute Rover-managed traffic. The primary identity path comes from task and session attribution.
 

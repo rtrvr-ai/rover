@@ -48,6 +48,7 @@ import {
   querySelectorSafe,
   winOf,
 } from './dom-utilities.js';
+import { isRoverWidgetHost } from './dom-root-guards.js';
 
 // Check visibility
 // export function isInvisible(element: Element, role?: string | null) {
@@ -1005,6 +1006,10 @@ function buildFrameContentNodes({
 }
 
 function getComposedChildNodes(element: Element): ChildNode[] {
+  if (isRoverWidgetHost(element)) {
+    return [];
+  }
+
   // Slot: traverse assigned nodes (composed tree)
   const winEl = winOf(element);
   if (isHTMLSlotElementX(element, winEl)) {
@@ -1316,6 +1321,9 @@ function shouldExcludeElement(node: Node): boolean {
   }
 
   const element = node as Element;
+  if (isRoverWidgetHost(element)) {
+    return true;
+  }
   const tagName = element.tagName;
 
   if (EXCLUDED_ELEMENT_TAGS.has(tagName)) {

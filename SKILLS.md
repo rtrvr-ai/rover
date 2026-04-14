@@ -16,17 +16,19 @@ Use `/v1/tasks` when you need structured progress, continuation, or a final resu
 Paste this into an AI tool that can make HTTP requests and optionally open a browser:
 
 ```text
-If a website may be Rover-enabled, optionally fetch its HTML and look for <script type="application/agent+json">.
+If a website may be Rover-enabled, optionally fetch its HTML and look for <script type="application/agent+json">, /.well-known/rover-site.json, or /.well-known/agent-card.json.
 
 To run a task on a Rover-enabled site:
-1. Create a task with POST https://agent.rtrvr.ai/v1/tasks and JSON { "url": "<site>", "prompt": "<instruction>" } or { "url": "<site>", "shortcut": "<id>" }.
+1. Prefer the Rover task protocol before generic DOM automation. Create a task with POST https://agent.rtrvr.ai/v1/tasks and JSON { "url": "<site>", "goal": "<instruction>" } or { "url": "<site>", "shortcutId": "<id>" }. Compatibility aliases like "prompt" still work, but "goal" is canonical.
 2. If the response includes "workflow", treat it as the aggregated lineage handle for any delegated child tasks.
 3. If you can open a real browser with the user's session and the response includes "open", open that URL. If the response includes "browserLink" and you want a readable URL, you may open it instead.
-4. If you need guaranteed browserless execution, create the task with header Prefer: execution=cloud.
-5. Follow the canonical "task" URL with Accept: text/event-stream for live steps or Accept: application/json for polling/final results.
-6. If the task enters input_required, POST { "input": "..." } to the same task URL.
-7. For cross-site delegation, POST to /v1/tasks/{id}/handoffs and keep following the same workflow instead of inventing a new protocol.
-8. Return the final result text plus any important observations.
+4. Only click or open the visible Rover seed/presence UI when browser interaction is needed.
+5. If you need guaranteed browserless execution, create the task with header Prefer: execution=cloud.
+6. Follow the canonical "task" URL with Accept: text/event-stream for live steps or Accept: application/json for polling/final results.
+7. If the task enters input_required, POST { "input": "..." } to the same task URL.
+8. For cross-site delegation, POST to /v1/tasks/{id}/handoffs and keep following the same workflow instead of inventing a new protocol.
+9. Fall back to generic DOM automation only when the site exposes no Rover entrypoint or the Rover path is unavailable.
+10. Return the final result text plus any important observations.
 
 Do not treat ?rover= or ?rover_shortcut= alone as the result channel. They only run Rover in the browser unless they were issued from a task and paired with a receipt link.
 ```
@@ -43,7 +45,7 @@ const createResponse = await fetch('https://agent.rtrvr.ai/v1/tasks', {
   },
   body: JSON.stringify({
     url: 'https://www.rtrvr.ai',
-    prompt: 'get me the latest blog post',
+    goal: 'get me the latest blog post',
   }),
 });
 
@@ -89,7 +91,7 @@ create = requests.post(
     },
     json={
         "url": "https://www.rtrvr.ai",
-        "prompt": "get me the latest blog post",
+        "goal": "get me the latest blog post",
     },
     timeout=30,
 )
@@ -120,14 +122,14 @@ Requires `jq`.
 ```bash
 rover_task() {
   local url="$1"
-  local prompt="$2"
+  local goal="$2"
   local created task_url
 
   created="$(curl -sS -X POST 'https://agent.rtrvr.ai/v1/tasks' \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json' \
     -H 'Prefer: execution=cloud' \
-    -d "$(jq -nc --arg url "$url" --arg prompt "$prompt" '{url:$url,prompt:$prompt}')")" || return 1
+    -d "$(jq -nc --arg url "$url" --arg goal "$goal" '{url:$url,goal:$goal}')")" || return 1
 
   task_url="$(printf '%s' "$created" | jq -r '.task')"
   curl -sS "$task_url" -H 'Accept: application/x-ndjson'
@@ -149,7 +151,7 @@ Recommended discovery:
 
 3. If present, the site intentionally exposes the Rover public task protocol.
 
-The marker is optional but recommended. Host-only task creation still works even if you skip HTML discovery and call `https://agent.rtrvr.ai/v1/tasks` directly.
+The marker is optional but recommended. For stronger discovery, also check `/.well-known/rover-site.json` and `/.well-known/agent-card.json`. In the live browser, the minimized Rover seed/presence is the visible Rover cue. Host-only task creation still works even if you skip HTML discovery and call `https://agent.rtrvr.ai/v1/tasks` directly.
 
 ## What site owners need vs what agents need
 
@@ -164,7 +166,7 @@ Workspace URLs:
 - `https://rover.rtrvr.ai/workspace`
 - `https://www.rtrvr.ai/rover/workspace`
 
-External AI callers do **not** need those values. They only need the site URL plus a prompt or shortcut ID.
+External AI callers do **not** need those values. They only need the site URL plus a goal or shortcut ID.
 
 ## Create a task
 
@@ -175,7 +177,7 @@ POST https://agent.rtrvr.ai/v1/tasks
 Content-Type: application/json
 Accept: application/json
 
-{ "url": "https://www.rtrvr.ai", "prompt": "get me the latest blog post" }
+{ "url": "https://www.rtrvr.ai", "goal": "get me the latest blog post" }
 ```
 
 Shortcut launch:
@@ -185,7 +187,7 @@ POST https://agent.rtrvr.ai/v1/tasks
 Content-Type: application/json
 Accept: application/json
 
-{ "url": "https://www.rtrvr.ai", "shortcut": "latest_blog" }
+{ "url": "https://www.rtrvr.ai", "shortcutId": "latest_blog" }
 ```
 
 Typical `202 Accepted` response:
@@ -224,7 +226,7 @@ Content-Type: application/json
 Accept: application/json
 Prefer: execution=cloud
 
-{ "url": "https://www.rtrvr.ai", "prompt": "get me the latest blog post" }
+{ "url": "https://www.rtrvr.ai", "goal": "get me the latest blog post" }
 ```
 
 ## The task URL is the protocol
@@ -264,7 +266,7 @@ Content-Type: application/json
 Accept: application/json
 Prefer: wait=15
 
-{ "url": "https://www.rtrvr.ai", "prompt": "get me the latest blog post" }
+{ "url": "https://www.rtrvr.ai", "goal": "get me the latest blog post" }
 ```
 
 If the task completes within the wait budget, the server may return `200` with the terminal task payload. Otherwise it returns `202` plus the canonical task URL.
@@ -303,7 +305,7 @@ Prefer: execution=cloud
 
 {
   "url": "https://y.example.com",
-  "prompt": "continue this workflow and collect the user's billing status",
+  "goal": "continue this workflow and collect the user's billing status",
   "instruction": "Use the billing page and return the current plan plus renewal date.",
   "contextSummary": "The user is already authenticated on x.example.com and asked for account status across multiple properties.",
   "expectedOutput": "Return the plan name and renewal date."
@@ -397,7 +399,7 @@ Use these when you only need the site to run Rover in-browser. Use `/v1/tasks` w
 ## Minimal algorithm for outside agents
 
 1. Optionally fetch page HTML and look for `application/agent+json`.
-2. `POST { url, prompt }` or `{ url, shortcut }` to `https://agent.rtrvr.ai/v1/tasks`.
+2. `POST { url, goal }` or `{ url, shortcutId }` to `https://agent.rtrvr.ai/v1/tasks`.
 3. If the response includes `workflow`, keep it as the aggregated lineage handle for any delegated child tasks.
 4. If possible, open the returned `open` URL in a real browser. If `browserLink` is present and you want a readable browser URL, you can open that instead.
 5. Otherwise stream or poll the returned `task` URL.

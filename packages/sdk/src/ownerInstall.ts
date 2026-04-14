@@ -89,6 +89,7 @@ export type RoverOwnerInstallBootConfig = {
       disabled?: boolean;
       mp4Url?: string;
       webmUrl?: string;
+      soundEnabled?: boolean;
     };
     shortcuts?: RoverShortcut[];
     greeting?: {
@@ -98,6 +99,7 @@ export type RoverOwnerInstallBootConfig = {
       disabled?: boolean;
     };
     voice?: RoverVoiceConfig | JsonRecord | null;
+    experience?: JsonRecord | null;
     muted?: boolean;
     thoughtStyle?: 'concise_cards' | 'minimal';
     panel?: {
@@ -183,6 +185,107 @@ function escapeScriptJson(value: string): string {
     .replace(/</g, '\\u003c')
     .replace(/>/g, '\\u003e')
     .replace(/&/g, '\\u0026');
+}
+
+function replaceInlineDiscoveryScript(
+  html: string,
+  marker: 'agent-card' | 'rover-site',
+  script?: string,
+): string {
+  if (!script) return html;
+  const pattern = new RegExp(`<script[^>]+data-rover-agent-discovery="${marker}"[^>]*>[\\s\\S]*?<\\/script>`);
+  if (pattern.test(html)) {
+    return html.replace(pattern, script);
+  }
+  return [html, script].filter(Boolean).join('\n');
+}
+
+function decorateBundleWithExperience(
+  bundle: RoverOwnerInstallBundle,
+  bootConfig: RoverOwnerInstallBootConfig,
+): RoverOwnerInstallBundle {
+  const experience = isObject(bootConfig.ui?.experience) ? bootConfig.ui?.experience : null;
+  if (!experience) return bundle;
+
+  const presence = isObject(experience.presence) ? experience.presence : {};
+  const inputs = isObject(experience.inputs) ? experience.inputs : {};
+  const shell = isObject(experience.shell) ? experience.shell : {};
+  const stream = isObject(experience.stream) ? experience.stream : {};
+  const ctaText = text(presence.ctaText) || `Do it with ${text(bootConfig.ui?.agent?.name) || 'Rover'}`;
+  const assistantName = text(presence.assistantName) || text(bootConfig.ui?.agent?.name) || 'Rover';
+
+  const agentCard = bundle.agentCard ? JSON.parse(JSON.stringify(bundle.agentCard)) as any : undefined;
+  if (agentCard?.extensions?.rover) {
+    agentCard.extensions.rover.discoverySurface = {
+      ...(agentCard.extensions.rover.discoverySurface || {}),
+      mode: 'beacon',
+      hostSurface: 'floating-corner',
+      actionReveal: 'click',
+      beaconLabel: ctaText,
+    };
+    agentCard.extensions.rover.presence = {
+      assistantName,
+      ctaText,
+      draggable: presence.draggable !== false,
+    };
+    agentCard.extensions.rover.experience = experience;
+    agentCard.extensions.rover.inputs = {
+      filesEnabled: inputs.files !== false,
+      acceptedMimeGroups: Array.isArray(inputs.acceptedMimeGroups) ? inputs.acceptedMimeGroups : ['images', 'pdfs', 'office', 'text'],
+      allowMultipleFiles: inputs.allowMultipleFiles !== false,
+    };
+  }
+
+  const roverSite = bundle.roverSite ? JSON.parse(JSON.stringify(bundle.roverSite)) as any : undefined;
+  if (roverSite) {
+    roverSite.display = {
+      ...(roverSite.display || {}),
+      mode: 'beacon',
+      hostSurface: 'floating-corner',
+      actionReveal: 'click',
+      beaconLabel: ctaText,
+      presence: 'draggable_pill',
+      openMode: text(shell.openMode) || 'center_stage',
+      mobileMode: text(shell.mobileMode) || 'fullscreen_sheet',
+      streamMode: text(stream.layout) || 'single_column',
+      focusView: 'focus_stream',
+    };
+    roverSite.experience = experience;
+    roverSite.inputs = {
+      ...(roverSite.inputs || {}),
+      filesEnabled: inputs.files !== false,
+      acceptedMimeGroups: Array.isArray(inputs.acceptedMimeGroups) ? inputs.acceptedMimeGroups : ['images', 'pdfs', 'office', 'text'],
+      allowMultipleFiles: inputs.allowMultipleFiles !== false,
+    };
+  }
+
+  const agentCardJson = agentCard ? JSON.stringify(agentCard, null, 2) : bundle.agentCardJson;
+  const roverSiteJson = roverSite ? JSON.stringify(roverSite, null, 2) : bundle.roverSiteJson;
+  const inlineAgentCardScript = agentCardJson
+    ? `<script type="application/agent-card+json" data-rover-agent-discovery="agent-card">${escapeScriptJson(agentCardJson)}</script>`
+    : bundle.metadata.inlineAgentCardScript;
+  const inlineRoverSiteScript = roverSiteJson
+    ? `<script type="application/rover-site+json" data-rover-agent-discovery="rover-site">${escapeScriptJson(roverSiteJson)}</script>`
+    : bundle.metadata.inlineRoverSiteScript;
+
+  return {
+    ...bundle,
+    agentCard,
+    agentCardJson,
+    roverSite,
+    roverSiteJson,
+    bodyInstallHtml: replaceInlineDiscoveryScript(
+      replaceInlineDiscoveryScript(bundle.bodyInstallHtml, 'agent-card', inlineAgentCardScript),
+      'rover-site',
+      inlineRoverSiteScript,
+    ),
+    metadata: {
+      ...bundle.metadata,
+      roverSiteJson,
+      inlineAgentCardScript,
+      inlineRoverSiteScript,
+    },
+  };
 }
 
 function indentJson(value: unknown): string {
@@ -397,7 +500,7 @@ export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInpu
     ? (text(input.llmsTxt) ? input.llmsTxt : buildDefaultLlmsTxt(agentCard, { agentCardUrl: publishedAgentCardUrl || DEFAULT_AGENT_CARD_PATH }))
     : undefined;
 
-  return {
+  return decorateBundleWithExperience({
     bodyInstallHtml: bodyLines.join('\n'),
     headDiscoveryHtml: [serviceDescLinkTag, serviceDocLinkTag].filter(Boolean).join('\n'),
     agentCard,
@@ -438,5 +541,5 @@ export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInpu
         ? `<script type="application/rover-page+json" data-rover-agent-discovery="page">${escapedPageManifestJson}</script>`
         : undefined,
     },
-  };
+  }, input.bootConfig);
 }

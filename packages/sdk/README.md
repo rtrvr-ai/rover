@@ -502,7 +502,8 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `ui.mascot.disabled` | `boolean` | `false` | Disable mascot video |
 | `ui.mascot.mp4Url` | `string` | default | Custom mascot MP4 URL |
 | `ui.mascot.webmUrl` | `string` | default | Custom mascot WebM URL |
-| `ui.muted` | `boolean` | `true` | Start with audio muted on first load; stored browser preference wins after the user toggles sound |
+| `ui.mascot.soundEnabled` | `boolean` | `false` | Owner gate for mascot sound. Rover keeps mascot audio unavailable unless this is explicitly `true`; legacy `ui.muted: false` still enables sound for backward compatibility. |
+| `ui.muted` | `boolean` | `true` | Initial mute state only when mascot sound is enabled. Visitor preference is stored per Rover site after they toggle sound. |
 | `ui.thoughtStyle` | `'concise_cards' \| 'minimal'` | `'concise_cards'` | Thought rendering style |
 | `ui.panel.resizable` | `boolean` | `true` | Enables desktop freeform resizing plus phone/tablet snap-height resizing with per-device memory |
 | `ui.showTaskControls` | `boolean` | `true` | Show new/end task controls |
@@ -520,7 +521,7 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `tools.web.allowDomains` | `string[]` | `[]` | External context allowlist |
 | `tools.web.denyDomains` | `string[]` | `[]` | External context denylist |
 | `tools.client` | `ClientToolDefinition[]` | `[]` | Runtime-registered client tools. Tool definitions can include `title`, `outputSchema`, and `annotations` (`whenToUse`, `whyUse`, `examples`, `sideEffect`, `requiresConfirmation`) to improve model tool selection and discovery-card quality. |
-| `agentDiscovery` | `{ enabled?, siteName?, description?, version?, siteUrl?, agentCardUrl?, roverSiteUrl?, llmsUrl?, hostSurfaceSelector?, preferExecution?, discoverySurface?, additionalSkills? }` | — | Optional overrides for Rover's generated discovery surfaces. `rover-site.json` is the authoritative rich profile, `agent-card.json` is the interop card, and `discoverySurface` controls the beacon-first visual ladder including `beaconLabel`. Legacy `visibleCue` / `visibleCueLabel` remain compatibility inputs only. |
+| `agentDiscovery` | `{ enabled?, siteName?, description?, version?, siteUrl?, agentCardUrl?, roverSiteUrl?, llmsUrl?, hostSurfaceSelector?, preferExecution?, discoverySurface?, additionalSkills? }` | — | Optional overrides for Rover's generated discovery surfaces. `rover-site.json` is the authoritative rich profile, `agent-card.json` is the interop card, and `discoverySurface.beaconLabel` now feeds the visible seed/presence CTA text in production. Legacy `visibleCue` / `visibleCueLabel` remain compatibility inputs only. |
 | `pageConfig` | `RoverPageCaptureConfig` | — | Optional per-site page-capture overrides such as `disableAutoScroll`, settle timing, and sparse-tree retry settings |
 
 ### AI-Callable URLs (Deep Links)
@@ -548,7 +549,7 @@ https://example.com?rover_shortcut=checkout_flow
 
 For AI or CLI-triggered entrypoints, prefer exact shortcut IDs for repeatable flows.
 
-When a site key or session token is used, Rover fetches cloud site config via `/v2/rover/session/open` (shortcuts + greeting + voice + pageConfig).
+When a site key or session token is used, Rover fetches cloud site config via `/v2/rover/session/open` (shortcuts + `businessType` + sparse `experience` overrides + legacy voice compatibility + `aiAccess` + `pageConfig`).
 If the same field exists in both cloud config and boot config, boot config wins.
 `deepLink` is boot/runtime only and is not persisted in cloud site config.
 

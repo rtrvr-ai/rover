@@ -1,5 +1,71 @@
 import type { RoverPageCaptureConfig } from '@rover/shared/lib/types/index.js';
 
+export type RoverServerExperienceConfig = {
+  presence?: {
+    assistantName?: string;
+    ctaText?: string;
+    iconMode?: 'logo' | 'mascot' | 'rover';
+    draggable?: boolean;
+    defaultAnchor?: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | 'bottom-center';
+    persistPosition?: boolean;
+    idleAnimation?: 'breathe' | 'orbit' | 'none';
+    firstRunIntro?: 'ambient' | 'headline' | 'none';
+  };
+  shell?: {
+    openMode?: 'center_stage';
+    mobileMode?: 'fullscreen_sheet';
+    desktopSize?: 'compact' | 'stage' | 'cinema';
+    desktopHeight?: 'tall' | 'full';
+    dimBackground?: boolean;
+    blurBackground?: boolean;
+    safeAreaInsetPx?: number;
+  };
+  stream?: {
+    layout?: 'single_column';
+    maxVisibleLiveCards?: number;
+    collapseCompletedSteps?: boolean;
+    artifactAutoMinimize?: boolean;
+    artifactOpenMode?: 'inline' | 'overlay';
+  };
+  inputs?: {
+    text?: boolean;
+    voice?: boolean;
+    files?: boolean;
+    acceptedMimeGroups?: Array<'images' | 'pdfs' | 'office' | 'text'>;
+    allowMultipleFiles?: boolean;
+    mobileCameraCapture?: boolean;
+    attachmentLimit?: number;
+    maxFileSizeMb?: number;
+  };
+  motion?: {
+    intensity?: 'calm' | 'balanced' | 'expressive';
+    reducedMotionFallback?: 'reduce' | 'remove';
+    performanceBudget?: 'standard' | 'high';
+  };
+  theme?: {
+    mode?: 'auto' | 'light' | 'dark';
+    accentColor?: string;
+    surfaceStyle?: 'glass' | 'solid';
+    radius?: 'soft' | 'rounded' | 'pill';
+    fontFamily?: string;
+  };
+};
+
+export type RoverServerFileDescriptor = {
+  id: string;
+  displayName: string;
+  mimeType: string;
+  storageUrl?: string;
+  gcsUri?: string;
+  sizeBytes?: number;
+  downloadUrl?: string;
+  expiresAt?: string;
+  kind?: string;
+  sourceStepId?: string;
+  originalIndex?: number;
+  data?: string;
+};
+
 export type RoverServerPolicy = {
   domainScopeMode?: 'host_only' | 'registrable_domain';
   externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
@@ -47,8 +113,23 @@ export type RoverServerAgentDiscoveryConfig = {
   };
 };
 
+export type RoverBusinessType =
+  | 'ecommerce'
+  | 'travel'
+  | 'saas'
+  | 'finance'
+  | 'healthcare'
+  | 'real_estate'
+  | 'restaurant'
+  | 'education'
+  | 'support'
+  | 'legal'
+  | 'automotive'
+  | 'general';
+
 export type RoverServerSiteConfig = {
   shortcuts?: Array<Record<string, unknown>>;
+  experience?: RoverServerExperienceConfig | null;
   greeting?: {
     text?: string;
     delay?: number;
@@ -63,6 +144,7 @@ export type RoverServerSiteConfig = {
   aiAccess?: RoverServerAiAccessConfig;
   pageConfig?: RoverPageCaptureConfig | null;
   agentDiscovery?: RoverServerAgentDiscoveryConfig | null;
+  businessType?: RoverBusinessType;
   version?: string | number;
 };
 
@@ -870,6 +952,7 @@ export class RoverServerRuntimeClient {
 
   async submitRunInput(params: {
     message: string;
+    files?: RoverServerFileDescriptor[];
     clientEventId?: string;
     continueRun?: boolean;
     forceNewRun?: boolean;
@@ -890,6 +973,7 @@ export class RoverServerRuntimeClient {
           payload: {
             runId: params.runId,
             message: params.message,
+            files: Array.isArray(params.files) ? params.files : undefined,
             continueRun: !!params.continueRun,
             forceNewRun: !!params.forceNewRun,
             requestedMode: params.requestedMode,
@@ -931,6 +1015,28 @@ export class RoverServerRuntimeClient {
       }
       return null;
     });
+  }
+
+  async uploadAttachment(params: {
+    fileName: string;
+    mimeType: string;
+    dataBase64: string;
+    sizeBytes?: number;
+  }): Promise<RoverServerFileDescriptor | null> {
+    const result = await this.postJson<{ file?: RoverServerFileDescriptor }>(
+      '/attachments/upload',
+      {
+        fileName: params.fileName,
+        mimeType: params.mimeType,
+        dataBase64: params.dataBase64,
+        sizeBytes: params.sizeBytes,
+      },
+    );
+    if (!result.ok) {
+      const message = (result.data as any)?.message || (result.raw as any)?.error || 'upload failed';
+      throw new Error(String(message));
+    }
+    return (result.data as any)?.file || null;
   }
 
   async controlRun(params: {
