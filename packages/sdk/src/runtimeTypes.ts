@@ -1,4 +1,5 @@
 import type { RoverExecutionMode, RoverMessageBlock, RoverTimelineEvent } from '@rover/ui';
+import type { LLMDataInput } from '@rover/shared/lib/types/workflow-types.js';
 
 export type UiRole = 'user' | 'assistant' | 'system';
 
@@ -20,6 +21,8 @@ export type PersistedTimelineEvent = {
   status?: RoverTimelineEvent['status'];
   ts: number;
   sourceRuntimeId?: string;
+  elementId?: number;
+  toolName?: string;
 };
 
 export type PersistedChatLogEntry = {
@@ -65,6 +68,7 @@ export type PersistedWorkerState = {
   taskBoundaryId?: string;
   rootUserInput?: string;
   seedChatLog?: PersistedChatLogEntry[];
+  files?: LLMDataInput[];
   history?: PersistedWorkerHistoryMessage[];
   plannerHistory?: unknown[];
   agentPrevSteps?: unknown[];

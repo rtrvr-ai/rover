@@ -9,6 +9,7 @@ const repoRoot = path.resolve(__dirname, '..');
 
 const curatedFiles = [
   'README.md',
+  'SKILLS.md',
   'packages/sdk/README.md',
   'packages/roverbook/README.md',
   'docs/AGENT_IDENTITY.md',
@@ -26,6 +27,10 @@ test('Rover docs publish the vNext discovery and identity model consistently', (
 
   assert.match(combined, /rover-site\.json/);
   assert.match(combined, /beaconLabel/);
+  assert.match(combined, /businessType/);
+  assert.match(combined, /siteConfig\.experience/);
+  assert.match(combined, /aiAccess/);
+  assert.match(combined, /ui\.mascot\.soundEnabled/);
   assert.match(combined, /verified_signed/);
   assert.match(combined, /signed_directory_only/);
   assert.match(combined, /goal/);
@@ -40,8 +45,10 @@ test('Rover docs no longer present pre-vNext canonical guidance', () => {
   const combined = curatedFiles.map((file) => read(file)).join('\n');
   const forbidden = [
     'Publish the well-known card first',
+    'siteConfig.surface',
     'Current launch behavior emits `self_reported`, `heuristic`, and `anonymous`',
     '`verified` remains reserved',
+    'visible AI-ready cue',
   ];
 
   for (const phrase of forbidden) {

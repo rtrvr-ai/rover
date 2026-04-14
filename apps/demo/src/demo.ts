@@ -257,6 +257,9 @@ function initRover(config: DemoConfig): ReturnType<typeof init> {
     },
     ui: {
       ...config.ui,
+      experience: {
+        presence: { persistPosition: false, defaultAnchor: 'bottom-center' },
+      },
       showTaskControls: true,
       greeting: {
         text: 'Hey {name}! I can help you shop',

@@ -1,6 +1,7 @@
 import { Bridge, bindRpc, type NavigationIntentEvent } from '@rover/bridge';
 import { sanitizeRoverPageCaptureConfig } from '@rover/shared/lib/page/index.js';
 import type { PageConfig, RoverPageCaptureConfig, ToolOutput } from '@rover/shared/lib/types/index.js';
+import type { LLMDataInput } from '@rover/shared/lib/types/workflow-types.js';
 import {
   mountWidget,
   ROVER_WIDGET_LAUNCHER_DESKTOP_INSET_PX,
@@ -154,7 +155,10 @@ import {
   type RoverServerProjection,
   type RoverServerPolicy,
   type RoverServerAiAccessConfig,
+  type RoverServerExperienceConfig,
+  type RoverServerFileDescriptor,
   type RoverServerSiteConfig,
+  type RoverBusinessType,
 } from './serverRuntime.js';
 import {
   describeCheckpointContinuity,
@@ -357,6 +361,7 @@ export type RoverInit = {
       disabled?: boolean;
       mp4Url?: string;
       webmUrl?: string;
+      soundEnabled?: boolean;
     };
     shortcuts?: RoverShortcut[];
     muted?: boolean;
@@ -365,6 +370,7 @@ export type RoverInit = {
       resizable?: boolean;
     };
     showTaskControls?: boolean;
+    experience?: RoverServerExperienceConfig;
     greeting?: {
       text?: string;
       delay?: number;
@@ -548,6 +554,9 @@ const RECEIPT_CLAIM_RETRY_MS = 350;
 const RECEIPT_CLAIM_WAIT_MS = 10_000;
 const DEFAULT_ACTION_TIMEOUT_MS = 30_000;
 const HANDOFF_TOOL_POLL_SLICE_SECONDS = 20;
+const DEFAULT_ATTACHMENT_LIMIT = 6;
+const DEFAULT_ATTACHMENT_MAX_FILE_SIZE_MB = 12;
+const DEFAULT_ATTACHMENT_MAX_FILE_SIZE_BYTES = DEFAULT_ATTACHMENT_MAX_FILE_SIZE_MB * 1024 * 1024;
 const ROVER_AGENT_DISCOVERY_ATTR = 'data-rover-agent-discovery';
 const ROVER_AGENT_DISCOVERY_CUE_ID = 'rover-agent-discovery-cue';
 const ROVER_AGENT_DISCOVERY_CUE_STYLE_ID = 'rover-agent-discovery-cue-style';
@@ -1667,7 +1676,7 @@ function syncAgentDiscoveryLandmark(cfg: RoverInit | null): void {
 function syncAgentDiscoveryCue(cfg: RoverInit | null): void {
   if (typeof document === 'undefined') return;
   const state = resolveAgentDiscoveryRenderState(cfg);
-  if (!state || state.policy.mode === 'silent' || state.integratedHost) {
+  if (!state || state.policy.mode === 'silent' || state.integratedHost || state.policy.mode !== 'debug') {
     removeAgentDiscoveryVisuals();
     return;
   }
@@ -1690,7 +1699,7 @@ function syncAgentDiscoveryCue(cfg: RoverInit | null): void {
 function syncAgentDiscoveryActionSheet(cfg: RoverInit | null): void {
   if (typeof document === 'undefined') return;
   const state = resolveAgentDiscoveryRenderState(cfg);
-  if (!state || state.policy.mode === 'silent' || state.integratedHost || state.policy.mode === 'debug') {
+  if (!state || state.policy.mode === 'silent' || state.integratedHost || state.policy.mode !== 'debug') {
     document.getElementById(ROVER_AGENT_DISCOVERY_ACTION_SHEET_ID)?.remove();
     agentDiscoveryActionSheetOpen = false;
     return;
@@ -2791,6 +2800,8 @@ async function ensureRoverServerRuntime(cfg: RoverInit): Promise<void> {
         if (session.siteConfig && typeof session.siteConfig === 'object' && currentConfig) {
           const resolvedSiteConfig: RoverResolvedSiteConfig = {
             shortcuts: sanitizeShortcutList(session.siteConfig.shortcuts),
+            businessType: sanitizeBusinessType(session.siteConfig.businessType),
+            experience: sanitizeExperienceConfig(session.siteConfig.experience),
             greeting: sanitizeGreetingConfig(session.siteConfig.greeting),
             voice: sanitizeVoiceConfig(session.siteConfig.voice),
             aiAccess: sanitizeAiAccessConfig(session.siteConfig.aiAccess),
@@ -3535,6 +3546,130 @@ function buildAskUserDispatchText(
   return String(askUserAnswers.rawText || '').trim();
 }
 
+function sanitizeAttachedFileDescriptors(input: unknown): LLMDataInput[] {
+  if (!Array.isArray(input)) return [];
+  const out: LLMDataInput[] = [];
+  const seen = new Set<string>();
+  for (const raw of input) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Record<string, unknown>;
+    const id = String(item.id || '').trim();
+    const displayName = String(item.displayName || '').trim();
+    const mimeType = String(item.mimeType || '').trim();
+    if (!id || !displayName || !mimeType || seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      displayName,
+      mimeType,
+      storageUrl: typeof item.storageUrl === 'string' && item.storageUrl.trim() ? item.storageUrl.trim() : undefined,
+      gcsUri: typeof item.gcsUri === 'string' && item.gcsUri.trim() ? item.gcsUri.trim() : undefined,
+      sizeBytes: Number.isFinite(Number(item.sizeBytes)) ? Math.max(0, Number(item.sizeBytes)) : undefined,
+      downloadUrl: typeof item.downloadUrl === 'string' && item.downloadUrl.trim() ? item.downloadUrl.trim() : undefined,
+      expiresAt: typeof item.expiresAt === 'string' && item.expiresAt.trim() ? item.expiresAt.trim() : undefined,
+      kind: typeof item.kind === 'string' && item.kind.trim() ? item.kind.trim() as any : undefined,
+      sourceStepId: typeof item.sourceStepId === 'string' && item.sourceStepId.trim() ? item.sourceStepId.trim() : undefined,
+      originalIndex: Number.isFinite(Number(item.originalIndex)) ? Math.max(0, Number(item.originalIndex)) : undefined,
+      data: typeof item.data === 'string' && item.data.trim() ? item.data.trim() : undefined,
+      ORIGIN_KEY: item.ORIGIN_KEY === 'tool' ? 'tool' : 'user',
+    });
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+
+function getEffectiveAttachmentLimit(): number {
+  const configured = Number(deriveExperienceConfig(currentConfig)?.inputs?.attachmentLimit);
+  if (!Number.isFinite(configured)) return DEFAULT_ATTACHMENT_LIMIT;
+  return Math.max(1, Math.min(12, Math.trunc(configured)));
+}
+
+function getEffectiveAttachmentMaxFileSizeBytes(): number {
+  const configuredMb = Number(deriveExperienceConfig(currentConfig)?.inputs?.maxFileSizeMb);
+  if (!Number.isFinite(configuredMb)) return DEFAULT_ATTACHMENT_MAX_FILE_SIZE_BYTES;
+  return Math.max(1, Math.min(32, Math.trunc(configuredMb))) * 1024 * 1024;
+}
+
+function encodeBytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, offset + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+async function fileToBase64(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer();
+  return encodeBytesToBase64(new Uint8Array(buffer));
+}
+
+function toInlineAttachmentDescriptor(file: File, dataBase64: string, originalIndex: number): LLMDataInput {
+  return {
+    id: `inline_${crypto.randomUUID()}`,
+    displayName: String(file.name || `attachment-${originalIndex + 1}`).trim() || `attachment-${originalIndex + 1}`,
+    mimeType: String(file.type || 'application/octet-stream').trim() || 'application/octet-stream',
+    sizeBytes: Number.isFinite(file.size) ? file.size : undefined,
+    originalIndex,
+    data: dataBase64,
+    ORIGIN_KEY: 'user',
+  };
+}
+
+function toUploadedAttachmentDescriptor(
+  file: File,
+  descriptor: RoverServerFileDescriptor | null,
+  originalIndex: number,
+  dataBase64?: string,
+): LLMDataInput {
+  const fallback = toInlineAttachmentDescriptor(file, dataBase64 || '', originalIndex);
+  if (!descriptor?.id) return fallback;
+  return {
+    id: descriptor.id,
+    displayName: String(descriptor.displayName || fallback.displayName).trim() || fallback.displayName,
+    mimeType: String(descriptor.mimeType || fallback.mimeType).trim() || fallback.mimeType,
+    storageUrl: descriptor.storageUrl,
+    gcsUri: descriptor.gcsUri,
+    sizeBytes: Number.isFinite(Number(descriptor.sizeBytes)) ? Number(descriptor.sizeBytes) : fallback.sizeBytes,
+    downloadUrl: descriptor.downloadUrl,
+    expiresAt: descriptor.expiresAt,
+    kind: descriptor.kind as any,
+    sourceStepId: descriptor.sourceStepId,
+    originalIndex: Number.isFinite(Number(descriptor.originalIndex)) ? Number(descriptor.originalIndex) : originalIndex,
+    data: descriptor.data || fallback.data,
+    ORIGIN_KEY: 'user',
+  };
+}
+
+async function uploadPromptAttachments(files: File[]): Promise<LLMDataInput[]> {
+  if (!Array.isArray(files) || files.length === 0) return [];
+  const maxFiles = getEffectiveAttachmentLimit();
+  const maxFileSizeBytes = getEffectiveAttachmentMaxFileSizeBytes();
+  const selected = files.slice(0, maxFiles);
+  const uploaded: LLMDataInput[] = [];
+  for (let index = 0; index < selected.length; index += 1) {
+    const file = selected[index];
+    if (!(file instanceof File)) continue;
+    if (Number.isFinite(file.size) && file.size > maxFileSizeBytes) {
+      throw new Error(`${file.name} exceeds the ${Math.round(maxFileSizeBytes / (1024 * 1024))}MB limit.`);
+    }
+    const dataBase64 = await fileToBase64(file);
+    if (roverServerRuntime) {
+      const descriptor = await roverServerRuntime.uploadAttachment({
+        fileName: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        dataBase64,
+        sizeBytes: file.size,
+      });
+      uploaded.push(toUploadedAttachmentDescriptor(file, descriptor, index, dataBase64));
+    } else {
+      uploaded.push(toInlineAttachmentDescriptor(file, dataBase64, index));
+    }
+  }
+  return sanitizeAttachedFileDescriptors(uploaded);
+}
+
 function resolveCanonicalTaskInputForRun(runId?: string): string | undefined {
   const activeTaskInput = String(taskOrchestrator?.getActiveTask()?.rootUserInput || '').trim();
   if (activeTaskInput) return activeTaskInput;
@@ -4106,6 +4241,7 @@ function sanitizeWorkerState(input: any): PersistedWorkerState | undefined {
     taskBoundaryId: taskBoundaryIdCandidate || undefined,
     rootUserInput: rootUserInput || undefined,
     seedChatLog: sanitizeChatLogEntries(input.seedChatLog),
+    files: sanitizeAttachedFileDescriptors((input as PersistedWorkerState).files),
     history,
     plannerHistory,
     agentPrevSteps,
@@ -5355,6 +5491,8 @@ function appendTimelineEvent(
     status: event.status,
     ts: event.ts || Date.now(),
     sourceRuntimeId: event.sourceRuntimeId,
+    elementId: event.elementId,
+    toolName: event.toolName,
   };
 
   ui?.addTimelineEvent(timelineEvent);
@@ -6004,6 +6142,7 @@ function postRun(
     autoResume?: boolean;
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: RoverAskUserAnswerMeta;
+    files?: LLMDataInput[];
   },
 ): void {
   const trimmed = String(text || '').trim();
@@ -6124,6 +6263,7 @@ function postRun(
     seedChatLog,
     routing: options?.routing,
     askUserAnswers: options?.askUserAnswers,
+    files: sanitizeAttachedFileDescriptors(options?.files),
     scopedTabIds,
     taskTabScope: toWorkerTaskTabScopePayload(),
   });
@@ -6160,6 +6300,7 @@ async function dispatchUserPromptAsync(
     reason?: string;
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: RoverAskUserAnswerMeta;
+    attachments?: File[];
     continueExistingRun?: boolean;
     continueRunId?: string;
   },
@@ -6205,6 +6346,9 @@ async function dispatchUserPromptAsync(
     ...providerSeedChatLog,
     ...(followupChatDecision.chatLog || []),
   ]);
+  const requestedAttachments = Array.isArray(options?.attachments)
+    ? options.attachments.filter((file): file is File => file instanceof File)
+    : [];
   recordTelemetryEvent('status', {
     event: 'task_boundary_decision',
     startFreshTask: shouldStartFreshTask,
@@ -6278,10 +6422,41 @@ async function dispatchUserPromptAsync(
   hideTaskSuggestion();
   let runId = continuationRunId;
   let routing: 'auto' | 'act' | 'planner' | undefined = options?.routing;
+  let uploadedFiles: LLMDataInput[] = [];
+  if (requestedAttachments.length > 0) {
+    try {
+      appendTimelineEvent({
+        kind: 'tool_start',
+        title: requestedAttachments.length === 1 ? 'Uploading attachment' : 'Uploading attachments',
+        detail: requestedAttachments.map(file => file.name).join(', '),
+        status: 'pending',
+      });
+      uploadedFiles = await uploadPromptAttachments(requestedAttachments);
+      appendTimelineEvent({
+        kind: 'tool_result',
+        title: uploadedFiles.length === 1 ? 'Attachment ready' : `${uploadedFiles.length} attachments ready`,
+        detail: uploadedFiles.map(file => file.displayName).join(', '),
+        status: 'success',
+      });
+    } catch (error: any) {
+      const message = String(error?.message || 'attachment upload failed');
+      appendTimelineEvent({
+        kind: 'error',
+        title: 'Attachment upload failed',
+        detail: message,
+        status: 'error',
+      });
+      appendUiMessage('system', `Unable to attach files: ${message}`, true);
+      setUiStatus(`Attachment upload failed (${message})`);
+      emit('error', { message, scope: 'attachment_upload' });
+      return;
+    }
+  }
   if (roverServerRuntime && currentConfig) {
     try {
       const server = await roverServerRuntime.submitRunInput({
         message: trimmed,
+        files: uploadedFiles,
         clientEventId: crypto.randomUUID(),
         continueRun: shouldContinueAskUserBoundary,
         forceNewRun: shouldStartFreshTask,
@@ -6313,6 +6488,7 @@ async function dispatchUserPromptAsync(
             // Retry submitRunInput once
             const retry = await roverServerRuntime.submitRunInput({
               message: trimmed,
+              files: uploadedFiles,
               clientEventId: crypto.randomUUID(),
               continueRun: false,
               forceNewRun: true,
@@ -6363,6 +6539,7 @@ async function dispatchUserPromptAsync(
     autoResume: true,
     routing,
     askUserAnswers: options?.askUserAnswers,
+    files: uploadedFiles,
   });
 }
 
@@ -6374,6 +6551,7 @@ function dispatchUserPrompt(
     reason?: string;
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: RoverAskUserAnswerMeta;
+    attachments?: File[];
     continueExistingRun?: boolean;
     continueRunId?: string;
   },
@@ -7648,11 +7826,14 @@ function handleWorkerMessage(msg: any): void {
   }
 
   if (msg.type === 'tool_start') {
+    const toolStartElementId = typeof msg.call?.args?.element_id === 'number' ? msg.call.args.element_id : undefined;
     appendTimelineEvent({
       kind: 'tool_start',
       title: `Running ${msg.call?.name || 'tool'}`,
       detail: safeSerialize(msg.call?.args),
       status: 'pending',
+      elementId: toolStartElementId,
+      toolName: msg.call?.name,
     });
     emit('tool_start', msg);
     enqueueLaunchRuntimeEvent('tool_start', buildLaunchToolStartData(msg), {
@@ -7673,12 +7854,15 @@ function handleWorkerMessage(msg: any): void {
       }
     }
     const detailBlocks = sanitizeMessageBlocks(msg.detailBlocks) || buildToolResultBlocks(msg.result);
+    const toolResultElementId = typeof msg.call?.args?.element_id === 'number' ? msg.call.args.element_id : undefined;
     appendTimelineEvent({
       kind: 'tool_result',
       title: `${msg.call?.name || 'tool'} completed`,
       detail: safeSerialize(msg.result),
       detailBlocks,
       status: msg?.result?.success === false ? 'error' : 'success',
+      elementId: toolResultElementId,
+      toolName: msg.call?.name,
     });
     emit('tool_result', msg);
     enqueueLaunchRuntimeEvent('tool_result', buildLaunchToolResultData(msg), {
@@ -8275,6 +8459,8 @@ type RoverGreetingConfig = {
 
 type RoverResolvedSiteConfig = {
   shortcuts: RoverShortcut[];
+  businessType?: RoverBusinessType;
+  experience?: RoverServerExperienceConfig;
   greeting?: RoverGreetingConfig;
   voice?: RoverVoiceConfig;
   aiAccess?: RoverAiAccessConfig;
@@ -8352,6 +8538,212 @@ function sanitizeAiAccessConfig(raw: unknown): RoverAiAccessConfig | undefined {
   return Object.keys(next).length ? next : undefined;
 }
 
+function sanitizeExperienceConfig(raw: unknown): RoverServerExperienceConfig | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const input = raw as Record<string, unknown>;
+  const next: RoverServerExperienceConfig = {};
+
+  if (input.presence && typeof input.presence === 'object') {
+    const presenceInput = input.presence as Record<string, unknown>;
+    const presence: NonNullable<RoverServerExperienceConfig['presence']> = {};
+    const assistantName = String(presenceInput.assistantName || '').trim();
+    if (assistantName) presence.assistantName = assistantName.slice(0, 160);
+    const ctaText = String(presenceInput.ctaText || '').trim();
+    if (ctaText) presence.ctaText = ctaText.slice(0, 160);
+    if (presenceInput.iconMode === 'logo' || presenceInput.iconMode === 'mascot' || presenceInput.iconMode === 'rover') {
+      presence.iconMode = presenceInput.iconMode;
+    }
+    if (typeof presenceInput.draggable === 'boolean') presence.draggable = presenceInput.draggable;
+    if (
+      presenceInput.defaultAnchor === 'bottom-right'
+      || presenceInput.defaultAnchor === 'bottom-left'
+      || presenceInput.defaultAnchor === 'top-right'
+      || presenceInput.defaultAnchor === 'top-left'
+      || presenceInput.defaultAnchor === 'bottom-center'
+    ) {
+      presence.defaultAnchor = presenceInput.defaultAnchor;
+    }
+    if (typeof presenceInput.persistPosition === 'boolean') presence.persistPosition = presenceInput.persistPosition;
+    if (presenceInput.idleAnimation === 'breathe' || presenceInput.idleAnimation === 'orbit' || presenceInput.idleAnimation === 'none') {
+      presence.idleAnimation = presenceInput.idleAnimation;
+    }
+    if (presenceInput.firstRunIntro === 'ambient' || presenceInput.firstRunIntro === 'headline' || presenceInput.firstRunIntro === 'none') {
+      presence.firstRunIntro = presenceInput.firstRunIntro;
+    }
+    if (Object.keys(presence).length) next.presence = presence;
+  }
+
+  if (input.shell && typeof input.shell === 'object') {
+    const shellInput = input.shell as Record<string, unknown>;
+    const shell: NonNullable<RoverServerExperienceConfig['shell']> = {};
+    if (shellInput.openMode === 'center_stage') shell.openMode = shellInput.openMode;
+    if (shellInput.mobileMode === 'fullscreen_sheet') shell.mobileMode = shellInput.mobileMode;
+    if (shellInput.desktopSize === 'compact' || shellInput.desktopSize === 'stage' || shellInput.desktopSize === 'cinema') {
+      shell.desktopSize = shellInput.desktopSize;
+    }
+    if (shellInput.desktopHeight === 'tall' || shellInput.desktopHeight === 'full') {
+      shell.desktopHeight = shellInput.desktopHeight;
+    }
+    if (typeof shellInput.dimBackground === 'boolean') shell.dimBackground = shellInput.dimBackground;
+    if (typeof shellInput.blurBackground === 'boolean') shell.blurBackground = shellInput.blurBackground;
+    if (Number.isFinite(Number(shellInput.safeAreaInsetPx))) {
+      shell.safeAreaInsetPx = Math.max(0, Math.min(48, Math.trunc(Number(shellInput.safeAreaInsetPx))));
+    }
+    if (Object.keys(shell).length) next.shell = shell;
+  }
+
+  if (input.stream && typeof input.stream === 'object') {
+    const streamInput = input.stream as Record<string, unknown>;
+    const stream: NonNullable<RoverServerExperienceConfig['stream']> = {};
+    if (streamInput.layout === 'single_column') stream.layout = streamInput.layout;
+    if (Number.isFinite(Number(streamInput.maxVisibleLiveCards))) {
+      stream.maxVisibleLiveCards = Math.max(1, Math.min(4, Math.trunc(Number(streamInput.maxVisibleLiveCards))));
+    }
+    if (typeof streamInput.collapseCompletedSteps === 'boolean') stream.collapseCompletedSteps = streamInput.collapseCompletedSteps;
+    if (typeof streamInput.artifactAutoMinimize === 'boolean') stream.artifactAutoMinimize = streamInput.artifactAutoMinimize;
+    if (streamInput.artifactOpenMode === 'inline' || streamInput.artifactOpenMode === 'overlay') {
+      stream.artifactOpenMode = streamInput.artifactOpenMode;
+    }
+    if (Object.keys(stream).length) next.stream = stream;
+  }
+
+  if (input.inputs && typeof input.inputs === 'object') {
+    const inputsInput = input.inputs as Record<string, unknown>;
+    const inputsCfg: NonNullable<RoverServerExperienceConfig['inputs']> = {};
+    if (typeof inputsInput.text === 'boolean') inputsCfg.text = inputsInput.text;
+    if (typeof inputsInput.voice === 'boolean') inputsCfg.voice = inputsInput.voice;
+    if (typeof inputsInput.files === 'boolean') inputsCfg.files = inputsInput.files;
+    const acceptedMimeGroups = Array.isArray(inputsInput.acceptedMimeGroups)
+      ? inputsInput.acceptedMimeGroups.filter(
+        (value): value is 'images' | 'pdfs' | 'office' | 'text' =>
+          value === 'images' || value === 'pdfs' || value === 'office' || value === 'text',
+      )
+      : [];
+    if (acceptedMimeGroups.length) inputsCfg.acceptedMimeGroups = Array.from(new Set(acceptedMimeGroups));
+    if (typeof inputsInput.allowMultipleFiles === 'boolean') inputsCfg.allowMultipleFiles = inputsInput.allowMultipleFiles;
+    if (typeof inputsInput.mobileCameraCapture === 'boolean') inputsCfg.mobileCameraCapture = inputsInput.mobileCameraCapture;
+    if (Number.isFinite(Number(inputsInput.attachmentLimit))) {
+      inputsCfg.attachmentLimit = Math.max(1, Math.min(12, Math.trunc(Number(inputsInput.attachmentLimit))));
+    }
+    if (Number.isFinite(Number(inputsInput.maxFileSizeMb))) {
+      inputsCfg.maxFileSizeMb = Math.max(1, Math.min(32, Math.trunc(Number(inputsInput.maxFileSizeMb))));
+    }
+    if (Object.keys(inputsCfg).length) next.inputs = inputsCfg;
+  }
+
+  if (input.motion && typeof input.motion === 'object') {
+    const motionInput = input.motion as Record<string, unknown>;
+    const motion: NonNullable<RoverServerExperienceConfig['motion']> = {};
+    if (motionInput.intensity === 'calm' || motionInput.intensity === 'balanced' || motionInput.intensity === 'expressive') {
+      motion.intensity = motionInput.intensity;
+    }
+    if (motionInput.reducedMotionFallback === 'reduce' || motionInput.reducedMotionFallback === 'remove') {
+      motion.reducedMotionFallback = motionInput.reducedMotionFallback;
+    }
+    if (motionInput.performanceBudget === 'standard' || motionInput.performanceBudget === 'high') {
+      motion.performanceBudget = motionInput.performanceBudget;
+    }
+    if (Object.keys(motion).length) next.motion = motion;
+  }
+
+  if (input.theme && typeof input.theme === 'object') {
+    const themeInput = input.theme as Record<string, unknown>;
+    const theme: NonNullable<RoverServerExperienceConfig['theme']> = {};
+    if (themeInput.mode === 'auto' || themeInput.mode === 'light' || themeInput.mode === 'dark') {
+      theme.mode = themeInput.mode;
+    }
+    const accentColor = String(themeInput.accentColor || '').trim();
+    if (accentColor) theme.accentColor = accentColor.slice(0, 32);
+    if (themeInput.surfaceStyle === 'glass' || themeInput.surfaceStyle === 'solid') {
+      theme.surfaceStyle = themeInput.surfaceStyle;
+    }
+    if (themeInput.radius === 'soft' || themeInput.radius === 'rounded' || themeInput.radius === 'pill') {
+      theme.radius = themeInput.radius;
+    }
+    const fontFamily = String(themeInput.fontFamily || '').trim();
+    if (fontFamily) theme.fontFamily = fontFamily.slice(0, 120);
+    if (Object.keys(theme).length) next.theme = theme;
+  }
+
+  return Object.keys(next).length ? next : undefined;
+}
+
+function deriveExperienceConfig(cfg: RoverInit | null): RoverServerExperienceConfig | undefined {
+  if (!cfg) return undefined;
+  const fromBackend = sanitizeExperienceConfig(backendSiteConfig?.experience);
+  const fromBoot = sanitizeExperienceConfig(cfg.ui?.experience);
+  const merged: RoverServerExperienceConfig = {
+    ...(fromBackend || {}),
+    ...(fromBoot || {}),
+  };
+  if (fromBackend?.presence || fromBoot?.presence) {
+    merged.presence = {
+      ...(fromBackend?.presence || {}),
+      ...(fromBoot?.presence || {}),
+    };
+  }
+  if (fromBackend?.shell || fromBoot?.shell) {
+    merged.shell = {
+      ...(fromBackend?.shell || {}),
+      ...(fromBoot?.shell || {}),
+    };
+  }
+  if (fromBackend?.stream || fromBoot?.stream) {
+    merged.stream = {
+      ...(fromBackend?.stream || {}),
+      ...(fromBoot?.stream || {}),
+    };
+  }
+  if (fromBackend?.inputs || fromBoot?.inputs) {
+    merged.inputs = {
+      ...(fromBackend?.inputs || {}),
+      ...(fromBoot?.inputs || {}),
+    };
+  }
+  if (fromBackend?.motion || fromBoot?.motion) {
+    merged.motion = {
+      ...(fromBackend?.motion || {}),
+      ...(fromBoot?.motion || {}),
+    };
+  }
+  if (fromBackend?.theme || fromBoot?.theme) {
+    merged.theme = {
+      ...(fromBackend?.theme || {}),
+      ...(fromBoot?.theme || {}),
+    };
+  }
+
+  const greeting = sanitizeGreetingConfig(backendSiteConfig?.greeting || cfg.ui?.greeting);
+  const voice = resolveEffectiveVoiceConfig(cfg);
+  const discovery = resolveEffectiveAgentDiscoveryRuntimeConfig(cfg);
+  const legacyDerived: RoverServerExperienceConfig = {};
+  if (discovery?.discoverySurface?.beaconLabel || greeting?.disabled === true) {
+    legacyDerived.presence = {
+      ...(discovery?.discoverySurface?.beaconLabel
+        ? { ctaText: discovery.discoverySurface.beaconLabel }
+        : {}),
+      ...(greeting?.disabled === true ? { firstRunIntro: 'none' as const } : {}),
+    };
+  }
+  if (voice?.enabled === false) {
+    legacyDerived.inputs = {
+      voice: false,
+    };
+  }
+
+  const resolved = sanitizeExperienceConfig({
+    ...legacyDerived,
+    ...merged,
+    presence: { ...(legacyDerived.presence || {}), ...(merged.presence || {}) },
+    inputs: { ...(legacyDerived.inputs || {}), ...(merged.inputs || {}) },
+    shell: merged.shell,
+    stream: merged.stream,
+    motion: merged.motion,
+    theme: merged.theme,
+  });
+  return resolved;
+}
+
 function resolveEffectiveAgentDiscoveryRuntimeConfig(cfg: RoverInit | null): RoverAgentDiscoveryRuntimeConfig | undefined {
   if (!cfg) return undefined;
   const fromBackend = sanitizeRoverAgentDiscoveryRuntimeConfig(backendSiteConfig?.agentDiscovery);
@@ -8427,6 +8819,8 @@ function getCachedSiteConfig(siteId: string): RoverResolvedSiteConfig | null {
       if (Date.now() - parsed.ts > SHORTCUTS_CACHE_TTL_MS) return null;
       return {
         shortcuts: sanitizeShortcutList(parsed.data.shortcuts),
+        businessType: sanitizeBusinessType(parsed.data.businessType),
+        experience: sanitizeExperienceConfig(parsed.data.experience),
         greeting: sanitizeGreetingConfig(parsed.data.greeting),
         voice: sanitizeVoiceConfig(parsed.data.voice),
         aiAccess: sanitizeAiAccessConfig(parsed.data.aiAccess),
@@ -8462,11 +8856,14 @@ function setCachedSiteConfig(siteId: string, data: RoverResolvedSiteConfig): voi
       version: data.version,
         data: {
           shortcuts: sanitizeShortcutList(data.shortcuts),
+          businessType: sanitizeBusinessType(data.businessType),
+          experience: sanitizeExperienceConfig(data.experience),
           greeting: sanitizeGreetingConfig(data.greeting),
           voice: sanitizeVoiceConfig(data.voice),
           aiAccess: sanitizeAiAccessConfig(data.aiAccess),
           limits: sanitizeSiteConfigLimits(data.limits),
           pageConfig: sanitizeResolvedPageCaptureConfig(data.pageConfig),
+          agentDiscovery: sanitizeRoverAgentDiscoveryRuntimeConfig(data.agentDiscovery),
         },
       }));
   } catch {
@@ -8602,7 +8999,26 @@ function resolveEffectiveShortcuts(cfg: RoverInit | null): RoverShortcut[] {
   if (!cfg) return [];
   const configShortcuts = sanitizeShortcutList(cfg.ui?.shortcuts || []);
   const backendShortcuts = sanitizeShortcutList(backendSiteConfig?.shortcuts || []);
-  return mergeShortcuts(configShortcuts, backendShortcuts);
+  const merged = mergeShortcuts(configShortcuts, backendShortcuts);
+  if (merged.length >= 3) return merged;
+  const suggestions = buildBusinessTypeShortcuts(backendSiteConfig?.businessType);
+  if (!suggestions.length) return merged;
+
+  const seenIds = new Set(merged.map(shortcut => shortcut.id));
+  const seenLabels = new Set(merged.map(shortcut => shortcut.label.trim().toLowerCase()));
+  const seenPrompts = new Set(merged.map(shortcut => shortcut.prompt.trim().toLowerCase()));
+  const remaining = Math.max(0, 3 - merged.length);
+  const generated = suggestions.filter(shortcut => {
+    const label = shortcut.label.trim().toLowerCase();
+    const prompt = shortcut.prompt.trim().toLowerCase();
+    if (seenIds.has(shortcut.id) || seenLabels.has(label) || seenPrompts.has(prompt)) return false;
+    seenIds.add(shortcut.id);
+    seenLabels.add(label);
+    seenPrompts.add(prompt);
+    return true;
+  }).slice(0, remaining);
+
+  return [...merged, ...generated];
 }
 
 function getRenderableShortcuts(shortcuts: RoverShortcut[]): RoverShortcut[] {
@@ -9944,10 +10360,116 @@ function maybeShowGreeting(): void {
   }, delay);
 }
 
+function sanitizeBusinessType(v: unknown): RoverBusinessType | undefined {
+  const valid: RoverBusinessType[] = [
+    'ecommerce', 'travel', 'saas', 'finance', 'healthcare',
+    'real_estate', 'restaurant', 'education', 'support', 'legal', 'automotive', 'general',
+  ];
+  return valid.includes(v as RoverBusinessType) ? (v as RoverBusinessType) : undefined;
+}
+
+const BUSINESS_PLACEHOLDER_MAP: Record<RoverBusinessType, string[]> = {
+  ecommerce:   ['Find the best deal here...', 'Add this to my cart...', 'What sizes are available?', 'Track my order...'],
+  travel:      ['Book this for me...', 'Find flights to Paris...', "What's the check-in time?", 'Compare hotel prices...'],
+  saas:        ['How do I export my data?', 'Set up an integration...', 'Help me configure this...', 'Show me usage analytics...'],
+  finance:     ['Check my account balance...', 'Help me apply for a loan...', 'What are the transfer fees?', 'Explain this charge...'],
+  healthcare:  ['Book an appointment...', 'Refill my prescription...', 'Find a specialist near me...', 'What are your office hours?'],
+  real_estate: ['Schedule a viewing...', "What's the price per sqft?", 'Find homes near good schools...', 'Tell me about this property...'],
+  restaurant:  ['Make a reservation...', "What's on the menu today?", 'Do you have vegan options?', 'Order delivery to my address...'],
+  education:   ['Enroll me in this course...', 'What are the prerequisites?', 'Show my learning progress...', 'Find a tutor for calculus...'],
+  support:     ['I need help with...', 'Reset my password...', 'Track my support ticket...', 'Report a problem...'],
+  legal:       ['Schedule a consultation...', 'Explain this clause...', 'What documents do I need?', 'Find a lawyer specializing in...'],
+  automotive:  ['Schedule a test drive...', "What's the trade-in value?", 'Book a service appointment...', 'Check parts availability...'],
+  general:     ['Fill this form for me...', 'Find the best option here...', 'Help me get started...', 'What can you do for me?'],
+};
+
+const DEFAULT_PLACEHOLDER_PHRASES = BUSINESS_PLACEHOLDER_MAP.general;
+
+const BUSINESS_SHORTCUT_MAP: Record<RoverBusinessType, Array<Pick<RoverShortcut, 'label' | 'description' | 'prompt'> & { id: string }>> = {
+  ecommerce: [
+    { id: 'biz_ecommerce_compare', label: 'Compare pricing', description: 'Check plans, bundles, or pricing tiers on this site.', prompt: 'Compare the main pricing or product options on this site and summarize the best fit.' },
+    { id: 'biz_ecommerce_checkout', label: 'Complete checkout', description: 'Add items, apply a code, and walk through checkout.', prompt: 'Help me buy the right item on this site and walk me through checkout.' },
+    { id: 'biz_ecommerce_support', label: 'Track an order', description: 'Find order status, shipping, or return information.', prompt: 'Find the order tracking or returns flow on this site and help me complete it.' },
+  ],
+  travel: [
+    { id: 'biz_travel_book', label: 'Book travel', description: 'Search dates, compare options, and complete a booking flow.', prompt: 'Help me compare the main travel options on this site and complete the best booking.' },
+    { id: 'biz_travel_policy', label: 'Check policies', description: 'Find cancellation, baggage, or check-in rules.', prompt: 'Find the important travel policies on this site and summarize them clearly.' },
+    { id: 'biz_travel_support', label: 'Manage reservation', description: 'Open the reservation flow and help with changes.', prompt: 'Help me find and manage an existing reservation on this site.' },
+  ],
+  saas: [
+    { id: 'biz_saas_pricing', label: 'Compare plans', description: 'Review pricing, tiers, and feature differences.', prompt: 'Compare the pricing plans on this site and recommend the right one for my use case.' },
+    { id: 'biz_saas_docs', label: 'Find setup docs', description: 'Locate docs, integrations, and onboarding steps.', prompt: 'Find the best setup or integration docs on this site and summarize the next steps.' },
+    { id: 'biz_saas_contact', label: 'Talk to sales', description: 'Open demo or contact flows and prepare the form.', prompt: 'Find the sales or demo request flow on this site and help me complete it.' },
+  ],
+  finance: [
+    { id: 'biz_finance_rates', label: 'Check rates', description: 'Compare rates, fees, or account options.', prompt: 'Compare the main rates or fees on this site and explain the important differences.' },
+    { id: 'biz_finance_apply', label: 'Start application', description: 'Open the relevant application flow and prepare inputs.', prompt: 'Help me find the right application flow on this site and get it started.' },
+    { id: 'biz_finance_support', label: 'Resolve account issue', description: 'Find support, dispute, or account-help flows.', prompt: 'Find the best support or dispute path on this site and help me use it.' },
+  ],
+  healthcare: [
+    { id: 'biz_healthcare_book', label: 'Book appointment', description: 'Find providers, locations, and scheduling steps.', prompt: 'Help me find the right appointment flow on this site and complete the booking steps.' },
+    { id: 'biz_healthcare_forms', label: 'Prepare forms', description: 'Locate intake, insurance, or patient forms.', prompt: 'Find the forms or patient-prep information I need on this site.' },
+    { id: 'biz_healthcare_support', label: 'Patient portal help', description: 'Navigate patient support or portal entry points.', prompt: 'Help me find the patient portal or support path on this site.' },
+  ],
+  real_estate: [
+    { id: 'biz_real_estate_search', label: 'Explore listings', description: 'Search listings, filters, and property details.', prompt: 'Help me compare the best matching listings on this site.' },
+    { id: 'biz_real_estate_tour', label: 'Request a tour', description: 'Open contact, showing, or inquiry flows.', prompt: 'Find the right showing or inquiry flow on this site and help me use it.' },
+    { id: 'biz_real_estate_market', label: 'Research property', description: 'Summarize pricing, location, and property facts.', prompt: 'Summarize the most important facts and pricing details for this property.' },
+  ],
+  restaurant: [
+    { id: 'biz_restaurant_reserve', label: 'Reserve a table', description: 'Find reservation or booking steps.', prompt: 'Help me make a reservation on this site.' },
+    { id: 'biz_restaurant_menu', label: 'Review the menu', description: 'Summarize menu sections, dietary filters, and specials.', prompt: 'Summarize the menu on this site and highlight the best options.' },
+    { id: 'biz_restaurant_order', label: 'Start an order', description: 'Navigate pickup or delivery ordering flow.', prompt: 'Help me place an order on this site.' },
+  ],
+  education: [
+    { id: 'biz_education_course', label: 'Compare courses', description: 'Review programs, syllabus, and enrollment details.', prompt: 'Compare the main courses or programs on this site and summarize the differences.' },
+    { id: 'biz_education_apply', label: 'Start enrollment', description: 'Open signup or application flows.', prompt: 'Help me find the right enrollment or application flow on this site.' },
+    { id: 'biz_education_support', label: 'Find support', description: 'Locate advising, tuition, or admissions help.', prompt: 'Find the most useful support or admissions contact path on this site.' },
+  ],
+  support: [
+    { id: 'biz_support_ticket', label: 'Open support path', description: 'Find the fastest route to help or ticket submission.', prompt: 'Help me find the best support path on this site and use it.' },
+    { id: 'biz_support_docs', label: 'Search help docs', description: 'Look through troubleshooting or FAQ content.', prompt: 'Search the help content on this site and summarize the answer.' },
+    { id: 'biz_support_status', label: 'Check status', description: 'Find system status or issue updates.', prompt: 'Find the current status or outage information on this site.' },
+  ],
+  legal: [
+    { id: 'biz_legal_consult', label: 'Request consultation', description: 'Open consultation or contact intake flow.', prompt: 'Help me request a consultation on this site.' },
+    { id: 'biz_legal_pricing', label: 'Review services', description: 'Compare services, practice areas, or pricing.', prompt: 'Compare the main services on this legal site and summarize what matters.' },
+    { id: 'biz_legal_docs', label: 'Find requirements', description: 'Locate intake requirements or needed documents.', prompt: 'Find the documents or information this site says I need before getting started.' },
+  ],
+  automotive: [
+    { id: 'biz_auto_inventory', label: 'Compare inventory', description: 'Review vehicles, trims, and availability.', prompt: 'Compare the best matching vehicles on this site.' },
+    { id: 'biz_auto_service', label: 'Book service', description: 'Find service scheduling and maintenance flows.', prompt: 'Help me schedule service on this site.' },
+    { id: 'biz_auto_financing', label: 'Check financing', description: 'Compare financing, lease, or trade-in paths.', prompt: 'Find the financing or trade-in flow on this site and summarize the options.' },
+  ],
+  general: [
+    { id: 'biz_general_start', label: 'Get started', description: 'Open the main conversion or onboarding path on this site.', prompt: 'Help me complete the main get-started flow on this site.' },
+    { id: 'biz_general_compare', label: 'Compare options', description: 'Summarize the main plans, products, or actions here.', prompt: 'Compare the main options on this site and tell me which one fits best.' },
+    { id: 'biz_general_contact', label: 'Find the right contact', description: 'Locate the best contact, demo, or support path.', prompt: 'Find the best contact or support path on this site.' },
+  ],
+};
+
+function buildBusinessTypeShortcuts(type?: RoverBusinessType): RoverShortcut[] {
+  const normalized = sanitizeBusinessType(type) || 'general';
+  return (BUSINESS_SHORTCUT_MAP[normalized] || BUSINESS_SHORTCUT_MAP.general).map((shortcut, index) => ({
+    ...shortcut,
+    id: `suggested_${normalized}_${shortcut.id}`,
+    enabled: true,
+    order: 10_000 + index,
+    preferredInterface: 'task',
+  }));
+}
+
+function resolveEffectivePlaceholders(): string[] {
+  const type = backendSiteConfig?.businessType;
+  return (type && BUSINESS_PLACEHOLDER_MAP[type]) ?? DEFAULT_PLACEHOLDER_PHRASES;
+}
+
 function applyEffectiveSiteConfig(cfg: RoverInit): void {
   const merged = resolveEffectiveShortcuts(cfg);
   ui?.setShortcuts(getRenderableShortcuts(merged));
+  ui?.setExperience?.(deriveExperienceConfig(cfg));
   ui?.setVoiceConfig(resolveEffectiveVoiceConfig(cfg));
+  ui?.setPlaceholders?.(resolveEffectivePlaceholders());
   syncEffectivePageCaptureConfig(cfg);
   syncAgentDiscoverySurfaces(cfg);
   maybeHandleBrowserReceipt('site_config');
@@ -9995,6 +10517,8 @@ async function fetchBackendSiteConfig(cfg: RoverInit): Promise<RoverResolvedSite
 
   return {
     shortcuts: sanitizeShortcutList(payload.shortcuts),
+    businessType: sanitizeBusinessType(payload.businessType),
+    experience: sanitizeExperienceConfig(payload.experience),
     greeting: sanitizeGreetingConfig(payload.greeting),
     voice: sanitizeVoiceConfig(payload.voice),
     aiAccess: sanitizeAiAccessConfig(payload.aiAccess),
@@ -10720,13 +11244,21 @@ function createRuntime(cfg: RoverInit): void {
     persistRuntimeState();
   };
 
-  ui = mountWidget({
+  const mountOptions: Parameters<typeof mountWidget>[0] & {
+    thoughtStyle?: 'concise_cards' | 'minimal';
+  } = {
+    siteId: cfg.siteId,
+    resolveElement: (elementId: number) => {
+      return document.querySelector(`[data-rveid="${elementId}"]`) || null;
+    },
     panel: {
       resizable: cfg.ui?.panel?.resizable !== false,
     },
     shortcuts: getRenderableShortcuts(sanitizeShortcutList(cfg.ui?.shortcuts || [])),
+    experience: deriveExperienceConfig(cfg),
     greeting: resolveEffectiveGreetingConfig(cfg),
     voice: resolveEffectiveVoiceConfig(cfg),
+    thoughtStyle: cfg.ui?.thoughtStyle,
     visitorName: resolvedVisitor?.name,
     onVoiceTelemetry: (event, payload) => {
       recordVoiceTelemetryEvent(event, payload);
@@ -10739,6 +11271,7 @@ function createRuntime(cfg: RoverInit): void {
     onSend: (text, meta) => {
       dispatchUserPrompt(text, {
         askUserAnswers: meta?.askUserAnswers,
+        attachments: meta?.attachments,
       });
     },
     onRequestControl: () => {
@@ -10878,6 +11411,7 @@ function createRuntime(cfg: RoverInit): void {
       disabled: cfg.ui?.mascot?.disabled,
       mp4Url: cfg.ui?.mascot?.mp4Url,
       webmUrl: cfg.ui?.mascot?.webmUrl,
+      soundEnabled: cfg.ui?.mascot?.soundEnabled,
     },
     onOpen: () => {
       greetingDismissed = true;
@@ -10898,7 +11432,11 @@ function createRuntime(cfg: RoverInit): void {
       syncAgentDiscoverySurfaces(currentConfig);
       emit('close');
     },
-  });
+  };
+
+  // The UI runtime already supports thoughtStyle; cast through the public mount
+  // signature so SDK type-checks do not depend on freshly built UI declarations.
+  ui = mountWidget(mountOptions as Parameters<typeof mountWidget>[0]);
 
   hideTaskSuggestion();
 
@@ -11531,6 +12069,10 @@ export function update(cfg: Partial<RoverInit>): void {
       agent: {
         ...currentConfig.ui?.agent,
         ...cfg.ui?.agent,
+      },
+      experience: {
+        ...currentConfig.ui?.experience,
+        ...cfg.ui?.experience,
       },
       panel: {
         ...currentConfig.ui?.panel,

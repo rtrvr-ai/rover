@@ -178,6 +178,83 @@ function normalizeVoiceError(event: SpeechRecognitionErrorEventLike | unknown): 
   };
 }
 
+// ── Audio Analyser (for voice-active visualisation) ──
+
+export type AudioAnalyser = {
+  start: () => Promise<void>;
+  stop: () => void;
+  dispose: () => void;
+  isActive: () => boolean;
+};
+
+export function createAudioAnalyser(handlers: {
+  onFrequencyData?: (avg: number) => void;
+}): AudioAnalyser {
+  let audioCtx: AudioContext | null = null;
+  let analyser: AnalyserNode | null = null;
+  let source: MediaStreamAudioSourceNode | null = null;
+  let stream: MediaStream | null = null;
+  let rafId: number | null = null;
+  let active = false;
+  let disposed = false;
+  let dataArray: Uint8Array<ArrayBuffer> | null = null;
+
+  function tick(): void {
+    if (!active || !analyser || !dataArray) { rafId = null; return; }
+    analyser.getByteFrequencyData(dataArray);
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+    const avg = sum / dataArray.length / 255; // normalize to 0-1
+    handlers.onFrequencyData?.(avg);
+    rafId = requestAnimationFrame(tick);
+  }
+
+  async function start(): Promise<void> {
+    if (disposed || active) return;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioCtx = new AudioContext();
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 128;
+      dataArray = new Uint8Array(analyser.frequencyBinCount);
+      source = audioCtx.createMediaStreamSource(stream);
+      source.connect(analyser);
+      // Do NOT connect to destination (no playback)
+      active = true;
+      rafId = requestAnimationFrame(tick);
+    } catch {
+      // Silently fail if permissions denied
+      cleanup();
+    }
+  }
+
+  function cleanup(): void {
+    if (rafId != null) { cancelAnimationFrame(rafId); rafId = null; }
+    if (source) { try { source.disconnect(); } catch {} source = null; }
+    if (analyser) { try { analyser.disconnect(); } catch {} analyser = null; }
+    if (audioCtx) { try { audioCtx.close(); } catch {} audioCtx = null; }
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    dataArray = null;
+    active = false;
+  }
+
+  function stop(): void {
+    cleanup();
+  }
+
+  function dispose(): void {
+    disposed = true;
+    cleanup();
+  }
+
+  return {
+    start,
+    stop,
+    dispose,
+    isActive: () => active,
+  };
+}
+
 export function createBrowserVoiceTranscriber(handlers: VoiceTranscriberHandlers = {}): VoiceTranscriber {
   let recognition: SpeechRecognitionLike | null = null;
   let disposed = false;

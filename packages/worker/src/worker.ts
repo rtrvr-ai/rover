@@ -22,6 +22,7 @@ import { isApiKeyRequiredError, toRoverErrorEnvelope } from './agent/errors.js';
 import { resolveRuntimeTabs } from './agent/runtimeTabs.js';
 import { shouldClearHistoryForRun } from './runHistoryGuards.js';
 import { classifyNavigationContinuation } from './navigationContinuation.js';
+import type { LLMDataInput } from '@rover/shared/lib/types/workflow-types.js';
 import { ROVER_V2_PERSIST_CAPS } from '@rover/shared';
 
 type RpcRequest = { t: 'req'; id: string; method: string; params?: unknown };
@@ -79,6 +80,7 @@ type PersistedWorkerState = {
   taskBoundaryId?: string;
   rootUserInput?: string;
   seedChatLog?: FollowupChatLogEntry[];
+  files?: LLMDataInput[];
   history: ChatMessage[];
   plannerHistory: unknown[];
   agentPrevSteps: PreviousSteps[];
@@ -165,6 +167,7 @@ let taskBoundaryId: string = crypto.randomUUID();
 let scopedTabIds: number[] = [];
 let scopedSeedTabId: number | undefined;
 let tabularStore: TabularStore | null = null;
+let attachedFiles: LLMDataInput[] = [];
 const PLANNER_TOOL_NAME_SET = new Set<string>(Object.values(PLANNER_FUNCTION_CALLS));
 let activeRun: { runId: string; text: string; startedAt: number; resume: boolean; preserveHistory: boolean } | null = null;
 const cancelledRunIds = new Set<string>();
@@ -266,6 +269,38 @@ function mergeWorkerTools(
       ...(incoming.web || {}),
     },
   };
+}
+
+function sanitizeAttachedFiles(input: unknown): LLMDataInput[] {
+  if (!Array.isArray(input)) return [];
+  const out: LLMDataInput[] = [];
+  const seen = new Set<string>();
+  for (const raw of input) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Record<string, unknown>;
+    const id = String(item.id || '').trim();
+    const displayName = String(item.displayName || '').trim();
+    const mimeType = String(item.mimeType || '').trim();
+    if (!id || !displayName || !mimeType || seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      displayName,
+      mimeType,
+      storageUrl: typeof item.storageUrl === 'string' && item.storageUrl.trim() ? item.storageUrl.trim() : undefined,
+      gcsUri: typeof item.gcsUri === 'string' && item.gcsUri.trim() ? item.gcsUri.trim() : undefined,
+      sizeBytes: Number.isFinite(Number(item.sizeBytes)) ? Math.max(0, Number(item.sizeBytes)) : undefined,
+      downloadUrl: typeof item.downloadUrl === 'string' && item.downloadUrl.trim() ? item.downloadUrl.trim() : undefined,
+      expiresAt: typeof item.expiresAt === 'string' && item.expiresAt.trim() ? item.expiresAt.trim() : undefined,
+      kind: typeof item.kind === 'string' && item.kind.trim() ? item.kind.trim() as any : undefined,
+      sourceStepId: typeof item.sourceStepId === 'string' && item.sourceStepId.trim() ? item.sourceStepId.trim() : undefined,
+      originalIndex: Number.isFinite(Number(item.originalIndex)) ? Math.max(0, Number(item.originalIndex)) : undefined,
+      data: typeof item.data === 'string' && item.data.trim() ? item.data.trim() : undefined,
+      ORIGIN_KEY: item.ORIGIN_KEY === 'tool' ? 'tool' : 'user',
+    });
+    if (out.length >= 12) break;
+  }
+  return out;
 }
 
 function mergeWorkerUi(
@@ -955,6 +990,7 @@ function buildPersistedState(): PersistedWorkerState {
     taskBoundaryId,
     ...(normalizedRootUserInput ? { rootUserInput: normalizedRootUserInput } : {}),
     ...(taskSeedChatLog.length ? { seedChatLog: normalizeFollowupChatLog(taskSeedChatLog) } : {}),
+    ...(attachedFiles.length ? { files: sanitizeAttachedFiles(attachedFiles) } : {}),
     history: sanitizeHistoryForPersist(history),
     plannerHistory: sanitizePlannerHistoryForPersist(Array.isArray(plannerHistory) ? plannerHistory : []),
     agentPrevSteps: safePrevSteps,
@@ -993,6 +1029,7 @@ function hydrateState(raw: any): void {
   if (!snapshot) return;
 
   taskSeedChatLog = normalizeFollowupChatLog((snapshot as any).seedChatLog);
+  attachedFiles = sanitizeAttachedFiles((snapshot as any).files);
 
   if (Array.isArray(snapshot.history)) {
     history.length = 0;
@@ -1893,6 +1930,7 @@ function clearTaskScopedContextAfterBoundary(_reason: 'cancel' | 'end' | 'new_ta
   pendingAskUser = undefined;
   rootUserInput = '';
   taskSeedChatLog = [];
+  attachedFiles = [];
 }
 
 async function maybeWaitForNewTab(
@@ -1913,6 +1951,7 @@ async function handleUserMessage(
     resume?: boolean;
     preserveHistory?: boolean;
     seedChatLog?: FollowupChatLogEntry[];
+    files?: LLMDataInput[];
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: AskUserAnswerMeta;
   },
@@ -2095,6 +2134,9 @@ async function handleUserMessage(
   if (Array.isArray(options?.seedChatLog)) {
     taskSeedChatLog = normalizeFollowupChatLog(options.seedChatLog);
   }
+  if (Array.isArray(options?.files)) {
+    attachedFiles = sanitizeAttachedFiles(options.files);
+  }
   const chatLog = taskSeedChatLog;
   const onPrevStepsUpdate = (steps: PreviousSteps[]) => {
     applyAgentPrevSteps(steps, { snapshot: true });
@@ -2120,7 +2162,7 @@ async function handleUserMessage(
     onScopedTabIdsTouched,
     previousMessages: history,
     trajectoryId: taskTrajectoryId,
-    files: [],
+    files: attachedFiles,
     recordingContext: config.recordingContext,
     previousSteps: plannerHistory,
     onStatusUpdate: postStatus,
@@ -2535,6 +2577,7 @@ async function runUserMessage(
     resume?: boolean;
     preserveHistory?: boolean;
     seedChatLog?: FollowupChatLogEntry[];
+    files?: LLMDataInput[];
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: AskUserAnswerMeta;
   },
@@ -2601,6 +2644,7 @@ async function runUserMessage(
       resume,
       preserveHistory,
       seedChatLog: Array.isArray(meta?.seedChatLog) ? normalizeFollowupChatLog(meta.seedChatLog) : undefined,
+      files: Array.isArray(meta?.files) ? sanitizeAttachedFiles(meta.files) : undefined,
       routing: meta?.routing,
       askUserAnswers: meta?.askUserAnswers,
     }));
@@ -2810,6 +2854,7 @@ async function runUserMessage(
         resume: !!data.resume,
         preserveHistory: !!data.preserveHistory,
         seedChatLog: Array.isArray(seedChatLogInput) ? normalizeFollowupChatLog(seedChatLogInput) : undefined,
+        files: Array.isArray(data.files) ? sanitizeAttachedFiles(data.files) : undefined,
         routing: data.routing,
         askUserAnswers: data.askUserAnswers,
       });
@@ -2825,6 +2870,7 @@ async function runUserMessage(
         resume: !!data.resume,
         preserveHistory: !!data.preserveHistory,
         seedChatLog: Array.isArray(seedChatLogInput) ? normalizeFollowupChatLog(seedChatLogInput) : undefined,
+        files: Array.isArray(data.files) ? sanitizeAttachedFiles(data.files) : undefined,
         askUserAnswers: data.askUserAnswers,
       });
       return;

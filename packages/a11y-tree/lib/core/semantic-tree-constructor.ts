@@ -22,6 +22,7 @@ import {
   isTextualNode,
 } from '../utilities/element-analysis.js';
 import { analyzeElementContext } from '../utilities/element-utilities.js';
+import { isRoverWidgetHost } from '../utilities/dom-root-guards.js';
 import {
   SEMANTIC_NODE_COLLECTION,
   getOrCreateSemanticNode,
@@ -329,6 +330,9 @@ function shouldExcludeElement(node: Node): boolean {
   }
 
   const element = node as Element;
+  if (isRoverWidgetHost(element)) {
+    return true;
+  }
   const tagName = element.tagName;
 
   // Always exclude meta elements
