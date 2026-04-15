@@ -15,6 +15,7 @@ import {
   type InstrumentationOptions,
 } from '@rover/instrumentation';
 import {
+  deriveRegistrableDomain,
   extractHostname,
   isUrlAllowedByDomains,
   normalizeAllowedDomains,
@@ -566,6 +567,13 @@ export class Bridge {
 
         const targetUrl = normalizeUrl(rawUrl, window.location.href);
         if (!targetUrl) return { success: false, error: `goto_url: invalid url "${rawUrl}"`, allowFallback: true };
+        const hostOnlySiblingBlockReason = this.getHostOnlySiblingBlockReason(targetUrl);
+        if (hostOnlySiblingBlockReason) {
+          return this.domainScopeBlockedResponse(targetUrl, hostOnlySiblingBlockReason, {
+            decisionReason: 'policy_blocked',
+            policyAction: 'block',
+          });
+        }
 
         if (this.shouldPreserveHostRuntime(targetUrl)) {
           const intent = this.buildNavigationIntent(targetUrl);
@@ -650,6 +658,13 @@ export class Bridge {
         const query = String(args.query || '').trim();
         if (!query) return { success: false, error: 'google_search: missing query', allowFallback: true };
         const targetUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+        const hostOnlySiblingBlockReason = this.getHostOnlySiblingBlockReason(targetUrl);
+        if (hostOnlySiblingBlockReason) {
+          return this.domainScopeBlockedResponse(targetUrl, hostOnlySiblingBlockReason, {
+            decisionReason: 'policy_blocked',
+            policyAction: 'block',
+          });
+        }
 
         if (this.shouldPreserveHostRuntime(targetUrl)) {
           const intent = this.buildNavigationIntent(targetUrl);
@@ -777,6 +792,13 @@ export class Bridge {
         if (!rawUrl) return { success: false, error: 'open_new_tab: missing url', allowFallback: true };
         const targetUrl = normalizeUrl(rawUrl, window.location.href);
         if (!targetUrl) return { success: false, error: `open_new_tab: invalid url "${rawUrl}"`, allowFallback: true };
+        const hostOnlySiblingBlockReason = this.getHostOnlySiblingBlockReason(targetUrl);
+        if (hostOnlySiblingBlockReason) {
+          return this.domainScopeBlockedResponse(targetUrl, hostOnlySiblingBlockReason, {
+            decisionReason: 'policy_blocked',
+            policyAction: 'block',
+          });
+        }
         const intent = this.buildNavigationIntent(targetUrl);
         const preflight = await this.resolveAgentNavigationDecision(intent, 'open_new_tab');
         if (preflight.decision === 'block') {
@@ -857,6 +879,18 @@ export class Bridge {
     return !isUrlAllowedByDomains(targetUrl, this.allowedDomains);
   }
 
+  private getHostOnlySiblingBlockReason(targetUrl: string): string | null {
+    if (this.domainScopeMode !== 'host_only') return null;
+    const currentHost = extractHostname(window.location.href) || window.location.hostname || '';
+    const targetHost = extractHostname(targetUrl) || '';
+    if (!currentHost || !targetHost || currentHost === targetHost) return null;
+    if (isUrlAllowedByDomains(targetUrl, this.allowedDomains)) return null;
+    const currentRegistrableDomain = deriveRegistrableDomain(currentHost);
+    const targetRegistrableDomain = deriveRegistrableDomain(targetHost);
+    if (!currentRegistrableDomain || currentRegistrableDomain !== targetRegistrableDomain) return null;
+    return `Blocked navigation to ${targetHost}. This Rover site uses host_only exact-host scope, so other hosts on the same registrable domain are out of scope unless explicitly allowed. Do NOT retry this host. Continue on ${currentHost} or explain the limitation.`;
+  }
+
   private shouldPreserveHostRuntime(targetUrl: string): boolean {
     if (this.externalNavigationPolicy === 'allow') return false;
     return !isUrlAllowedByDomains(targetUrl, this.allowedDomains);
@@ -864,6 +898,9 @@ export class Bridge {
 
   private getNavigationFallbackDecision(targetUrl?: string): 'allow_same_tab' | 'open_new_tab' | 'block' {
     if (!targetUrl) return 'allow_same_tab';
+    if (this.getHostOnlySiblingBlockReason(targetUrl)) {
+      return 'block';
+    }
     if (isUrlAllowedByDomains(targetUrl, this.allowedDomains)) {
       if (this.crossHostPolicy === 'open_new_tab' && this.isCrossHostNavigation(targetUrl)) {
         return 'open_new_tab';
@@ -1053,6 +1090,14 @@ export class Bridge {
   } | null {
     const targetUrl = this.getClickTargetUrl(args);
     if (!targetUrl) return null;
+    const hostOnlySiblingBlockReason = this.getHostOnlySiblingBlockReason(targetUrl);
+    if (hostOnlySiblingBlockReason) {
+      return {
+        targetUrl,
+        reason: hostOnlySiblingBlockReason,
+        forceOpenInNewTab: false,
+      };
+    }
     if (this.shouldPreserveHostRuntime(targetUrl)) {
       const inAllowedDomain = isUrlAllowedByDomains(targetUrl, this.allowedDomains);
       if (!inAllowedDomain && this.externalNavigationPolicy === 'block') {
@@ -1093,9 +1138,14 @@ export class Bridge {
   private domainScopeBlockedResponse(
     targetUrl: string,
     reason: string,
-    options?: { fromCurrentContext?: boolean; decisionReason?: string },
+    options?: {
+      fromCurrentContext?: boolean;
+      decisionReason?: string;
+      policyAction?: Exclude<ExternalNavigationPolicy, 'allow'>;
+    },
   ): any {
-    const policyAction = this.externalNavigationPolicy === 'block' ? 'block' : 'open_new_tab_notice';
+    const policyAction = options?.policyAction
+      || (this.externalNavigationPolicy === 'block' ? 'block' : 'open_new_tab_notice');
     const currentUrl = window.location.href;
     const currentHost = extractHostname(currentUrl) || window.location.hostname || undefined;
     const blockedHost = extractHostname(targetUrl) || undefined;
@@ -1120,7 +1170,7 @@ export class Bridge {
           missing: [],
           next_action:
             policyAction === 'block'
-              ? 'This domain is blocked. Do NOT retry. Acknowledge and proceed with the task using available resources.'
+              ? 'This host is out of scope. Do NOT retry it. Continue on an allowed host or explain the limitation to the user.'
               : 'Use open_new_tab to access external pages without losing context.',
           retryable: false,
         },
@@ -1136,7 +1186,10 @@ export class Bridge {
         navigationOutcome: 'blocked',
         decisionReason: options?.decisionReason || 'policy_blocked',
         from_current_context: !!options?.fromCurrentContext,
-        agentInstruction: `Navigation to ${blockedHost || targetUrl} is blocked by domain policy. Do NOT retry this URL. Acknowledge to user and proceed with the next step.`,
+        agentInstruction:
+          policyAction === 'block'
+            ? `Navigation to ${blockedHost || targetUrl} is out of scope. Do NOT retry this host. Continue on an allowed host or explain the limitation to the user.`
+            : `Navigation to ${blockedHost || targetUrl} is blocked by domain policy. Do NOT retry this URL. Acknowledge to user and proceed with the next step.`,
         blockedDomain: blockedHost || targetUrl,
         // Dummy page context for blocked domain so agent has something to work with
         pageContext: {
@@ -1177,6 +1230,13 @@ export class Bridge {
     targetUrl: string,
     options?: { policyBlocked?: boolean; reason?: string; decisionReason?: string },
   ): Promise<any> {
+    const hostOnlySiblingBlockReason = this.getHostOnlySiblingBlockReason(targetUrl);
+    if (hostOnlySiblingBlockReason) {
+      return this.domainScopeBlockedResponse(targetUrl, hostOnlySiblingBlockReason, {
+        decisionReason: options?.decisionReason || 'policy_blocked',
+        policyAction: 'block',
+      });
+    }
     const external = !isUrlAllowedByDomains(targetUrl, this.allowedDomains);
     const knownTabIdsBeforeOpen = this.snapshotKnownTabIds();
     let popupAttempt = this.openVerifiedPopup(targetUrl);

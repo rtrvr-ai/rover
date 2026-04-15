@@ -119,7 +119,7 @@ Domain scope cheat sheet:
 
 - `allowedDomains: ['example.com']` with `registrable_domain` allows `example.com` and subdomains
 - `allowedDomains: ['*.example.com']` allows subdomains only, not the apex host
-- `host_only` makes plain entries exact-host only
+- `host_only` makes plain entries exact-host only and blocks sibling subdomains unless you explicitly allow them
 
 ### npm
 

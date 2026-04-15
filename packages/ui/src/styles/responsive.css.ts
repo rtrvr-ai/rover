@@ -121,6 +121,7 @@ export const responsiveStyles = `
         min-width: 188px;
         height: 64px;
         padding: 7px 12px 7px 8px;
+        border-radius: 999px;
       }
       .launcherMedia {
         width: 48px;
@@ -162,6 +163,10 @@ export const responsiveStyles = `
         max-width: calc(100vw - 16px);
         min-height: 56px;
         bottom: 16px;
+      }
+      .inputBarComposerSlot .composerPlaceholder {
+        max-width: calc(100% - 220px);
+        text-overflow: ellipsis;
       }
     }
 `;
