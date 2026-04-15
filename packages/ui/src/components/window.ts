@@ -20,6 +20,7 @@ import {
   PANEL_DESKTOP_MIN_HEIGHT,
   PANEL_DESKTOP_MAX_WIDTH,
   PANEL_DESKTOP_MARGIN,
+  PANEL_PHONE_BOTTOM_OFFSET,
 } from '../config.js';
 import {
   clampNumber,
@@ -388,12 +389,17 @@ export function createWindow(opts: WindowOptions): WindowComponent {
         panel.style.height = 'auto';
         panel.style.minWidth = '320px';
       } else {
+        // Phone layout — use sheet preset height, anchored at bottom
+        const presetHeights = getSheetPresetHeights(nextMetrics);
+        const sheetHeight = liveSheetHeight ?? presetHeights[currentSheetPreset];
+        const bottomOffset = Math.max(PANEL_PHONE_BOTTOM_OFFSET, keyboardInset);
+        const topOffset = Math.max(0, nextMetrics.height - bottomOffset - sheetHeight);
         panel.style.left = '0px';
         panel.style.right = '0px';
-        panel.style.top = '0px';
-        panel.style.bottom = '0px';
+        panel.style.top = `${topOffset}px`;
+        panel.style.bottom = `${bottomOffset}px`;
         panel.style.width = '100vw';
-        panel.style.height = '100dvh';
+        panel.style.height = 'auto';
         panel.style.minWidth = '0px';
       }
       panel.style.minHeight = '0px';

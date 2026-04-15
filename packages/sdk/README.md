@@ -76,7 +76,7 @@ Common patterns:
 - `allowedDomains: ['example.com']` with `registrable_domain` allows `example.com` and all subdomains.
 - `allowedDomains: ['*.example.com']` allows subdomains only, not the apex host.
 - `allowedDomains: ['app.example.com']` with `registrable_domain` allows `app.example.com` and its subdomains, but not sibling hosts.
-- `allowedDomains: ['example.com']` with `host_only` allows only the exact host `example.com`.
+- `allowedDomains: ['example.com']` with `host_only` allows only the exact host `example.com`; sibling subdomains are blocked unless you explicitly list them.
 
 ## Preview Helpers
 
@@ -413,7 +413,7 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `visitor` | `{ name?: string; email?: string }` | — | Optional visitor profile for greeting personalization. Recommended flow is async updates via `identify(...)` after login/user hydration. |
 | `apiBase` | `string` | `https://agent.rtrvr.ai` | Optional API base override. Rover uses `/v2/rover/*` under this base. |
 | `allowedDomains` | `string[]` | `[]` | Hostnames or patterns where Rover may operate. In `registrable_domain`, plain `example.com` covers the apex host and subdomains. |
-| `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | How Rover interprets plain `allowedDomains` entries: `registrable_domain` = apex + subdomains, `host_only` = exact host only. |
+| `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | How Rover interprets plain `allowedDomains` entries: `registrable_domain` = apex + subdomains, `host_only` = exact host only unless you explicitly allow more hosts. |
 | `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
 | `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | In-scope cross-host navigation policy |
 | `mode` | `'full' \| 'safe'` | `'full'` | Runtime mode |

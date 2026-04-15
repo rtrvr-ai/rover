@@ -43,6 +43,10 @@ import {
   type RoverLaunchRequest,
 } from './launchParams.js';
 import {
+  isNavigationResumeReason,
+  normalizePendingRunResumeReason,
+} from './resumeReasons.js';
+import {
   parseBrowserReceiptRequest,
   stripBrowserReceiptParams,
   type RoverBrowserReceiptRequest,
@@ -1885,14 +1889,6 @@ function getUnconsumedNavigationHandoff(maxAgeMs = 120_000): PersistedNavigation
   return handoff;
 }
 
-function isNavigationResumeReason(reason: PersistedPendingRun['resumeReason'] | undefined): boolean {
-  return reason === 'agent_navigation'
-    || reason === 'cross_host_navigation'
-    || reason === 'handoff'
-    || reason === 'worker_interrupted'
-    || reason === 'page_reload';
-}
-
 function canValidateResumeFromPersistedHandoff(pending: PersistedPendingRun): boolean {
   if (!runtimeState || !isNavigationResumeReason(pending.resumeReason)) return false;
   const handoff = sanitizeNavigationHandoff(runtimeState.lastNavigationHandoff);
@@ -2158,13 +2154,7 @@ function consumeNavigationHandoffBootstrap(siteId: string): NavigationHandoffBoo
         typeof parsed.taskBoundaryId === 'string' && parsed.taskBoundaryId.trim()
           ? parsed.taskBoundaryId.trim()
           : undefined,
-      resumeReason:
-        parsed.resumeReason === 'cross_host_navigation'
-        || parsed.resumeReason === 'agent_navigation'
-        || parsed.resumeReason === 'handoff'
-        || parsed.resumeReason === 'page_reload'
-          ? parsed.resumeReason
-          : undefined,
+      resumeReason: normalizePendingRunResumeReason(parsed.resumeReason),
       handoffId: typeof parsed.handoffId === 'string' ? parsed.handoffId : undefined,
       openIntent: parsed.openIntent === 'preserve_if_running' ? 'preserve_if_running' : undefined,
       ts,
@@ -4465,13 +4455,7 @@ function sanitizePendingRun(input: any): PersistedPendingRun | undefined {
     autoResume: input.autoResume !== false,
     taskBoundaryId,
     resumeRequired: input.resumeRequired === true,
-    resumeReason:
-      input.resumeReason === 'cross_host_navigation'
-      || input.resumeReason === 'agent_navigation'
-      || input.resumeReason === 'handoff'
-      || input.resumeReason === 'page_reload'
-        ? input.resumeReason
-        : undefined,
+    resumeReason: normalizePendingRunResumeReason(input.resumeReason),
   };
 }
 
@@ -12673,6 +12657,7 @@ function normalizeCommandName(command: string): keyof RoverInstance | undefined 
 }
 
 export const __roverInternalsForTests = {
+  normalizePendingRunResumeReason,
   sanitizeWorkerState,
   cloneRuntimeStateForCheckpoint,
   getPersistGovernorConfig: () => ({

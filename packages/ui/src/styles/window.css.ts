@@ -892,6 +892,8 @@ export const windowStyles = `
     .inputBarComposerSlot .composerPlaceholder {
       font-size: 14px;
       padding: 0 10px;
+      max-width: calc(100% - 180px);
+      text-overflow: ellipsis;
     }
 
     .composer textarea:focus {

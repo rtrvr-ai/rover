@@ -86,7 +86,7 @@ Use `data-domain-scope-mode="host_only"` when the key should only run on the exa
 - `allowedDomains: ['example.com']` with `domainScopeMode: 'registrable_domain'` allows `example.com` and all of its subdomains.
 - `allowedDomains: ['*.example.com']` allows subdomains only. It does not match the apex host `example.com`.
 - `allowedDomains: ['app.example.com']` with `domainScopeMode: 'registrable_domain'` allows `app.example.com` and its subdomains, but not sibling hosts such as `www.example.com`.
-- `allowedDomains: ['example.com']` with `domainScopeMode: 'host_only'` allows only the exact host `example.com`.
+- `allowedDomains: ['example.com']` with `domainScopeMode: 'host_only'` allows only the exact host `example.com`; sibling subdomains are blocked unless you explicitly allow them.
 - `example.com` plus `*.example.com` is usually redundant in `registrable_domain` mode, because the plain `example.com` entry already covers the apex host and subdomains.
 
 For advanced configuration (task routing, checkpointing, UI options), use the JS boot call.
@@ -414,7 +414,7 @@ rover.boot(config);
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `allowedDomains` | `string[]` | `[]` | Hostnames or patterns where Rover may operate. In `registrable_domain`, plain `example.com` covers the apex host and subdomains. |
-| `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | How Rover interprets plain entries in `allowedDomains`: `registrable_domain` = apex + subdomains, `host_only` = exact host only. |
+| `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | How Rover interprets plain entries in `allowedDomains`: `registrable_domain` = apex + subdomains, `host_only` = exact host only unless you explicitly allow more hosts. |
 | `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
 | `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | In-scope cross-host navigation policy |
 | `openOnInit` | `boolean` | `false` | Open panel after boot |

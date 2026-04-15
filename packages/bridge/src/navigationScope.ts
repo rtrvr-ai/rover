@@ -1,5 +1,6 @@
 export type { DomainScopeMode } from '@rover/shared/lib/utils/domainScope.js';
 export {
+  deriveRegistrableDomain,
   extractHostname,
   inferDefaultAllowedDomain,
   isUrlAllowedByDomains,
