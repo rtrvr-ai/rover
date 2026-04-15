@@ -29,8 +29,10 @@ import {
   type SharedNavigationHandoff,
 } from './sessionCoordinator.js';
 import {
+  normalizeDeepLinkConfig,
   parseDeepLinkRequest,
   resolveDeepLinkConfig,
+  resolveRuntimeDeepLinkConfig,
   stripDeepLinkParams,
   type ResolvedDeepLinkConfig,
   type RoverDeepLinkRequest,
@@ -10200,7 +10202,7 @@ function maybeHandleBrowserReceipt(
 
 function maybeHandleDeepLink(source: 'boot' | 'update' | 'navigation' | 'site_config' | 'shortcut_retry' | 'receipt_fallback'): void {
   if (!currentConfig || typeof window === 'undefined') return;
-  const config = resolveDeepLinkConfig(currentConfig.deepLink);
+  const config = resolveRuntimeDeepLinkConfig(currentConfig.deepLink, backendSiteConfig?.aiAccess);
   if (source !== 'receipt_fallback' && parseBrowserReceiptRequest(window.location.href)) {
     return;
   }
@@ -10229,6 +10231,20 @@ function maybeHandleDeepLink(source: 'boot' | 'update' | 'navigation' | 'site_co
   deepLinkLastIgnoredDisabledKey = '';
 
   if (handleKey === deepLinkLastHandledKey) {
+    return;
+  }
+
+  if ((request.kind === 'prompt' && !config.promptLaunchEnabled) || (request.kind === 'shortcut' && !config.shortcutLaunchEnabled)) {
+    clearPendingDeepLinkShortcut();
+    if (deepLinkLastIgnoredDisabledKey !== handleKey) {
+      recordTelemetryEvent('status', {
+        event: 'deep_link_ignored_disabled',
+        kind: request.kind,
+        paramName: request.paramName,
+        source,
+      });
+      deepLinkLastIgnoredDisabledKey = handleKey;
+    }
     return;
   }
 
@@ -11703,7 +11719,7 @@ export function boot(cfg: RoverInit): RoverInstance {
 
   currentConfig = {
     ...cfg,
-    deepLink: resolveDeepLinkConfig(cfg.deepLink),
+    deepLink: normalizeDeepLinkConfig(cfg.deepLink),
     pageConfig: sanitizeResolvedPageCaptureConfig(cfg.pageConfig),
     visitorId: resolvedVisitorId || cfg.visitorId,
     sessionId: desiredSessionId || runtimeState.sessionId,
@@ -11920,7 +11936,7 @@ export function update(cfg: Partial<RoverInit>): void {
   currentConfig = {
     ...currentConfig,
     ...cfg,
-    deepLink: resolveDeepLinkConfig({
+    deepLink: normalizeDeepLinkConfig({
       ...currentConfig.deepLink,
       ...cfg.deepLink,
     }),

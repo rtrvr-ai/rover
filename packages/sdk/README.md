@@ -530,7 +530,7 @@ Rover can be triggered via URL query parameters, turning any page into an AI-cal
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `deepLink.enabled` | `boolean` | `false` | Enable URL-triggered Rover |
+| `deepLink.enabled` | `boolean` | derived from `siteConfig.aiAccess.enabled` when available, otherwise `false` | Advanced manual override for URL-triggered Rover |
 | `deepLink.promptParam` | `string` | `'rover'` | Query parameter for natural-language prompts |
 | `deepLink.shortcutParam` | `string` | `'rover_shortcut'` | Query parameter for shortcut IDs |
 | `deepLink.consume` | `boolean` | `true` | Strip deep link params from URL after reading |
@@ -551,7 +551,7 @@ For AI or CLI-triggered entrypoints, prefer exact shortcut IDs for repeatable fl
 
 When a site key or session token is used, Rover fetches cloud site config via `/v2/rover/session/open` (shortcuts + `businessType` + sparse `experience` overrides + legacy voice compatibility + `aiAccess` + `pageConfig`).
 If the same field exists in both cloud config and boot config, boot config wins.
-`deepLink` is boot/runtime only and is not persisted in cloud site config.
+`siteConfig.aiAccess.enabled` is the canonical owner-facing launch switch persisted from Workspace/Webflow. `deepLink` stays boot/runtime only for advanced manual overrides such as custom param names, explicit enable/disable, or disabling URL param consumption.
 
 If you enable `tools.web.scrapeMode: 'on_demand'`, use a site key capability profile that includes cloud scrape support.
 

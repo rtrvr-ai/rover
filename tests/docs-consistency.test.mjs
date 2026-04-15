@@ -46,6 +46,8 @@ test('Rover docs no longer present pre-vNext canonical guidance', () => {
   const forbidden = [
     'Publish the well-known card first',
     'siteConfig.surface',
+    'siteConfig.aiAccess.allowPromptLaunch',
+    'siteConfig.aiAccess.allowShortcutLaunch',
     'Current launch behavior emits `self_reported`, `heuristic`, and `anonymous`',
     '`verified` remains reserved',
     'visible AI-ready cue',
