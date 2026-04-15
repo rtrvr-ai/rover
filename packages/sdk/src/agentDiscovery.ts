@@ -1,5 +1,6 @@
 import type { RoverShortcut } from '@rover/ui';
 import { toBaseUrl } from './serverRuntime.js';
+import { resolveAiLaunchAccess } from './deepLink.js';
 import { createRoverAgentDiscoverySnapshot } from '@rover/shared/lib/agent-discovery.js';
 import type { RoverAgentDiscoverySnapshot } from '@rover/shared/lib/types/index.js';
 
@@ -1128,8 +1129,10 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
   const serviceDescUrl = text(config.agentCardUrl) || DEFAULT_AGENT_CARD_PATH;
   const roverSiteUrl = text(config.roverSiteUrl) || DEFAULT_ROVER_SITE_PATH;
   const llmsUrl = text(config.llmsUrl);
-  const promptLaunchEnabled = config.aiAccess?.enabled !== false && config.aiAccess?.allowPromptLaunch !== false;
-  const shortcutLaunchEnabled = config.aiAccess?.enabled !== false && config.aiAccess?.allowShortcutLaunch !== false;
+  const launchAccess = resolveAiLaunchAccess(config.aiAccess);
+  const promptLaunchEnabled = launchAccess.promptLaunchEnabled;
+  const shortcutLaunchEnabled = launchAccess.shortcutLaunchEnabled;
+  const publicTaskEnabled = promptLaunchEnabled || shortcutLaunchEnabled;
   const cloudBrowserAllowed = config.aiAccess?.allowCloudBrowser !== false;
   const delegatedHandoffs = config.aiAccess?.allowDelegatedHandoffs === true;
   const shortcutSkills = (config.shortcuts || [])
@@ -1188,9 +1191,9 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
     defaultInputModes: ['text/plain', 'application/json'],
     defaultOutputModes: ['text/plain', 'application/json'],
     capabilities: {
-      streaming: promptLaunchEnabled || shortcutLaunchEnabled,
-      publicTasks: promptLaunchEnabled || shortcutLaunchEnabled,
-      stateTransitions: promptLaunchEnabled || shortcutLaunchEnabled,
+      streaming: publicTaskEnabled,
+      publicTasks: publicTaskEnabled,
+      stateTransitions: publicTaskEnabled,
       delegatedHandoffs,
       webmcp: webmcpSkills.length > 0,
     },
@@ -1218,7 +1221,7 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
         type: 'deep_link',
         url: siteUrl,
         description: 'Browser-first Rover deep link surface using rover= or rover_shortcut= query params.',
-        available: shortcutLaunchEnabled || promptLaunchEnabled,
+        available: publicTaskEnabled,
       },
       {
         type: 'webmcp',

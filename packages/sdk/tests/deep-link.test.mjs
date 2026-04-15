@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  normalizeDeepLinkConfig,
   parseDeepLinkRequest,
   resolveDeepLinkConfig,
+  resolveRuntimeDeepLinkConfig,
   stripDeepLinkParams,
 } from '../dist/deepLink.js';
 
@@ -55,6 +57,79 @@ test('custom param names are honored and conflicting names are normalized apart'
   assert.equal(config.promptParam, 'agent');
   assert.notEqual(config.shortcutParam, config.promptParam);
   assert.equal(config.consume, false);
+});
+
+test('runtime deep-link config derives enabled state from aiAccess when boot config omits it', () => {
+  assert.deepEqual(
+    resolveRuntimeDeepLinkConfig(undefined, {
+      enabled: true,
+    }),
+    {
+      enabled: true,
+      promptParam: 'rover',
+      shortcutParam: 'rover_shortcut',
+      consume: true,
+      promptLaunchEnabled: true,
+      shortcutLaunchEnabled: true,
+    },
+  );
+
+  assert.deepEqual(
+    resolveRuntimeDeepLinkConfig(undefined, {
+      allowPromptLaunch: false,
+      allowShortcutLaunch: true,
+    }),
+    {
+      enabled: true,
+      promptParam: 'rover',
+      shortcutParam: 'rover_shortcut',
+      consume: true,
+      promptLaunchEnabled: false,
+      shortcutLaunchEnabled: true,
+    },
+  );
+
+  assert.deepEqual(
+    resolveRuntimeDeepLinkConfig(normalizeDeepLinkConfig({ promptParam: 'agent' }), {
+      enabled: true,
+      allowPromptLaunch: false,
+      allowShortcutLaunch: true,
+    }),
+    {
+      enabled: true,
+      promptParam: 'agent',
+      shortcutParam: 'rover_shortcut',
+      consume: true,
+      promptLaunchEnabled: false,
+      shortcutLaunchEnabled: true,
+    },
+  );
+
+  assert.deepEqual(
+    resolveRuntimeDeepLinkConfig({ enabled: false }, {
+      enabled: true,
+    }),
+    {
+      enabled: false,
+      promptParam: 'rover',
+      shortcutParam: 'rover_shortcut',
+      consume: true,
+      promptLaunchEnabled: false,
+      shortcutLaunchEnabled: false,
+    },
+  );
+
+  assert.deepEqual(
+    resolveRuntimeDeepLinkConfig({ enabled: true }, undefined),
+    {
+      enabled: true,
+      promptParam: 'rover',
+      shortcutParam: 'rover_shortcut',
+      consume: true,
+      promptLaunchEnabled: true,
+      shortcutLaunchEnabled: true,
+    },
+  );
 });
 
 test('deep-link cleanup removes Rover params and preserves unrelated search + hash', () => {

@@ -21,8 +21,6 @@ test('agent card maps shortcuts and explicit tools into published skills', () =>
     preferExecution: 'cloud',
     aiAccess: {
       enabled: true,
-      allowPromptLaunch: true,
-      allowShortcutLaunch: true,
       allowCloudBrowser: true,
       allowDelegatedHandoffs: true,
     },
@@ -119,8 +117,6 @@ test('agent discovery snapshot normalizes callable Rover surfaces from the publi
     roverSiteUrl: '/.well-known/rover-site.json',
     aiAccess: {
       enabled: true,
-      allowPromptLaunch: true,
-      allowShortcutLaunch: true,
       allowCloudBrowser: true,
       allowDelegatedHandoffs: true,
     },
@@ -216,6 +212,23 @@ test('agent card keeps longer shortcut prompts while still bounding them', () =>
 
   assert.equal(card.extensions.rover.shortcuts[0].prompt.length, 2000);
   assert.equal(card.extensions.rover.shortcuts[1].prompt.length, 2000);
+});
+
+test('agent card preserves legacy per-kind launch flags until aiAccess.enabled is resaved', () => {
+  const card = createRoverAgentCard({
+    siteUrl: 'https://example.com/',
+    siteName: 'Legacy Store',
+    aiAccess: {
+      allowPromptLaunch: false,
+      allowShortcutLaunch: true,
+    },
+  });
+
+  assert.equal(card.capabilities.publicTasks, true);
+  assert.equal(card.interfaces.find(entry => entry.type === 'task')?.available, false);
+  assert.equal(card.interfaces.find(entry => entry.type === 'deep_link')?.available, true);
+  assert.equal(card.extensions.rover.promptLaunchEnabled, false);
+  assert.equal(card.extensions.rover.shortcutLaunchEnabled, true);
 });
 
 test('agent discovery runtime config sanitizer preserves supported beacon-first fields', () => {
