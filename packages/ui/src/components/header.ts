@@ -41,6 +41,15 @@ export type HeaderComponent = {
 
 export function createHeader(opts: HeaderOptions): HeaderComponent {
   const { agentName, agentInitial, mascotDisabled } = opts;
+  const applyVideoMuteState = (video: HTMLVideoElement | null, muted: boolean): void => {
+    if (!video) return;
+    video.muted = muted;
+    video.defaultMuted = muted;
+    if (muted) video.setAttribute('muted', '');
+    else video.removeAttribute('muted');
+    video.playsInline = true;
+    video.setAttribute('playsinline', '');
+  };
 
   const header = document.createElement('div');
   header.className = 'header';
@@ -50,6 +59,7 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
   let avatarVideo: HTMLVideoElement | null = null;
   if (!mascotDisabled && opts.launcherVideo) {
     avatarVideo = opts.launcherVideo.cloneNode(true) as HTMLVideoElement;
+    applyVideoMuteState(avatarVideo, opts.isMuted);
     avatar.appendChild(avatarVideo);
   }
   const avatarFallback = document.createElement('span');
@@ -251,7 +261,7 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
     setMuted(muted: boolean) {
       isMuted = muted;
       menuMuteToggle.textContent = muted ? 'Unmute sounds' : 'Mute sounds';
-      if (avatarVideo) avatarVideo.muted = muted;
+      applyVideoMuteState(avatarVideo, muted);
     },
     closeOverflow,
     update(_experience: RoverExperienceConfig) {

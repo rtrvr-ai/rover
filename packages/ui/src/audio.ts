@@ -14,9 +14,7 @@ function normalizeStorageScope(value: string | undefined): string {
 }
 
 export function isMascotSoundEnabled(input: Pick<MountOptions, 'muted' | 'mascot'> | null | undefined): boolean {
-  if (input?.mascot?.soundEnabled === true) return true;
-  if (input?.mascot?.soundEnabled === false) return false;
-  return input?.muted === false;
+  return input?.mascot?.soundEnabled === true;
 }
 
 export function buildMutePreferenceStorageKey(input: { siteId?: string; host?: string }): string {

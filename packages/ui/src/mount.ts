@@ -166,6 +166,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     }
     seed.setMuted(isMuted);
     headerComp.setMuted(isMuted);
+    inputBar.setMuted(isMuted);
   }
 
   // ── Seed Component ──
@@ -286,6 +287,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     mascotWebm: opts.mascot?.webmUrl,
     launcherVideo: seed.video,
     launcherToken,
+    isMuted,
     onExpand: () => {
       if (stateMachine.getState() === 'window') minimize();
       else maximize();
@@ -883,6 +885,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   seed.applyPosition();
   seed.setMuted(isMuted);
   headerComp.setMuted(isMuted);
+  inputBar.setMuted(isMuted);
   setExecutionMode('controller');
   setVoiceConfig(voiceConfig);
   feedComp.setTraceExpanded(false, experience.stream?.maxVisibleLiveCards);

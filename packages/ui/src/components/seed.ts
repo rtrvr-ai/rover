@@ -54,8 +54,11 @@ export function createSeed(opts: SeedOptions): SeedComponent {
     launcherVideo = document.createElement('video');
     launcherVideo.autoplay = true;
     launcherVideo.muted = true;
+    launcherVideo.defaultMuted = true;
     launcherVideo.loop = true;
     launcherVideo.playsInline = true;
+    launcherVideo.setAttribute('muted', '');
+    launcherVideo.setAttribute('playsinline', '');
     launcherVideo.preload = 'metadata';
     const mp4 = document.createElement('source');
     mp4.src = opts.mascotMp4 || DEFAULT_MASCOT_MP4;
