@@ -502,7 +502,7 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `ui.mascot.disabled` | `boolean` | `false` | Disable mascot video |
 | `ui.mascot.mp4Url` | `string` | default | Custom mascot MP4 URL |
 | `ui.mascot.webmUrl` | `string` | default | Custom mascot WebM URL |
-| `ui.mascot.soundEnabled` | `boolean` | `false` | Owner gate for mascot sound. Rover keeps mascot audio unavailable unless this is explicitly `true`; legacy `ui.muted: false` still enables sound for backward compatibility. |
+| `ui.mascot.soundEnabled` | `boolean` | `false` | Owner gate for mascot sound. Rover keeps mascot audio unavailable unless this is explicitly `true`. |
 | `ui.muted` | `boolean` | `true` | Initial mute state only when mascot sound is enabled. Visitor preference is stored per Rover site after they toggle sound. |
 | `ui.thoughtStyle` | `'concise_cards' \| 'minimal'` | `'concise_cards'` | Thought rendering style |
 | `ui.panel.resizable` | `boolean` | `true` | Enables desktop freeform resizing plus phone/tablet snap-height resizing with per-device memory |

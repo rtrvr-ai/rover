@@ -4,6 +4,7 @@ export type InputBarOptions = {
   mascotWebm?: string;
   launcherVideo?: HTMLVideoElement | null;
   launcherToken: string;
+  isMuted: boolean;
   onExpand: () => void;
   onClose: () => void;
 };
@@ -14,12 +15,23 @@ export type InputBarComponent = {
   mascotVideo: HTMLVideoElement | null;
   show: () => void;
   hide: () => void;
+  setMuted: (muted: boolean) => void;
   setRunning: (running: boolean) => void;
   setExpanded: (expanded: boolean) => void;
   destroy: () => void;
 };
 
 export function createInputBar(opts: InputBarOptions): InputBarComponent {
+  const applyVideoMuteState = (video: HTMLVideoElement | null, muted: boolean): void => {
+    if (!video) return;
+    video.muted = muted;
+    video.defaultMuted = muted;
+    if (muted) video.setAttribute('muted', '');
+    else video.removeAttribute('muted');
+    video.playsInline = true;
+    video.setAttribute('playsinline', '');
+  };
+
   const bar = document.createElement('div');
   bar.className = 'inputBar';
 
@@ -30,15 +42,14 @@ export function createInputBar(opts: InputBarOptions): InputBarComponent {
 
   if (!opts.mascotDisabled && opts.launcherVideo) {
     const video = opts.launcherVideo.cloneNode(true) as HTMLVideoElement;
+    applyVideoMuteState(video, opts.isMuted);
     mascotEl.appendChild(video);
     mascotVideo = video;
   } else if (!opts.mascotDisabled && (opts.mascotMp4 || opts.mascotWebm)) {
     const video = document.createElement('video');
     video.autoplay = true;
     video.loop = true;
-    video.muted = true;
-    video.playsInline = true;
-    video.setAttribute('playsinline', '');
+    applyVideoMuteState(video, opts.isMuted);
     if (opts.mascotWebm) {
       const srcWebm = document.createElement('source');
       srcWebm.src = opts.mascotWebm;
@@ -107,6 +118,9 @@ export function createInputBar(opts: InputBarOptions): InputBarComponent {
     },
     hide() {
       bar.classList.remove('open');
+    },
+    setMuted(muted: boolean) {
+      applyVideoMuteState(mascotVideo, muted);
     },
     setRunning(running: boolean) {
       bar.classList.toggle('running', running);
