@@ -186,6 +186,129 @@ export function deriveTimelineBody(event: RoverTimelineEvent): string {
   return '';
 }
 
+export type TranscriptMessageLike = {
+  id?: string;
+  role: 'user' | 'assistant' | 'system';
+  text: string;
+  blocks?: RoverMessageBlock[];
+  ts?: number;
+  order?: number;
+};
+
+export type TranscriptTimelineLike = RoverTimelineEvent & {
+  order?: number;
+};
+
+export type TranscriptItem =
+  | { kind: 'message'; message: TranscriptMessageLike }
+  | { kind: 'timeline'; event: TranscriptTimelineLike };
+
+export type TranscriptSegment =
+  | { kind: 'message'; message: TranscriptMessageLike }
+  | { kind: 'timeline'; id: string; events: TranscriptTimelineLike[] };
+
+function transcriptItemOrderValue(item: TranscriptItem): number {
+  const value = item.kind === 'message' ? item.message.order : item.event.order;
+  return Number.isFinite(Number(value)) ? Number(value) : Number.MAX_SAFE_INTEGER;
+}
+
+function transcriptItemTimestamp(item: TranscriptItem): number {
+  const value = item.kind === 'message' ? item.message.ts : item.event.ts;
+  return Number.isFinite(Number(value)) ? Number(value) : 0;
+}
+
+function transcriptItemPriority(item: TranscriptItem): number {
+  if (item.kind === 'timeline') return 1;
+  return item.message.role === 'user' ? 0 : 2;
+}
+
+function transcriptItemStableId(item: TranscriptItem): string {
+  if (item.kind === 'message') return sanitizeText(item.message.id || item.message.text || '');
+  return sanitizeText(item.event.id || item.event.title || '');
+}
+
+export function mergeTranscriptItems(
+  messages: TranscriptMessageLike[] = [],
+  timeline: TranscriptTimelineLike[] = [],
+): TranscriptItem[] {
+  const items: TranscriptItem[] = [];
+  for (const message of messages) {
+    if (!message) continue;
+    items.push({ kind: 'message', message });
+  }
+  for (const event of timeline) {
+    if (!event) continue;
+    items.push({ kind: 'timeline', event });
+  }
+  return items.sort((left, right) => {
+    const tsDiff = transcriptItemTimestamp(left) - transcriptItemTimestamp(right);
+    if (tsDiff !== 0) return tsDiff;
+    const orderDiff = transcriptItemOrderValue(left) - transcriptItemOrderValue(right);
+    if (orderDiff !== 0) return orderDiff;
+    const priorityDiff = transcriptItemPriority(left) - transcriptItemPriority(right);
+    if (priorityDiff !== 0) return priorityDiff;
+    return transcriptItemStableId(left).localeCompare(transcriptItemStableId(right));
+  });
+}
+
+export function buildTranscriptSegments(
+  messages: TranscriptMessageLike[] = [],
+  timeline: TranscriptTimelineLike[] = [],
+): TranscriptSegment[] {
+  const ordered = mergeTranscriptItems(messages, timeline);
+  const segments: TranscriptSegment[] = [];
+  for (const item of ordered) {
+    if (item.kind === 'message') {
+      segments.push({ kind: 'message', message: item.message });
+      continue;
+    }
+    const current = segments[segments.length - 1];
+    if (current?.kind === 'timeline') {
+      current.events.push(item.event);
+      continue;
+    }
+    segments.push({
+      kind: 'timeline',
+      id: sanitizeText(item.event.id || '') || createId('trace-group'),
+      events: [item.event],
+    });
+  }
+  return segments;
+}
+
+function shortenDisplayUrl(url: string, maxLength: number): string {
+  const fallback = sanitizeText(url);
+  try {
+    const parsed = new URL(fallback);
+    const host = parsed.hostname.replace(/^www\./i, '');
+    const path = `${parsed.pathname || ''}${parsed.search || ''}${parsed.hash || ''}`;
+    if (!path) return host;
+    const budget = Math.max(12, maxLength - host.length - 1);
+    if (path.length <= budget) return `${host}${path}`;
+    const head = path.slice(0, Math.max(6, Math.floor(budget * 0.55)));
+    const tail = path.slice(-Math.max(4, budget - head.length - 3));
+    return `${host}${head}...${tail}`;
+  } catch {
+    if (fallback.length <= maxLength) return fallback;
+    return `${fallback.slice(0, Math.max(12, maxLength - 15))}...${fallback.slice(-12)}`;
+  }
+}
+
+export function summarizeTaskText(input: string, options?: {
+  maxLength?: number;
+  maxUrlLength?: number;
+}): string {
+  const maxLength = Math.max(24, Number(options?.maxLength) || 96);
+  const maxUrlLength = Math.max(20, Number(options?.maxUrlLength) || 52);
+  const clean = sanitizeText(String(input || ''))
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!clean) return '';
+  const summarized = clean.replace(/https?:\/\/[^\s]+/gi, (url) => shortenDisplayUrl(url, maxUrlLength));
+  if (summarized.length <= maxLength) return summarized;
+  return `${summarized.slice(0, Math.max(20, maxLength - 3)).trimEnd()}...`;
+}
+
 export function classifyVisibility(event: RoverTimelineEvent): 'primary' | 'detail' {
   const title = (event.title || '').toLowerCase();
   if (title === 'run started' || title === 'run resumed' || title === 'run completed') return 'detail';

@@ -465,6 +465,13 @@ export const windowStyles = `
       gap: 16px;
     }
 
+    .transcriptContainer {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: min-content;
+    }
+
     /* Ma whitespace: breathing room between trace and message */
     .entry.trace + .entry.message {
       margin-top: 8px;
@@ -698,6 +705,60 @@ export const windowStyles = `
       border-color: var(--rv-accent-border);
     }
 
+    .traceSegment {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      width: 100%;
+    }
+
+    .traceSegmentHeader {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      padding: 0 2px;
+    }
+
+    .traceSegmentLabel {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--rv-text-secondary);
+      flex: 0 0 auto;
+    }
+
+    .traceSegmentCount {
+      font-size: 11px;
+      color: var(--rv-text-tertiary);
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .traceSegmentToggle {
+      border: none;
+      background: transparent;
+      color: var(--rv-accent);
+      font-size: 11px;
+      font-weight: 700;
+      font-family: inherit;
+      cursor: pointer;
+      padding: 0;
+      flex: 0 0 auto;
+    }
+
+    .traceSegmentToggle:hover {
+      text-decoration: underline;
+    }
+
+    .traceSegmentBody {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      width: 100%;
+    }
+
     /* ── Task Stage ── */
     .taskStage {
       padding: 0 18px 14px;
@@ -740,6 +801,12 @@ export const windowStyles = `
       letter-spacing: -0.04em;
       font-weight: 800;
       color: var(--rv-text);
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      overflow: hidden;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .taskStageMeta {
       font-size: 12.5px;
@@ -1891,6 +1958,14 @@ export const windowStyles = `
 
     .feed.liveMode .traceContainer {
       flex-direction: column-reverse; /* latest entry appears visually first */
+    }
+
+    .feed.liveMode .transcriptContainer {
+      flex-direction: column-reverse;
+    }
+
+    .feed.liveMode .traceSegmentBody {
+      flex-direction: column-reverse;
     }
 
     /* Hide messages and toggle bar during live mode */

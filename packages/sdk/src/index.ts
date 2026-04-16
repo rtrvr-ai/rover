@@ -4891,12 +4891,7 @@ function restoreRuntimeStateFromTaskRecord(
   if (options?.replayUi === false) return;
 
   clearTaskUiState();
-  if (runtimeState.uiMessages.length) {
-    replayUiMessages(runtimeState.uiMessages);
-  }
-  if (runtimeState.timeline.length) {
-    replayTimeline(runtimeState.timeline);
-  }
+  syncTranscriptUi(runtimeState.uiMessages, runtimeState.timeline);
   replayTransientStatusFromRuntime(runtimeState);
   syncQuestionPromptFromWorkerState();
   ui?.setRunning(!!runtimeState.pendingRun && runtimeState.activeTask?.status === 'running');
@@ -5528,6 +5523,20 @@ function replayTimeline(events: PersistedTimelineEvent[]): void {
       false,
     );
   }
+}
+
+function syncTranscriptUi(
+  messages: PersistedUiMessage[] = runtimeState?.uiMessages || [],
+  timeline: PersistedTimelineEvent[] = runtimeState?.timeline || [],
+): void {
+  if (!ui) return;
+  if (typeof ui.setTranscript === 'function') {
+    ui.setTranscript(messages, timeline);
+    return;
+  }
+  ui.clearMessages();
+  replayUiMessages(messages);
+  replayTimeline(timeline);
 }
 
 function getRenderableTransientStatusText(
@@ -6969,9 +6978,7 @@ async function applyAsyncRuntimeStateHydration(key: string, fallbackKeys?: strin
   persistRuntimeState();
 
   if (ui) {
-    ui.clearMessages();
-    replayUiMessages(runtimeState.uiMessages);
-    replayTimeline(runtimeState.timeline);
+    syncTranscriptUi(runtimeState.uiMessages, runtimeState.timeline);
     replayTransientStatusFromRuntime(runtimeState);
     syncQuestionPromptFromWorkerState();
     if (runtimeState.uiHidden) {
@@ -7052,8 +7059,6 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
       });
     if (uiMessagesChanged) {
       runtimeState.uiMessages = mergedMessages;
-      ui?.clearMessages();
-      replayUiMessages(runtimeState.uiMessages);
     }
 
     const incomingTimeline = sanitizeTimelineEvents(state.timeline as SharedTimelineEvent[]);
@@ -7074,7 +7079,9 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
       });
     if (timelineChanged) {
       runtimeState.timeline = mergedTimeline;
-      replayTimeline(runtimeState.timeline);
+    }
+    if (uiMessagesChanged || timelineChanged) {
+      syncTranscriptUi(runtimeState.uiMessages, runtimeState.timeline);
     }
 
     setUiStatus(
@@ -11216,15 +11223,15 @@ function createRuntime(cfg: RoverInit): void {
       ui?.setQuestionPrompt(undefined);
       markTaskCancelled(reason);
       setUiStatus(undefined);
-      appendUiMessage('system', 'Task cancelled.', true);
-      lastCompletedTaskInput = undefined;
-      lastCompletedTaskSummary = undefined;
-      lastCompletedTaskAt = 0;
       appendTimelineEvent({
         kind: 'info',
         title: 'Run cancelled',
         status: 'info',
       });
+      appendUiMessage('system', 'Task cancelled.', true);
+      lastCompletedTaskInput = undefined;
+      lastCompletedTaskSummary = undefined;
+      lastCompletedTaskAt = 0;
       persistRuntimeState();
       return;
     }
@@ -11458,12 +11465,7 @@ function createRuntime(cfg: RoverInit): void {
 
   hideTaskSuggestion();
 
-  if (runtimeState?.uiMessages?.length) {
-    replayUiMessages(runtimeState.uiMessages);
-  }
-  if (runtimeState?.timeline?.length) {
-    replayTimeline(runtimeState.timeline);
-  }
+  syncTranscriptUi(runtimeState?.uiMessages || [], runtimeState?.timeline || []);
   replayTransientStatusFromRuntime(runtimeState);
   syncQuestionPromptFromWorkerState();
   if (runtimeState?.executionMode) {
