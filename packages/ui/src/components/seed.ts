@@ -183,15 +183,22 @@ export function createSeed(opts: SeedOptions): SeedComponent {
     };
   }
 
+  function writeLauncherInlineStyle(pos: RoverPresencePosition): void {
+    const vv = window.visualViewport;
+    const vvX = vv ? vv.offsetLeft : 0;
+    const vvY = vv ? vv.offsetTop : 0;
+    launcher.style.left = `${pos.x + vvX}px`;
+    launcher.style.top = `${pos.y + vvY}px`;
+    launcher.style.right = 'auto';
+    launcher.style.bottom = 'auto';
+  }
+
   function applyPosition(): void {
     const storageKey = getPresenceStorageKey();
     const stored = experience.presence?.persistPosition ? readPresencePosition(storageKey) : null;
     presencePosition = stored || getDefaultPosition();
     presencePosition = clampPosition(presencePosition);
-    launcher.style.left = `${presencePosition.x}px`;
-    launcher.style.top = `${presencePosition.y}px`;
-    launcher.style.right = 'auto';
-    launcher.style.bottom = 'auto';
+    writeLauncherInlineStyle(presencePosition);
   }
 
   function persistPosition(): void {
@@ -274,9 +281,12 @@ export function createSeed(opts: SeedOptions): SeedComponent {
       launcher.classList.remove('snap-resist');
     }
 
-    presencePosition = clampPosition({ x: nextX, y: nextY });
-    launcher.style.left = `${presencePosition.x}px`;
-    launcher.style.top = `${presencePosition.y}px`;
+    // Normalize to pre-pinch (layout) space — pinch offset is re-added in writeLauncherInlineStyle
+    const vv = window.visualViewport;
+    const vvX = vv ? vv.offsetLeft : 0;
+    const vvY = vv ? vv.offsetTop : 0;
+    presencePosition = clampPosition({ x: nextX - vvX, y: nextY - vvY });
+    writeLauncherInlineStyle(presencePosition);
     // Reposition greeting bubble during drag
     if (greetingBubble.classList.contains('visible')) {
       positionGreetingBubble();
@@ -292,14 +302,17 @@ export function createSeed(opts: SeedOptions): SeedComponent {
       const snap = findNearestSnap(presencePosition || { x: 0, y: 0 });
       if (snap && snap.dist < SNAP_THRESHOLD) {
         const target = snap.corner;
+        const fromPos = { ...presencePosition! };
         presencePosition = { x: target.x, y: target.y };
-        launcher.style.left = `${target.x}px`;
-        launcher.style.top = `${target.y}px`;
+        writeLauncherInlineStyle(presencePosition);
         try {
+          const vv = window.visualViewport;
+          const vvX = vv ? vv.offsetLeft : 0;
+          const vvY = vv ? vv.offsetTop : 0;
           const anim = launcher.animate(
             [
-              { left: `${presencePosition!.x}px`, top: `${presencePosition!.y}px` },
-              { left: `${target.x}px`, top: `${target.y}px` },
+              { left: `${fromPos.x + vvX}px`, top: `${fromPos.y + vvY}px` },
+              { left: `${target.x + vvX}px`, top: `${target.y + vvY}px` },
             ],
             { duration: 250, easing: 'cubic-bezier(0.34, 1.56, 0.64, 1)', fill: 'forwards' },
           );
@@ -347,7 +360,7 @@ export function createSeed(opts: SeedOptions): SeedComponent {
     const bubbleWidth = greetingBubble.offsetWidth || 220;
     const bubbleHeight = greetingBubble.offsetHeight || 48;
     const seedCenterX = rect.left + rect.width / 2;
-    const vw = window.innerWidth || document.documentElement.clientWidth;
+    const vw = getViewportWidth();
 
     // Center bubble above seed, clamp to viewport
     let left = seedCenterX - bubbleWidth / 2;
