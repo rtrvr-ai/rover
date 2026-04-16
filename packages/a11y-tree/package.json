@@ -1,6 +1,6 @@
 {
   "name": "@rover/a11y-tree",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "description": "rover embed - a11y tree",
   "license": "FSL-1.1-Apache-2.0",
   "type": "module",
