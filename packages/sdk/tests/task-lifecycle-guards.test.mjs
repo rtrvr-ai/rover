@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  shouldAdoptExternalActiveRun,
   canAutoResumePendingRun,
   resolveAutoResumePolicyAction,
   shouldAdoptProjectionRun,
-  shouldAdoptSnapshotActiveRun,
   shouldClearPendingFromSharedState,
   shouldIgnoreRunScopedMessage,
   shouldQueueCancelForIgnoredProjectionRun,
@@ -34,22 +34,28 @@ test('cancel -> no late resume from stale run id', () => {
   });
   assert.equal(ignoreLateCompletion, true);
 
-  const adoptCancelledSnapshot = shouldAdoptSnapshotActiveRun({
+  const adoptCancelledSnapshot = shouldAdoptExternalActiveRun({
     taskStatus: 'running',
-    hasPendingRun: false,
-    activeRunId: 'run-cancelled',
-    activeRunText: 'cancelled task',
+    localPendingRunId: 'run-cancelled',
+    localPendingTaskBoundaryId: 'boundary-current',
+    currentTaskBoundaryId: 'boundary-current',
+    candidateRunId: 'run-cancelled',
+    candidateRunText: 'cancelled task',
+    candidateTaskBoundaryId: 'boundary-current',
     ignoredRunIds: ignored,
   });
   assert.equal(adoptCancelledSnapshot, false);
 });
 
 test('end task -> no stale run adoption across tabs', () => {
-  const adoptWhenEnded = shouldAdoptSnapshotActiveRun({
+  const adoptWhenEnded = shouldAdoptExternalActiveRun({
     taskStatus: 'ended',
-    hasPendingRun: false,
-    activeRunId: 'stale-run',
-    activeRunText: 'stale',
+    localPendingRunId: 'stale-run',
+    localPendingTaskBoundaryId: 'boundary-current',
+    currentTaskBoundaryId: 'boundary-current',
+    candidateRunId: 'stale-run',
+    candidateRunText: 'stale',
+    candidateTaskBoundaryId: 'boundary-current',
     ignoredRunIds: new Set(),
   });
   assert.equal(adoptWhenEnded, false);
@@ -95,6 +101,40 @@ test('run lifecycle messages are gated by task boundary id', () => {
     ignoredRunIds: new Set(),
   });
   assert.equal(acceptMatchingBoundary, false);
+});
+
+test('assistant and tool events are ignored when their task boundary mismatches the current task', () => {
+  const ignoreAssistantBoundaryMismatch = shouldIgnoreRunScopedMessage({
+    type: 'assistant',
+    messageRunId: 'run-1',
+    messageTaskBoundaryId: 'boundary-old',
+    currentTaskBoundaryId: 'boundary-new',
+    pendingRunId: 'run-1',
+    taskStatus: 'running',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(ignoreAssistantBoundaryMismatch, true);
+
+  const ignoreToolBoundaryMismatch = shouldIgnoreRunScopedMessage({
+    type: 'tool_result',
+    messageRunId: 'run-1',
+    messageTaskBoundaryId: 'boundary-old',
+    currentTaskBoundaryId: 'boundary-new',
+    pendingRunId: 'run-1',
+    taskStatus: 'running',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(ignoreToolBoundaryMismatch, true);
+
+  const allowAssistantWithoutBoundaryWhenRunMatches = shouldIgnoreRunScopedMessage({
+    type: 'assistant',
+    messageRunId: 'run-1',
+    currentTaskBoundaryId: 'boundary-new',
+    pendingRunId: 'run-1',
+    taskStatus: 'running',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(allowAssistantWithoutBoundaryWhenRunMatches, false);
 });
 
 test('pending completion is accepted even if boundary metadata is missing', () => {
@@ -153,12 +193,69 @@ test('auto-resume policy branching honors auto, confirm, never, and remote owner
   );
 });
 
-test('projection adoption skips ignored run ids and queues cancel only for non-terminal ignored runs', () => {
+test('external active run adoption requires matching pending run and boundary ownership', () => {
+  assert.equal(
+    shouldAdoptExternalActiveRun({
+      taskStatus: 'running',
+      localPendingRunId: undefined,
+      currentTaskBoundaryId: 'boundary-current',
+      candidateRunId: 'run-old',
+      candidateRunText: 'old task',
+      candidateTaskBoundaryId: 'boundary-current',
+      ignoredRunIds: new Set(),
+    }),
+    false,
+  );
+  assert.equal(
+    shouldAdoptExternalActiveRun({
+      taskStatus: 'running',
+      localPendingRunId: 'run-current',
+      localPendingTaskBoundaryId: 'boundary-current',
+      currentTaskBoundaryId: 'boundary-current',
+      candidateRunId: 'run-old',
+      candidateRunText: 'old task',
+      candidateTaskBoundaryId: 'boundary-current',
+      ignoredRunIds: new Set(),
+    }),
+    false,
+  );
+  assert.equal(
+    shouldAdoptExternalActiveRun({
+      taskStatus: 'running',
+      localPendingRunId: 'run-current',
+      localPendingTaskBoundaryId: 'boundary-current',
+      currentTaskBoundaryId: 'boundary-current',
+      candidateRunId: 'run-current',
+      candidateRunText: 'current task',
+      candidateTaskBoundaryId: 'boundary-other',
+      ignoredRunIds: new Set(),
+    }),
+    false,
+  );
+  assert.equal(
+    shouldAdoptExternalActiveRun({
+      taskStatus: 'running',
+      localPendingRunId: 'run-current',
+      localPendingTaskBoundaryId: 'boundary-current',
+      currentTaskBoundaryId: 'boundary-current',
+      candidateRunId: 'run-current',
+      candidateRunText: 'current task',
+      candidateTaskBoundaryId: 'boundary-current',
+      ignoredRunIds: new Set(),
+    }),
+    true,
+  );
+});
+
+test('projection adoption only refreshes the known current run and never seeds a fresh boundary from stale external state', () => {
   const ignored = new Set(['run_ignored']);
   assert.equal(
     shouldAdoptProjectionRun({
       serverRunId: 'run_ignored',
+      taskStatus: 'running',
       localPendingRunId: '',
+      localPendingTaskBoundaryId: 'boundary-current',
+      currentTaskBoundaryId: 'boundary-current',
       ignoredRunIds: ignored,
     }),
     false,
@@ -166,18 +263,35 @@ test('projection adoption skips ignored run ids and queues cancel only for non-t
   assert.equal(
     shouldAdoptProjectionRun({
       serverRunId: 'run_new',
-      localPendingRunId: 'run_old',
+      taskStatus: 'running',
+      localPendingRunId: '',
+      localPendingTaskBoundaryId: undefined,
+      currentTaskBoundaryId: 'boundary-current',
       ignoredRunIds: ignored,
     }),
-    true,
+    false,
+  );
+  assert.equal(
+    shouldAdoptProjectionRun({
+      serverRunId: 'run_new',
+      taskStatus: 'running',
+      localPendingRunId: 'run_old',
+      localPendingTaskBoundaryId: 'boundary-current',
+      currentTaskBoundaryId: 'boundary-current',
+      ignoredRunIds: ignored,
+    }),
+    false,
   );
   assert.equal(
     shouldAdoptProjectionRun({
       serverRunId: 'run_same',
+      taskStatus: 'running',
       localPendingRunId: 'run_same',
+      localPendingTaskBoundaryId: 'boundary-current',
+      currentTaskBoundaryId: 'boundary-current',
       ignoredRunIds: ignored,
     }),
-    false,
+    true,
   );
   assert.equal(
     shouldQueueCancelForIgnoredProjectionRun({

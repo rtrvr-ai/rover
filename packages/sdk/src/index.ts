@@ -119,10 +119,10 @@ import type {
   UiRole,
 } from './runtimeTypes.js';
 import {
+  shouldAdoptExternalActiveRun,
   canAutoResumePendingRun,
   resolveAutoResumePolicyAction,
   shouldAdoptProjectionRun,
-  shouldAdoptSnapshotActiveRun,
   shouldClearPendingFromSharedState,
   shouldIgnoreRunScopedMessage,
   shouldQueueCancelForIgnoredProjectionRun,
@@ -2685,10 +2685,13 @@ function applyServerProjection(projection: RoverServerProjection): void {
     && !hasRemoteExecutionOwner()
     && resolveEffectiveExecutionMode(currentMode) !== 'observer'
     && shouldAdoptProjectionRun({
-    serverRunId,
-    localPendingRunId: localRunId,
-    ignoredRunIds,
-  })
+      serverRunId,
+      localPendingRunId: localRunId,
+      localPendingTaskBoundaryId: localPending?.taskBoundaryId,
+      currentTaskBoundaryId,
+      taskStatus: runtimeState.activeTask?.status,
+      ignoredRunIds,
+    })
   ) {
     setPendingRun({
       id: serverRunId,
@@ -7106,37 +7109,35 @@ function applyCoordinatorState(state: SharedSessionState, source: 'local' | 'rem
       if (shouldStayObserverOnly) {
         setPendingRun(undefined);
       } else {
-      const existingPending = sanitizePendingRun(runtimeState.pendingRun);
-      const incomingBoundaryId = normalizeTaskBoundaryId(state.workerContext?.taskBoundaryId);
-      const sameRun =
-        existingPending?.id === state.activeRun.runId
-        && (
-          !existingPending?.taskBoundaryId
-          || normalizeTaskBoundaryId(existingPending.taskBoundaryId)
-            === (incomingBoundaryId || normalizeTaskBoundaryId(currentTaskBoundaryId))
-        );
-      const incomingResumeRequired =
-        sameRun
-          ? existingPending?.resumeRequired === true
-          : String(state.activeRun.runtimeId || '').trim() === '';
-      setPendingRun(
-        sanitizePendingRun({
-          id: state.activeRun.runId,
-          text: state.activeRun.text,
-          startedAt: state.activeRun.startedAt,
-          attempts: sameRun ? (existingPending?.attempts || 0) : 0,
-          autoResume: true,
-          taskBoundaryId:
-            (sameRun ? existingPending?.taskBoundaryId : undefined)
-            || incomingBoundaryId
-            || existingPending?.taskBoundaryId
-            || currentTaskBoundaryId,
-          resumeRequired: incomingResumeRequired,
-          resumeReason: sameRun
-            ? existingPending?.resumeReason
-            : (incomingResumeRequired ? 'agent_navigation' : undefined),
-        }),
-      );
+        const existingPending = sanitizePendingRun(runtimeState.pendingRun);
+        const incomingBoundaryId = normalizeTaskBoundaryId(state.workerContext?.taskBoundaryId);
+        const canRefreshPendingFromSharedRun = shouldAdoptExternalActiveRun({
+          taskStatus: localTaskStatus,
+          localPendingRunId: existingPending?.id,
+          localPendingTaskBoundaryId: existingPending?.taskBoundaryId,
+          currentTaskBoundaryId,
+          candidateRunId: state.activeRun.runId,
+          candidateRunText: state.activeRun.text,
+          candidateTaskBoundaryId: incomingBoundaryId,
+          ignoredRunIds,
+        });
+        if (canRefreshPendingFromSharedRun) {
+          setPendingRun(
+            sanitizePendingRun({
+              id: state.activeRun.runId,
+              text: state.activeRun.text,
+              startedAt: state.activeRun.startedAt,
+              attempts: existingPending?.attempts || 0,
+              autoResume: true,
+              taskBoundaryId:
+                existingPending?.taskBoundaryId
+                || incomingBoundaryId
+                || currentTaskBoundaryId,
+              resumeRequired: existingPending?.resumeRequired === true,
+              resumeReason: existingPending?.resumeReason,
+            }),
+          );
+        }
       }
     } else {
       const shouldClearPending = shouldClearPendingFromSharedState({
@@ -7924,25 +7925,42 @@ function handleWorkerMessage(msg: any): void {
         ? msg.activeRun.runId
         : undefined;
       const activeRunText = typeof msg?.activeRun?.text === 'string' ? msg.activeRun.text : undefined;
-      const canAdoptActiveRun = shouldAdoptSnapshotActiveRun({
+      const existingPending = sanitizePendingRun(runtimeState.pendingRun);
+      const canAdoptActiveRun = shouldAdoptExternalActiveRun({
         taskStatus: runtimeState.activeTask?.status,
-        hasPendingRun: !!runtimeState.pendingRun,
-        activeRunId,
-        activeRunText,
+        localPendingRunId: existingPending?.id,
+        localPendingTaskBoundaryId: existingPending?.taskBoundaryId,
+        currentTaskBoundaryId,
+        candidateRunId: activeRunId,
+        candidateRunText: activeRunText,
+        candidateTaskBoundaryId: incomingWorkerState.taskBoundaryId,
         ignoredRunIds,
       });
       if (canAdoptActiveRun) {
-        runtimeState.pendingRun = sanitizePendingRun({
+        setPendingRun(sanitizePendingRun({
           id: activeRunId,
           text: activeRunText,
           startedAt: msg.activeRun.startedAt,
-          attempts: 0,
+          attempts: existingPending?.attempts || 0,
           autoResume: true,
-        });
+          taskBoundaryId:
+            existingPending?.taskBoundaryId
+            || incomingWorkerState.taskBoundaryId
+            || currentTaskBoundaryId,
+          resumeRequired: existingPending?.resumeRequired === true,
+          resumeReason: existingPending?.resumeReason,
+        }));
       }
       if (activeRunId && activeRunText && canAdoptActiveRun) {
         sessionCoordinator?.setActiveRun({ runId: activeRunId, text: activeRunText });
-      } else if (activeRunId && (!isTaskRunning() || ignoredRunIds.has(activeRunId))) {
+      } else if (
+        activeRunId
+        && (
+          !isTaskRunning()
+          || ignoredRunIds.has(activeRunId)
+          || existingPending?.id !== activeRunId
+        )
+      ) {
         sessionCoordinator?.setActiveRun(undefined);
       }
       if (!isTaskRunning() && runtimeState.pendingRun) {
