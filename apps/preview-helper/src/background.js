@@ -122,6 +122,7 @@ async function fetchPreviewConfig(params, tabUrl) {
     ...(data.helperConfig || {}),
     siteId: data.helperConfig?.siteId || data.siteId,
     sessionToken: data.helperConfig?.sessionToken || data.runtimeSessionToken,
+    sessionId: data.helperConfig?.sessionId || data.sessionId,
     sessionTokenExpiresAt: data.runtimeSessionTokenExpiresAt || data.helperConfig?.sessionTokenExpiresAt,
     targetUrl: data.helperConfig?.targetUrl || data.targetUrl || tabUrl,
     embedScriptUrl: data.helperConfig?.embedScriptUrl || 'https://rover.rtrvr.ai/embed.js',
@@ -134,6 +135,7 @@ async function fetchPreviewConfig(params, tabUrl) {
       data.helperConfig?.allowedDomains
       || (data.host ? [data.host] : []),
     domainScopeMode: data.helperConfig?.domainScopeMode || 'host_only',
+    sessionScope: data.helperConfig?.sessionScope || 'shared_site',
     openOnInit: data.helperConfig?.openOnInit !== false,
     configRefreshedAt: fetchedAt,
   });

@@ -137,6 +137,7 @@ export function normalizeConfig(input = {}) {
   const siteId = String(input.siteId || '').trim();
   const publicKey = String(input.publicKey || '').trim();
   const sessionToken = String(input.sessionToken || '').trim();
+  const sessionId = String(input.sessionId || '').trim();
   const siteKeyId = String(input.siteKeyId || input.keyId || '').trim();
   const sessionTokenExpiresAt = Number(input.sessionTokenExpiresAt);
   const embedScriptUrl = String(input.embedScriptUrl || DEFAULT_EMBED_SCRIPT_URL).trim() || DEFAULT_EMBED_SCRIPT_URL;
@@ -151,6 +152,9 @@ export function normalizeConfig(input = {}) {
   const externalNavigationPolicy = ['open_new_tab_notice', 'block', 'allow'].includes(String(input.externalNavigationPolicy || '').trim())
     ? String(input.externalNavigationPolicy).trim()
     : '';
+  const sessionScope = ['shared_site', 'tab'].includes(String(input.sessionScope || '').trim())
+    ? String(input.sessionScope).trim()
+    : '';
   const openOnInit = input.openOnInit !== false;
   const mode = ['safe', 'full'].includes(String(input.mode || '').trim()) ? String(input.mode).trim() : '';
   const allowActions = typeof input.allowActions === 'boolean' ? input.allowActions : undefined;
@@ -164,6 +168,7 @@ export function normalizeConfig(input = {}) {
     siteId,
     publicKey,
     sessionToken,
+    sessionId,
     siteKeyId,
     sessionTokenExpiresAt: Number.isFinite(sessionTokenExpiresAt) ? sessionTokenExpiresAt : 0,
     embedScriptUrl,
@@ -176,6 +181,7 @@ export function normalizeConfig(input = {}) {
     allowedDomains,
     domainScopeMode,
     externalNavigationPolicy,
+    sessionScope,
     openOnInit,
     mode,
     allowActions,
@@ -273,6 +279,7 @@ export function serializeConfigForSeed(config) {
     siteId: config.siteId,
     publicKey: config.publicKey,
     sessionToken: config.sessionToken,
+    sessionId: config.sessionId,
     siteKeyId: config.siteKeyId,
     sessionTokenExpiresAt: config.sessionTokenExpiresAt,
     embedScriptUrl: config.embedScriptUrl,
@@ -285,6 +292,7 @@ export function serializeConfigForSeed(config) {
     allowedDomains: config.allowedDomains,
     domainScopeMode: config.domainScopeMode,
     externalNavigationPolicy: config.externalNavigationPolicy,
+    sessionScope: config.sessionScope,
     openOnInit: config.openOnInit,
     mode: config.mode,
     allowActions: config.allowActions,

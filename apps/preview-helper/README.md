@@ -38,6 +38,7 @@ Reusable wildcard config (recommended for testing):
   "siteKeyId": "...",
   "allowedDomains": ["*"],
   "domainScopeMode": "registrable_domain",
+  "sessionScope": "shared_site",
   "openOnInit": true,
   "mode": "full",
   "allowActions": true,
@@ -57,6 +58,7 @@ Exact site-scoped config (when you need policy-accurate domain validation):
   "allowedDomains": ["example.com"],
   "domainScopeMode": "registrable_domain",
   "externalNavigationPolicy": "open_new_tab_notice",
+  "sessionScope": "shared_site",
   "openOnInit": true,
   "mode": "full",
   "allowActions": true,
@@ -83,6 +85,8 @@ The helper can auto-hydrate from the temporary handoff payload that Rover puts o
 - `rover_preview_id`
 - `rover_preview_token`
 - `rover_preview_api`
+
+After the helper fetches the hosted preview config, it also preserves Rover's preview session continuity fields like `sessionId` and `sessionScope`.
 
 Legacy query-param handoff still works for compatibility, but new Rover links use the fragment payload instead. You do not need to paste JSON for this path.
 
