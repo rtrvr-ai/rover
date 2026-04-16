@@ -72,7 +72,7 @@ import {
   GREETING_REVEAL_DELAY_MS,
 } from './config.js';
 import { resolveMascotMutePreference } from './audio.js';
-import { composeVoiceDraft, formatTime, renderMessageBlock } from './dom-helpers.js';
+import { composeVoiceDraft, formatTime, renderMessageBlock, summarizeTaskText } from './dom-helpers.js';
 import { createStateMachine } from './state-machine.js';
 import { morphSeedToWindow, morphWindowToSeed, morphBarToSeed, morphSeedToBar, prefersReducedMotion, scaleDuration } from './animation.js';
 import { createSeed } from './components/seed.js';
@@ -659,7 +659,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     win.taskStage.style.display = hasTaskContent ? '' : 'none';
     if (!hasTaskContent) return;
 
-    win.taskStageTitle.textContent = latestTaskTitle
+    win.taskStageTitle.textContent = summarizeTaskText(latestTaskTitle, { maxLength: 120, maxUrlLength: 56 })
       || `${experience.presence?.assistantName || agentName} is working…`;
     const metaParts: string[] = [];
     if (taskStartedAt > 0) metaParts.push(formatTime(taskStartedAt));
@@ -1361,7 +1361,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
     if (key === lastConversationsKey) return;
     lastConversationsKey = key;
     const active = conversations.find(c => c.isActive);
-    win.conversationPillLabel.textContent = active ? (active.summary.length > 40 ? active.summary.slice(0, 40) + '...' : active.summary) || 'Current task' : 'Current task';
+    win.conversationPillLabel.textContent = active
+      ? summarizeTaskText(active.summary, { maxLength: 44, maxUrlLength: 32 }) || 'Current task'
+      : 'Current task';
     win.conversationPill.style.display = conversations.length > 1 ? 'flex' : 'none';
     win.conversationList.innerHTML = '';
     for (const conv of conversations) {
@@ -1371,7 +1373,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       const dot = document.createElement('span'); dot.className = 'conversationDot';
       const content = document.createElement('div'); content.className = 'conversationContent';
       const summary = document.createElement('div'); summary.className = 'conversationSummary';
-      summary.textContent = conv.summary.length > 60 ? conv.summary.slice(0, 60) + '...' : conv.summary;
+      summary.textContent = summarizeTaskText(conv.summary, { maxLength: 64, maxUrlLength: 36 }) || 'Task';
       const meta = document.createElement('div'); meta.className = 'conversationMeta';
       const statusBadge = conv.status === 'running' ? 'Running' : conv.status === 'paused' ? 'Paused' : conv.status === 'completed' ? 'Done' : conv.status;
       meta.textContent = `${statusBadge} · ${formatTime(conv.updatedAt)}`;
@@ -1395,7 +1397,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   function showPausedTaskBanner(task: { taskId: string; rootUserInput: string }): void {
     pausedTaskId = task.taskId;
-    const truncated = task.rootUserInput.length > 50 ? task.rootUserInput.slice(0, 50) + '...' : task.rootUserInput;
+    const truncated = summarizeTaskText(task.rootUserInput, { maxLength: 56, maxUrlLength: 32 }) || 'Task';
     win.pausedTaskBanner.innerHTML = '';
     const text = document.createElement('span'); text.className = 'pausedTaskText'; text.textContent = `Paused: "${truncated}"`;
     const actions = document.createElement('div'); actions.className = 'pausedTaskActions';
@@ -1429,6 +1431,14 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   return {
     addMessage,
+    setTranscript: (messages, timeline) => {
+      feedComp.setTranscript(messages, timeline);
+      hasMessages = messages.length > 0 || timeline.length > 0;
+      const latestUserMessage = [...messages].reverse().find(message => message.role === 'user');
+      latestTaskTitle = latestUserMessage ? sanitizeText(latestUserMessage.text) : '';
+      syncTaskStage();
+      shortcutsComp.syncVisibility(hasMessages, isRunning, !!currentQuestionPrompt?.questions?.length);
+    },
     setQuestionPrompt,
     clearMessages,
     addTimelineEvent: (event) => {

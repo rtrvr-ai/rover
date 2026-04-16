@@ -108,6 +108,16 @@ export type RoverUi = {
     text: string,
     options?: { blocks?: RoverMessageBlock[] },
   ) => void;
+  setTranscript: (
+    messages: Array<{
+      id?: string;
+      role: 'user' | 'assistant' | 'system';
+      text: string;
+      blocks?: RoverMessageBlock[];
+      ts?: number;
+    }>,
+    timeline: RoverTimelineEvent[],
+  ) => void;
   setQuestionPrompt: (prompt?: { questions: RoverAskUserQuestion[] }) => void;
   clearMessages: () => void;
   addTimelineEvent: (event: RoverTimelineEvent) => void;

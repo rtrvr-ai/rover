@@ -32,16 +32,39 @@ export function resolveAutoResumePolicyAction(params: {
   return 'auto_resume';
 }
 
+function hasStrictBoundaryMatch(params: {
+  currentTaskBoundaryId?: string;
+  localPendingTaskBoundaryId?: string;
+  candidateTaskBoundaryId?: string;
+}): boolean {
+  const currentBoundary = normalizeTaskBoundaryId(params.currentTaskBoundaryId);
+  const localPendingBoundary = normalizeTaskBoundaryId(params.localPendingTaskBoundaryId);
+  const candidateBoundary = normalizeTaskBoundaryId(params.candidateTaskBoundaryId);
+  if (!localPendingBoundary) return false;
+  if (currentBoundary && localPendingBoundary !== currentBoundary) return false;
+  if (candidateBoundary && candidateBoundary !== (currentBoundary || localPendingBoundary)) return false;
+  return true;
+}
+
 export function shouldAdoptProjectionRun(params: {
   serverRunId?: string;
   localPendingRunId?: string;
+  localPendingTaskBoundaryId?: string;
+  currentTaskBoundaryId?: string;
+  taskStatus?: TaskStatus | TaskState;
   ignoredRunIds?: Set<string>;
 }): boolean {
   const serverRunId = String(params.serverRunId || '').trim();
   if (!serverRunId) return false;
+  if (params.taskStatus !== 'running') return false;
   if (params.ignoredRunIds?.has(serverRunId)) return false;
   const localPendingRunId = String(params.localPendingRunId || '').trim();
-  return !localPendingRunId || localPendingRunId !== serverRunId;
+  if (!localPendingRunId) return false;
+  if (localPendingRunId !== serverRunId) return false;
+  return hasStrictBoundaryMatch({
+    currentTaskBoundaryId: params.currentTaskBoundaryId,
+    localPendingTaskBoundaryId: params.localPendingTaskBoundaryId,
+  });
 }
 
 export function shouldQueueCancelForIgnoredProjectionRun(params: {
@@ -57,18 +80,28 @@ export function shouldQueueCancelForIgnoredProjectionRun(params: {
   return !terminal;
 }
 
-export function shouldAdoptSnapshotActiveRun(params: {
+export function shouldAdoptExternalActiveRun(params: {
   taskStatus?: TaskStatus | TaskState;
-  hasPendingRun: boolean;
-  activeRunId?: string;
-  activeRunText?: string;
+  localPendingRunId?: string;
+  localPendingTaskBoundaryId?: string;
+  currentTaskBoundaryId?: string;
+  candidateRunId?: string;
+  candidateRunText?: string;
+  candidateTaskBoundaryId?: string;
   ignoredRunIds?: Set<string>;
 }): boolean {
   if (params.taskStatus !== 'running') return false;
-  if (!params.activeRunId || !params.activeRunText) return false;
-  if (params.hasPendingRun) return false;
-  if (params.ignoredRunIds?.has(params.activeRunId)) return false;
-  return true;
+  const candidateRunId = String(params.candidateRunId || '').trim();
+  const localPendingRunId = String(params.localPendingRunId || '').trim();
+  if (!candidateRunId || !String(params.candidateRunText || '').trim()) return false;
+  if (!localPendingRunId) return false;
+  if (params.ignoredRunIds?.has(candidateRunId)) return false;
+  if (localPendingRunId !== candidateRunId) return false;
+  return hasStrictBoundaryMatch({
+    currentTaskBoundaryId: params.currentTaskBoundaryId,
+    localPendingTaskBoundaryId: params.localPendingTaskBoundaryId,
+    candidateTaskBoundaryId: params.candidateTaskBoundaryId,
+  });
 }
 
 export function shouldClearPendingFromSharedState(params: {
@@ -108,14 +141,19 @@ export function shouldIgnoreRunScopedMessage(params: {
   const currentBoundary = normalizeTaskBoundaryId(currentTaskBoundaryId);
   const messageBoundary = normalizeTaskBoundaryId(messageTaskBoundaryId);
   const isCompletionEvent = type === 'run_state_transition' || type === 'run_completed';
+  const isLifecycleBoundaryEvent =
+    type === 'run_started'
+    || type === 'run_resumed'
+    || isCompletionEvent;
   const canRelaxBoundaryForPendingCompletion =
     isCompletionEvent
     && !!messageRunId
     && !!pendingRunId
     && messageRunId === pendingRunId
     && taskStatus === 'running';
-  if ((type === 'run_started' || type === 'run_resumed' || isCompletionEvent) && currentBoundary) {
-    if ((!messageBoundary || messageBoundary !== currentBoundary) && !canRelaxBoundaryForPendingCompletion) return true;
+  if (currentBoundary) {
+    if (messageBoundary && messageBoundary !== currentBoundary) return true;
+    if (isLifecycleBoundaryEvent && !messageBoundary && !canRelaxBoundaryForPendingCompletion) return true;
   }
   if (!messageRunId && type !== 'run_started' && type !== 'run_resumed') return false;
   if (messageRunId && ignoredRunIds?.has(messageRunId)) return true;
