@@ -30,7 +30,6 @@ export type RoverOwnerInstallBootConfig = {
   workerUrl?: string;
   allowedDomains?: string[];
   domainScopeMode?: 'host_only' | 'registrable_domain';
-  externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
   cloudSandboxEnabled?: boolean;
   sessionScope?: 'shared_site' | 'tab';
   openOnInit?: boolean;
@@ -43,9 +42,6 @@ export type RoverOwnerInstallBootConfig = {
     consume?: boolean;
   };
   pageConfig?: RoverPageCaptureConfig | null;
-  navigation?: {
-    crossHostPolicy?: 'open_new_tab' | 'same_tab';
-  };
   tabPolicy?: {
     observerByDefault?: boolean;
     actionLeaseMs?: number;

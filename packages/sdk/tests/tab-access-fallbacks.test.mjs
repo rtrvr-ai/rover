@@ -19,7 +19,7 @@ test('missing target tab fallback stays non-external for page data', () => {
 
 test('missing target tab fallback stays non-external for tool errors', () => {
   const result = buildTabAccessToolError(
-    { externalNavigationPolicy: 'open_new_tab_notice' },
+    {},
     { logicalTabId: 19, external: false },
     'target_tab_missing',
   );
@@ -31,7 +31,7 @@ test('missing target tab fallback stays non-external for tool errors', () => {
 
 test('external tab fallback retains external semantics', () => {
   const result = buildTabAccessToolError(
-    { externalNavigationPolicy: 'open_new_tab_notice' },
+    {},
     { logicalTabId: 22, external: true, url: 'https://external.example' },
     'external_tab_action_blocked',
   );

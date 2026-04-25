@@ -265,7 +265,7 @@ init({
 | Error | Cause | Fix |
 |-------|-------|-----|
 | "Rover requires a bootstrap key/session token" | Missing bootstrap key/session token in init config | Add `publicKey: 'pk_site_...'` or `sessionToken: 'rvrsess_...'` |
-| "HTTP 401" / "Invalid or expired Rover session token" | Session token expired or bootstrap key invalid | Refresh via `session/start` (automatic) or rotate site key |
+| "HTTP 401" / "Invalid or expired Rover session token" | Session token expired or bootstrap key invalid | Refresh via `session/start` (automatic) or replace the site key |
 | "HTTP 402" | Insufficient credits | Add credits to your rtrvr account |
 | Worker fails silently | `workerUrl` is wrong or CORS blocked | Check URL is accessible, serve with CORS |
 | "No handler for X" | RPC method mismatch | Rebuild all packages (`pnpm build`) |

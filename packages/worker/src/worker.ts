@@ -201,20 +201,9 @@ function extractWebToolsConfig(config: RoverWorkerConfig | null): ExternalWebCon
   return config.tools.web;
 }
 
-function resolveRuntimeExternalNavigationPolicy(
-  config: RoverWorkerConfig | null,
-): 'open_new_tab_notice' | 'block' | 'allow' | undefined {
-  if (!config) return undefined;
-  if (config.externalNavigationPolicy === 'open_new_tab_notice' || config.externalNavigationPolicy === 'block' || config.externalNavigationPolicy === 'allow') {
-    return config.externalNavigationPolicy;
-  }
-  return undefined;
-}
-
 function buildRoverRuntimeContext(params: {
   tabs: RoverTab[];
   agentName: string;
-  externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
   taskBoundaryId?: string;
 }): RoverRuntimeContext {
   const externalTabs = params.tabs
@@ -238,7 +227,6 @@ function buildRoverRuntimeContext(params: {
   return {
     mode: 'rover_embed',
     agentName: params.agentName,
-    externalNavigationPolicy: params.externalNavigationPolicy,
     tabIdContract: 'tree_index_mapped_by_tab_order',
     taskBoundaryId: params.taskBoundaryId,
     ...(externalTabs.length ? { externalTabs } : {}),
@@ -2107,7 +2095,6 @@ async function handleUserMessage(
   const runtimeContext = buildRoverRuntimeContext({
     tabs: tabsForRun,
     agentName,
-    externalNavigationPolicy: resolveRuntimeExternalNavigationPolicy(config),
     taskBoundaryId,
   });
   const ctx = createAgentContext(

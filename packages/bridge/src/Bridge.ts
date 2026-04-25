@@ -27,8 +27,7 @@ import {
 } from './toolScopePolicy.js';
 
 export type DomainScopeMode = 'host_only' | 'registrable_domain';
-export type ExternalNavigationPolicy = 'open_new_tab_notice' | 'block' | 'allow';
-export type CrossHostPolicy = 'open_new_tab' | 'same_tab';
+export type NavigationPolicyAction = 'open_new_tab_notice' | 'block';
 export type ActionGateContext = {
   mode?: 'controller' | 'observer';
   controllerRuntimeId?: string;
@@ -40,7 +39,7 @@ export type ActionGateContext = {
 export type NavigationGuardrailEvent = {
   blockedUrl: string;
   currentUrl: string;
-  policyAction: Exclude<ExternalNavigationPolicy, 'allow'>;
+  policyAction: NavigationPolicyAction;
   reason: string;
   allowedDomains: string[];
   openedInNewTab: boolean;
@@ -71,8 +70,6 @@ export type BridgeOptions = {
   runtimeId?: string;
   allowedDomains?: string[];
   domainScopeMode?: DomainScopeMode;
-  externalNavigationPolicy?: ExternalNavigationPolicy;
-  crossHostPolicy?: CrossHostPolicy;
   onNavigationGuardrail?: (event: NavigationGuardrailEvent) => void;
   onBeforeAgentNavigation?: (
     event: NavigationIntentEvent,
@@ -109,8 +106,6 @@ export class Bridge {
   private runtimeId?: string;
   private domainScopeMode: DomainScopeMode;
   private allowedDomains: string[];
-  private externalNavigationPolicy: ExternalNavigationPolicy;
-  private crossHostPolicy: CrossHostPolicy;
   private registerOpenedTab?: BridgeOptions['registerOpenedTab'];
   private listKnownTabs?: BridgeOptions['listKnownTabs'];
   private switchToLogicalTab?: BridgeOptions['switchToLogicalTab'];
@@ -140,8 +135,6 @@ export class Bridge {
     this.runtimeId = opts.runtimeId;
     this.domainScopeMode = normalizeDomainScopeMode(opts.domainScopeMode);
     this.allowedDomains = normalizeAllowedDomains(opts.allowedDomains, window.location.hostname, this.domainScopeMode);
-    this.externalNavigationPolicy = normalizeExternalNavigationPolicy(opts.externalNavigationPolicy);
-    this.crossHostPolicy = normalizeCrossHostPolicy(opts.crossHostPolicy);
     this.registerOpenedTab = opts.registerOpenedTab;
     this.listKnownTabs = opts.listKnownTabs;
     this.switchToLogicalTab = opts.switchToLogicalTab;
@@ -196,8 +189,6 @@ export class Bridge {
   setNavigationPolicy(options: {
     allowedDomains?: string[];
     domainScopeMode?: DomainScopeMode;
-    externalNavigationPolicy?: ExternalNavigationPolicy;
-    crossHostPolicy?: CrossHostPolicy;
   }): void {
     if (options.domainScopeMode) {
       this.domainScopeMode = normalizeDomainScopeMode(options.domainScopeMode);
@@ -207,12 +198,6 @@ export class Bridge {
     }
     if (options.allowedDomains) {
       this.allowedDomains = normalizeAllowedDomains(options.allowedDomains, window.location.hostname, this.domainScopeMode);
-    }
-    if (options.externalNavigationPolicy) {
-      this.externalNavigationPolicy = normalizeExternalNavigationPolicy(options.externalNavigationPolicy);
-    }
-    if (options.crossHostPolicy) {
-      this.crossHostPolicy = normalizeCrossHostPolicy(options.crossHostPolicy);
     }
   }
 
@@ -362,15 +347,10 @@ export class Bridge {
           });
         }
         const reason = intercepted.reason;
-        if (this.externalNavigationPolicy === 'open_new_tab_notice') {
-          return this.openUrlInNewTab(intercepted.targetUrl, {
-            policyBlocked: true,
-            reason,
-            decisionReason: 'open_new_tab',
-          });
-        }
-        return this.domainScopeBlockedResponse(intercepted.targetUrl, reason, {
-          decisionReason: 'policy_blocked',
+        return this.openUrlInNewTab(intercepted.targetUrl, {
+          policyBlocked: true,
+          reason,
+          decisionReason: 'open_new_tab',
         });
       }
       // Notify agent navigation before executing any click.
@@ -585,10 +565,7 @@ export class Bridge {
             intent,
             this.getNavigationFallbackDecision(targetUrl, intent.preferredDisposition),
           );
-          const forcedDecision =
-            this.externalNavigationPolicy === 'block'
-              ? 'block'
-              : 'open_new_tab';
+          const forcedDecision = 'open_new_tab';
           const effectiveDecision = preflight.decision === 'allow_same_tab' ? forcedDecision : preflight.decision;
 
           if (effectiveDecision === 'block') {
@@ -607,13 +584,10 @@ export class Bridge {
 
         if (this.shouldGuardExternalNavigation(targetUrl)) {
           const reason = 'Navigation blocked by domain policy.';
-          if (this.externalNavigationPolicy === 'open_new_tab_notice') {
-            return await this.openUrlInNewTab(targetUrl, {
-              policyBlocked: true,
-              reason,
-            });
-          }
-          return this.domainScopeBlockedResponse(targetUrl, reason);
+          return await this.openUrlInNewTab(targetUrl, {
+            policyBlocked: true,
+            reason,
+          });
         }
 
         const intent = this.buildNavigationIntent(targetUrl);
@@ -679,10 +653,7 @@ export class Bridge {
             intent,
             this.getNavigationFallbackDecision(targetUrl, intent.preferredDisposition),
           );
-          const forcedDecision =
-            this.externalNavigationPolicy === 'block'
-              ? 'block'
-              : 'open_new_tab';
+          const forcedDecision = 'open_new_tab';
           const effectiveDecision = preflight.decision === 'allow_same_tab' ? forcedDecision : preflight.decision;
 
           if (effectiveDecision === 'block') {
@@ -701,13 +672,10 @@ export class Bridge {
 
         if (this.shouldGuardExternalNavigation(targetUrl)) {
           const reason = 'Google search opens outside the allowed navigation scope.';
-          if (this.externalNavigationPolicy === 'open_new_tab_notice') {
-            return await this.openUrlInNewTab(targetUrl, {
-              policyBlocked: true,
-              reason,
-            });
-          }
-          return this.domainScopeBlockedResponse(targetUrl, reason);
+          return await this.openUrlInNewTab(targetUrl, {
+            policyBlocked: true,
+            reason,
+          });
         }
 
         const intent = this.buildNavigationIntent(targetUrl);
@@ -835,7 +803,7 @@ export class Bridge {
           };
         }
 
-        if (this.externalNavigationPolicy !== 'allow' && this.listKnownTabs) {
+        if (this.listKnownTabs) {
           const tab = this.listKnownTabs().find(entry => Number(entry.logicalTabId) === logicalTabId);
           if (tab?.external) {
             return this.domainScopeBlockedResponse(
@@ -885,7 +853,6 @@ export class Bridge {
   }
 
   private shouldGuardExternalNavigation(targetUrl: string): boolean {
-    if (this.externalNavigationPolicy === 'allow') return false;
     return !isUrlAllowedByDomains(targetUrl, this.allowedDomains);
   }
 
@@ -902,7 +869,6 @@ export class Bridge {
   }
 
   private shouldPreserveHostRuntime(targetUrl: string): boolean {
-    if (this.externalNavigationPolicy === 'allow') return false;
     return !isUrlAllowedByDomains(targetUrl, this.allowedDomains);
   }
 
@@ -915,21 +881,12 @@ export class Bridge {
       return 'block';
     }
     if (isUrlAllowedByDomains(targetUrl, this.allowedDomains)) {
-      if (this.crossHostPolicy === 'open_new_tab' && this.isCrossHostNavigation(targetUrl)) {
-        return 'open_new_tab';
-      }
       if (preferredDisposition === 'new_tab') {
         return 'open_new_tab';
       }
       return 'allow_same_tab';
     }
-    if (this.externalNavigationPolicy === 'block') {
-      return 'block';
-    }
-    if (this.externalNavigationPolicy === 'open_new_tab_notice') {
-      return 'open_new_tab';
-    }
-    return 'allow_same_tab';
+    return 'open_new_tab';
   }
 
   private isCrossHostNavigation(targetUrl: string): boolean {
@@ -1099,7 +1056,6 @@ export class Bridge {
       toolName,
       currentUrl: window.location.href,
       allowedDomains: this.allowedDomains,
-      externalNavigationPolicy: this.externalNavigationPolicy,
     });
   }
 
@@ -1119,21 +1075,12 @@ export class Bridge {
       };
     }
     if (this.shouldPreserveHostRuntime(targetUrl)) {
-      const inAllowedDomain = isUrlAllowedByDomains(targetUrl, this.allowedDomains);
-      if (!inAllowedDomain && this.externalNavigationPolicy === 'block') {
-        return {
-          targetUrl,
-          reason: 'Blocked same-tab navigation to an out-of-scope destination.',
-          forceOpenInNewTab: false,
-        };
-      }
       return {
         targetUrl,
         reason: 'Opened in a new tab to preserve Rover runtime continuity outside allowed domains.',
         forceOpenInNewTab: true,
       };
     }
-    if (this.externalNavigationPolicy === 'allow') return null;
     if (!isUrlAllowedByDomains(targetUrl, this.allowedDomains)) {
       return {
         targetUrl,
@@ -1174,11 +1121,10 @@ export class Bridge {
     options?: {
       fromCurrentContext?: boolean;
       decisionReason?: string;
-      policyAction?: Exclude<ExternalNavigationPolicy, 'allow'>;
+      policyAction?: NavigationPolicyAction;
     },
   ): any {
-    const policyAction = options?.policyAction
-      || (this.externalNavigationPolicy === 'block' ? 'block' : 'open_new_tab_notice');
+    const policyAction = options?.policyAction || 'open_new_tab_notice';
     const currentUrl = window.location.href;
     const currentHost = extractHostname(currentUrl) || window.location.hostname || undefined;
     const blockedHost = extractHostname(targetUrl) || undefined;
@@ -1214,7 +1160,6 @@ export class Bridge {
         policy_action: policyAction,
         allowed_domains: this.allowedDomains,
         domain_scope_mode: this.domainScopeMode,
-        external_navigation_policy: this.externalNavigationPolicy,
         blockedDomainStatus: 'blocked',
         navigationOutcome: 'blocked',
         decisionReason: options?.decisionReason || 'policy_blocked',
@@ -1228,7 +1173,7 @@ export class Bridge {
         pageContext: {
           url: targetUrl,
           title: `[Blocked] ${blockedHost || targetUrl}`,
-          contentText: `Access to ${blockedHost || targetUrl} is restricted by navigation policy. The page content is not available. Continue the task without this resource or use /scrape endpoint if external context is needed.`,
+          contentText: `Access to ${blockedHost || targetUrl} is outside Rover's allowed domain scope. The page content is not available. Continue the task without this resource or use /scrape endpoint if external context is needed.`,
           accessible: false,
         },
       },
@@ -1244,7 +1189,6 @@ export class Bridge {
           policyAction,
           allowedDomains: this.allowedDomains,
           domainScopeMode: this.domainScopeMode,
-          externalNavigationPolicy: this.externalNavigationPolicy,
           fromCurrentContext: !!options?.fromCurrentContext,
         },
       },
@@ -1316,14 +1260,14 @@ export class Bridge {
     const reusedTab = await this.tryReuseKnownTargetTab(targetUrl);
     if (reusedTab) {
       const message = options?.policyBlocked
-        ? options.reason || 'Opened in another Rover tab due to navigation policy.'
+        ? options.reason || 'Opened in another Rover tab to preserve Rover runtime continuity.'
         : undefined;
       if (options?.policyBlocked) {
         this.emitNavigationGuardrail({
           blockedUrl: targetUrl,
           currentUrl: window.location.href,
           policyAction: 'open_new_tab_notice',
-          reason: message || 'Opened in another Rover tab due to navigation policy.',
+          reason: message || 'Opened in another Rover tab to preserve Rover runtime continuity.',
           allowedDomains: this.allowedDomains,
           openedInNewTab: true,
         });
@@ -1704,18 +1648,6 @@ function formatAllowedDomainsForMessage(allowedDomains: string[]): string {
 
 function normalizeDomainScopeMode(mode?: DomainScopeMode): DomainScopeMode {
   return mode === 'host_only' ? 'host_only' : 'registrable_domain';
-}
-
-function normalizeExternalNavigationPolicy(policy?: ExternalNavigationPolicy): ExternalNavigationPolicy {
-  if (policy === 'allow' || policy === 'block' || policy === 'open_new_tab_notice') {
-    return policy;
-  }
-  return 'open_new_tab_notice';
-}
-
-function normalizeCrossHostPolicy(policy?: CrossHostPolicy): CrossHostPolicy {
-  if (policy === 'open_new_tab' || policy === 'same_tab') return policy;
-  return 'same_tab';
 }
 
 function normalizeDomSettleNumber(input: unknown, fallback: number, min: number, max: number): number {

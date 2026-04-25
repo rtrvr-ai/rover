@@ -157,8 +157,6 @@ function createBridge(overrides = {}) {
     runtimeId: 'runtime-1',
     domainScopeMode: 'registrable_domain',
     allowedDomains: ['example.com'],
-    externalNavigationPolicy: 'open_new_tab_notice',
-    crossHostPolicy: 'same_tab',
     navigationDelayMs: 0,
     actionGateContext: { localLogicalTabId: 1 },
     registerOpenedTab: undefined,
@@ -351,7 +349,7 @@ test('popup-blocked external tab opens return actionable fallback messaging', as
 
   const result = await bridge.openUrlInNewTab('https://docs.other-site.com/help', {
     policyBlocked: true,
-    reason: 'Opened in a new tab due to navigation policy.',
+    reason: 'Opened in a new tab to preserve Rover runtime continuity.',
     decisionReason: 'open_new_tab',
   });
 

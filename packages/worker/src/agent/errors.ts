@@ -61,7 +61,7 @@ function defaultNextActionForCode(code: RoverErrorCode): string | undefined {
     return 'Use a Rover session token (rvrsess_*) from /v2/rover/session/open.';
   }
   if (code === 'INVALID_API_KEY') {
-    return 'Use a valid active Rover session token or rotate your site public key.';
+    return 'Use a valid active Rover session token or replace your site public key.';
   }
   if (code === 'STALE_SEQ') {
     return 'Sync session projection and retry with latest seq.';

@@ -1,7 +1,3 @@
-type TabAccessRuntimeConfig = {
-  externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
-};
-
 export type RoverAvailability = 'available' | 'not_available' | 'unknown';
 
 export function buildInaccessibleTabPageData(
@@ -34,7 +30,7 @@ export function buildInaccessibleTabPageData(
 }
 
 export function buildTabAccessToolError(
-  cfg: TabAccessRuntimeConfig,
+  _cfg: Record<string, unknown>,
   tab?: { logicalTabId?: number; url?: string; external?: boolean },
   reason = 'tab_not_accessible',
 ): Record<string, any> {
@@ -63,7 +59,7 @@ export function buildTabAccessToolError(
       blocked_url: blockedUrl || undefined,
       logical_tab_id: logicalTabId || undefined,
       external: !!tab?.external,
-      policy_action: tab?.external ? cfg.externalNavigationPolicy || 'open_new_tab_notice' : undefined,
+      policy_action: tab?.external ? 'open_new_tab_notice' : undefined,
       reason,
     },
     errorDetails: {

@@ -149,9 +149,6 @@ export function normalizeConfig(input = {}) {
   const workerUrl = String(input.workerUrl || '').trim();
   const domainScopeMode = input.domainScopeMode === 'host_only' ? 'host_only' : 'registrable_domain';
   const allowedDomains = normalizeAllowedDomains(input.allowedDomains);
-  const externalNavigationPolicy = ['open_new_tab_notice', 'block', 'allow'].includes(String(input.externalNavigationPolicy || '').trim())
-    ? String(input.externalNavigationPolicy).trim()
-    : '';
   const sessionScope = ['shared_site', 'tab'].includes(String(input.sessionScope || '').trim())
     ? String(input.sessionScope).trim()
     : '';
@@ -180,7 +177,6 @@ export function normalizeConfig(input = {}) {
     workerUrl,
     allowedDomains,
     domainScopeMode,
-    externalNavigationPolicy,
     sessionScope,
     openOnInit,
     mode,
@@ -291,7 +287,6 @@ export function serializeConfigForSeed(config) {
     workerUrl: config.workerUrl,
     allowedDomains: config.allowedDomains,
     domainScopeMode: config.domainScopeMode,
-    externalNavigationPolicy: config.externalNavigationPolicy,
     sessionScope: config.sessionScope,
     openOnInit: config.openOnInit,
     mode: config.mode,

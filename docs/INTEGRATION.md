@@ -418,8 +418,6 @@ rover.boot(config);
 |---|---|---|---|
 | `allowedDomains` | `string[]` | `[]` | Hostnames or patterns where Rover may operate. In `registrable_domain`, plain `example.com` covers the apex host and subdomains. |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | How Rover interprets plain entries in `allowedDomains`: `registrable_domain` = apex + subdomains, `host_only` = exact host only unless you explicitly allow more hosts. |
-| `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | Advanced / legacy external navigation override. Standard owner-facing installs rely on Rover's default new-tab-with-notice behavior outside allowed scope. |
-| `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | Advanced / legacy in-scope cross-host override. Standard owner-facing installs let Rover choose the right tab automatically. |
 | `openOnInit` | `boolean` | `false` | Open panel after boot |
 | `deepLink` | `{ enabled?: boolean; promptParam?: string; shortcutParam?: string; consume?: boolean }` | `{ promptParam: 'rover', shortcutParam: 'rover_shortcut', consume: true }` | Advanced boot/runtime override for URL-triggered Rover. When `enabled` is omitted, Rover derives browser deep-link availability from persisted `siteConfig.aiAccess.enabled`. |
 | `allowActions` | `boolean` | `true` | Enable/disable action tools |
@@ -629,7 +627,7 @@ Runtime semantics:
 - `POST /command` stale/missing run is non-fatal for tab navigation decisions (`decision='stale_run'`).
 - `GET /state` is metadata-first by default (`includeSnapshot=false`). Use `includeSnapshot=true` only when full checkpoint payload is required.
 - Projection payloads expose `snapshotMeta` (`updatedAt`, `digest`) for lightweight change detection. Full `snapshot` is sent at bootstrap and selective resync points.
-- Cross-registrable navigation preflight is resilient: when `POST /command` tab decision checks are unavailable, Rover falls back to local runtime behavior. Standard installs open outside-domain pages in a new tab with notice and choose the right tab automatically for allowed-host hops; explicit legacy overrides still apply when present.
+- Cross-registrable navigation preflight is resilient: when `POST /command` tab decision checks are unavailable, Rover falls back to local runtime behavior. Standard installs open outside-domain pages in a new tab with notice and choose the right tab automatically for allowed-host hops.
 - External intent routing: `/context/external` uses `read_context` (read/navigation-context prompts) or `act` (mutation prompts). Navigation-only external opens are represented by `POST /command` with `type='TAB_EVENT'` plus external placeholder tab handling.
 - Any normal user send starts a fresh task boundary (fresh `prevSteps`, fresh run-scoped tab order/scope).
 - `ask_user` answer submissions are the only continuation path and keep the same task boundary.

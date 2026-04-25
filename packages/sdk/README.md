@@ -102,7 +102,7 @@ Use `createRoverConsoleSnippet(...)` and `createRoverBookmarklet(...)` to genera
 Before you use any of these helpers on another website:
 
 1. Open Rover Workspace.
-2. Create or rotate a site key so Workspace reveals the full `pk_site_*` value.
+2. Create a site key. Workspace keeps the full owner-readable `pk_site_*` install material available whenever you reopen Install or Scripts by fetching the canonical owner install material from the backend control plane.
 3. Copy the **test config JSON** from Workspace.
 4. Either paste that JSON into the Rover website's "Try on Other Sites" tool, or pass the same values into the SDK helpers below.
 
@@ -422,8 +422,6 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `apiBase` | `string` | `https://agent.rtrvr.ai` | Optional API base override. Rover uses `/v2/rover/*` under this base. |
 | `allowedDomains` | `string[]` | `[]` | Hostnames or patterns where Rover may operate. In `registrable_domain`, plain `example.com` covers the apex host and subdomains. |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | How Rover interprets plain `allowedDomains` entries: `registrable_domain` = apex + subdomains, `host_only` = exact host only unless you explicitly allow more hosts. |
-| `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | Advanced / legacy external navigation override. Standard owner-facing installs rely on Rover's default new-tab-with-notice behavior outside allowed scope. |
-| `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | Advanced / legacy in-scope cross-host override. Standard owner-facing installs let Rover choose the right tab automatically. |
 | `mode` | `'full' \| 'safe'` | `'full'` | Runtime mode |
 | `allowActions` | `boolean` | `true` | Enable or disable action tools |
 | `openOnInit` | `boolean` | `false` | Open panel immediately on boot |
@@ -690,7 +688,7 @@ Runtime contract notes:
 - `plannerOnActError` applies only in `auto` mode and only when ACT has no usable outcome.
 - Typed conflicts: `stale_seq`, `stale_epoch`, `active_run_exists`.
 - `POST /command` stale/missing run is non-fatal for tab navigation decisions (`decision='stale_run'`).
-- Cross-registrable navigation preflight is resilient: if decision checks are unavailable, Rover falls back to local runtime behavior. Standard installs open outside-domain pages in a new tab with notice and choose the right tab automatically for allowed-host hops; explicit legacy overrides still apply when present.
+- Cross-registrable navigation preflight is resilient: if decision checks are unavailable, Rover falls back to local runtime behavior. Standard installs open outside-domain pages in a new tab with notice and choose the right tab automatically for allowed-host hops.
 - External intent routing: `/context/external` uses `read_context` (read/navigation-context prompts) or `act` (mutation prompts). Navigation-only external opens are represented by `POST /command` with `type='TAB_EVENT'` plus external placeholder tab handling.
 - Any normal user send starts a fresh task boundary (fresh `prevSteps`, fresh run-scoped tab order/scope).
 - `ask_user` answer submissions are the only continuation path and keep the same task boundary.

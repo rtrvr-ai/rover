@@ -2,8 +2,6 @@ import { SystemToolNames } from '@rover/shared/lib/system-tools/tools.js';
 
 import { isUrlAllowedByDomains } from './navigationScope.js';
 
-type ExternalNavigationPolicy = 'open_new_tab_notice' | 'block' | 'allow';
-
 export const NON_ACTION_TOOLS = new Set<SystemToolNames>([
   SystemToolNames.describe_images,
   SystemToolNames.wait_action,
@@ -29,22 +27,13 @@ function normalizeScopeToolName(name: string | undefined): string {
   return String(name || '').trim();
 }
 
-function normalizeExternalNavigationPolicy(policy?: ExternalNavigationPolicy): ExternalNavigationPolicy {
-  if (policy === 'allow' || policy === 'block' || policy === 'open_new_tab_notice') {
-    return policy;
-  }
-  return 'open_new_tab_notice';
-}
-
 export function shouldBlockToolForOutOfScopeContext(params: {
   toolName: SystemToolNames | string;
   currentUrl: string;
   allowedDomains: string[];
-  externalNavigationPolicy?: ExternalNavigationPolicy;
 }): boolean {
   const toolName = normalizeScopeToolName(String(params.toolName || '')) as SystemToolNames;
   if (!toolName) return false;
-  if (normalizeExternalNavigationPolicy(params.externalNavigationPolicy) === 'allow') return false;
   if (NON_ACTION_TOOLS.has(toolName) || SCOPE_SAFE_TOOLS.has(toolName)) return false;
   return !isUrlAllowedByDomains(params.currentUrl, params.allowedDomains);
 }

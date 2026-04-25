@@ -55,15 +55,14 @@ test('host_only mode treats plain allowlist tokens as exact host matches', () =>
   assert.equal(isUrlAllowedByDomains('https://app.example.com/pricing', domains), false);
 });
 
-test('current-context scope guard never blocks action tools when external policy is allow', () => {
+test('current-context scope guard blocks action tools outside allowed scope', () => {
   assert.equal(
     shouldBlockToolForOutOfScopeContext({
       toolName: 'click_element',
       currentUrl: 'https://outside.example.com/dashboard',
       allowedDomains: ['sphere-demo-nine.vercel.app'],
-      externalNavigationPolicy: 'allow',
     }),
-    false,
+    true,
   );
 });
 

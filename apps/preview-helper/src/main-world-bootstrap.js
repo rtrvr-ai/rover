@@ -73,7 +73,6 @@
   if (sessionId) bootConfig.sessionId = sessionId;
   if (siteKeyId) bootConfig.siteKeyId = siteKeyId;
   if (workerUrl) bootConfig.workerUrl = workerUrl;
-  if (state.externalNavigationPolicy) bootConfig.externalNavigationPolicy = state.externalNavigationPolicy;
   if (sessionScope) bootConfig.sessionScope = sessionScope;
   if (state.mode) bootConfig.mode = state.mode;
   if (typeof state.allowActions === 'boolean') bootConfig.allowActions = state.allowActions;
