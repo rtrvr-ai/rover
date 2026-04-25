@@ -72,7 +72,7 @@ Common optional fields:
 - `allowActions`
 - `capabilities.roverEmbed`
 
-Advanced/manual configs can still include legacy navigation overrides such as `externalNavigationPolicy` or `navigation.crossHostPolicy`, but standard Workspace and Live Test flows now rely on Rover's built-in tab behavior by default.
+Workspace and Live Test rely on Rover's built-in tab behavior: external pages open in a new tab with notice, and allowed-host hops use smart tab selection.
 
 ## Step 1: Choose the config source
 
@@ -92,14 +92,14 @@ Open one of:
 
 Then:
 
-1. Create or rotate a Rover site key.
+1. Create a Rover site key, or reuse an existing active one that already has the right domains and policy.
 2. In the setup view, find **Try Rover on Other Sites**.
 3. Click **Copy exact config JSON**.
 4. Optionally click **Open Live Test with exact config** to open the website tool with that JSON prefilled.
 
-Why create or rotate?
+Why create or reuse a key?
 
-Workspace only shows the full public `pk_site_*` value when it is issued. That value is required for the advanced exact site-config path.
+Workspace keeps the full owner-readable `pk_site_*` install material available for authenticated owners whenever you reopen Install, Scripts, or Quick Test. Replace the key only when you intentionally want a new public key.
 
 ## Step 2: Choose the right path
 
@@ -226,7 +226,7 @@ Docs:
 - **“What JSON do I paste?”**
   Use the Workspace test config JSON, not the install snippet and not a random code sample.
 - **`This API key is missing capability: roverEmbed`**
-  Your selected key is not embed-ready. Go back to Workspace and create or rotate a key with Rover embed enabled, then copy the fresh test config JSON.
+  Your selected key is not embed-ready. Go back to Workspace and create or replace with a key that has Rover embed enabled, then copy the fresh test config JSON.
 - **“The target host is outside allowedDomains.”**
   Fix the site key domain policy in Workspace or test on the right host.
 - **“Rover appears but does not take actions.”**

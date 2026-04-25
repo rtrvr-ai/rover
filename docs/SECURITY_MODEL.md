@@ -87,6 +87,6 @@ These settings are intentionally omitted from the public site config returned to
 
 - Use separate site keys per environment/workspace.
 - Keep domain allowlists minimal and explicit.
-- Rotate keys on suspicious origin activity.
+- Replace keys on suspicious origin activity.
 - Treat browser keys as scoped public credentials, not private secrets.
 - Treat heuristic agent attribution as useful labeling, not strong identity proof.

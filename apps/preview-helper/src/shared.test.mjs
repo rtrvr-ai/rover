@@ -19,7 +19,6 @@ test('normalizeConfig keeps Workspace publicKey config fields', () => {
     apiBase: 'https://agent.rtrvr.ai',
     allowedDomains: ['example.com'],
     domainScopeMode: 'host_only',
-    externalNavigationPolicy: 'allow',
     sessionScope: 'shared_site',
     mode: 'full',
     allowActions: true,
@@ -39,7 +38,6 @@ test('normalizeConfig keeps Workspace publicKey config fields', () => {
   assert.equal(config.apiBase, 'https://agent.rtrvr.ai');
   assert.deepEqual(config.allowedDomains, ['example.com']);
   assert.equal(config.domainScopeMode, 'host_only');
-  assert.equal(config.externalNavigationPolicy, 'allow');
   assert.equal(config.sessionScope, 'shared_site');
   assert.equal(config.mode, 'full');
   assert.equal(config.allowActions, true);

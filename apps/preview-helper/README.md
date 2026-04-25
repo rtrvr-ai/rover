@@ -67,7 +67,7 @@ Exact site-scoped config (when you need policy-accurate domain validation):
 
 This works with `publicKey` directly. It is not limited to `sessionToken` anymore.
 
-Advanced/manual configs can still include legacy navigation overrides like `externalNavigationPolicy` or `navigation.crossHostPolicy`, but standard Workspace and Live Test configs now rely on Rover's built-in tab behavior by default.
+Workspace and Live Test configs rely on Rover's built-in tab behavior: outside-domain pages open in a new tab with notice, and allowed-host hops use smart tab selection.
 
 ### Wildcard configs
 

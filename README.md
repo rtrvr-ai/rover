@@ -219,7 +219,7 @@ Notes:
 ### Troubleshooting
 
 - **`This API key is missing capability: roverEmbed`**
-  The selected Workspace key is not embed-ready. Go back to Workspace and create or rotate an embed-enabled site key, then copy the fresh test config JSON again.
+  The selected Workspace key is not embed-ready. Go back to Workspace and create or replace with an embed-enabled site key, then copy the fresh test config JSON again.
 - **`Open hosted shell` does nothing**
   Hosted Preview should show Rover's hosted browser inline in Live Test and also open the dedicated hosted viewer route in a new tab. If neither works, recreate the temporary demo and try again.
 - **The hosted browser opens but Rover never appears inside the page**
@@ -268,7 +268,7 @@ If you want to play with Rover immediately:
 For production or generic helper/SDK usage:
 
 1. Open Rover Workspace.
-2. Create or rotate a site key so Workspace reveals the full `pk_site_*` value.
+2. Create a site key. Workspace keeps the full owner-readable `pk_site_*` install material available whenever you reopen Install or Scripts by fetching the canonical owner install material from the backend control plane.
 3. Use `Copy test config JSON` for portable testing on other sites.
 4. Use `Copy install snippet` for your real production site.
 5. If you want the full walkthrough, read [docs/TRY_ON_OTHER_SITES.md](docs/TRY_ON_OTHER_SITES.md).
@@ -306,7 +306,7 @@ Use the hosted API when you want signed-in preview creation, preview tokens, hos
 - **Autonomous navigation**: multi-step tasks across real pages
 - **Shadow DOM widget**: isolated UI that does not collide with host styling
 - **Backend-powered planning**: server-authoritative planner and run lifecycle
-- **Execution guardrails**: domain scoping, navigation policy, and session isolation
+- **Execution guardrails**: domain scoping, smart tab behavior, and session isolation
 - **Accessibility-first targeting**: semantic/a11y tree instead of brittle selectors
 - **Framework agnostic**: React, Vue, Angular, vanilla JS, WordPress, Shopify
 - **Voice input**: browser-native dictation

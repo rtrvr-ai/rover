@@ -15,9 +15,8 @@ window.__ROVER_WEBSITE_CONFIG__ = {
   // In production this should come from your own session/user identity.
   visitorId: 'demo-visitor-001',
 
-  // Demo policy: keep same-tab scope guardrails active.
+  // Scope policy: Rover uses built-in smart tab behavior for navigation.
   domainScopeMode: 'registrable_domain',
-  externalNavigationPolicy: 'open_new_tab_notice',
 
   // Optional branding config for embedded widget.
   ui: {

@@ -68,8 +68,6 @@ export type RoverServerFileDescriptor = {
 
 export type RoverServerPolicy = {
   domainScopeMode?: 'host_only' | 'registrable_domain';
-  externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
-  crossHostPolicy?: 'open_new_tab' | 'same_tab';
   cloudSandboxEnabled?: boolean;
   enableExternalWebContext?: boolean;
   externalScrapeMode?: 'off' | 'on_demand';

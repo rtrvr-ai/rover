@@ -8,8 +8,6 @@ export type NavigationTabDispositionInput = {
   currentHost?: string;
   allowedDomains?: string[];
   domainScopeMode?: 'host_only' | 'registrable_domain';
-  externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
-  crossHostPolicy?: 'open_new_tab' | 'same_tab';
   preferredDisposition?: 'auto' | 'same_tab' | 'new_tab';
   knownTabs?: Array<{ logicalTabId: number; url?: string; external?: boolean }>;
   taskScopedTabIds?: number[];
@@ -79,8 +77,6 @@ export function resolveNavigationTabDisposition(
   });
 
   if (!targetInScope) {
-    if (input.externalNavigationPolicy === 'block') return 'block';
-    if (input.externalNavigationPolicy === 'allow') return 'allow_same_tab';
     return 'open_new_tab';
   }
 
@@ -88,7 +84,6 @@ export function resolveNavigationTabDisposition(
     return input.preferredDisposition === 'new_tab' ? 'open_new_tab' : 'allow_same_tab';
   }
 
-  if (input.crossHostPolicy === 'open_new_tab') return 'open_new_tab';
   if (input.preferredDisposition === 'new_tab') return 'open_new_tab';
   if (hasReusableKnownTargetTab(input)) return 'open_new_tab';
   if (shouldPreserveSourceTab(input)) return 'open_new_tab';

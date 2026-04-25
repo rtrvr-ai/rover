@@ -56,7 +56,6 @@ type DemoConfig = {
   visitorId: string;
   allowedDomains: string[];
   domainScopeMode: 'host_only' | 'registrable_domain';
-  externalNavigationPolicy: 'open_new_tab_notice' | 'block' | 'allow';
   ui?: {
     agent?: {
       name?: string;
@@ -230,7 +229,6 @@ function initRover(config: DemoConfig): ReturnType<typeof init> {
     sessionScope: 'shared_site',
     allowedDomains: config.allowedDomains || ['localhost'],
     domainScopeMode: config.domainScopeMode,
-    externalNavigationPolicy: config.externalNavigationPolicy,
     tabPolicy: { observerByDefault: true, actionLeaseMs: 12000 },
     taskRouting: {
       mode: 'act',
@@ -328,7 +326,6 @@ function bindRoverControls(config: DemoConfig): void {
       visitorId: config.visitorId,
       allowedDomains: config.allowedDomains,
       domainScopeMode: config.domainScopeMode,
-      externalNavigationPolicy: config.externalNavigationPolicy,
       ui: config.ui,
       tools: config.tools,
     };
@@ -1018,7 +1015,6 @@ function loadConfig(): DemoConfig {
     visitorId,
     allowedDomains: defaultAllowedDomains,
     domainScopeMode: 'registrable_domain',
-    externalNavigationPolicy: 'open_new_tab_notice',
     ui: undefined,
     tools: undefined,
   };
@@ -1034,7 +1030,6 @@ function loadConfig(): DemoConfig {
         visitorId: website.visitorId || fallback.visitorId,
         allowedDomains: website.allowedDomains?.length ? website.allowedDomains : fallback.allowedDomains,
         domainScopeMode: website.domainScopeMode || fallback.domainScopeMode,
-        externalNavigationPolicy: website.externalNavigationPolicy || fallback.externalNavigationPolicy,
         ui: website.ui || fallback.ui,
         tools: website.tools || fallback.tools,
       };
@@ -1050,10 +1045,6 @@ function loadConfig(): DemoConfig {
           ? normalizeDomainList(parsed.allowedDomains)
           : (website.allowedDomains?.length ? website.allowedDomains : fallback.allowedDomains),
       domainScopeMode: normalizeDomainScopeMode(parsed.domainScopeMode) || website.domainScopeMode || fallback.domainScopeMode,
-      externalNavigationPolicy:
-        normalizeExternalNavigationPolicy(parsed.externalNavigationPolicy)
-        || website.externalNavigationPolicy
-        || fallback.externalNavigationPolicy,
       ui: parsed.ui || website.ui || fallback.ui,
       tools: parsed.tools || website.tools || fallback.tools,
     };
@@ -1064,7 +1055,6 @@ function loadConfig(): DemoConfig {
       visitorId: website.visitorId || fallback.visitorId,
       allowedDomains: website.allowedDomains?.length ? website.allowedDomains : fallback.allowedDomains,
       domainScopeMode: website.domainScopeMode || fallback.domainScopeMode,
-      externalNavigationPolicy: website.externalNavigationPolicy || fallback.externalNavigationPolicy,
       ui: website.ui || fallback.ui,
       tools: website.tools || fallback.tools,
     };
@@ -1101,7 +1091,6 @@ function loadWebsiteConfig(): DemoConfig {
     visitorId: typeof raw?.visitorId === 'string' ? raw.visitorId.trim() : '',
     allowedDomains,
     domainScopeMode: normalizeDomainScopeMode(raw?.domainScopeMode) || 'registrable_domain',
-    externalNavigationPolicy: normalizeExternalNavigationPolicy(raw?.externalNavigationPolicy) || 'open_new_tab_notice',
     ui: hasUi
       ? {
           ...(uiAgentName ? { agent: { name: uiAgentName } } : {}),

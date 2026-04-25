@@ -24,7 +24,6 @@ export type RoverPreviewBootstrapConfig = {
   workerUrl?: string;
   allowedDomains?: string[];
   domainScopeMode?: 'host_only' | 'registrable_domain';
-  externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
   sessionScope?: 'shared_site' | 'tab';
   openOnInit?: boolean;
   mode?: 'safe' | 'full';
@@ -126,7 +125,6 @@ function buildBootstrapPayload(config: RoverPreviewBootstrapConfig): Record<stri
   if (normalized.workerUrl) payload.workerUrl = normalized.workerUrl;
   if (normalized.allowedDomains?.length) payload.allowedDomains = normalized.allowedDomains;
   if (normalized.domainScopeMode) payload.domainScopeMode = normalized.domainScopeMode;
-  if (normalized.externalNavigationPolicy) payload.externalNavigationPolicy = normalized.externalNavigationPolicy;
   if (normalized.sessionScope) payload.sessionScope = normalized.sessionScope;
   if (typeof normalized.openOnInit === 'boolean') payload.openOnInit = normalized.openOnInit;
   if (normalized.mode) payload.mode = normalized.mode;
@@ -212,7 +210,6 @@ export function createRoverScriptTagSnippet(config: RoverPreviewBootstrapConfig)
   if (normalized.workerUrl) attrs.push(`data-worker-url="${escapeHtmlAttr(normalized.workerUrl)}"`);
   if (normalized.allowedDomains?.length) attrs.push(`data-allowed-domains="${escapeHtmlAttr(normalized.allowedDomains.join(','))}"`);
   if (normalized.domainScopeMode) attrs.push(`data-domain-scope-mode="${escapeHtmlAttr(normalized.domainScopeMode)}"`);
-  if (normalized.externalNavigationPolicy) attrs.push(`data-external-navigation-policy="${escapeHtmlAttr(normalized.externalNavigationPolicy)}"`);
   if (normalized.sessionScope) attrs.push(`data-session-scope="${escapeHtmlAttr(normalized.sessionScope)}"`);
   if (typeof normalized.openOnInit === 'boolean') attrs.push(`data-open-on-init="${escapeHtmlAttr(String(normalized.openOnInit))}"`);
   if (normalized.mode) attrs.push(`data-mode="${escapeHtmlAttr(normalized.mode)}"`);
@@ -262,11 +259,6 @@ export function readRoverScriptDataAttributes(
   const domainScopeMode = toStringValue(scriptEl.getAttribute('data-domain-scope-mode'));
   if (domainScopeMode === 'host_only' || domainScopeMode === 'registrable_domain') {
     config.domainScopeMode = domainScopeMode;
-  }
-
-  const externalNavigationPolicy = toStringValue(scriptEl.getAttribute('data-external-navigation-policy'));
-  if (externalNavigationPolicy === 'open_new_tab_notice' || externalNavigationPolicy === 'block' || externalNavigationPolicy === 'allow') {
-    config.externalNavigationPolicy = externalNavigationPolicy;
   }
 
   const sessionScope = toStringValue(scriptEl.getAttribute('data-session-scope'));

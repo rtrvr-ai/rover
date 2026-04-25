@@ -246,7 +246,6 @@ export type RoverInit = {
   pageConfig?: RoverPageCaptureConfig;
   allowedDomains?: string[];
   domainScopeMode?: 'host_only' | 'registrable_domain';
-  externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
   tabPolicy?: {
     observerByDefault?: boolean;
     actionLeaseMs?: number;
@@ -255,9 +254,6 @@ export type RoverInit = {
     mode?: 'auto' | 'act' | 'planner';
     actHeuristicThreshold?: number;
     plannerOnActError?: boolean;
-  };
-  navigation?: {
-    crossHostPolicy?: 'open_new_tab' | 'same_tab';
   };
   timing?: {
     /** Delay (ms) before same-tab navigation executes, allowing state persistence. Default: 80 */
@@ -2322,11 +2318,6 @@ function normalizeTelemetryConfig(cfg: RoverInit | null): {
   };
 }
 
-function normalizeCrossHostPolicy(policy?: 'open_new_tab' | 'same_tab'): 'open_new_tab' | 'same_tab' {
-  if (policy === 'same_tab' || policy === 'open_new_tab') return policy;
-  return 'same_tab';
-}
-
 function normalizeDomainScopeMode(
   mode?: 'host_only' | 'registrable_domain',
 ): 'host_only' | 'registrable_domain' {
@@ -2634,15 +2625,8 @@ function applyServerPolicy(policy?: RoverServerPolicy): void {
   if (!policy || !currentConfig) return;
   const cloudSandboxEnabled = policy.cloudSandboxEnabled === true
     || (policy.enableExternalWebContext === true && policy.externalScrapeMode === 'on_demand');
-  currentConfig.externalNavigationPolicy = policy.externalNavigationPolicy || currentConfig.externalNavigationPolicy;
   if (policy.domainScopeMode) {
     currentConfig.domainScopeMode = normalizeDomainScopeMode(policy.domainScopeMode);
-  }
-  if (policy.crossHostPolicy === 'open_new_tab' || policy.crossHostPolicy === 'same_tab') {
-    currentConfig.navigation = {
-      ...(currentConfig.navigation || {}),
-      crossHostPolicy: normalizeCrossHostPolicy(policy.crossHostPolicy),
-    };
   }
   if (!currentConfig.tools) currentConfig.tools = {};
   if (!currentConfig.tools.web) currentConfig.tools.web = {};
@@ -2849,9 +2833,7 @@ async function ensureRoverServerRuntime(cfg: RoverInit): Promise<void> {
           bridge.setNavigationPolicy({
             allowedDomains: currentConfig?.allowedDomains,
             domainScopeMode: currentConfig?.domainScopeMode,
-            externalNavigationPolicy: currentConfig?.externalNavigationPolicy,
-            crossHostPolicy: currentConfig?.navigation?.crossHostPolicy,
-          } as any);
+          });
         }
         if (currentConfig) {
           setupCloudCheckpointing(currentConfig);
@@ -10698,8 +10680,6 @@ function createRuntime(cfg: RoverInit): void {
     runtimeId,
     allowedDomains: cfg.allowedDomains,
     domainScopeMode: normalizeDomainScopeMode(cfg.domainScopeMode),
-    externalNavigationPolicy: cfg.externalNavigationPolicy,
-    crossHostPolicy: normalizeCrossHostPolicy(cfg.navigation?.crossHostPolicy),
     navigationDelayMs: cfg.timing?.navigationDelayMs,
     domSettle: {
       debounceMs: normalizeTimingNumber(cfg.timing?.domSettleDebounceMs, 8, 500),
@@ -10833,8 +10813,6 @@ function createRuntime(cfg: RoverInit): void {
         currentHost,
         allowedDomains: currentConfig?.allowedDomains,
         domainScopeMode: currentConfig?.domainScopeMode,
-        externalNavigationPolicy: currentConfig?.externalNavigationPolicy,
-        crossHostPolicy: normalizeCrossHostPolicy(currentConfig?.navigation?.crossHostPolicy),
         preferredDisposition: intent?.preferredDisposition || 'auto',
         knownTabs: (sessionCoordinator?.listTabs({ scope: 'all' }) || []).map((tab) => ({
           logicalTabId: tab.logicalTabId,
@@ -11059,7 +11037,7 @@ function createRuntime(cfg: RoverInit): void {
         return bridge!.getPageData(params);
       }
 
-      if (targetTab.external && runtimeCfg.externalNavigationPolicy !== 'allow') {
+      if (targetTab.external) {
         return buildInaccessibleTabPageData(targetTab, 'external_domain_inaccessible');
       }
 
@@ -11119,7 +11097,7 @@ function createRuntime(cfg: RoverInit): void {
         );
       }
 
-      if (targetTab.external && runtimeCfg.externalNavigationPolicy !== 'allow') {
+      if (targetTab.external) {
         return buildTabAccessToolError(runtimeCfg, targetTab, 'external_tab_action_blocked');
       }
 
@@ -11756,9 +11734,6 @@ export function boot(cfg: RoverInit): RoverInstance {
       actHeuristicThreshold: cfg.taskRouting?.actHeuristicThreshold,
       plannerOnActError: cfg.taskRouting?.plannerOnActError,
     },
-    navigation: {
-      crossHostPolicy: normalizeCrossHostPolicy(cfg.navigation?.crossHostPolicy),
-    },
     timing: {
       navigationDelayMs: normalizeTimingNumber(cfg.timing?.navigationDelayMs, 0, 3000),
       actionTimeoutMs: normalizeTimingNumber(cfg.timing?.actionTimeoutMs, DEFAULT_ACTION_TIMEOUT_MS, 120_000),
@@ -11976,11 +11951,6 @@ export function update(cfg: Partial<RoverInit>): void {
       ...currentConfig.taskRouting,
       ...cfg.taskRouting,
     },
-    navigation: {
-      ...currentConfig.navigation,
-      ...cfg.navigation,
-      crossHostPolicy: normalizeCrossHostPolicy(cfg.navigation?.crossHostPolicy ?? currentConfig.navigation?.crossHostPolicy),
-    },
     timing: {
       ...currentConfig.timing,
       ...cfg.timing,
@@ -12181,13 +12151,11 @@ export function update(cfg: Partial<RoverInit>): void {
       localLogicalTabId: sessionCoordinator?.getLocalLogicalTabId(),
       reason: resolveActionGateReason(actionGateMode, allowActions),
     });
-    if (cfg.allowedDomains || cfg.domainScopeMode || cfg.externalNavigationPolicy || cfg.navigation?.crossHostPolicy) {
+    if (cfg.allowedDomains || cfg.domainScopeMode) {
       bridge.setNavigationPolicy({
         allowedDomains: cfg.allowedDomains,
         domainScopeMode: normalizeDomainScopeMode(cfg.domainScopeMode ?? currentConfig.domainScopeMode),
-        externalNavigationPolicy: cfg.externalNavigationPolicy,
-        crossHostPolicy: cfg.navigation?.crossHostPolicy,
-      } as any);
+      });
     }
   }
 

@@ -28,20 +28,6 @@ test('explicit new-tab intent opens in a new tab for in-scope cross-host navigat
   assert.equal(decision, 'open_new_tab');
 });
 
-test('legacy same-tab override still works when explicitly configured', () => {
-  const decision = resolveNavigationTabDisposition({
-    currentUrl: 'https://www.example.com/products',
-    targetUrl: 'https://app.example.com/checkout',
-    currentHost: 'www.example.com',
-    allowedDomains: ['example.com'],
-    domainScopeMode: 'registrable_domain',
-    externalNavigationPolicy: 'open_new_tab_notice',
-    crossHostPolicy: 'same_tab',
-  });
-
-  assert.equal(decision, 'allow_same_tab');
-});
-
 test('existing target tab is preserved by opening or switching tabs instead of same-tab handoff', () => {
   const decision = resolveNavigationTabDisposition({
     currentUrl: 'https://www.example.com/products',

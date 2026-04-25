@@ -25,7 +25,6 @@ export type RoverAgentConfig = {
   authToken?: string;
   siteId?: string;
   allowedDomains?: string[];
-  externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
   llmIntegration?: Partial<LLMIntegration>;
   model?: string;
   googleAiStudioApiKey?: string;
@@ -256,7 +255,6 @@ function buildRoverRuntimeContext(config: RoverAgentConfig): RoverRuntimeContext
   return {
     mode: 'rover_embed',
     agentName: normalizeAgentName(runtimeContext.agentName) || 'Rover',
-    externalNavigationPolicy: runtimeContext.externalNavigationPolicy || config.externalNavigationPolicy,
     tabIdContract: runtimeContext.tabIdContract || 'tree_index_mapped_by_tab_order',
     ...(compactExternalTabs.length ? { externalTabs: compactExternalTabs } : {}),
   };
