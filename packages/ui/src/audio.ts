@@ -14,7 +14,13 @@ function normalizeStorageScope(value: string | undefined): string {
 }
 
 export function isMascotSoundEnabled(input: Pick<MountOptions, 'muted' | 'mascot'> | null | undefined): boolean {
-  return input?.mascot?.soundEnabled === true;
+  if (input?.mascot?.soundEnabled !== true) return false;
+  if (input?.mascot?.disabled === true) return false;
+  const hasCustomVideo = !!String(input?.mascot?.mp4Url || '').trim() || !!String(input?.mascot?.webmUrl || '').trim();
+  const hasImage = !!String(input?.mascot?.imageUrl || '').trim();
+  if (hasCustomVideo) return true;
+  if (hasImage) return false;
+  return true;
 }
 
 export function buildMutePreferenceStorageKey(input: { siteId?: string; host?: string }): string {

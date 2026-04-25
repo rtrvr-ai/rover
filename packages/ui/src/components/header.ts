@@ -1,10 +1,13 @@
 import type { RoverExperienceConfig, RoverExecutionMode } from '../types.js';
+import { mountMascotMedia } from '../mascot-media.js';
 
 export type HeaderOptions = {
   agentName: string;
   agentInitial: string;
   mascotDisabled: boolean;
-  launcherVideo: HTMLVideoElement | null;
+  mascotImage?: string;
+  mascotMp4?: string;
+  mascotWebm?: string;
   panelResizable: boolean;
   showTaskControls: boolean;
   allowSoundToggle: boolean;
@@ -41,40 +44,23 @@ export type HeaderComponent = {
 
 export function createHeader(opts: HeaderOptions): HeaderComponent {
   const { agentName, agentInitial, mascotDisabled } = opts;
-  const applyVideoMuteState = (video: HTMLVideoElement | null, muted: boolean): void => {
-    if (!video) return;
-    video.muted = muted;
-    video.defaultMuted = muted;
-    if (muted) video.setAttribute('muted', '');
-    else video.removeAttribute('muted');
-    video.playsInline = true;
-    video.setAttribute('playsinline', '');
-  };
 
   const header = document.createElement('div');
   header.className = 'header';
 
   const avatar = document.createElement('div');
   avatar.className = 'avatar';
-  let avatarVideo: HTMLVideoElement | null = null;
-  if (!mascotDisabled && opts.launcherVideo) {
-    avatarVideo = opts.launcherVideo.cloneNode(true) as HTMLVideoElement;
-    applyVideoMuteState(avatarVideo, opts.isMuted);
-    avatar.appendChild(avatarVideo);
-  }
-  const avatarFallback = document.createElement('span');
-  avatarFallback.className = 'avatarFallback';
-  avatarFallback.textContent = agentInitial;
-  avatar.appendChild(avatarFallback);
-
-  if (avatarVideo) {
-    const showFallback = () => {
-      avatarVideo!.style.display = 'none';
-      avatarFallback.style.display = 'grid';
-    };
-    avatarVideo.addEventListener('error', showFallback, { once: true });
-    avatarFallback.style.display = 'none';
-  }
+  const avatarMedia = mountMascotMedia({
+    container: avatar,
+    token: agentInitial,
+    disabled: mascotDisabled,
+    imageUrl: opts.mascotImage,
+    mp4Url: opts.mascotMp4,
+    webmUrl: opts.mascotWebm,
+    muted: opts.isMuted,
+    fallbackClassName: 'avatarFallback',
+  });
+  const avatarVideo = avatarMedia.video;
 
   const meta = document.createElement('div');
   meta.className = 'meta';
@@ -261,7 +247,7 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
     setMuted(muted: boolean) {
       isMuted = muted;
       menuMuteToggle.textContent = muted ? 'Unmute sounds' : 'Mute sounds';
-      applyVideoMuteState(avatarVideo, muted);
+      avatarMedia.setMuted(muted);
     },
     closeOverflow,
     update(_experience: RoverExperienceConfig) {

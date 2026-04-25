@@ -56,7 +56,7 @@ export function buildTabAccessToolError(
         message,
         missing: [],
         next_action: tab?.external
-          ? 'Use open_new_tab for external context or continue on an in-scope tab.'
+          ? 'External pages open in a new tab with notice. Switch to that tab or continue on an allowed Rover tab.'
           : 'Switch to an active tab and retry.',
         retryable: false,
       },

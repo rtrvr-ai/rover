@@ -241,6 +241,7 @@ export type MountOptions = {
   };
   mascot?: {
     disabled?: boolean;
+    imageUrl?: string;
     mp4Url?: string;
     webmUrl?: string;
     soundEnabled?: boolean;

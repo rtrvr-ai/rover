@@ -2,11 +2,13 @@ import type { RoverExperienceConfig, RoverPresencePosition, RoverMood } from '..
 import { ROVER_WIDGET_MOBILE_BREAKPOINT_PX } from '../config.js';
 import { clampNumber } from '../layout.js';
 import { readPresencePosition, writePresencePosition, buildPresenceStorageKey } from '../storage.js';
+import { mountMascotMedia } from '../mascot-media.js';
 
 export type SeedOptions = {
   agentName: string;
   launcherToken: string;
   mascotDisabled: boolean;
+  mascotImage?: string;
   mascotMp4?: string;
   mascotWebm?: string;
   experience: RoverExperienceConfig;
@@ -28,9 +30,6 @@ export type SeedComponent = {
   destroy: () => void;
 };
 
-const DEFAULT_MASCOT_MP4 = 'https://www.rtrvr.ai/rover/mascot.mp4';
-const DEFAULT_MASCOT_WEBM = 'https://www.rtrvr.ai/rover/mascot.webm';
-
 export function createSeed(opts: SeedOptions): SeedComponent {
   const { agentName, launcherToken, mascotDisabled } = opts;
   let experience = opts.experience;
@@ -49,32 +48,17 @@ export function createSeed(opts: SeedOptions): SeedComponent {
   const launcherMedia = document.createElement('span');
   launcherMedia.className = 'launcherMedia';
 
-  let launcherVideo: HTMLVideoElement | null = null;
-  if (!mascotDisabled) {
-    launcherVideo = document.createElement('video');
-    launcherVideo.autoplay = true;
-    launcherVideo.muted = true;
-    launcherVideo.defaultMuted = true;
-    launcherVideo.loop = true;
-    launcherVideo.playsInline = true;
-    launcherVideo.setAttribute('muted', '');
-    launcherVideo.setAttribute('playsinline', '');
-    launcherVideo.preload = 'metadata';
-    const mp4 = document.createElement('source');
-    mp4.src = opts.mascotMp4 || DEFAULT_MASCOT_MP4;
-    mp4.type = 'video/mp4';
-    const webm = document.createElement('source');
-    webm.src = opts.mascotWebm || DEFAULT_MASCOT_WEBM;
-    webm.type = 'video/webm';
-    launcherVideo.appendChild(mp4);
-    launcherVideo.appendChild(webm);
-    launcherMedia.appendChild(launcherVideo);
-  }
-
-  const launcherFallback = document.createElement('span');
-  launcherFallback.className = 'launcherFallback';
-  launcherFallback.textContent = launcherToken;
-  launcherMedia.appendChild(launcherFallback);
+  const launcherMediaState = mountMascotMedia({
+    container: launcherMedia,
+    token: launcherToken,
+    disabled: mascotDisabled,
+    imageUrl: opts.mascotImage,
+    mp4Url: opts.mascotMp4,
+    webmUrl: opts.mascotWebm,
+    muted: true,
+    fallbackClassName: 'launcherFallback',
+  });
+  const launcherVideo = launcherMediaState.video;
 
   const launcherCopy = document.createElement('span');
   launcherCopy.className = 'launcherCopy';
@@ -109,16 +93,6 @@ export function createSeed(opts: SeedOptions): SeedComponent {
   launcher.appendChild(launcherBody);
   launcher.appendChild(launcherShine);
   launcher.appendChild(seedGlow);
-
-  // Video fallback
-  if (launcherVideo) {
-    const showFallback = () => {
-      launcherVideo!.style.display = 'none';
-      launcherFallback.style.display = 'grid';
-    };
-    launcherVideo.addEventListener('error', showFallback, { once: true });
-    launcherFallback.style.display = 'none';
-  }
 
   // Idle animation
   launcher.classList.toggle('breathe', experience.presence?.idleAnimation !== 'none');
@@ -352,7 +326,7 @@ export function createSeed(opts: SeedOptions): SeedComponent {
   }
 
   function setMuted(muted: boolean): void {
-    if (launcherVideo) launcherVideo.muted = muted;
+    launcherMediaState.setMuted(muted);
   }
 
   function positionGreetingBubble(): void {

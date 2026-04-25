@@ -57,7 +57,6 @@ Exact site-scoped config (when you need policy-accurate domain validation):
   "apiBase": "https://agent.rtrvr.ai",
   "allowedDomains": ["example.com"],
   "domainScopeMode": "registrable_domain",
-  "externalNavigationPolicy": "open_new_tab_notice",
   "sessionScope": "shared_site",
   "openOnInit": true,
   "mode": "full",
@@ -67,6 +66,8 @@ Exact site-scoped config (when you need policy-accurate domain validation):
 ```
 
 This works with `publicKey` directly. It is not limited to `sessionToken` anymore.
+
+Advanced/manual configs can still include legacy navigation overrides like `externalNavigationPolicy` or `navigation.crossHostPolicy`, but standard Workspace and Live Test configs now rely on Rover's built-in tab behavior by default.
 
 ### Wildcard configs
 

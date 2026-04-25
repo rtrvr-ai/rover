@@ -125,3 +125,17 @@ test('owner install bundle respects explicit discovery disable even when ai acce
   assert.equal(bundle.agentCardJson, undefined);
   assert.equal(bundle.roverSiteJson, undefined);
 });
+
+test('owner install bundle materializes cloud sandbox owner config into tools.web', () => {
+  const bundle = createRoverOwnerInstallBundle({
+    bootConfig: {
+      siteId: 'site_cloud',
+      publicKey: 'pk_site_cloud',
+      cloudSandboxEnabled: true,
+    },
+  });
+
+  assert.match(bundle.bodyInstallHtml, /"cloudSandboxEnabled": true/);
+  assert.match(bundle.bodyInstallHtml, /"enableExternalWebContext": true/);
+  assert.match(bundle.bodyInstallHtml, /"scrapeMode": "on_demand"/);
+});
