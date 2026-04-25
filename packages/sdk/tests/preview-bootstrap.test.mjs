@@ -24,6 +24,8 @@ test('preview bootstrap preserves ui.voice across console and script-tag helpers
   const config = {
     siteId: 'site_123',
     publicKey: 'pk_site_123',
+    sessionId: 'sess_123',
+    sessionScope: 'shared_site',
     ui: {
       voice: {
         enabled: true,
@@ -40,6 +42,10 @@ test('preview bootstrap preserves ui.voice across console and script-tag helpers
   assert.match(consoleSnippet, /"enabled":\s*true/);
   assert.match(consoleSnippet, /"language":\s*"en-US"/);
   assert.match(consoleSnippet, /"autoStopMs":\s*2800/);
+  assert.match(consoleSnippet, /"sessionId":\s*"sess_123"/);
+  assert.match(consoleSnippet, /"sessionScope":\s*"shared_site"/);
+  assert.match(scriptSnippet, /data-session-id="sess_123"/);
+  assert.match(scriptSnippet, /data-session-scope="shared_site"/);
   assert.match(scriptSnippet, /data-voice-enabled="true"/);
   assert.match(scriptSnippet, /data-voice-language="en-US"/);
   assert.match(scriptSnippet, /data-voice-auto-stop-ms="2800"/);
@@ -49,6 +55,8 @@ test('preview bootstrap preserves ui.voice across console and script-tag helpers
       const attrs = {
         'data-site-id': 'site_123',
         'data-public-key': 'pk_site_123',
+        'data-session-id': 'sess_123',
+        'data-session-scope': 'shared_site',
         'data-voice-enabled': 'true',
         'data-voice-language': 'en-US',
         'data-voice-auto-stop-ms': '2800',
@@ -57,6 +65,8 @@ test('preview bootstrap preserves ui.voice across console and script-tag helpers
     },
   });
 
+  assert.equal(parsed?.sessionId, 'sess_123');
+  assert.equal(parsed?.sessionScope, 'shared_site');
   assert.deepEqual(parsed?.ui, {
     voice: {
       enabled: true,

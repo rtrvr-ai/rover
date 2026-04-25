@@ -99,19 +99,26 @@ Get your `siteId`, `publicKey`, and optional `siteKeyId` from Workspace:
 - `https://rover.rtrvr.ai/workspace`
 - `https://www.rtrvr.ai/rover/workspace`
 
-For production installs, copy the Workspace-generated snippet rather than hand-assembling it. When RoverBook is enabled for a site, Workspace emits:
+For production installs, copy the Workspace-generated snippet rather than hand-assembling it. When Agent analytics is enabled for a site, Workspace emits:
 
 - `embed.js`
 - `roverbook.js`
 - the inline attach block that calls `enableRoverBook(...)` with the correct per-site config
 
-Workspace site mode now controls whether the generated snippet is:
+Workspace onboarding now centers on:
 
-- **Full Rover agent**: action-capable Rover runtime
-- **RoverBook analytics-only**: RoverBook enabled with action tools disabled
+- **Rover Agent**: action-capable Rover runtime plus Agent analytics
+- **Agent Analytics**: reporting without Rover's action-taking runtime
+- **Journeys**: dedicated shortcut setup during onboarding
+- **Cloud sandboxes**: one owner-facing control that turns on cloud execution plus approved third-party browsing
+- **No-expiry site keys** by default for new onboarding-created installs
+
+At runtime, `cloudSandboxEnabled: true` materializes `tools.web.enableExternalWebContext`, `tools.web.scrapeMode='on_demand'`, and the matching cloud site-key capabilities underneath.
+Standard owner-facing installs keep `Domain scope` configurable, open outside-domain pages in a new tab with notice, and let Rover choose the right tab automatically for allowed-host hops.
 
 Workspace also persists `businessType`, `aiAccess`, and sparse `siteConfig.experience` overrides. Runtime defaults still own the visible seed/presence cue, centered stage, transparent live-action mode, and two-card live stream unless the site owner explicitly overrides them.
-Mascot sound is now owner-gated: leave it off by default, enable `ui.mascot.soundEnabled` only when you want site visitors to control mascot audio, and use `ui.muted` only for the initial mute state after sound is enabled.
+Custom mascots can use a static image alone or combine that image with MP4/WebM for animation; when video exists, Rover prefers the video and uses the image as poster/fallback.
+Mascot sound is site-owned and owner-gated: leave it off by default, persist it alongside the site mascot config, and only materialize `ui.mascot.soundEnabled` / `ui.muted` when that site explicitly enables mascot audio. Image-only mascots stay silent.
 
 Script-tag installs do not need a custom `identityResolver` to attribute Rover-managed traffic. The primary identity path comes from task and session attribution.
 

@@ -181,6 +181,7 @@ import { shouldBlockNavigation, computeAdversarialScore } from './adversarialGua
 import { applyFaviconBadge, removeFaviconBadge } from './faviconBadge.js';
 import { resolveNavigationDecision } from './navigationPreflightPolicy.js';
 import { resolveNavigationMessageContext } from './navigationMessageContext.js';
+import { resolveNavigationTabDisposition } from './navigationTabDisposition.js';
 import {
   deriveRegistrableDomain,
   isHostInNavigationScope,
@@ -365,6 +366,7 @@ export type RoverInit = {
     };
     mascot?: {
       disabled?: boolean;
+      imageUrl?: string;
       mp4Url?: string;
       webmUrl?: string;
       soundEnabled?: boolean;
@@ -2630,6 +2632,8 @@ function readRuntimeAgentAttribution(token?: string): RoverRuntimeAgentAttributi
 
 function applyServerPolicy(policy?: RoverServerPolicy): void {
   if (!policy || !currentConfig) return;
+  const cloudSandboxEnabled = policy.cloudSandboxEnabled === true
+    || (policy.enableExternalWebContext === true && policy.externalScrapeMode === 'on_demand');
   currentConfig.externalNavigationPolicy = policy.externalNavigationPolicy || currentConfig.externalNavigationPolicy;
   if (policy.domainScopeMode) {
     currentConfig.domainScopeMode = normalizeDomainScopeMode(policy.domainScopeMode);
@@ -2642,13 +2646,26 @@ function applyServerPolicy(policy?: RoverServerPolicy): void {
   }
   if (!currentConfig.tools) currentConfig.tools = {};
   if (!currentConfig.tools.web) currentConfig.tools.web = {};
-  currentConfig.tools.web.enableExternalWebContext = policy.enableExternalWebContext ?? currentConfig.tools.web.enableExternalWebContext;
-  currentConfig.tools.web.scrapeMode = policy.externalScrapeMode ?? currentConfig.tools.web.scrapeMode;
+  currentConfig.tools.web.enableExternalWebContext = cloudSandboxEnabled
+    ? true
+    : (policy.enableExternalWebContext ?? currentConfig.tools.web.enableExternalWebContext);
+  currentConfig.tools.web.scrapeMode = cloudSandboxEnabled
+    ? 'on_demand'
+    : (policy.externalScrapeMode ?? currentConfig.tools.web.scrapeMode);
   if (Array.isArray(policy.externalAllowDomains)) {
     currentConfig.tools.web.allowDomains = policy.externalAllowDomains;
   }
   if (Array.isArray(policy.externalDenyDomains)) {
     currentConfig.tools.web.denyDomains = policy.externalDenyDomains;
+  }
+  if (typeof policy.uiMascotSoundEnabled === 'boolean') {
+    if (!currentConfig.ui) currentConfig.ui = {};
+    if (!currentConfig.ui.mascot) currentConfig.ui.mascot = {};
+    currentConfig.ui.mascot.soundEnabled = policy.uiMascotSoundEnabled;
+  }
+  if (typeof policy.uiMuted === 'boolean') {
+    if (!currentConfig.ui) currentConfig.ui = {};
+    currentConfig.ui.muted = policy.uiMuted;
   }
 }
 
@@ -10694,7 +10711,7 @@ function createRuntime(cfg: RoverInit): void {
     registerOpenedTab: (payload: any) => sessionCoordinator?.registerOpenedTab(payload),
     switchToLogicalTab: (logicalTabId: number) => sessionCoordinator?.switchToLogicalTab(logicalTabId) || { ok: false, reason: 'No session coordinator' },
     listKnownTabs: () =>
-      (sessionCoordinator?.listTabs() || []).map(tab => ({
+      (sessionCoordinator?.listTabs({ scope: 'all' }) || []).map(tab => ({
         logicalTabId: tab.logicalTabId,
         runtimeId: tab.runtimeId,
         url: tab.url,
@@ -10810,18 +10827,23 @@ function createRuntime(cfg: RoverInit): void {
         allowedDomains: currentConfig?.allowedDomains,
         domainScopeMode: currentConfig?.domainScopeMode,
       });
-      const fallbackDecision: 'allow_same_tab' | 'open_new_tab' | 'block' =
-        targetInScope
-          ? (
-            crossHostNavigation && currentConfig?.navigation?.crossHostPolicy === 'open_new_tab'
-              ? 'open_new_tab'
-              : 'allow_same_tab'
-          )
-          : currentConfig?.externalNavigationPolicy === 'block'
-            ? 'block'
-            : currentConfig?.externalNavigationPolicy === 'allow'
-              ? 'allow_same_tab'
-              : 'open_new_tab';
+      const fallbackDecision = resolveNavigationTabDisposition({
+        targetUrl: intent?.targetUrl,
+        currentUrl: window.location.href,
+        currentHost,
+        allowedDomains: currentConfig?.allowedDomains,
+        domainScopeMode: currentConfig?.domainScopeMode,
+        externalNavigationPolicy: currentConfig?.externalNavigationPolicy,
+        crossHostPolicy: normalizeCrossHostPolicy(currentConfig?.navigation?.crossHostPolicy),
+        preferredDisposition: intent?.preferredDisposition || 'auto',
+        knownTabs: (sessionCoordinator?.listTabs({ scope: 'all' }) || []).map((tab) => ({
+          logicalTabId: tab.logicalTabId,
+          url: tab.url,
+          external: !!tab.external,
+        })),
+        taskScopedTabIds: getTaskScopedTabIds(),
+        sourceLogicalTabId: intent?.sourceLogicalTabId,
+      });
       const preflightMessage = resolveNavigationPreflightMessageContext();
 
       // Early handoff setup: prepare handoff synchronously before yielding to any await,
@@ -10926,8 +10948,8 @@ function createRuntime(cfg: RoverInit): void {
           decision: 'open_new_tab',
           reason: serverDecision?.reason
             || (usedFallback
-              ? 'Preflight is unavailable; using local policy to open in a new tab and preserve runtime continuity.'
-              : 'Open in new tab to preserve runtime continuity.'),
+              ? 'Preflight is unavailable; Rover will open this page in a new tab and keep the task moving there.'
+              : 'Rover will open this page in a new tab and keep the task moving there.'),
           decisionReason: serverDecision?.decisionReason || resolvedDecision.decisionReason || 'open_new_tab',
         };
       }
@@ -10949,7 +10971,7 @@ function createRuntime(cfg: RoverInit): void {
         decision: 'allow_same_tab',
         reason: serverDecision?.reason
           || (resolvedDecision.decisionReason === 'preflight_unavailable_fallback' && !serverDecision
-            ? 'Preflight is unavailable; allowing navigation using local policy.'
+            ? 'Preflight is unavailable; Rover will continue in the current tab.'
             : 'Navigation allowed.'),
         decisionReason: serverDecision?.decisionReason || resolvedDecision.decisionReason || 'allow_same_tab',
       };
@@ -11434,6 +11456,7 @@ function createRuntime(cfg: RoverInit): void {
     },
     mascot: {
       disabled: cfg.ui?.mascot?.disabled,
+      imageUrl: cfg.ui?.mascot?.imageUrl,
       mp4Url: cfg.ui?.mascot?.mp4Url,
       webmUrl: cfg.ui?.mascot?.webmUrl,
       soundEnabled: cfg.ui?.mascot?.soundEnabled,

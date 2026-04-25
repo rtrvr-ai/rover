@@ -12,6 +12,8 @@ test('mascot audio stays disabled unless the owner explicitly enables it', () =>
   assert.equal(isMascotSoundEnabled({ mascot: { soundEnabled: false } }), false);
   assert.equal(isMascotSoundEnabled({ muted: true, mascot: {} }), false);
   assert.equal(isMascotSoundEnabled({ muted: false, mascot: {} }), false);
+  assert.equal(isMascotSoundEnabled({ mascot: { imageUrl: 'https://cdn.example.com/mascot.png', soundEnabled: true } }), false);
+  assert.equal(isMascotSoundEnabled({ mascot: { mp4Url: 'https://cdn.example.com/mascot.mp4', soundEnabled: true } }), true);
 });
 
 test('mute storage is scoped per Rover site and falls back to host', () => {

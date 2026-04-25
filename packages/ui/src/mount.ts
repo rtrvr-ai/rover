@@ -174,6 +174,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     agentName,
     launcherToken,
     mascotDisabled,
+    mascotImage: opts.mascot?.imageUrl,
     mascotMp4: opts.mascot?.mp4Url,
     mascotWebm: opts.mascot?.webmUrl,
     experience,
@@ -215,7 +216,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
     agentName,
     agentInitial,
     mascotDisabled,
-    launcherVideo: seed.video,
+    mascotImage: opts.mascot?.imageUrl,
+    mascotMp4: opts.mascot?.mp4Url,
+    mascotWebm: opts.mascot?.webmUrl,
     panelResizable,
     showTaskControls: opts.showTaskControls !== false,
     allowSoundToggle,
@@ -283,9 +286,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
   // ── Input Bar Component ──
   const inputBar = createInputBar({
     mascotDisabled,
+    mascotImage: opts.mascot?.imageUrl,
     mascotMp4: opts.mascot?.mp4Url,
     mascotWebm: opts.mascot?.webmUrl,
-    launcherVideo: seed.video,
     launcherToken,
     isMuted,
     onExpand: () => {

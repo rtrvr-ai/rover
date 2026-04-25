@@ -14,11 +14,13 @@ test('normalizeConfig keeps Workspace publicKey config fields', () => {
   const config = normalizeConfig({
     siteId: 'site_123',
     publicKey: 'pk_site_123',
+    sessionId: 'sess_123',
     siteKeyId: 'key_123',
     apiBase: 'https://agent.rtrvr.ai',
     allowedDomains: ['example.com'],
     domainScopeMode: 'host_only',
     externalNavigationPolicy: 'allow',
+    sessionScope: 'shared_site',
     mode: 'full',
     allowActions: true,
     ui: {
@@ -32,11 +34,13 @@ test('normalizeConfig keeps Workspace publicKey config fields', () => {
 
   assert.equal(config.siteId, 'site_123');
   assert.equal(config.publicKey, 'pk_site_123');
+  assert.equal(config.sessionId, 'sess_123');
   assert.equal(config.siteKeyId, 'key_123');
   assert.equal(config.apiBase, 'https://agent.rtrvr.ai');
   assert.deepEqual(config.allowedDomains, ['example.com']);
   assert.equal(config.domainScopeMode, 'host_only');
   assert.equal(config.externalNavigationPolicy, 'allow');
+  assert.equal(config.sessionScope, 'shared_site');
   assert.equal(config.mode, 'full');
   assert.equal(config.allowActions, true);
   assert.deepEqual(config.ui, {
@@ -69,8 +73,10 @@ test('helper fragment handoff round-trips generic publicKey config and strips it
   const fragment = encodeHelperConfigFragment({
     siteId: 'site_123',
     publicKey: 'pk_site_123',
+    sessionId: 'sess_123',
     allowedDomains: ['example.com'],
     domainScopeMode: 'registrable_domain',
+    sessionScope: 'shared_site',
   });
   const url = `https://www.example.com/products#${fragment}`;
 
@@ -78,8 +84,10 @@ test('helper fragment handoff round-trips generic publicKey config and strips it
   assert.deepEqual(extractHelperConfigFragment(url), {
     siteId: 'site_123',
     publicKey: 'pk_site_123',
+    sessionId: 'sess_123',
     allowedDomains: ['example.com'],
     domainScopeMode: 'registrable_domain',
+    sessionScope: 'shared_site',
   });
   assert.equal(stripPreviewLaunchParams(url), 'https://www.example.com/products');
 });
@@ -89,6 +97,8 @@ test('helper fragment handoff also round-trips hosted preview payloads', () => {
     previewId: 'rpv_123',
     previewToken: 'rvprv_123',
     apiBase: 'https://agent.rtrvr.ai',
+    sessionId: 'rpv_123',
+    sessionScope: 'shared_site',
     targetUrl: 'https://www.example.com/products',
   });
   const url = `https://www.example.com/products#${fragment}`;
@@ -97,6 +107,8 @@ test('helper fragment handoff also round-trips hosted preview payloads', () => {
     previewId: 'rpv_123',
     previewToken: 'rvprv_123',
     apiBase: 'https://agent.rtrvr.ai',
+    sessionId: 'rpv_123',
+    sessionScope: 'shared_site',
     targetUrl: 'https://www.example.com/products',
   });
 });

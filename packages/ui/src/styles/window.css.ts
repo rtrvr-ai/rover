@@ -142,6 +142,12 @@ export const windowStyles = `
       height: 100%;
       object-fit: cover;
     }
+    .avatar img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
 
     .avatarFallback {
       width: 100%;

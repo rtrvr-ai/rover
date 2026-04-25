@@ -47,9 +47,19 @@ export const seedStyles = `
       transform-origin: center 45%;
       transition: filter 180ms ease, transform 300ms var(--rv-ease-spring);
     }
+    .launcher img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      border-radius: inherit;
+      display: block;
+      transition: filter 180ms ease, transform 300ms var(--rv-ease-spring);
+    }
 
     .rover[data-mood="running"] .launcher video,
-    .rover[data-mood="running"] .avatar video {
+    .rover[data-mood="running"] .launcher img,
+    .rover[data-mood="running"] .avatar video,
+    .rover[data-mood="running"] .avatar img {
       filter: saturate(1.2);
       transform: scale(1.18);
     }
@@ -197,6 +207,14 @@ export const seedStyles = `
       height: 100%;
       object-fit: cover;
       border-radius: inherit;
+      transform: none;
+    }
+    .launcher img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      border-radius: inherit;
+      display: block;
       transform: none;
     }
     .launcherFallback {

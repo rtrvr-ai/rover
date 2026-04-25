@@ -63,8 +63,10 @@ type DemoConfig = {
     };
     mascot?: {
       disabled?: boolean;
+      imageUrl?: string;
       mp4Url?: string;
       webmUrl?: string;
+      soundEnabled?: boolean;
     };
   };
   tools?: {
@@ -1074,14 +1076,18 @@ function loadWebsiteConfig(): DemoConfig {
   const allowedDomains = normalizeDomainList(raw?.allowedDomains);
   const uiAgentName = typeof raw?.ui?.agent?.name === 'string' ? raw.ui.agent.name.trim() : undefined;
   const mascotDisabled = typeof raw?.ui?.mascot?.disabled === 'boolean' ? raw.ui.mascot.disabled : undefined;
+  const mascotImageUrl = typeof raw?.ui?.mascot?.imageUrl === 'string' ? raw.ui.mascot.imageUrl.trim() : undefined;
   const mascotMp4Url = typeof raw?.ui?.mascot?.mp4Url === 'string' ? raw.ui.mascot.mp4Url.trim() : undefined;
   const mascotWebmUrl = typeof raw?.ui?.mascot?.webmUrl === 'string' ? raw.ui.mascot.webmUrl.trim() : undefined;
+  const mascotSoundEnabled = raw?.ui?.mascot?.soundEnabled === true ? true : undefined;
   const toolsWebAllowDomains = normalizeDomainList(raw?.tools?.web?.allowDomains);
   const toolsWebDenyDomains = normalizeDomainList(raw?.tools?.web?.denyDomains);
   const hasMascot =
     typeof mascotDisabled === 'boolean'
+    || !!mascotImageUrl
     || !!mascotMp4Url
-    || !!mascotWebmUrl;
+    || !!mascotWebmUrl
+    || mascotSoundEnabled === true;
   const hasUi = !!uiAgentName || hasMascot;
   const hasWebTools =
     typeof raw?.tools?.web?.enableExternalWebContext === 'boolean'
@@ -1103,8 +1109,10 @@ function loadWebsiteConfig(): DemoConfig {
             ? {
                 mascot: {
                   ...(typeof mascotDisabled === 'boolean' ? { disabled: mascotDisabled } : {}),
+                  ...(mascotImageUrl ? { imageUrl: mascotImageUrl } : {}),
                   ...(mascotMp4Url ? { mp4Url: mascotMp4Url } : {}),
                   ...(mascotWebmUrl ? { webmUrl: mascotWebmUrl } : {}),
+                  ...(mascotSoundEnabled ? { soundEnabled: true } : {}),
                 },
               }
             : {}),

@@ -1,8 +1,10 @@
+import { mountMascotMedia } from '../mascot-media.js';
+
 export type InputBarOptions = {
   mascotDisabled: boolean;
+  mascotImage?: string;
   mascotMp4?: string;
   mascotWebm?: string;
-  launcherVideo?: HTMLVideoElement | null;
   launcherToken: string;
   isMuted: boolean;
   onExpand: () => void;
@@ -22,65 +24,23 @@ export type InputBarComponent = {
 };
 
 export function createInputBar(opts: InputBarOptions): InputBarComponent {
-  const applyVideoMuteState = (video: HTMLVideoElement | null, muted: boolean): void => {
-    if (!video) return;
-    video.muted = muted;
-    video.defaultMuted = muted;
-    if (muted) video.setAttribute('muted', '');
-    else video.removeAttribute('muted');
-    video.playsInline = true;
-    video.setAttribute('playsinline', '');
-  };
-
   const bar = document.createElement('div');
   bar.className = 'inputBar';
 
   // Mascot circle (leftmost)
   const mascotEl = document.createElement('div');
   mascotEl.className = 'inputBarMascot';
-  let mascotVideo: HTMLVideoElement | null = null;
-
-  if (!opts.mascotDisabled && opts.launcherVideo) {
-    const video = opts.launcherVideo.cloneNode(true) as HTMLVideoElement;
-    applyVideoMuteState(video, opts.isMuted);
-    mascotEl.appendChild(video);
-    mascotVideo = video;
-  } else if (!opts.mascotDisabled && (opts.mascotMp4 || opts.mascotWebm)) {
-    const video = document.createElement('video');
-    video.autoplay = true;
-    video.loop = true;
-    applyVideoMuteState(video, opts.isMuted);
-    if (opts.mascotWebm) {
-      const srcWebm = document.createElement('source');
-      srcWebm.src = opts.mascotWebm;
-      srcWebm.type = 'video/webm';
-      video.appendChild(srcWebm);
-    }
-    if (opts.mascotMp4) {
-      const srcMp4 = document.createElement('source');
-      srcMp4.src = opts.mascotMp4;
-      srcMp4.type = 'video/mp4';
-      video.appendChild(srcMp4);
-    }
-    mascotEl.appendChild(video);
-    mascotVideo = video;
-
-    // Fallback if video fails
-    const fallback = document.createElement('span');
-    fallback.className = 'inputBarMascotFallback';
-    fallback.textContent = opts.launcherToken;
-    fallback.style.display = 'none';
-    mascotEl.appendChild(fallback);
-    video.addEventListener('error', () => {
-      video.style.display = 'none';
-      fallback.style.display = '';
-    }, { once: true });
-  } else {
-    const fallback = document.createElement('span');
-    fallback.className = 'inputBarMascotFallback';
-    fallback.textContent = opts.launcherToken;
-    mascotEl.appendChild(fallback);
-  }
+  const mascotMedia = mountMascotMedia({
+    container: mascotEl,
+    token: opts.launcherToken,
+    disabled: opts.mascotDisabled,
+    imageUrl: opts.mascotImage,
+    mp4Url: opts.mascotMp4,
+    webmUrl: opts.mascotWebm,
+    muted: opts.isMuted,
+    fallbackClassName: 'inputBarMascotFallback',
+  });
+  const mascotVideo = mascotMedia.video;
 
   mascotEl.addEventListener('click', () => opts.onClose());
 
@@ -120,7 +80,7 @@ export function createInputBar(opts: InputBarOptions): InputBarComponent {
       bar.classList.remove('open');
     },
     setMuted(muted: boolean) {
-      applyVideoMuteState(mascotVideo, muted);
+      mascotMedia.setMuted(muted);
     },
     setRunning(running: boolean) {
       bar.classList.toggle('running', running);

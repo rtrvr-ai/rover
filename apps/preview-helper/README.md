@@ -38,6 +38,7 @@ Reusable wildcard config (recommended for testing):
   "siteKeyId": "...",
   "allowedDomains": ["*"],
   "domainScopeMode": "registrable_domain",
+  "sessionScope": "shared_site",
   "openOnInit": true,
   "mode": "full",
   "allowActions": true,
@@ -56,7 +57,7 @@ Exact site-scoped config (when you need policy-accurate domain validation):
   "apiBase": "https://agent.rtrvr.ai",
   "allowedDomains": ["example.com"],
   "domainScopeMode": "registrable_domain",
-  "externalNavigationPolicy": "open_new_tab_notice",
+  "sessionScope": "shared_site",
   "openOnInit": true,
   "mode": "full",
   "allowActions": true,
@@ -65,6 +66,8 @@ Exact site-scoped config (when you need policy-accurate domain validation):
 ```
 
 This works with `publicKey` directly. It is not limited to `sessionToken` anymore.
+
+Advanced/manual configs can still include legacy navigation overrides like `externalNavigationPolicy` or `navigation.crossHostPolicy`, but standard Workspace and Live Test configs now rely on Rover's built-in tab behavior by default.
 
 ### Wildcard configs
 
@@ -83,6 +86,8 @@ The helper can auto-hydrate from the temporary handoff payload that Rover puts o
 - `rover_preview_id`
 - `rover_preview_token`
 - `rover_preview_api`
+
+After the helper fetches the hosted preview config, it also preserves Rover's preview session continuity fields like `sessionId` and `sessionScope`.
 
 Legacy query-param handoff still works for compatibility, but new Rover links use the fragment payload instead. You do not need to paste JSON for this path.
 

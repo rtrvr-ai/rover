@@ -47,7 +47,6 @@ Workspace exports JSON in this family:
   "apiBase": "https://agent.rtrvr.ai",
   "allowedDomains": ["example.com"],
   "domainScopeMode": "registrable_domain",
-  "externalNavigationPolicy": "open_new_tab_notice",
   "openOnInit": true,
   "mode": "full",
   "allowActions": true,
@@ -68,11 +67,12 @@ Common optional fields:
 - `apiBase`
 - `allowedDomains`
 - `domainScopeMode`
-- `externalNavigationPolicy`
 - `openOnInit`
 - `mode`
 - `allowActions`
 - `capabilities.roverEmbed`
+
+Advanced/manual configs can still include legacy navigation overrides such as `externalNavigationPolicy` or `navigation.crossHostPolicy`, but standard Workspace and Live Test flows now rely on Rover's built-in tab behavior by default.
 
 ## Step 1: Choose the config source
 

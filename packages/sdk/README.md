@@ -39,12 +39,14 @@ Add this snippet before `</body>` on any page:
 <script src="https://rover.rtrvr.ai/embed.js" async></script>
 ```
 
-If RoverBook is enabled for the site in Rover Workspace, the generated install snippet also includes `https://rover.rtrvr.ai/roverbook.js` plus an inline attach block that calls `window.RoverBook.enableRoverBook(window.rover, ...)`. Copy the Workspace snippet as-is for production installs.
+If Agent analytics is enabled for the site in Rover Workspace, the generated install snippet also includes `https://rover.rtrvr.ai/roverbook.js` plus an inline attach block that calls `window.RoverBook.enableRoverBook(window.rover, ...)`. Copy the Workspace snippet as-is for production installs.
 
 Workspace also controls site mode:
 
-- `Full Rover agent`: action-capable Rover runtime
-- `RoverBook analytics-only`: embed-oriented RoverBook deployment with action tools disabled
+- `Rover Agent`: action-capable Rover runtime plus Agent analytics
+- `Agent Analytics`: embed-oriented analytics deployment with action tools disabled
+
+Workspace onboarding now also gives site owners a dedicated Journeys step for shortcuts, defaults new production site keys to `No expiry`, and exposes `Cloud sandboxes` as the single owner-facing switch for cloud execution plus approved third-party browsing.
 
 Get `siteId`, `publicKey` (`pk_site_*`), and optional `siteKeyId` from Rover Workspace:
 
@@ -187,6 +189,12 @@ const bundle = createRoverOwnerInstallBundle({
     siteKeyId: 'key_123',
     allowedDomains: ['example.com'],
     domainScopeMode: 'registrable_domain',
+    cloudSandboxEnabled: true,
+    ui: {
+      shortcuts: [
+        { id: 'book_demo', label: 'Book demo', prompt: 'Help me book a demo.' },
+      ],
+    },
   },
   discovery: {
     siteId: 'site_123',
@@ -414,8 +422,8 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `apiBase` | `string` | `https://agent.rtrvr.ai` | Optional API base override. Rover uses `/v2/rover/*` under this base. |
 | `allowedDomains` | `string[]` | `[]` | Hostnames or patterns where Rover may operate. In `registrable_domain`, plain `example.com` covers the apex host and subdomains. |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | How Rover interprets plain `allowedDomains` entries: `registrable_domain` = apex + subdomains, `host_only` = exact host only unless you explicitly allow more hosts. |
-| `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
-| `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | In-scope cross-host navigation policy |
+| `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | Advanced / legacy external navigation override. Standard owner-facing installs rely on Rover's default new-tab-with-notice behavior outside allowed scope. |
+| `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | Advanced / legacy in-scope cross-host override. Standard owner-facing installs let Rover choose the right tab automatically. |
 | `mode` | `'full' \| 'safe'` | `'full'` | Runtime mode |
 | `allowActions` | `boolean` | `true` | Enable or disable action tools |
 | `openOnInit` | `boolean` | `false` | Open panel immediately on boot |
@@ -499,15 +507,17 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `ui.agent.name` | `string` | `'Rover'` | Custom assistant name |
-| `ui.mascot.disabled` | `boolean` | `false` | Disable mascot video |
-| `ui.mascot.mp4Url` | `string` | default | Custom mascot MP4 URL |
-| `ui.mascot.webmUrl` | `string` | default | Custom mascot WebM URL |
-| `ui.mascot.soundEnabled` | `boolean` | `false` | Owner gate for mascot sound. Rover keeps mascot audio unavailable unless this is explicitly `true`. |
+| `ui.mascot.disabled` | `boolean` | `false` | Hide mascot media entirely |
+| `ui.mascot.imageUrl` | `string` | default | Custom mascot image URL. Works by itself or as the fallback/poster for custom video mascots |
+| `ui.mascot.mp4Url` | `string` | default | Custom mascot MP4 URL. Video is preferred when MP4 or WebM is provided |
+| `ui.mascot.webmUrl` | `string` | default | Custom mascot WebM URL. Video is preferred when MP4 or WebM is provided |
+| `ui.mascot.soundEnabled` | `boolean` | `false` | Owner gate for mascot sound. Video mascots stay silent unless this is explicitly `true`; image-only mascots remain silent |
 | `ui.muted` | `boolean` | `true` | Initial mute state only when mascot sound is enabled. Visitor preference is stored per Rover site after they toggle sound. |
 | `ui.thoughtStyle` | `'concise_cards' \| 'minimal'` | `'concise_cards'` | Thought rendering style |
 | `ui.panel.resizable` | `boolean` | `true` | Enables desktop freeform resizing plus phone/tablet snap-height resizing with per-device memory |
 | `ui.showTaskControls` | `boolean` | `true` | Show new/end task controls |
 | `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced). Shortcuts can also publish agent-facing metadata such as `tags`, `examples`, `inputSchema`, `outputSchema`, `sideEffect`, and `requiresConfirmation`. |
+| `cloudSandboxEnabled` | `boolean` | `false` | Owner-facing shorthand for cloud execution plus approved third-party browsing. When `true`, Rover materializes `tools.web.enableExternalWebContext=true` and `tools.web.scrapeMode='on_demand'`. |
 | `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | — | Greeting bubble config (`{name}` token supported) |
 | `ui.voice` | `{ enabled?: boolean; language?: string; autoStopMs?: number }` | — | Browser dictation for supported Chromium browsers. Rover fills the draft live, waits for post-speech silence before stopping, and the user still sends manually. |
 
@@ -553,7 +563,7 @@ When a site key or session token is used, Rover fetches cloud site config via `/
 If the same field exists in both cloud config and boot config, boot config wins.
 `siteConfig.aiAccess.enabled` is the canonical owner-facing launch switch persisted from Workspace/Webflow. `deepLink` stays boot/runtime only for advanced manual overrides such as custom param names, explicit enable/disable, or disabling URL param consumption.
 
-If you enable `tools.web.scrapeMode: 'on_demand'`, use a site key capability profile that includes cloud scrape support.
+For owner-facing installs, prefer `cloudSandboxEnabled: true` instead of hand-wiring low-level scrape/browser flags. Rover materializes the current runtime fields from that shorthand for you.
 
 See [full configuration reference](https://github.com/rtrvr-ai/rover/blob/main/docs/INTEGRATION.md#configuration-reference).
 
@@ -680,7 +690,7 @@ Runtime contract notes:
 - `plannerOnActError` applies only in `auto` mode and only when ACT has no usable outcome.
 - Typed conflicts: `stale_seq`, `stale_epoch`, `active_run_exists`.
 - `POST /command` stale/missing run is non-fatal for tab navigation decisions (`decision='stale_run'`).
-- Cross-registrable navigation preflight is resilient: if command-tab decision checks are unavailable, Rover falls back to local policy (in-scope targets follow `navigation.crossHostPolicy`, default `same_tab`; out-of-scope targets follow `externalNavigationPolicy`).
+- Cross-registrable navigation preflight is resilient: if decision checks are unavailable, Rover falls back to local runtime behavior. Standard installs open outside-domain pages in a new tab with notice and choose the right tab automatically for allowed-host hops; explicit legacy overrides still apply when present.
 - External intent routing: `/context/external` uses `read_context` (read/navigation-context prompts) or `act` (mutation prompts). Navigation-only external opens are represented by `POST /command` with `type='TAB_EVENT'` plus external placeholder tab handling.
 - Any normal user send starts a fresh task boundary (fresh `prevSteps`, fresh run-scoped tab order/scope).
 - `ask_user` answer submissions are the only continuation path and keep the same task boundary.

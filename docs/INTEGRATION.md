@@ -46,17 +46,20 @@ Add this snippet before `</body>` on your website:
 <script src="https://rover.rtrvr.ai/embed.js" async></script>
 ```
 
-If RoverBook is enabled in Rover Workspace, the authoritative generated snippet also includes:
+If Agent analytics is enabled in Rover Workspace, the authoritative generated snippet also includes:
 
 - `https://rover.rtrvr.ai/roverbook.js`
 - an inline attach block that calls `window.RoverBook.enableRoverBook(window.rover, {...})`
 
-Copy the Workspace-generated snippet as-is for production installs instead of hand-assembling RoverBook config by hand.
+Copy the Workspace-generated snippet as-is for production installs instead of hand-assembling analytics config by hand.
 
 Workspace also controls site mode:
 
-- `Full Rover agent`: action-capable Rover runtime
-- `RoverBook analytics-only`: embed-oriented RoverBook deployment with action tools disabled
+- `Rover Agent`: action-capable Rover runtime plus Agent analytics
+- `Agent Analytics`: embed-oriented analytics deployment with action tools disabled
+
+Workspace onboarding now also gives site owners a dedicated Journeys step for shortcuts, defaults new production site keys to `No expiry`, and exposes `Cloud sandboxes` as the single owner-facing switch for cloud execution plus approved third-party browsing.
+Standard owner-facing installs keep `Domain scope` configurable, open outside-domain pages in a new tab with notice, and let Rover choose the right tab automatically for allowed-host hops.
 
 Get your `siteId` and `publicKey` (`pk_site_*`) from the [Rover Workspace](https://rover.rtrvr.ai/workspace). If you also have a `siteKeyId`, append it to the script URL as `embed.js?v=YOUR_SITE_KEY_ID` for cache-busting and safer key-rotation rollouts. The `v` query string does not affect domain authorization or scope matching.
 
@@ -415,8 +418,8 @@ rover.boot(config);
 |---|---|---|---|
 | `allowedDomains` | `string[]` | `[]` | Hostnames or patterns where Rover may operate. In `registrable_domain`, plain `example.com` covers the apex host and subdomains. |
 | `domainScopeMode` | `'registrable_domain' \| 'host_only'` | `'registrable_domain'` | How Rover interprets plain entries in `allowedDomains`: `registrable_domain` = apex + subdomains, `host_only` = exact host only unless you explicitly allow more hosts. |
-| `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | External navigation policy |
-| `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | In-scope cross-host navigation policy |
+| `externalNavigationPolicy` | `'open_new_tab_notice' \| 'block' \| 'allow'` | `'open_new_tab_notice'` | Advanced / legacy external navigation override. Standard owner-facing installs rely on Rover's default new-tab-with-notice behavior outside allowed scope. |
+| `navigation.crossHostPolicy` | `'same_tab' \| 'open_new_tab'` | `'same_tab'` | Advanced / legacy in-scope cross-host override. Standard owner-facing installs let Rover choose the right tab automatically. |
 | `openOnInit` | `boolean` | `false` | Open panel after boot |
 | `deepLink` | `{ enabled?: boolean; promptParam?: string; shortcutParam?: string; consume?: boolean }` | `{ promptParam: 'rover', shortcutParam: 'rover_shortcut', consume: true }` | Advanced boot/runtime override for URL-triggered Rover. When `enabled` is omitted, Rover derives browser deep-link availability from persisted `siteConfig.aiAccess.enabled`. |
 | `allowActions` | `boolean` | `true` | Enable/disable action tools |
@@ -482,20 +485,22 @@ rover.boot(config);
 |---|---|---|---|
 | `tools.web.enableExternalWebContext` | `boolean` | `false` | Allow external tab cloud context fallback |
 | `tools.web.scrapeMode` | `'off' \| 'on_demand'` | `'off'` | Cloud scrape mode for external tabs |
+| `cloudSandboxEnabled` | `boolean` | `false` | Owner-facing shorthand for cloud execution plus approved third-party browsing. When `true`, Rover materializes `tools.web.enableExternalWebContext=true` and `tools.web.scrapeMode='on_demand'`. |
 | `tools.web.allowDomains` | `string[]` | `[]` | Optional allowlist for external cloud context fetch |
 | `tools.web.denyDomains` | `string[]` | `[]` | Optional denylist for external cloud context fetch |
 
-When `tools.web.scrapeMode` is `on_demand`, ensure your Rover site key includes cloud scrape capability.
+For owner-facing installs, prefer `cloudSandboxEnabled: true` instead of hand-wiring low-level scrape/browser flags. Rover materializes the current runtime fields from that shorthand for you.
 
 ### UI & Branding
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `ui.agent.name` | `string` | `'Rover'` | Assistant name shown in UI and runtime context |
-| `ui.mascot.disabled` | `boolean` | `false` | Disable mascot video |
-| `ui.mascot.mp4Url` | `string` | default | Custom mascot MP4 URL |
-| `ui.mascot.webmUrl` | `string` | default | Custom mascot WebM URL |
-| `ui.mascot.soundEnabled` | `boolean` | `false` | Owner gate for mascot sound. Rover keeps mascot audio unavailable unless this is explicitly `true`. |
+| `ui.mascot.disabled` | `boolean` | `false` | Hide mascot media entirely |
+| `ui.mascot.imageUrl` | `string` | default | Custom mascot image URL. Works by itself or as the fallback/poster for custom video mascots |
+| `ui.mascot.mp4Url` | `string` | default | Custom mascot MP4 URL. Video is preferred when MP4 or WebM is provided |
+| `ui.mascot.webmUrl` | `string` | default | Custom mascot WebM URL. Video is preferred when MP4 or WebM is provided |
+| `ui.mascot.soundEnabled` | `boolean` | `false` | Owner gate for mascot sound. Video mascots stay silent unless this is explicitly `true`; image-only mascots remain silent |
 | `ui.muted` | `boolean` | `true` | Initial mute state only when mascot sound is enabled. Visitor preference is stored per Rover site after they toggle sound. |
 | `ui.thoughtStyle` | `'concise_cards' \| 'minimal'` | `'concise_cards'` | Thought rendering preference |
 | `ui.panel.resizable` | `boolean` | `true` | Enables desktop freeform resizing plus phone/tablet snap-height resizing with per-device memory |
@@ -624,7 +629,7 @@ Runtime semantics:
 - `POST /command` stale/missing run is non-fatal for tab navigation decisions (`decision='stale_run'`).
 - `GET /state` is metadata-first by default (`includeSnapshot=false`). Use `includeSnapshot=true` only when full checkpoint payload is required.
 - Projection payloads expose `snapshotMeta` (`updatedAt`, `digest`) for lightweight change detection. Full `snapshot` is sent at bootstrap and selective resync points.
-- Cross-registrable navigation preflight is resilient: when `POST /command` tab decision checks are unavailable, Rover falls back to local policy (in-scope targets follow `navigation.crossHostPolicy`, default `same_tab`; out-of-scope targets follow `externalNavigationPolicy`).
+- Cross-registrable navigation preflight is resilient: when `POST /command` tab decision checks are unavailable, Rover falls back to local runtime behavior. Standard installs open outside-domain pages in a new tab with notice and choose the right tab automatically for allowed-host hops; explicit legacy overrides still apply when present.
 - External intent routing: `/context/external` uses `read_context` (read/navigation-context prompts) or `act` (mutation prompts). Navigation-only external opens are represented by `POST /command` with `type='TAB_EVENT'` plus external placeholder tab handling.
 - Any normal user send starts a fresh task boundary (fresh `prevSteps`, fresh run-scoped tab order/scope).
 - `ask_user` answer submissions are the only continuation path and keep the same task boundary.

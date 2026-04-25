@@ -31,6 +31,7 @@ export type RoverOwnerInstallBootConfig = {
   allowedDomains?: string[];
   domainScopeMode?: 'host_only' | 'registrable_domain';
   externalNavigationPolicy?: 'open_new_tab_notice' | 'block' | 'allow';
+  cloudSandboxEnabled?: boolean;
   sessionScope?: 'shared_site' | 'tab';
   openOnInit?: boolean;
   mode?: 'safe' | 'full';
@@ -87,6 +88,7 @@ export type RoverOwnerInstallBootConfig = {
     };
     mascot?: {
       disabled?: boolean;
+      imageUrl?: string;
       mp4Url?: string;
       webmUrl?: string;
       soundEnabled?: boolean;
@@ -400,11 +402,29 @@ function buildQueueStubLines(): string[] {
   ];
 }
 
+function materializeCloudSandboxBootConfig(bootConfig: RoverOwnerInstallBootConfig): RoverOwnerInstallBootConfig {
+  if (bootConfig.cloudSandboxEnabled !== true) {
+    return bootConfig;
+  }
+  return {
+    ...bootConfig,
+    tools: {
+      ...(bootConfig.tools || {}),
+      web: {
+        ...(bootConfig.tools?.web || {}),
+        enableExternalWebContext: true,
+        scrapeMode: 'on_demand',
+      },
+    },
+  };
+}
+
 function buildBootScript(bootConfig: RoverOwnerInstallBootConfig): string {
+  const normalizedBootConfig = materializeCloudSandboxBootConfig(bootConfig);
   const lines = [
     '<script>',
     ...buildQueueStubLines().map(line => `  ${line}`),
-    `  rover('boot', ${indentJson(bootConfig)});`,
+    `  rover('boot', ${indentJson(normalizedBootConfig)});`,
     '</script>',
   ];
   return lines.join('\n');
@@ -438,7 +458,7 @@ function buildRoverBookAttachScript(config: JsonRecord, options?: { pollInterval
 }
 
 export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInput): RoverOwnerInstallBundle {
-  const bootConfig = input.bootConfig;
+  const bootConfig = materializeCloudSandboxBootConfig(input.bootConfig);
   const discoveryConfig = discoveryEnabled(input.discovery) ? input.discovery : null;
   const publishedAgentCardUrl = discoveryConfig ? text(discoveryConfig.agentCardUrl) || DEFAULT_AGENT_CARD_PATH : '';
   const publishedRoverSiteUrl = discoveryConfig ? text(discoveryConfig.roverSiteUrl) || DEFAULT_ROVER_SITE_PATH : '';

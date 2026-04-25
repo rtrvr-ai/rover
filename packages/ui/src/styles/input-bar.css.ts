@@ -51,6 +51,9 @@ export const inputBarStyles = `
     .inputBarMascot video {
       width: 100%; height: 100%; object-fit: cover; border-radius: inherit;
     }
+    .inputBarMascot img {
+      width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block;
+    }
     .inputBarMascotFallback {
       font-size: 11px; font-weight: 800; letter-spacing: 0.08em; color: #fff;
     }
