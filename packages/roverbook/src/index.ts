@@ -100,7 +100,7 @@ export function enableRoverBook(
     const trust =
       merged.trust
       || (
-        merged.source === 'public_task_agent'
+        merged.source === 'public_run_agent'
         || merged.source === 'handoff_agent'
         || merged.source === 'webmcp_agent'
           ? 'self_reported'
@@ -130,8 +130,8 @@ export function enableRoverBook(
           ? 'delegated_handoff'
           : merged.source === 'webmcp_agent'
             ? 'webmcp'
-            : merged.source === 'public_task_agent'
-              ? 'public_task_api'
+            : merged.source === 'public_run_agent'
+              ? 'public_run_api'
               : undefined
       )
       || fallback.launchSource;
@@ -299,9 +299,9 @@ export function enableRoverBook(
   });
 
   const unsubs = [
-    instance.on('task_started', async payload => {
+    instance.on('visit_started', async payload => {
       applyIdentity(await resolveIdentity());
-      recordUpdate(tracker.handleTaskStarted(payload || {}));
+      recordUpdate(tracker.handleVisitStarted(payload || {}));
     }),
     instance.on('run_started', async payload => {
       applyIdentity(await resolveIdentity());
@@ -328,8 +328,8 @@ export function enableRoverBook(
     instance.on('run_completed', payload => {
       recordUpdate(tracker.handleRunLifecycle('run_completed', (payload || {}) as RunLifecyclePayload));
     }),
-    instance.on('task_ended', payload => {
-      recordUpdate(tracker.handleTaskEnded(payload || {}));
+    instance.on('visit_ended', payload => {
+      recordUpdate(tracker.handleVisitEnded(payload || {}));
     }),
   ];
 

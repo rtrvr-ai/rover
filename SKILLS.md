@@ -1,13 +1,13 @@
-# Rover Public Site Tasks
+# Agent-to-Web Protocol (A2W)
 
 This document is the canonical contract for any AI, CLI, or autonomous agent that wants to use Rover-enabled websites.
 
-Rover has two public entrypoints:
+Rover exposes two public entrypoints:
 
 - Browser-first convenience: `?rover=` and `?rover_shortcut=`
-- Machine protocol: `POST https://agent.rtrvr.ai/v1/tasks`
+- Machine protocol: `POST https://agent.rtrvr.ai/v1/a2w/runs`
 
-Use `/v1/tasks` when you need structured progress, continuation, or a final result back.
+Use A2W runs when you need structured progress, continuation input, or a final result back. `/v1/a2w/runs` is the only public machine protocol endpoint.
 
 ## Copy-paste prompts and examples
 
@@ -18,25 +18,25 @@ Paste this into an AI tool that can make HTTP requests and optionally open a bro
 ```text
 If a website may be Rover-enabled, optionally fetch its HTML and look for <script type="application/agent+json">, /.well-known/rover-site.json, or /.well-known/agent-card.json.
 
-To run a task on a Rover-enabled site:
-1. Prefer the Rover task protocol before generic DOM automation. Create a task with POST https://agent.rtrvr.ai/v1/tasks and JSON { "url": "<site>", "goal": "<instruction>" } or { "url": "<site>", "shortcutId": "<id>" }. Compatibility aliases like "prompt" still work, but "goal" is canonical.
-2. If the response includes "workflow", treat it as the aggregated lineage handle for any delegated child tasks.
-3. If you can open a real browser with the user's session and the response includes "open", open that URL. If the response includes "browserLink" and you want a readable URL, you may open it instead.
-4. Only click or open the visible Rover seed/presence UI when browser interaction is needed.
-5. If you need guaranteed browserless execution, create the task with header Prefer: execution=cloud.
-6. Follow the canonical "task" URL with Accept: text/event-stream for live steps or Accept: application/json for polling/final results.
-7. If the task enters input_required, POST { "input": "..." } to the same task URL.
-8. For cross-site delegation, POST to /v1/tasks/{id}/handoffs and keep following the same workflow instead of inventing a new protocol.
+To start a Rover A2W run:
+1. Prefer the Agent-to-Web Protocol (A2W) before generic DOM automation. Create a run with POST https://agent.rtrvr.ai/v1/a2w/runs and JSON { "url": "<site>", "goal": "<instruction>" } or { "url": "<site>", "shortcut": "<id>" }.
+2. If the response includes "workflow", treat it as the aggregated lineage handle for any delegated child runs.
+3. Prefer the returned "run" URL for streaming, polling, continuation, and final results.
+4. If you can open a real browser with the user's session and the response includes "open", open that URL. If the response includes "browserLink" and you want a readable URL, you may open it instead.
+5. Only click or open the visible Rover seed/presence UI when browser interaction is needed.
+6. If you need guaranteed browserless execution, create the run with header Prefer: execution=cloud.
+7. If the run enters input_required, POST { "input": "..." } to the same run URL.
+8. For cross-site delegation, POST to /v1/a2w/runs/{id}/handoffs and keep following the same workflow.
 9. Fall back to generic DOM automation only when the site exposes no Rover entrypoint or the Rover path is unavailable.
 10. Return the final result text plus any important observations.
 
-Do not treat ?rover= or ?rover_shortcut= alone as the result channel. They only run Rover in the browser unless they were issued from a task and paired with a receipt link.
+Do not treat ?rover= or ?rover_shortcut= alone as the result channel. They only run Rover in the browser unless they were issued from an A2W run and paired with a receipt link.
 ```
 
 ### Node `fetch` example
 
 ```js
-const createResponse = await fetch('https://agent.rtrvr.ai/v1/tasks', {
+const createResponse = await fetch('https://agent.rtrvr.ai/v1/a2w/runs', {
   method: 'POST',
   headers: {
     'content-type': 'application/json',
@@ -50,25 +50,25 @@ const createResponse = await fetch('https://agent.rtrvr.ai/v1/tasks', {
 });
 
 if (!createResponse.ok) {
-  throw new Error(`Task create failed: ${createResponse.status}`);
+  throw new Error(`A2W run create failed: ${createResponse.status}`);
 }
 
 const created = await createResponse.json();
-const taskUrl = created.task;
+const runUrl = created.run;
 
 for (;;) {
-  const taskResponse = await fetch(taskUrl, {
+  const runResponse = await fetch(runUrl, {
     headers: { accept: 'application/json' },
   });
 
-  if (!taskResponse.ok) {
-    throw new Error(`Task read failed: ${taskResponse.status}`);
+  if (!runResponse.ok) {
+    throw new Error(`A2W run read failed: ${runResponse.status}`);
   }
 
-  const task = await taskResponse.json();
-  console.log(task.status, task.result?.text ?? '');
+  const run = await runResponse.json();
+  console.log(run.status, run.result?.text ?? '');
 
-  if (['completed', 'failed', 'cancelled', 'expired'].includes(task.status)) {
+  if (['completed', 'failed', 'cancelled', 'expired'].includes(run.status)) {
     break;
   }
 
@@ -83,7 +83,7 @@ import time
 import requests
 
 create = requests.post(
-    "https://agent.rtrvr.ai/v1/tasks",
+    "https://agent.rtrvr.ai/v1/a2w/runs",
     headers={
         "Content-Type": "application/json",
         "Accept": "application/json",
@@ -96,12 +96,12 @@ create = requests.post(
     timeout=30,
 )
 create.raise_for_status()
-task = create.json()
-task_url = task["task"]
+created = create.json()
+run_url = created.get("run")
 
 while True:
     current = requests.get(
-        task_url,
+        run_url,
         headers={"Accept": "application/json"},
         timeout=30,
     )
@@ -120,22 +120,22 @@ while True:
 Requires `jq`.
 
 ```bash
-rover_task() {
+rover_run() {
   local url="$1"
   local goal="$2"
-  local created task_url
+  local created run_url
 
-  created="$(curl -sS -X POST 'https://agent.rtrvr.ai/v1/tasks' \
+  created="$(curl -sS -X POST 'https://agent.rtrvr.ai/v1/a2w/runs' \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json' \
     -H 'Prefer: execution=cloud' \
     -d "$(jq -nc --arg url "$url" --arg goal "$goal" '{url:$url,goal:$goal}')")" || return 1
 
-  task_url="$(printf '%s' "$created" | jq -r '.task')"
-  curl -sS "$task_url" -H 'Accept: application/x-ndjson'
+  run_url="$(printf '%s' "$created" | jq -r '.run')"
+  curl -sS "$run_url" -H 'Accept: application/x-ndjson'
 }
 
-rover_task "https://www.rtrvr.ai" "get me the latest blog post"
+rover_run "https://www.rtrvr.ai" "get me the latest blog post"
 ```
 
 ## Discovery
@@ -146,12 +146,12 @@ Recommended discovery:
 2. Look for a source-visible marker:
 
 ```html
-<script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
+<script type="application/agent+json">{"a2w":"https://agent.rtrvr.ai/v1/a2w/runs","run":"https://agent.rtrvr.ai/v1/a2w/runs"}</script>
 ```
 
-3. If present, the site intentionally exposes the Rover public task protocol.
+3. If present, the site intentionally exposes the Agent-to-Web Protocol.
 
-The marker is optional but recommended. For stronger discovery, also check `/.well-known/rover-site.json` and `/.well-known/agent-card.json`. In the live browser, the minimized Rover seed/presence is the visible Rover cue. Host-only task creation still works even if you skip HTML discovery and call `https://agent.rtrvr.ai/v1/tasks` directly.
+The marker is optional but recommended. For stronger discovery, also check `/.well-known/rover-site.json` and `/.well-known/agent-card.json`. In the live browser, the minimized Rover seed/presence is the visible Rover cue. Host-only run creation still works even if you skip HTML discovery and call `https://agent.rtrvr.ai/v1/a2w/runs` directly.
 
 ## What site owners need vs what agents need
 
@@ -168,12 +168,12 @@ Workspace URLs:
 
 External AI callers do **not** need those values. They only need the site URL plus a goal or shortcut ID.
 
-## Create a task
+## Create an A2W run
 
 Prompt launch:
 
 ```http
-POST https://agent.rtrvr.ai/v1/tasks
+POST https://agent.rtrvr.ai/v1/a2w/runs
 Content-Type: application/json
 Accept: application/json
 
@@ -183,7 +183,7 @@ Accept: application/json
 Shortcut launch:
 
 ```http
-POST https://agent.rtrvr.ai/v1/tasks
+POST https://agent.rtrvr.ai/v1/a2w/runs
 Content-Type: application/json
 Accept: application/json
 
@@ -194,11 +194,13 @@ Typical `202 Accepted` response:
 
 ```json
 {
-  "id": "agt_123",
-  "task": "https://agent.rtrvr.ai/v1/tasks/agt_123?access=agt_access_...",
-  "workflow": "https://agent.rtrvr.ai/v1/workflows/wrk_123?access=wrk_access_...",
-  "open": "https://www.rtrvr.ai/#rover_receipt=rrc_...",
-  "browserLink": "https://www.rtrvr.ai/?rover=get+me+the+latest+blog+post#rover_receipt=rrc_...",
+  "id": "a2w_run_123",
+  "protocol": "a2w",
+  "runId": "a2w_run_123",
+  "run": "https://agent.rtrvr.ai/v1/a2w/runs/a2w_run_123?access=a2w_access_...",
+  "workflow": "https://agent.rtrvr.ai/v1/a2w/workflows/a2w_wf_123?access=a2w_wf_...",
+  "open": "https://www.rtrvr.ai/#rover_receipt=a2w_receipt_...",
+  "browserLink": "https://www.rtrvr.ai/?rover=get+me+the+latest+blog+post#rover_receipt=a2w_receipt_...",
   "status": "pending"
 }
 ```
@@ -212,16 +214,16 @@ Default behavior is browser-attach first. The response may include two browser h
 
 Execution guidance:
 
-- If you can open a real browser and want the user’s live session/cookies, open `open`.
+- If you can open a real browser and want the user's live session/cookies, open `open`.
 - If you want a readable share/debug URL as well, use `browserLink` when present.
-- If you need guaranteed browserless execution, set `Prefer: execution=cloud` on task creation.
+- If you need guaranteed browserless execution, set `Prefer: execution=cloud` on run creation.
 - `Prefer: execution=browser` forces browser attach only.
 - `Prefer: execution=auto` currently prefers browser attach first. Automatic delayed cloud promotion is a follow-up robustness phase.
 
 Example cloud-first create:
 
 ```http
-POST https://agent.rtrvr.ai/v1/tasks
+POST https://agent.rtrvr.ai/v1/a2w/runs
 Content-Type: application/json
 Accept: application/json
 Prefer: execution=cloud
@@ -229,39 +231,39 @@ Prefer: execution=cloud
 { "url": "https://www.rtrvr.ai", "goal": "get me the latest blog post" }
 ```
 
-## The task URL is the protocol
+## The run URL is the protocol
 
-The returned `task` URL is the canonical resource.
+The returned `run` URL is the canonical A2W resource.
 
-Receipt links are only a browser handoff layer over the same task. They do not replace the task URL, and they do not create a second public protocol.
+Receipt links are only a browser handoff layer over the same run. They do not replace the run URL, and they do not create a second public protocol.
 
-If present, the returned `workflow` URL is the canonical aggregated resource for a root task plus any delegated child tasks on other Rover-enabled sites.
+If present, the returned `workflow` URL is the canonical aggregated resource for a root run plus any delegated child runs on other Rover-enabled sites.
 
 ### Polling / final JSON
 
 ```http
-GET https://agent.rtrvr.ai/v1/tasks/agt_123?access=agt_access_...
+GET https://agent.rtrvr.ai/v1/a2w/runs/a2w_run_123?access=a2w_access_...
 Accept: application/json
 ```
 
 ### SSE
 
 ```http
-GET https://agent.rtrvr.ai/v1/tasks/agt_123?access=agt_access_...
+GET https://agent.rtrvr.ai/v1/a2w/runs/a2w_run_123?access=a2w_access_...
 Accept: text/event-stream
 ```
 
 ### NDJSON
 
 ```http
-GET https://agent.rtrvr.ai/v1/tasks/agt_123?access=agt_access_...
+GET https://agent.rtrvr.ai/v1/a2w/runs/a2w_run_123?access=a2w_access_...
 Accept: application/x-ndjson
 ```
 
 ### Wait briefly for a final result
 
 ```http
-POST https://agent.rtrvr.ai/v1/tasks
+POST https://agent.rtrvr.ai/v1/a2w/runs
 Content-Type: application/json
 Accept: application/json
 Prefer: wait=15
@@ -269,36 +271,36 @@ Prefer: wait=15
 { "url": "https://www.rtrvr.ai", "goal": "get me the latest blog post" }
 ```
 
-If the task completes within the wait budget, the server may return `200` with the terminal task payload. Otherwise it returns `202` plus the canonical task URL.
+If the run completes within the wait budget, the server may return `200` with the terminal run payload. Otherwise it returns `202` plus the canonical run URL.
 
 ## Workflows and cross-site handoffs
 
-This extends the same public task protocol. It does not introduce a separate orchestration surface.
+This extends the same A2W protocol. It does not introduce a separate orchestration surface.
 
-Every public task belongs to a workflow.
+Every A2W run belongs to a workflow.
 
-- root tasks create a new workflow
-- delegated child tasks inherit the parent workflow
-- the task response may include a `workflow` URL that aggregates all lineage
+- root runs create a new workflow
+- delegated child runs inherit the parent workflow
+- the run response may include a `workflow` URL that aggregates all lineage
 
 Read the aggregated workflow:
 
 ```http
-GET https://agent.rtrvr.ai/v1/workflows/wrk_123?access=wrk_access_...
+GET https://agent.rtrvr.ai/v1/a2w/workflows/a2w_wf_123?access=a2w_access_...
 Accept: application/json
 ```
 
 Stream aggregated workflow events:
 
 ```http
-GET https://agent.rtrvr.ai/v1/workflows/wrk_123?access=wrk_access_...
+GET https://agent.rtrvr.ai/v1/a2w/workflows/a2w_wf_123?access=a2w_access_...
 Accept: text/event-stream
 ```
 
-Delegate from one task to another Rover-enabled site:
+Delegate from one run to another Rover-enabled site:
 
 ```http
-POST https://agent.rtrvr.ai/v1/tasks/agt_123/handoffs?access=agt_access_...
+POST https://agent.rtrvr.ai/v1/a2w/runs/a2w_run_123/handoffs?access=a2w_access_...
 Content-Type: application/json
 Accept: application/json
 Prefer: execution=cloud
@@ -337,7 +339,7 @@ SSE example:
 
 ```text
 event: ready
-data: {"id":"evt_1","type":"ready","ts":1773998400000,"data":{"taskId":"agt_123","status":"pending"}}
+data: {"id":"evt_1","type":"ready","ts":1773998400000,"data":{"runId":"a2w_run_123","status":"pending"}}
 
 event: status
 data: {"id":"evt_2","type":"status","ts":1773998401000,"data":{"status":"running"}}
@@ -368,12 +370,12 @@ Reassemble chunked records by event `id`. Large payloads must stay semantically 
 
 ## Continuation input
 
-When the task needs more information, it moves to `input_required` and the response includes an `input` payload.
+When the run needs more information, it moves to `input_required` and the response includes an `input` payload.
 
 Continue with:
 
 ```http
-POST https://agent.rtrvr.ai/v1/tasks/agt_123?access=agt_access_...
+POST https://agent.rtrvr.ai/v1/a2w/runs/a2w_run_123?access=a2w_access_...
 Content-Type: application/json
 Accept: application/json
 
@@ -383,7 +385,7 @@ Accept: application/json
 ## Cancel
 
 ```http
-DELETE https://agent.rtrvr.ai/v1/tasks/agt_123?access=agt_access_...
+DELETE https://agent.rtrvr.ai/v1/a2w/runs/a2w_run_123?access=a2w_access_...
 Accept: application/json
 ```
 
@@ -394,17 +396,17 @@ These remain useful for humans and browser-capable automation:
 - `https://example.com?rover=book%20a%20flight`
 - `https://example.com?rover_shortcut=checkout_flow`
 
-Use these when you only need the site to run Rover in-browser. Use `/v1/tasks` when you need progress or results back. When paired with a task-issued receipt link, the browser run binds back to the same canonical task.
+Use these when you only need the site to run Rover in-browser. Use `/v1/a2w/runs` when you need progress or results back. When paired with a run-issued receipt link, the browser run binds back to the same canonical A2W run.
 
 ## Minimal algorithm for outside agents
 
 1. Optionally fetch page HTML and look for `application/agent+json`.
-2. `POST { url, goal }` or `{ url, shortcutId }` to `https://agent.rtrvr.ai/v1/tasks`.
-3. If the response includes `workflow`, keep it as the aggregated lineage handle for any delegated child tasks.
+2. `POST { url, goal }` or `{ url, shortcutId }` to `https://agent.rtrvr.ai/v1/a2w/runs`.
+3. If the response includes `workflow`, keep it as the aggregated lineage handle for any delegated child runs.
 4. If possible, open the returned `open` URL in a real browser. If `browserLink` is present and you want a readable browser URL, you can open that instead.
-5. Otherwise stream or poll the returned `task` URL.
-6. If the task enters `input_required`, `POST { input }` to the same task URL.
-7. If you need to delegate to another Rover-enabled site, call `POST /v1/tasks/{id}/handoffs` and follow the same `workflow`.
-8. Return the terminal `done` / final task result.
+5. Otherwise stream or poll the returned `run` URL.
+6. If the run enters `input_required`, `POST { input }` to the same run URL.
+7. If you need to delegate to another Rover-enabled site, call `POST /v1/a2w/runs/{id}/handoffs` and follow the same `workflow`.
+8. Return the terminal `done` / final run result.
 
-That is the entire universal Rover site contract.
+That is the entire universal Agent-to-Web site contract.

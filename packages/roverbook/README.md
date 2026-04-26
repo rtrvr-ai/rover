@@ -4,9 +4,9 @@ RoverBook is the AX package that sits on top of Rover.
 
 It does three things:
 
-1. tracks each Rover task as a visit with one or more runs
+1. tracks each Rover visit with one or more A2W runs
 2. captures explicit and derived agent feedback
-3. feeds relevant memory back into the next task
+3. feeds relevant memory back into the next run
 
 This package is the client-side instrumentation layer. The backend contract lives behind `roverbookRouter`.
 
@@ -50,13 +50,13 @@ await roverbook.flush();
 
 RoverBook intentionally maps onto Rover's real runtime:
 
-- **visit**: one Rover task
+- **visit**: one Rover-guided user journey
 - **run**: one execution attempt inside that visit
 - **event**: raw lifecycle, tool, or error event
 
 The package listens to:
 
-- `task_started`
+- `visit_started`
 - `run_started`
 - `tool_start`
 - `tool_result`
@@ -65,9 +65,9 @@ The package listens to:
 - `navigation_guardrail`
 - `run_state_transition`
 - `run_completed`
-- `task_ended`
+- `visit_ended`
 
-`task_ended` is not treated as the source of truth for success/failure. Finalization happens from terminal run state or explicit cancellation.
+`visit_ended` is not treated as the source of truth for success/failure. Finalization happens from terminal run state or explicit cancellation.
 
 ## What `enableRoverBook(...)` Does
 
@@ -78,7 +78,7 @@ When you call `enableRoverBook(instance, config)`, the package:
 3. starts visit/run/event tracking
 4. registers explicit RoverBook tools on the Rover instance
 5. registers WebMCP tools when `navigator.modelContext` is available
-6. defers cross-site task orchestration to Rover public tasks and delegated handoffs
+6. defers cross-site run orchestration to Rover A2W runs and delegated handoffs
 7. batches and flushes events to the backend with signed Rover session auth
 
 ## Identity
@@ -87,13 +87,13 @@ When you call `enableRoverBook(instance, config)`, the package:
 
 Resolution order:
 
-1. current Rover task/session attribution from runtime state
-2. explicit `agent` metadata coming from public tasks, delegated handoffs, or WebMCP tools
+1. current Rover run/session attribution from runtime state
+2. explicit `agent` metadata coming from A2W runs, delegated handoffs, or WebMCP tools
 3. heuristic attribution from `Signature-Agent`, `User-Agent`, `Signature`, `Signature-Input`, and `X-RTRVR-Client-Id`
 4. local `identityResolver`
 5. anonymous fallback
 
-That means plain script-tag installs do not need a custom owner-supplied function to label every visitor. For Rover-managed traffic, RoverBook reads the attributed agent from the current task/session claims automatically.
+That means plain script-tag installs do not need a custom owner-supplied function to label every visitor. For Rover-managed traffic, RoverBook reads the attributed agent from the current run/session claims automatically.
 
 Workspace-generated script-tag installs are JSON-only, so they cannot carry callback config such as `identityResolver`. Use npm/manual installs when you intentionally need function-valued local fallback logic.
 
@@ -137,7 +137,7 @@ These create `agent_authored` records.
 
 These tools are the RoverBook analytics, memory, and feedback layer. They are not the primary public site-action discovery surface by themselves. For arbitrary external agents, the preferred discovery path is:
 
-1. Rover ATP task access on `POST https://agent.rtrvr.ai/v1/tasks`
+1. Rover Agent-to-Web Protocol (A2W) run access on `POST https://agent.rtrvr.ai/v1/a2w/runs`
 2. the site-published rich profile in `/.well-known/rover-site.json`
 3. site-published Rover shortcut skills in `/.well-known/agent-card.json`
 4. optional WebMCP tools when the browser/runtime supports them
@@ -179,14 +179,14 @@ Stored RoverBook provenance for Rover-mediated traffic includes:
 
 When enabled and supported by the browser, RoverBook registers:
 
-- `rover_run_task`
+- `rover_start_run`
 - `rover_get_page_data`
 - `roverbook_leave_feedback`
 - `roverbook_agent_notes`
 
 Delegated handoffs are only advertised when the target site explicitly allows them in Rover site config.
 
-WebMCP remains optional. Generic agents should still be able to discover and prefer Rover through the public ATP and agent-card surfaces even when `navigator.modelContext` is unavailable.
+WebMCP remains optional. Generic agents should still be able to discover and prefer Rover through the public A2W and agent-card surfaces even when `navigator.modelContext` is unavailable.
 
 ## Config Surface
 
@@ -270,5 +270,5 @@ Per-site webhook subscriptions are private owner settings keyed by `ownerUid + s
 
 This package does not claim passive omniscience.
 
-- If the agent uses Rover-managed tasks, RoverBook can track the visit accurately.
-- If a third-party agent never touches Rover tasks or WebMCP, RoverBook will only see whatever explicit RoverBook surface that agent uses.
+- If the agent uses Rover-managed runs, RoverBook can track the visit accurately.
+- If a third-party agent never touches A2W runs or WebMCP, RoverBook will only see whatever explicit RoverBook surface that agent uses.

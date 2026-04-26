@@ -94,7 +94,7 @@ function normalizeActionReveal(value: unknown): RoverDiscoveryActionReveal | und
     : undefined;
 }
 
-function normalizeTaskPayload(value: unknown): Record<string, unknown> | undefined {
+function normalizeRunPayload(value: unknown): Record<string, unknown> | undefined {
   const object = asObject(value);
   return object ? { ...object } : undefined;
 }
@@ -123,7 +123,7 @@ function normalizeSkill(value: unknown): RoverAgentDiscoverySkillSnapshot | null
     source: normalizeSource(rover?.source),
     deepLink: text(rover?.deepLink, 2048) || undefined,
     toolName: text(rover?.toolName, 120) || undefined,
-    taskPayload: normalizeTaskPayload(asObject(rover?.task)?.payload),
+    runPayload: normalizeRunPayload(asObject(rover?.run)?.payload),
   };
 }
 
@@ -151,7 +151,7 @@ function normalizeCapability(value: unknown): RoverAgentDiscoveryCapabilitySnaps
     analyticsTags: uniqueStrings(capability.analyticsTags, { max: 24, maxLen: 64 }),
     deepLink: text(rover?.deepLink, 2048) || undefined,
     toolName: text(rover?.toolName, 120) || undefined,
-    taskPayload: normalizeTaskPayload(asObject(rover?.task)?.payload),
+    runPayload: normalizeRunPayload(asObject(rover?.run)?.payload),
   };
 }
 
@@ -204,12 +204,11 @@ export function createRoverAgentDiscoverySnapshot(cardLike: unknown): RoverAgent
   if (!rover) return undefined;
 
   const siteUrl = text(rover.siteUrl, 2048);
-  const taskEndpoint = text(rover.taskEndpoint || card.url, 2048);
+  const runEndpoint = text(rover.runEndpoint || card.url, 2048);
   const workflowEndpoint = text(rover.workflowEndpoint, 2048);
-  if (!siteUrl || !taskEndpoint || !workflowEndpoint) return undefined;
+  if (!siteUrl || !runEndpoint || !workflowEndpoint) return undefined;
 
-  const promptLaunchEnabled = bool(rover.promptLaunchEnabled);
-  const shortcutLaunchEnabled = bool(rover.shortcutLaunchEnabled);
+  const a2wRunsEnabled = bool(rover.a2wRunsEnabled);
   const delegatedHandoffs = bool(rover.delegatedHandoffs);
   const webmcp = asObject(rover.webmcp);
   const webmcpAvailable = bool(webmcp?.available);
@@ -233,16 +232,15 @@ export function createRoverAgentDiscoverySnapshot(cardLike: unknown): RoverAgent
   const instructions = uniqueStrings(rover.instructions, { max: 12, maxLen: 280 });
 
   return {
-    roverEnabled: promptLaunchEnabled || shortcutLaunchEnabled || webmcpAvailable,
+    roverEnabled: a2wRunsEnabled || webmcpAvailable,
     siteUrl,
-    taskEndpoint,
+    runEndpoint,
     workflowEndpoint,
     serviceDescUrl: text(rover.serviceDescUrl, 2048) || undefined,
     llmsUrl: text(rover.llmsUrl, 2048) || undefined,
     roverSiteUrl: text(rover.roverSiteUrl, 2048) || undefined,
     preferredExecution: normalizeExecutionPreference(rover.preferredExecution),
-    promptLaunchEnabled,
-    shortcutLaunchEnabled,
+    a2wRunsEnabled,
     delegatedHandoffs,
     webmcpAvailable,
     skills,

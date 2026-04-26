@@ -138,8 +138,8 @@ export function normalizeAgentTrust(value: unknown): AgentIdentityTrust | undefi
 
 export function normalizeAgentSource(value: unknown): AgentIdentitySource | undefined {
   switch (asString(value)) {
-    case 'public_task_agent':
-      return 'public_task_agent';
+    case 'public_run_agent':
+      return 'public_run_agent';
     case 'handoff_agent':
       return 'handoff_agent';
     case 'webmcp_agent':
@@ -159,8 +159,8 @@ export function normalizeAgentSource(value: unknown): AgentIdentitySource | unde
 
 export function normalizeLaunchSource(value: unknown): LaunchSource | undefined {
   switch (asString(value)) {
-    case 'public_task_api':
-      return 'public_task_api';
+    case 'public_run_api':
+      return 'public_run_api';
     case 'delegated_handoff':
       return 'delegated_handoff';
     case 'webmcp':

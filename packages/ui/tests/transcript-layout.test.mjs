@@ -4,7 +4,14 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { buildTranscriptSegments, summarizeTaskText } from '../dist/dom-helpers.js';
+import {
+  buildTranscriptSegments,
+  deriveTimelineBody,
+  deriveTimelineHeading,
+  deriveTraceKey,
+  summarizeTaskText,
+} from '../dist/dom-helpers.js';
+import { computeChipPlacement } from '../dist/components/action-spotlight.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(__dirname, '..');
@@ -74,4 +81,40 @@ test('mount uses summarized task text for hero and conversation labels instead o
   assert.match(source, /taskStageTitle\.textContent = summarizeTaskText\(latestTaskTitle, \{ maxLength: 120, maxUrlLength: 56 \}\)/);
   assert.match(source, /summarizeTaskText\(active\.summary, \{ maxLength: 44, maxUrlLength: 32 \}\) \|\| 'Current task'/);
   assert.match(source, /summary\.textContent = summarizeTaskText\(conv\.summary, \{ maxLength: 64, maxUrlLength: 36 \}\)/);
+});
+
+test('action cues drive deterministic timeline text without exposing raw tool details', () => {
+  const event = {
+    id: 'trace-click',
+    kind: 'tool_start',
+    title: 'Running click_element',
+    detail: '{"element_id":3}',
+    toolName: 'click_element',
+    actionCue: {
+      kind: 'click',
+      toolCallId: 'call-1',
+      primaryElementId: 3,
+      elementIds: [3],
+      targetLabel: 'Checkout',
+    },
+  };
+
+  assert.equal(deriveTraceKey(event), 'tool:call-1');
+  assert.equal(deriveTimelineHeading(event), 'Clicking Checkout');
+  assert.equal(deriveTimelineBody(event), '');
+});
+
+test('action spotlight chip placement avoids target, panel, viewport, and occupied chips', () => {
+  const placement = computeChipPlacement({
+    target: { left: 100, top: 100, right: 180, bottom: 140, width: 80, height: 40 },
+    chip: { width: 90, height: 28 },
+    viewport: { left: 0, top: 0, right: 420, bottom: 320, width: 420, height: 320 },
+    panel: { left: 260, top: 80, right: 410, bottom: 260, width: 150, height: 180 },
+    occupied: [{ left: 4, top: 4, right: 100, bottom: 32, width: 96, height: 28 }],
+  });
+
+  assert.ok(placement);
+  assert.notEqual(placement.side, 'right');
+  assert.ok(placement.left >= 8);
+  assert.ok(placement.top >= 8);
 });

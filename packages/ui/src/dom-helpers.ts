@@ -33,6 +33,10 @@ export function normalizeTimelineStatus(event: RoverTimelineEvent): 'pending' | 
 }
 
 export function deriveTraceKey(event: RoverTimelineEvent): string {
+  const toolCallId = sanitizeText(event.actionCue?.toolCallId || '');
+  if ((event.kind === 'tool_start' || event.kind === 'tool_result') && toolCallId) {
+    return `tool:${toolCallId}`;
+  }
   const title = String(event.title || '').trim().toLowerCase();
   if (title.startsWith('running ')) {
     return `tool:${title.replace(/^running\s+/, '').trim()}`;
@@ -142,11 +146,57 @@ export function humanizeToolName(value: string): string | undefined {
   return toolLabels[normalized] || titleCase(normalized);
 }
 
+function truncateActionLabel(label?: string): string {
+  const clean = sanitizeText(label || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return '';
+  return clean.length <= 48 ? clean : `${clean.slice(0, 45).trim()}...`;
+}
+
+export function deriveActionCueText(event: RoverTimelineEvent): string | undefined {
+  const cue = event.actionCue;
+  if (!cue) return undefined;
+  const label = truncateActionLabel(cue.targetLabel);
+  const inProgress = event.kind !== 'tool_result';
+  const verbs: Record<string, { active: string; done: string }> = {
+    click: { active: 'Clicking', done: 'Clicked' },
+    type: { active: 'Typing in', done: 'Typed in' },
+    select: { active: 'Selecting', done: 'Selected' },
+    clear: { active: 'Clearing', done: 'Cleared' },
+    focus: { active: 'Focusing', done: 'Focused' },
+    hover: { active: 'Hovering over', done: 'Hovered over' },
+    press: { active: 'Pressing', done: 'Pressed' },
+    scroll: { active: 'Scrolling to', done: 'Scrolled to' },
+    drag: { active: 'Dragging', done: 'Dragged' },
+    navigate: { active: 'Navigating', done: 'Navigated' },
+    read: { active: 'Reading', done: 'Read' },
+    wait: { active: 'Waiting for', done: 'Waited for' },
+    unknown: { active: 'Acting on', done: 'Acted on' },
+  };
+  const verb = verbs[cue.kind]?.[inProgress ? 'active' : 'done'] || verbs.unknown[inProgress ? 'active' : 'done'];
+  if (label) return `${verb} ${label}`;
+  if (cue.kind === 'type') return inProgress ? 'Typing into field' : 'Typed into field';
+  if (cue.kind === 'select') return inProgress ? 'Selecting option' : 'Selected option';
+  if (cue.kind === 'clear') return inProgress ? 'Clearing field' : 'Cleared field';
+  if (cue.kind === 'scroll') return inProgress ? 'Scrolling page' : 'Scrolled page';
+  if (cue.kind === 'drag') return inProgress ? 'Dragging item' : 'Dragged item';
+  if (cue.kind === 'navigate') return inProgress ? 'Navigating' : 'Navigated';
+  if (cue.kind === 'read') return inProgress ? 'Reading page' : 'Read page';
+  if (cue.kind === 'wait') return inProgress ? 'Waiting' : 'Waited';
+  return inProgress ? 'Acting on page' : 'Acted on page';
+}
+
 export function deriveTimelineStatusLabel(event: RoverTimelineEvent): string {
   const kind = event.kind;
+  const cueKind = event.actionCue?.kind;
   const toolCandidate = extractToolCandidate(event);
   const title = sanitizeText(event.title || '');
   if (kind === 'tool_start') {
+    if (cueKind === 'click' || cueKind === 'press' || cueKind === 'hover' || cueKind === 'focus' || cueKind === 'clear' || cueKind === 'drag') return 'Acting';
+    if (cueKind === 'navigate') return 'Navigating';
+    if (cueKind === 'type' || cueKind === 'select') return 'Inputting';
+    if (cueKind === 'read') return 'Reading';
+    if (cueKind === 'scroll') return 'Scrolling';
+    if (cueKind === 'wait') return 'Waiting';
     if (/click|tap|press/i.test(toolCandidate) || /click|tap|press/i.test(title)) return 'Acting';
     if (/navigate|goto|go to|open|visit/i.test(toolCandidate) || /navigate|go to|visit|open/i.test(title)) return 'Navigating';
     if (/type|fill|input|write|set/i.test(toolCandidate) || /type|fill|input|write|set/i.test(title)) return 'Inputting';
@@ -169,6 +219,8 @@ export function deriveTimelineStatusLabel(event: RoverTimelineEvent): string {
 }
 
 export function deriveTimelineHeading(event: RoverTimelineEvent): string {
+  const actionText = deriveActionCueText(event);
+  if (actionText) return actionText;
   const parsed = parseStageFromTitle(event.title || '');
   const toolLabel = humanizeToolName(extractToolCandidate(event));
   if (toolLabel) return toolLabel;
@@ -178,6 +230,7 @@ export function deriveTimelineHeading(event: RoverTimelineEvent): string {
 }
 
 export function deriveTimelineBody(event: RoverTimelineEvent): string {
+  if (event.actionCue) return '';
   const detail = sanitizeText(event.detail || '');
   if (detail) return detail;
   const parsed = parseStageFromTitle(event.title || '');

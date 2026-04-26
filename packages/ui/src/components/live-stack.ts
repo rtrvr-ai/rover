@@ -169,7 +169,7 @@ export function createLiveStack(options: LiveStackOptions = {}): LiveStackCompon
     card.classList.toggle('minimalThought', thoughtStyle === 'minimal');
 
     // Update detail content
-    const detailText = sanitizeText(event.detail || '') || (body !== heading ? body : '');
+    const detailText = event.actionCue ? '' : (sanitizeText(event.detail || '') || (body !== heading ? body : ''));
     if (detailText) {
       detailEl.textContent = detailText.slice(0, 500);
       card.dataset.hasDetail = 'true';

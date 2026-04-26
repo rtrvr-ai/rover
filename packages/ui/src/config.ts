@@ -195,6 +195,10 @@ export function sanitizeExperienceConfig(input?: RoverExperienceConfig): RoverEx
         input.motion.performanceBudget === 'standard' || input.motion.performanceBudget === 'high'
           ? input.motion.performanceBudget
           : undefined,
+      actionSpotlight: typeof input.motion.actionSpotlight === 'boolean' ? input.motion.actionSpotlight : undefined,
+      filaments: typeof input.motion.filaments === 'boolean' ? input.motion.filaments : undefined,
+      particles: typeof input.motion.particles === 'boolean' ? input.motion.particles : undefined,
+      palimpsest: typeof input.motion.palimpsest === 'boolean' ? input.motion.palimpsest : undefined,
     };
   }
   if (input.theme && typeof input.theme === 'object') {
@@ -260,6 +264,10 @@ export function resolveMountExperienceConfig(opts: MountOptions, agentName: stri
       intensity: explicit.motion?.intensity || 'balanced',
       reducedMotionFallback: explicit.motion?.reducedMotionFallback || 'reduce',
       performanceBudget: explicit.motion?.performanceBudget || 'standard',
+      actionSpotlight: explicit.motion?.actionSpotlight ?? true,
+      filaments: explicit.motion?.filaments,
+      particles: explicit.motion?.particles,
+      palimpsest: explicit.motion?.palimpsest,
     },
     theme: {
       mode: explicit.theme?.mode || 'auto',

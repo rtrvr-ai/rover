@@ -23,7 +23,7 @@ type AgentAttribution = {
   homepage?: string
   trust: 'verified_signed' | 'signed_directory_only' | 'self_reported' | 'heuristic' | 'anonymous'
   source:
-    | 'public_task_agent'
+    | 'public_run_agent'
     | 'handoff_agent'
     | 'webmcp_agent'
     | 'signature_agent'
@@ -60,9 +60,9 @@ Attribution is resolved in this order:
 
 That order means site owners no longer need to hardcode one identity for every visitor just to make RoverBook work.
 
-## Public task ingress
+## A2W run ingress
 
-Public task callers can send:
+A2W callers can send:
 
 ```json
 {
@@ -81,9 +81,9 @@ Public task callers can send:
 
 The same optional `agent` object is accepted on:
 
-- `POST /v1/tasks`
-- `POST /v1/tasks/{id}/handoffs`
-- WebMCP task creation and explicit RoverBook feedback/note tools
+- `POST /v1/a2w/runs`
+- `POST /v1/a2w/runs/{id}/handoffs`
+- WebMCP run creation and explicit RoverBook feedback/note tools
 
 ## Heuristic inputs
 
@@ -101,7 +101,7 @@ Those inputs may improve grouping and display names, but they do **not** become 
 
 Attribution is carried through the full Rover stack:
 
-- public task document
+- A2W run document
 - Rover launch document
 - Rover session token claims
 - Rover browser runtime state

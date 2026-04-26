@@ -1,4 +1,4 @@
-import type { RoverMessageBlock } from '@rover/ui';
+import type { RoverActionCue, RoverMessageBlock } from '@rover/ui';
 import { ROVER_V2_PERSIST_CAPS } from '@rover/shared';
 
 export type SharedRole = 'controller' | 'observer';
@@ -34,6 +34,9 @@ export type SharedTimelineEvent = {
   status?: 'pending' | 'success' | 'error' | 'info';
   ts: number;
   sourceRuntimeId?: string;
+  elementId?: number;
+  toolName?: string;
+  actionCue?: RoverActionCue;
 };
 
 export type SharedActiveRun = {
@@ -304,6 +307,58 @@ function sanitizeSharedUiMessages(input: unknown): SharedUiMessage[] {
     .filter((message: SharedUiMessage) => !!message.text || !!message.blocks?.length);
 }
 
+const VALID_ACTION_CUE_KINDS = new Set([
+  'click',
+  'type',
+  'select',
+  'clear',
+  'focus',
+  'hover',
+  'press',
+  'scroll',
+  'drag',
+  'navigate',
+  'read',
+  'wait',
+  'unknown',
+]);
+
+function sanitizePositiveIds(input: unknown): number[] | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const seen = new Set<number>();
+  const ids: number[] = [];
+  for (const value of input) {
+    const id = Math.trunc(Number(value));
+    if (!Number.isFinite(id) || id <= 0 || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids.length ? ids : undefined;
+}
+
+function sanitizeActionCue(input: unknown): RoverActionCue | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const raw = input as Record<string, unknown>;
+  const kind = String(raw.kind || '').trim();
+  if (!VALID_ACTION_CUE_KINDS.has(kind)) return undefined;
+  const primaryElementId = Math.trunc(Number(raw.primaryElementId));
+  const elementIds = sanitizePositiveIds(raw.elementIds);
+  const toolCallId = typeof raw.toolCallId === 'string' && raw.toolCallId.trim()
+    ? raw.toolCallId.trim().slice(0, 128)
+    : undefined;
+  const targetLabel = typeof raw.targetLabel === 'string' && raw.targetLabel.trim()
+    ? raw.targetLabel.trim().slice(0, 64)
+    : undefined;
+  return {
+    kind: kind as RoverActionCue['kind'],
+    toolCallId,
+    primaryElementId: Number.isFinite(primaryElementId) && primaryElementId > 0 ? primaryElementId : undefined,
+    elementIds,
+    valueRedacted: typeof raw.valueRedacted === 'boolean' ? raw.valueRedacted : undefined,
+    targetLabel,
+  };
+}
+
 function sanitizeSharedTimeline(input: unknown): SharedTimelineEvent[] {
   if (!Array.isArray(input)) return [];
   return input
@@ -317,6 +372,9 @@ function sanitizeSharedTimeline(input: unknown): SharedTimelineEvent[] {
       status: event?.status === 'pending' || event?.status === 'success' || event?.status === 'error' || event?.status === 'info' ? event.status : undefined,
       ts: Number(event?.ts) || now(),
       sourceRuntimeId: typeof event?.sourceRuntimeId === 'string' ? event.sourceRuntimeId : undefined,
+      elementId: Number.isFinite(Number(event?.elementId)) ? Math.trunc(Number(event.elementId)) : undefined,
+      toolName: typeof event?.toolName === 'string' ? event.toolName.slice(0, 120) : undefined,
+      actionCue: sanitizeActionCue(event?.actionCue),
     }))
     .filter((event: SharedTimelineEvent) => !!event.title);
 }
@@ -364,6 +422,9 @@ function sanitizeSharedTaskRecord(raw: any): SharedTaskRecord | undefined {
           status: e?.status === 'pending' || e?.status === 'success' || e?.status === 'error' || e?.status === 'info' ? e.status : undefined,
           ts: Number(e?.ts) || now(),
           sourceRuntimeId: typeof e?.sourceRuntimeId === 'string' ? e.sourceRuntimeId : undefined,
+          elementId: Number.isFinite(Number(e?.elementId)) ? Math.trunc(Number(e.elementId)) : undefined,
+          toolName: typeof e?.toolName === 'string' ? e.toolName.slice(0, 120) : undefined,
+          actionCue: sanitizeActionCue(e?.actionCue),
         })).filter((e: SharedTimelineEvent) => !!e.title)
       : [],
     rootUserInput: typeof raw.rootUserInput === 'string' ? raw.rootUserInput : undefined,
@@ -1376,6 +1437,9 @@ export class SessionCoordinator {
       status: event.status,
       ts: Number(event.ts) || now(),
       sourceRuntimeId: this.runtimeId,
+      elementId: Number.isFinite(Number(event.elementId)) ? Math.trunc(Number(event.elementId)) : undefined,
+      toolName: typeof event.toolName === 'string' ? event.toolName.slice(0, 120) : undefined,
+      actionCue: sanitizeActionCue(event.actionCue),
     };
 
     this.mutate('local', draft => {

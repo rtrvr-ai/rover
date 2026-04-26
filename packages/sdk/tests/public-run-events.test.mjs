@@ -10,19 +10,19 @@ import {
 test('run_started payload exposes public run metadata', () => {
   const payload = buildPublicRunStartedPayload({
     msg: {
-      runId: 'run-1',
-      taskBoundaryId: 'task-boundary-1',
+      executionId: 'exec-1',
+      runBoundaryId: 'run-boundary-1',
       text: 'Check pricing',
     },
-    taskId: 'task-1',
-    currentTaskBoundaryId: 'task-boundary-1',
+    runId: 'a2w_run_1',
+    currentRunBoundaryId: 'run-boundary-1',
     pageUrl: 'https://example.com/pricing',
     now: 123,
   });
 
-  assert.equal(payload.taskId, 'task-1');
-  assert.equal(payload.runId, 'run-1');
-  assert.equal(payload.taskBoundaryId, 'task-boundary-1');
+  assert.equal(payload.runId, 'a2w_run_1');
+  assert.equal(payload.executionId, 'exec-1');
+  assert.equal(payload.runBoundaryId, 'run-boundary-1');
   assert.equal(payload.text, 'Check pricing');
   assert.equal(payload.startedAt, 123);
 });
@@ -30,28 +30,28 @@ test('run_started payload exposes public run metadata', () => {
 test('run lifecycle payload keeps terminal state, outcome, and summary', () => {
   const payload = buildPublicRunLifecyclePayload({
     msg: {
-      runId: 'run-2',
-      taskBoundaryId: 'task-boundary-2',
+      executionId: 'exec-2',
+      runBoundaryId: 'run-boundary-2',
       summary: 'Completed checkout',
       ok: true,
     },
-    taskId: 'task-2',
-    currentTaskBoundaryId: 'task-boundary-2',
+    runId: 'a2w_run_2',
+    currentRunBoundaryId: 'run-boundary-2',
     pageUrl: 'https://example.com/checkout',
     now: 456,
     completionState: {
-      taskComplete: true,
+      runComplete: true,
       needsUserInput: false,
       terminalState: 'completed',
       contextResetRecommended: true,
     },
   });
 
-  assert.equal(payload.taskId, 'task-2');
-  assert.equal(payload.runId, 'run-2');
-  assert.equal(payload.taskBoundaryId, 'task-boundary-2');
+  assert.equal(payload.runId, 'a2w_run_2');
+  assert.equal(payload.executionId, 'exec-2');
+  assert.equal(payload.runBoundaryId, 'run-boundary-2');
   assert.equal(payload.terminalState, 'completed');
-  assert.equal(payload.taskComplete, true);
+  assert.equal(payload.runComplete, true);
   assert.equal(payload.outcome, 'success');
   assert.equal(payload.summary, 'Completed checkout');
   assert.equal(payload.endedAt, 456);

@@ -20,7 +20,7 @@ Site owners install Rover with:
 Example:
 
 ```html
-<script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
+<script type="application/agent+json">{"a2w":"https://agent.rtrvr.ai/v1/a2w/runs","run":"https://agent.rtrvr.ai/v1/a2w/runs"}</script>
 <script>
   (function(){ var r = window.rover = window.rover || function(){ (r.q = r.q || []).push(arguments); }; r.l = +new Date(); })();
   rover('boot', {
@@ -53,16 +53,16 @@ These open Rover on the page and run through the normal browser runtime.
 The canonical AI / CLI / agent protocol is:
 
 ```http
-POST https://agent.rtrvr.ai/v1/tasks
+POST https://agent.rtrvr.ai/v1/a2w/runs
 Content-Type: application/json
 
-{ "url": "https://example.com", "prompt": "book a flight" }
+{ "url": "https://example.com", "goal": "book a flight" }
 ```
 
 Or:
 
 ```http
-POST https://agent.rtrvr.ai/v1/tasks
+POST https://agent.rtrvr.ai/v1/a2w/runs
 Content-Type: application/json
 
 { "url": "https://example.com", "shortcut": "checkout_flow" }
@@ -70,7 +70,7 @@ Content-Type: application/json
 
 Anonymous AI callers do **not** need `siteId`, `publicKey`, or `siteKeyId`.
 
-The returned task URL is the canonical resource:
+The returned run URL is the canonical resource:
 
 - `GET` + `Accept: application/json` for polling/final result
 - `GET` + `Accept: text/event-stream` for SSE
@@ -78,40 +78,38 @@ The returned task URL is the canonical resource:
 - `POST { "input": "..." }` to continue when the task requests input
 - `DELETE` to cancel
 
-Task responses may also include:
+Run responses may also include:
 
-- `workflow`: canonical aggregated lineage resource for root task + delegated child tasks
-- `open`: clean receipt URL, for example `https://example.com/#rover_receipt=rrc_...`
-- `browserLink`: optional readable alias, for example `https://example.com/?rover=book+a+flight#rover_receipt=rrc_...`
+- `workflow`: canonical aggregated lineage resource for root run + delegated child runs
+- `open`: clean receipt URL, for example `https://example.com/#rover_receipt=a2w_receipt_...`
+- `browserLink`: optional readable alias, for example `https://example.com/?rover=book+a+flight#rover_receipt=a2w_receipt_...`
 
 Explicit `Prefer: execution=cloud` omits browser handoff URLs. Use `Prefer: execution=cloud` when the caller needs guaranteed browserless execution. `execution=auto` currently prefers browser attach first.
 
 Cross-site Rover delegation stays on the same public protocol:
 
-- `POST /v1/tasks/{id}/handoffs` delegates part of a workflow to Rover on another Rover-enabled site
-- `GET /v1/workflows/{id}` reads the aggregated workflow state or stream
+- `POST /v1/a2w/runs/{id}/handoffs` delegates part of a workflow to Rover on another Rover-enabled site
+- `GET /v1/a2w/workflows/{id}` reads the aggregated workflow state or stream
 
 Receiving sites must opt in:
 
 - `aiAccess.enabled = true`
 - `aiAccess.allowDelegatedHandoffs = true`
 
-This extends ATP; it does not replace `/v1/tasks`.
-
 Quick examples:
 
 - Browser-first URL:
   - `https://www.rtrvr.ai/?rover=get%20me%20the%20latest%20blog%20post`
-- Machine task create:
+- A2W run create:
 
 ```bash
-curl -X POST 'https://agent.rtrvr.ai/v1/tasks' \
+curl -X POST 'https://agent.rtrvr.ai/v1/a2w/runs' \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
   -H 'Prefer: execution=cloud' \
   -d '{
     "url": "https://www.rtrvr.ai",
-    "prompt": "get me the latest blog post"
+    "goal": "get me the latest blog post"
   }'
 ```
 

@@ -1,6 +1,7 @@
 import type {
   ClientToolDefinition,
   ChatMessage,
+  FunctionCall,
   FunctionDeclaration,
   ExternalWebConfig,
   RoverRuntimeContext,
@@ -440,8 +441,61 @@ function postStatus(message: string, thought?: string, stage?: StatusStage) {
     const recent = Array.from(seenStatusKeys).slice(-30);
     seenStatusKeys = new Set(recent);
   }
-  (self as any).postMessage({ type: 'status', message, thought, stage: resolvedStage, compactThought: compact, runId: activeRun?.runId });
+  (self as any).postMessage({ type: 'status', message, thought, stage: resolvedStage, compactThought: compact, executionId: activeRun?.runId });
   postStateSnapshot();
+}
+
+function cloneToolCall(call: FunctionCall & { id?: string }, toolCallId: string): FunctionCall & { id?: string } {
+  return {
+    ...call,
+    id: toolCallId,
+    args: cloneUnknown(call.args || {}) || {},
+  };
+}
+
+function postToolLifecycleEvent(type: 'tool_start' | 'tool_result', payload: {
+  call: FunctionCall & { id?: string };
+  toolCallId: string;
+  result?: unknown;
+}): void {
+  const runId = activeRun?.runId || 'no-run';
+  if (runId !== 'no-run' && cancelledRunIds.has(runId)) return;
+  (self as any).postMessage({
+    type,
+    call: payload.call,
+    toolCallId: payload.toolCallId,
+    result: payload.result,
+    executionId: activeRun?.runId,
+  });
+}
+
+function wrapBridgeRpcWithToolLifecycle(
+  rawBridgeRpc: (method: string, params?: any) => Promise<any>,
+): (method: string, params?: any) => Promise<any> {
+  return async (method: string, params?: any) => {
+    const rawCall = method === 'executeTool' && params?.call && typeof params.call === 'object'
+      ? params.call as FunctionCall & { id?: string }
+      : null;
+    if (!rawCall?.name) {
+      return rawBridgeRpc(method, params);
+    }
+
+    const toolCallId = typeof rawCall.id === 'string' && rawCall.id.trim() ? rawCall.id.trim() : crypto.randomUUID();
+    const call = cloneToolCall(rawCall, toolCallId);
+    postToolLifecycleEvent('tool_start', { call, toolCallId });
+    try {
+      const result = await rawBridgeRpc(method, { ...(params || {}), call });
+      postToolLifecycleEvent('tool_result', { call, toolCallId, result: cloneUnknown(result) });
+      return result;
+    } catch (err: any) {
+      const result = {
+        success: false,
+        error: err?.message || String(err),
+      };
+      postToolLifecycleEvent('tool_result', { call, toolCallId, result });
+      throw err;
+    }
+  };
 }
 
 function postRuntimeTabsDiagnostics(payload: {
@@ -465,7 +519,7 @@ function postRuntimeTabsDiagnostics(payload: {
   lastRuntimeTabsDiagnosticsKey = signature;
   (self as any).postMessage({
     type: 'runtime_tabs_diagnostics',
-    runId: activeRun?.runId,
+    executionId: activeRun?.runId,
     diagnostics: payload,
   });
 }
@@ -1233,7 +1287,7 @@ function postAssistantMessage(payload: string | AssistantMessagePayload): string
   if (runId && cancelledRunIds.has(runId)) {
     return resolvedText;
   }
-  (self as any).postMessage({ type: 'assistant', text: resolvedText, blocks, runId });
+  (self as any).postMessage({ type: 'assistant', text: resolvedText, blocks, executionId: runId });
   return resolvedText;
 }
 
@@ -1259,7 +1313,7 @@ function postAuthRequired(err: any): void {
     err && typeof err === 'object' && err.code && err.message
       ? toRoverErrorEnvelope({ errorDetails: err }, 'Rover API key is required.')
       : toRoverErrorEnvelope(err, 'Rover API key is required.');
-  (self as any).postMessage({ type: 'auth_required', error: envelope, runId });
+  (self as any).postMessage({ type: 'auth_required', error: envelope, executionId: runId });
 }
 
 type StructuredErrorPayload = {
@@ -1404,7 +1458,7 @@ function maybePostNavigationGuardrailFromToolResult(toolResult: any): void {
   if (!policyAction) return;
   (self as any).postMessage({
     type: 'navigation_guardrail',
-    runId: activeRun?.runId,
+    executionId: activeRun?.runId,
     blockedUrl: output?.blocked_url || output?.url || details?.details?.blockedUrl,
     currentUrl: output?.current_url || details?.details?.currentUrl,
     reason: output?.error?.message || details?.message || output?.message,
@@ -2575,12 +2629,12 @@ async function runUserMessage(
     if (terminal.ok) {
       const cachedOutcome = normalizeRunOutcome(terminal.outcome);
         (self as any).postMessage({
-          type: 'run_completed',
-          runId,
-          taskBoundaryId: terminal.taskBoundaryId,
+          type: 'execution_completed',
+          executionId: runId,
+          runBoundaryId: terminal.taskBoundaryId,
           ok: true,
           route: cachedOutcome.route,
-          taskComplete: cachedOutcome.taskComplete,
+          runComplete: cachedOutcome.taskComplete,
           needsUserInput: cachedOutcome.needsUserInput,
           questions: cachedOutcome.questions,
           terminalState: cachedOutcome.terminalState,
@@ -2589,12 +2643,12 @@ async function runUserMessage(
         });
     } else {
       (self as any).postMessage({
-        type: 'run_completed',
-        runId,
-        taskBoundaryId: terminal.taskBoundaryId,
+        type: 'execution_completed',
+        executionId: runId,
+        runBoundaryId: terminal.taskBoundaryId,
         ok: false,
         error: terminal.error,
-        taskComplete: false,
+        runComplete: false,
         needsUserInput: false,
         terminalState: 'failed',
         contextResetRecommended: terminal.contextResetRecommended,
@@ -2617,7 +2671,7 @@ async function runUserMessage(
   cancelledRunIds.delete(runId);
   activeAbortController = new AbortController();
   activeRun = { runId, text, startedAt: Date.now(), resume, preserveHistory };
-  (self as any).postMessage({ type: 'run_started', runId, text, resume, taskBoundaryId: runTaskBoundaryId });
+  (self as any).postMessage({ type: 'execution_started', executionId: runId, text, resume, runBoundaryId: runTaskBoundaryId });
 
   if (shouldClearHistoryForRun({ resume, preserveHistory })) {
     // Keep prevSteps/planner history task-sticky. Clear chat history unless caller explicitly preserves follow-up cues.
@@ -2641,12 +2695,12 @@ async function runUserMessage(
     if (isTerminalOutcome) {
       rememberTerminalRun(runId, { ok: true, outcome, taskBoundaryId: runTaskBoundaryId });
       (self as any).postMessage({
-        type: 'run_completed',
-        runId,
-        taskBoundaryId: runTaskBoundaryId,
+        type: 'execution_completed',
+        executionId: runId,
+        runBoundaryId: runTaskBoundaryId,
         ok: true,
         route: outcome.route,
-        taskComplete: outcome.taskComplete,
+        runComplete: outcome.taskComplete,
         needsUserInput: outcome.needsUserInput,
         questions: outcome.questions,
         terminalState: outcome.terminalState,
@@ -2656,12 +2710,12 @@ async function runUserMessage(
     } else {
       terminalRuns.delete(runId);
       (self as any).postMessage({
-        type: 'run_state_transition',
-        runId,
-        taskBoundaryId: runTaskBoundaryId,
+        type: 'execution_state_transition',
+        executionId: runId,
+        runBoundaryId: runTaskBoundaryId,
         ok: true,
         route: outcome.route,
-        taskComplete: outcome.taskComplete,
+        runComplete: outcome.taskComplete,
         needsUserInput: outcome.needsUserInput,
         questions: outcome.questions,
         terminalState: outcome.terminalState,
@@ -2681,12 +2735,12 @@ async function runUserMessage(
         taskBoundaryId: runTaskBoundaryId,
       });
       (self as any).postMessage({
-        type: 'run_completed',
-        runId,
-        taskBoundaryId: runTaskBoundaryId,
+        type: 'execution_completed',
+        executionId: runId,
+        runBoundaryId: runTaskBoundaryId,
         ok: false,
         error: 'Run cancelled',
-        taskComplete: false,
+        runComplete: false,
         needsUserInput: false,
         terminalState: 'failed',
         contextResetRecommended: false,
@@ -2702,12 +2756,12 @@ async function runUserMessage(
         taskBoundaryId: runTaskBoundaryId,
       });
       (self as any).postMessage({
-        type: 'run_completed',
-        runId,
-        taskBoundaryId: runTaskBoundaryId,
+        type: 'execution_completed',
+        executionId: runId,
+        runBoundaryId: runTaskBoundaryId,
         ok: false,
         error: error?.message || String(error),
-        taskComplete: false,
+        runComplete: false,
         needsUserInput: false,
         terminalState: 'failed',
         contextResetRecommended: true,
@@ -2742,7 +2796,7 @@ async function runUserMessage(
         tabularStore = new TabularStore(`rover-${taskTrajectoryId}`);
       }
       if (data.port) {
-        bridgeRpc = createRpcClient(data.port as MessagePort);
+        bridgeRpc = wrapBridgeRpcWithToolLifecycle(createRpcClient(data.port as MessagePort));
         (data.port as MessagePort).start?.();
       }
       // Load client tools from init config
@@ -2817,7 +2871,6 @@ async function runUserMessage(
       activeRun = null;
       activeAbortController = null;
       postStateSnapshot();
-      (self as any).postMessage({ type: 'task_started', taskId: nextTaskId });
       return;
     }
 
@@ -2867,6 +2920,6 @@ async function runUserMessage(
       postAuthRequired(err);
       return;
     }
-    (self as any).postMessage({ type: 'error', message: err?.message || String(err), runId: activeRun?.runId });
+    (self as any).postMessage({ type: 'error', message: err?.message || String(err), executionId: activeRun?.runId });
   }
 };

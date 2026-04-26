@@ -144,7 +144,7 @@ export interface RoverAgentDiscoveryCapabilitySnapshot {
   analyticsTags?: string[];
   deepLink?: string;
   toolName?: string;
-  taskPayload?: Record<string, unknown>;
+  runPayload?: Record<string, unknown>;
 }
 
 export interface RoverAgentDiscoveryPageSnapshot {
@@ -170,20 +170,19 @@ export interface RoverAgentDiscoverySkillSnapshot {
   source?: RoverDiscoverySkillSource;
   deepLink?: string;
   toolName?: string;
-  taskPayload?: Record<string, unknown>;
+  runPayload?: Record<string, unknown>;
 }
 
 export interface RoverAgentDiscoverySnapshot {
   roverEnabled: boolean;
   siteUrl: string;
-  taskEndpoint: string;
+  runEndpoint?: string;
   workflowEndpoint: string;
   serviceDescUrl?: string;
   llmsUrl?: string;
   roverSiteUrl?: string;
   preferredExecution: RoverDiscoveryExecutionPreference;
-  promptLaunchEnabled: boolean;
-  shortcutLaunchEnabled: boolean;
+  a2wRunsEnabled: boolean;
   delegatedHandoffs: boolean;
   webmcpAvailable: boolean;
   skills: RoverAgentDiscoverySkillSnapshot[];

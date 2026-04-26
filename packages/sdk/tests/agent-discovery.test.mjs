@@ -63,15 +63,15 @@ test('agent card maps shortcuts and explicit tools into published skills', () =>
     ],
     webmcpTools: [
       {
-        name: 'rover_run_task',
-        title: 'Run Rover Task',
-        description: 'Run a structured Rover task on this site.',
+        name: 'rover_start_run',
+        title: 'Start Rover Run',
+        description: 'Start a structured A2W run on this site.',
         schema: {
           type: 'object',
           properties: {
-            task: { type: 'string' },
+            prompt: { type: 'string' },
           },
-          required: ['task'],
+          required: ['prompt'],
         },
         annotations: {
           category: 'primary',
@@ -84,8 +84,8 @@ test('agent card maps shortcuts and explicit tools into published skills', () =>
   });
 
   assert.equal(card.name, 'Example Store');
-  assert.equal(card.url, 'https://agent.rtrvr.ai/v1/tasks');
-  assert.equal(card.capabilities.publicTasks, true);
+  assert.equal(card.url, 'https://agent.rtrvr.ai/v1/a2w/runs');
+  assert.equal(card.capabilities.a2wRuns, true);
   assert.equal(card.capabilities.delegatedHandoffs, true);
   assert.equal(card.capabilities.webmcp, true);
   assert.equal(card.extensions.rover.preferredExecution, 'cloud');
@@ -97,15 +97,15 @@ test('agent card maps shortcuts and explicit tools into published skills', () =>
   const checkoutSkill = card.skills.find(skill => skill.id === 'start_checkout');
   assert.equal(checkoutSkill.category, 'primary');
   assert.equal(checkoutSkill.preferredInterface, 'shortcut');
-  assert.equal(checkoutSkill.rover.task.endpoint, 'https://agent.rtrvr.ai/v1/tasks');
-  assert.equal(checkoutSkill.rover.task.payload.shortcut, 'start_checkout');
+  assert.equal(checkoutSkill.rover.run.endpoint, 'https://agent.rtrvr.ai/v1/a2w/runs');
+  assert.equal(checkoutSkill.rover.run.payload.shortcut, 'start_checkout');
 
   const reviewTool = card.skills.find(skill => skill.id === 'roverbook_leave_review');
   assert.equal(reviewTool.category, 'secondary');
   assert.equal(reviewTool.preferredInterface, 'client_tool');
   assert.match(reviewTool.description, /When to use:/);
 
-  const webmcpTool = card.skills.find(skill => skill.id === 'rover_run_task');
+  const webmcpTool = card.skills.find(skill => skill.id === 'rover_start_run');
   assert.equal(webmcpTool.preferredInterface, 'webmcp');
 });
 
@@ -130,15 +130,15 @@ test('agent discovery snapshot normalizes callable Rover surfaces from the publi
     ],
     webmcpTools: [
       {
-        name: 'rover_run_task',
-        title: 'Run Rover Task',
-        description: 'Run a structured Rover task on this site.',
+        name: 'rover_start_run',
+        title: 'Start Rover Run',
+        description: 'Start a structured A2W run on this site.',
         schema: {
           type: 'object',
           properties: {
-            task: { type: 'string' },
+            prompt: { type: 'string' },
           },
-          required: ['task'],
+          required: ['prompt'],
         },
         annotations: {
           preferredInterface: 'webmcp',
@@ -164,19 +164,19 @@ test('agent discovery snapshot normalizes callable Rover surfaces from the publi
 
   const snapshot = createRoverAgentDiscoverySnapshot(card);
   assert.equal(snapshot.roverEnabled, true);
-  assert.equal(snapshot.taskEndpoint, 'https://agent.rtrvr.ai/v1/tasks');
-  assert.equal(snapshot.workflowEndpoint, 'https://agent.rtrvr.ai/v1/workflows');
+  assert.equal(snapshot.runEndpoint, 'https://agent.rtrvr.ai/v1/a2w/runs');
+  assert.equal(snapshot.workflowEndpoint, 'https://agent.rtrvr.ai/v1/a2w/workflows');
   assert.equal(snapshot.webmcpAvailable, true);
   assert.equal(snapshot.roverSiteUrl, '/.well-known/rover-site.json');
   assert.equal(snapshot.discoverySurface?.mode, 'beacon');
   assert.equal(snapshot.page?.beaconLabel, 'AI actions available');
   assert.equal(snapshot.capabilities[0].capabilityId, 'checkout_flow');
   assert.equal(snapshot.page?.pageId, 'checkout');
-  assert.equal(snapshot.skills[0].id, 'checkout_flow');
-  assert.equal(snapshot.skills[0].taskPayload.shortcut, 'checkout_flow');
+  const checkoutSkill = snapshot.skills.find(skill => skill.id === 'checkout_flow');
+  assert.equal(checkoutSkill?.runPayload.shortcut, 'checkout_flow');
 });
 
-test('agent card disables public task capability when ai access is off', () => {
+test('agent card disables public A2W capability when ai access is off', () => {
   const card = createRoverAgentCard({
     siteUrl: 'https://example.com/',
     siteName: 'Example Store',
@@ -185,9 +185,9 @@ test('agent card disables public task capability when ai access is off', () => {
     },
   });
 
-  assert.equal(card.capabilities.publicTasks, false);
+  assert.equal(card.capabilities.a2wRuns, false);
   assert.equal(card.capabilities.stateTransitions, false);
-  assert.equal(card.interfaces.find(entry => entry.type === 'task')?.available, false);
+  assert.equal(card.interfaces.find(entry => entry.type === 'run')?.available, false);
 });
 
 test('agent card keeps longer shortcut prompts while still bounding them', () => {
@@ -214,21 +214,19 @@ test('agent card keeps longer shortcut prompts while still bounding them', () =>
   assert.equal(card.extensions.rover.shortcuts[1].prompt.length, 2000);
 });
 
-test('agent card preserves legacy per-kind launch flags until aiAccess.enabled is resaved', () => {
+test('agent card exposes A2W runs from aiAccess.enabled only', () => {
   const card = createRoverAgentCard({
     siteUrl: 'https://example.com/',
-    siteName: 'Legacy Store',
+    siteName: 'A2W Store',
     aiAccess: {
-      allowPromptLaunch: false,
-      allowShortcutLaunch: true,
+      enabled: true,
     },
   });
 
-  assert.equal(card.capabilities.publicTasks, true);
-  assert.equal(card.interfaces.find(entry => entry.type === 'task')?.available, false);
+  assert.equal(card.capabilities.a2wRuns, true);
+  assert.equal(card.interfaces.find(entry => entry.type === 'run')?.available, true);
   assert.equal(card.interfaces.find(entry => entry.type === 'deep_link')?.available, true);
-  assert.equal(card.extensions.rover.promptLaunchEnabled, false);
-  assert.equal(card.extensions.rover.shortcutLaunchEnabled, true);
+  assert.equal(card.extensions.rover.a2wRunsEnabled, true);
 });
 
 test('agent discovery runtime config sanitizer preserves supported beacon-first fields', () => {

@@ -38,7 +38,7 @@ test('Rover docs publish the vNext discovery and identity model consistently', (
   assert.match(docs['README.md'], /\/\.well-known\/rover-site\.json/);
   assert.match(docs['packages/sdk/README.md'], /beaconLabel/);
   assert.match(docs['packages/roverbook/README.md'], /requestedResultModes/);
-  assert.match(docs['docs/INTEGRATION.md'], /Compatibility aliases like .*prompt.*still work/);
+  assert.match(docs['docs/INTEGRATION.md'], /POST \/v1\/a2w\/runs/);
 })
 
 test('Rover docs no longer present pre-vNext canonical guidance', () => {
@@ -46,11 +46,14 @@ test('Rover docs no longer present pre-vNext canonical guidance', () => {
   const forbidden = [
     'Publish the well-known card first',
     'siteConfig.surface',
-    'siteConfig.aiAccess.allowPromptLaunch',
-    'siteConfig.aiAccess.allowShortcutLaunch',
+    'siteConfig.aiAccess.' + 'allow' + 'Prompt' + 'Launch',
+    'siteConfig.aiAccess.' + 'allow' + 'Shortcut' + 'Launch',
     'Current launch behavior emits `self_reported`, `heuristic`, and `anonymous`',
     '`verified` remains reserved',
     'visible AI-ready cue',
+    'Compatibility aliases',
+    '/v1/' + 'tasks',
+    '"task":"https://agent.rtrvr.ai/v1/a2w/runs"',
   ];
 
   for (const phrase of forbidden) {

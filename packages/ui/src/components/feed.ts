@@ -394,7 +394,7 @@ export function createFeed(options: FeedOptions = {}): FeedComponent {
     const heading = deriveTimelineHeading(event);
     const derivedBody = deriveTimelineBody(event);
     const detailBlocks = Array.isArray(event.detailBlocks) ? event.detailBlocks : [];
-    const detailText = sanitizeText(event.detail || '');
+    const detailText = event.actionCue ? '' : sanitizeText(event.detail || '');
     const bodyText = detailText || (derivedBody !== heading ? derivedBody : '');
 
     title.textContent = heading || 'Step';
@@ -443,7 +443,7 @@ export function createFeed(options: FeedOptions = {}): FeedComponent {
     entry.dataset.kind = event.kind;
     entry.dataset.visibility = classifyVisibility(event);
 
-    const tooltipText = sanitizeText(event.detail || '');
+    const tooltipText = event.actionCue ? '' : sanitizeText(event.detail || '');
     if (tooltipText) entry.dataset.tooltipText = tooltipText.slice(0, 400);
     else delete entry.dataset.tooltipText;
 
