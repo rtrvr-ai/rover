@@ -1,4 +1,4 @@
-import type { RoverExecutionMode, RoverMessageBlock, RoverTimelineEvent } from '@rover/ui';
+import type { RoverActionCue, RoverExecutionMode, RoverMessageBlock, RoverTimelineEvent } from '@rover/ui';
 import type { LLMDataInput } from '@rover/shared/lib/types/workflow-types.js';
 
 export type UiRole = 'user' | 'assistant' | 'system';
@@ -23,6 +23,7 @@ export type PersistedTimelineEvent = {
   sourceRuntimeId?: string;
   elementId?: number;
   toolName?: string;
+  actionCue?: RoverActionCue;
 };
 
 export type PersistedChatLogEntry = {

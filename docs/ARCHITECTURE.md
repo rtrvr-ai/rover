@@ -53,10 +53,10 @@ rtrvr-cloud-website
 ## End-To-End Runtime Flow
 
 ```text
-Agent / Operator / WebMCP / POST /v1/tasks
+Agent / Operator / WebMCP / POST /v1/a2w/runs
                   |
                   v
-             Rover task create
+             A2W run create
       (optional agent attribution input)
                   |
                   v
@@ -101,7 +101,7 @@ RoverBook uses Rover's real runtime boundaries rather than a side protocol:
 
 Source-of-truth inputs:
 
-- `task_started`
+- `visit_started`
 - `run_started`
 - `tool_start`
 - `tool_result`
@@ -122,8 +122,8 @@ Key Rover integration points:
 
 Agent attribution is normalized once and then propagated through:
 
-1. public task creation / delegated handoff / WebMCP input
-2. task document
+1. A2W run creation / delegated handoff / WebMCP input
+2. run document
 3. Rover launch document
 4. Rover session token claims
 5. Rover browser runtime state

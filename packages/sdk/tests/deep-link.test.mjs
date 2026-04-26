@@ -69,39 +69,18 @@ test('runtime deep-link config derives enabled state from aiAccess when boot con
       promptParam: 'rover',
       shortcutParam: 'rover_shortcut',
       consume: true,
-      promptLaunchEnabled: true,
-      shortcutLaunchEnabled: true,
-    },
-  );
-
-  assert.deepEqual(
-    resolveRuntimeDeepLinkConfig(undefined, {
-      allowPromptLaunch: false,
-      allowShortcutLaunch: true,
-    }),
-    {
-      enabled: true,
-      promptParam: 'rover',
-      shortcutParam: 'rover_shortcut',
-      consume: true,
-      promptLaunchEnabled: false,
-      shortcutLaunchEnabled: true,
     },
   );
 
   assert.deepEqual(
     resolveRuntimeDeepLinkConfig(normalizeDeepLinkConfig({ promptParam: 'agent' }), {
       enabled: true,
-      allowPromptLaunch: false,
-      allowShortcutLaunch: true,
     }),
     {
       enabled: true,
       promptParam: 'agent',
       shortcutParam: 'rover_shortcut',
       consume: true,
-      promptLaunchEnabled: false,
-      shortcutLaunchEnabled: true,
     },
   );
 
@@ -114,8 +93,6 @@ test('runtime deep-link config derives enabled state from aiAccess when boot con
       promptParam: 'rover',
       shortcutParam: 'rover_shortcut',
       consume: true,
-      promptLaunchEnabled: false,
-      shortcutLaunchEnabled: false,
     },
   );
 
@@ -126,8 +103,6 @@ test('runtime deep-link config derives enabled state from aiAccess when boot con
       promptParam: 'rover',
       shortcutParam: 'rover_shortcut',
       consume: true,
-      promptLaunchEnabled: true,
-      shortcutLaunchEnabled: true,
     },
   );
 });

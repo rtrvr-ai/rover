@@ -8,7 +8,7 @@ import { VisitTracker } from '../dist/trajectory.js';
 test('same page with two tasks creates two distinct visits', () => {
   const tracker = new VisitTracker({ siteId: 'site-demo' }, { key: 'agent-1', name: 'Agent 1' });
 
-  tracker.handleTaskStarted({ taskId: 'task-1' });
+  tracker.handleVisitStarted({ taskId: 'task-1' });
   tracker.handleRunStarted({ taskId: 'task-1', runId: 'run-1', taskBoundaryId: 'boundary-1', text: 'buy item' });
   tracker.handleToolStart({ runId: 'run-1', call: { name: 'click', args: { selector: '#buy' } } });
   tracker.handleToolResult({ runId: 'run-1', call: { name: 'click', args: { selector: '#buy' } }, result: { success: true } });
@@ -17,11 +17,11 @@ test('same page with two tasks creates two distinct visits', () => {
     runId: 'run-1',
     taskBoundaryId: 'boundary-1',
     terminalState: 'completed',
-    taskComplete: true,
+    runComplete: true,
     endedAt: Date.now(),
   });
 
-  tracker.handleTaskStarted({ taskId: 'task-2' });
+  tracker.handleVisitStarted({ taskId: 'task-2' });
   tracker.handleRunStarted({ taskId: 'task-2', runId: 'run-2', taskBoundaryId: 'boundary-2', text: 'find pricing' });
   tracker.handleToolStart({ runId: 'run-2', call: { name: 'extract', args: { selector: '.price' } } });
   tracker.handleToolResult({ runId: 'run-2', call: { name: 'extract', args: { selector: '.price' } }, result: { success: true } });
@@ -30,7 +30,7 @@ test('same page with two tasks creates two distinct visits', () => {
     runId: 'run-2',
     taskBoundaryId: 'boundary-2',
     terminalState: 'completed',
-    taskComplete: true,
+    runComplete: true,
     endedAt: Date.now(),
   });
 
@@ -46,7 +46,7 @@ test('same page with two tasks creates two distinct visits', () => {
 test('run_started reuses the active visit when Rover promotes a local task id to a server task id', () => {
   const tracker = new VisitTracker({ siteId: 'site-demo' }, { key: 'agent-1', name: 'Agent 1' });
 
-  tracker.handleTaskStarted({ taskId: 'task-local-1', reason: 'auto_new_prompt_boundary' });
+  tracker.handleVisitStarted({ taskId: 'task-local-1', reason: 'auto_new_prompt_boundary' });
   tracker.handleRunStarted({
     taskId: 'task_server_1',
     runId: 'run-1',
@@ -59,7 +59,7 @@ test('run_started reuses the active visit when Rover promotes a local task id to
     runId: 'run-1',
     taskBoundaryId: 'boundary-1',
     terminalState: 'completed',
-    taskComplete: true,
+    runComplete: true,
     endedAt: Date.now(),
     pageUrl: 'https://example.com/pricing',
   });
@@ -75,7 +75,7 @@ test('run_started reuses the active visit when Rover promotes a local task id to
 test('run lifecycle payload attribution is persisted onto the visit', () => {
   const tracker = new VisitTracker({ siteId: 'site-demo' }, { key: 'anon-1', name: 'Anonymous agent', anonymous: true });
 
-  tracker.handleTaskStarted({ taskId: 'task-1' });
+  tracker.handleVisitStarted({ taskId: 'task-1' });
   tracker.handleRunStarted({
     taskId: 'task-1',
     runId: 'run-1',
@@ -87,10 +87,10 @@ test('run lifecycle payload attribution is persisted onto the visit', () => {
       vendor: 'Anthropic',
       model: 'Claude 3.7 Sonnet',
       trust: 'self_reported',
-      source: 'public_task_agent',
+      source: 'public_run_agent',
       memoryKey: 'agent:claude-web',
     },
-    launchSource: 'public_task_api',
+    launchSource: 'public_run_api',
   });
 
   const visit = tracker.getVisit('task-1');
@@ -99,9 +99,9 @@ test('run lifecycle payload attribution is persisted onto the visit', () => {
   assert.equal(visit.agentVendor, 'Anthropic');
   assert.equal(visit.agentModel, 'Claude 3.7 Sonnet');
   assert.equal(visit.agentTrust, 'self_reported');
-  assert.equal(visit.agentSource, 'public_task_agent');
+  assert.equal(visit.agentSource, 'public_run_agent');
   assert.equal(visit.agentMemoryKey, 'agent:claude-web');
-  assert.equal(visit.launchSource, 'public_task_api');
+  assert.equal(visit.launchSource, 'public_run_api');
 });
 
 test('runtime session claims resolve to a durable agent identity', () => {
@@ -116,7 +116,7 @@ test('runtime session claims resolve to a durable agent identity', () => {
             agentVendor: 'OpenAI',
             agentModel: 'gpt-4.1',
             agentTrust: 'self_reported',
-            agentSource: 'public_task_agent',
+            agentSource: 'public_run_agent',
             agentMemoryKey: 'agent:gpt-4.1',
           },
         },
@@ -130,7 +130,7 @@ test('runtime session claims resolve to a durable agent identity', () => {
   assert.equal(identity.vendor, 'OpenAI');
   assert.equal(identity.model, 'gpt-4.1');
   assert.equal(identity.trust, 'self_reported');
-  assert.equal(identity.source, 'public_task_agent');
+  assert.equal(identity.source, 'public_run_agent');
   assert.equal(identity.memoryKey, 'agent:gpt-4.1');
 });
 

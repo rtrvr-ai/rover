@@ -27,7 +27,7 @@ When credits are exhausted, Rover API calls return an `auth_required` event. See
 Add this snippet before `</body>` on your website:
 
 ```html
-<script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
+<script type="application/agent+json">{"a2w":"https://agent.rtrvr.ai/v1/a2w/runs","run":"https://agent.rtrvr.ai/v1/a2w/runs"}</script>
 <script>
   (function(){
     var r = window.rover = window.rover || function(){
@@ -63,7 +63,7 @@ Standard owner-facing installs keep `Domain scope` configurable, open outside-do
 
 Get your `siteId` and `publicKey` (`pk_site_*`) from the [Rover Workspace](https://rover.rtrvr.ai/workspace). If you also have a `siteKeyId`, append it to the script URL as `embed.js?v=YOUR_SITE_KEY_ID` for cache-busting and safer key-rotation rollouts. The `v` query string does not affect domain authorization or scope matching.
 
-Site-owner credentials are only for installing Rover on your website. External AI callers do **not** need `siteId`, `publicKey`, or `siteKeyId` when they use the public task protocol.
+Site-owner credentials are only for installing Rover on your website. External AI callers do **not** need `siteId`, `publicKey`, or `siteKeyId` when they use the Agent-to-Web Protocol (A2W).
 
 For stronger machine discovery, publish `/.well-known/rover-site.json` as Rover's authoritative rich profile, publish `/.well-known/agent-card.json` as the interop card, add a `Link` header with `rel="service-desc"` for the interop card, and keep `llms.txt` as supporting context rather than the only AI-facing surface.
 
@@ -136,7 +136,7 @@ Resolution order:
 
 1. verified signed signal
 2. signed directory discovery without full request verification
-3. explicit `agent` metadata on `POST /v1/tasks`, delegated handoffs, or WebMCP task tools
+3. explicit `agent` metadata on `POST /v1/a2w/runs`, delegated handoffs, or WebMCP tools
 4. heuristic headers: `User-Agent`, `Signature-Agent`, `Signature`, `Signature-Input`, `X-RTRVR-Client-Id`
 5. advanced local `identityResolver`
 6. anonymous fallback
@@ -297,7 +297,7 @@ If your site sets a `Content-Security-Policy` header or `<meta>` tag, add the fo
 |---|---|---|
 | `script-src` | `https://rover.rtrvr.ai blob:` | Loads the SDK script. `blob:` is needed because the Web Worker is created from a blob URL. |
 | `worker-src` | `blob: https://rover.rtrvr.ai` | Allows the Web Worker to execute. |
-| `connect-src` | `https://agent.rtrvr.ai` | API calls for task execution, authentication, checkpointing, and public task resources. |
+| `connect-src` | `https://agent.rtrvr.ai` | API calls for execution, authentication, checkpointing, and public A2W run resources. |
 | `style-src` | `'unsafe-inline'` | Rover renders inside a Shadow DOM and injects its styles inline. |
 | `font-src` | `https://rover.rtrvr.ai` | Loads the self-hosted Manrope font used in the widget UI. |
 
@@ -508,7 +508,7 @@ For owner-facing installs, prefer `cloudSandboxEnabled: true` instead of hand-wi
 | `ui.voice` | `{ enabled?: boolean; language?: string; autoStopMs?: number }` | - | Browser dictation on supported Chromium browsers. Transcript fills the draft live, Rover waits for post-speech silence before stopping, and the user manually sends. |
 | `pageConfig` | `RoverPageCaptureConfig` | - | Optional per-site page-capture overrides such as `disableAutoScroll`, settle timing, and sparse-tree retry settings |
 
-With site keys (or a valid `rvrsess_*` token), Rover fetches cloud site config via `POST /v2/rover/session/open` (shortcuts + `businessType` + sparse `siteConfig.experience` overrides + legacy voice compatibility + `aiAccess` + `pageConfig`).
+With site keys (or a valid `rvrsess_*` token), Rover fetches cloud site config via `POST /v2/rover/session/open` (shortcuts + `businessType` + sparse `siteConfig.experience` overrides + voice compatibility + `aiAccess` + `pageConfig`).
 If boot config and cloud config define the same field, boot config takes precedence.
 `siteConfig.aiAccess.enabled` is the canonical owner-facing launch switch in Workspace/Webflow. `deepLink` remains boot/runtime only for advanced manual overrides such as custom param names, explicit enable/disable, or disabling URL param consumption.
 
@@ -524,10 +524,10 @@ Use raw prompt deep links for ad hoc tasks:
 https://example.com?rover=book%20a%20flight
 ```
 
-For AI and CLI tools that need structured results back, use the neutral task resource instead of raw deep links:
+For AI and CLI tools that need structured results back, use the neutral A2W run resource instead of raw deep links:
 
 ```http
-POST https://agent.rtrvr.ai/v1/tasks
+POST https://agent.rtrvr.ai/v1/a2w/runs
 Content-Type: application/json
 
 {
@@ -537,33 +537,33 @@ Content-Type: application/json
 }
 ```
 
-Compatibility aliases like `{ "url": "https://example.com", "prompt": "book a flight" }` still work, but the richer task envelope is the canonical public contract.
+Use the explicit A2W run envelope with `goal` for natural-language instructions and `shortcut` for saved journeys.
 
-The returned task URL supports JSON polling, SSE, NDJSON, continuation input, and cancel. Task creation may also return:
+The returned run URL supports JSON polling, SSE, NDJSON, continuation input, and cancel. Run creation may also return:
 
 - `open`: clean receipt URL for browser attach
 - `browserLink`: optional readable alias with visible `?rover=` or `?rover_shortcut=` when it fits the URL budget
 
-The task URL remains canonical; receipt links are only a browser handoff layer over that same task. When returned, `workflow` is the canonical aggregated lineage resource layered on top of that same ATP contract.
+The run URL remains canonical; receipt links are only a browser handoff layer over that same run. When returned, `workflow` is the canonical aggregated lineage resource layered on top of that same A2W contract.
 
-### Public agent tasks and workflows
+### A2W runs and workflows
 
-`POST /v1/tasks` returns a canonical task resource and, when applicable, a canonical workflow resource:
+`POST /v1/a2w/runs` returns a canonical run resource and, when applicable, a canonical workflow resource:
 
-- `task`: the durable single-task resource for JSON, SSE, NDJSON, continuation, and cancel
-- `workflow`: the aggregated lineage resource for a root task plus any delegated child tasks
+- `run`: the durable single-run resource for JSON, SSE, NDJSON, continuation, and cancel
+- `workflow`: the aggregated lineage resource for a root run plus any delegated child runs
 - `open`: clean receipt URL for browser attach
 - `browserLink`: optional readable browser alias when the visible URL stays within budget
 
-Use `GET /v1/workflows/{id}` when you need one aggregated multi-site view of the current workflow state or final result.
+Use `GET /v1/a2w/workflows/{id}` when you need one aggregated multi-site view of the current workflow state or final result.
 
-Cross-site workflows extend the same public task protocol. They do not replace `/v1/tasks`.
+Cross-site workflows extend the same A2W protocol.
 
 Cross-site delegation stays on the same public protocol:
 
-- `POST /v1/tasks/{id}/handoffs` creates a child task on another Rover-enabled site
-- child tasks inherit the same workflow lineage
-- `GET /v1/workflows/{id}` aggregates status and result across parent and child tasks
+- `POST /v1/a2w/runs/{id}/handoffs` creates a child run on another Rover-enabled site
+- child runs inherit the same workflow lineage
+- `GET /v1/a2w/workflows/{id}` aggregates status and result across parent and child runs
 
 Receiving sites must opt in through Workspace/site config:
 
@@ -575,7 +575,7 @@ By default, handoffs carry a structured summary of the goal, context, and last o
 The discovery marker is optional but recommended:
 
 ```html
-<script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
+<script type="application/agent+json">{"a2w":"https://agent.rtrvr.ai/v1/a2w/runs","run":"https://agent.rtrvr.ai/v1/a2w/runs"}</script>
 ```
 
 For broader agent interoperability, prefer the full discovery bundle:
@@ -599,7 +599,7 @@ Site owners manage install credentials in Workspace:
 
 The Workspace AI launch controls gate Rover's public launch surfaces:
 
-- `aiAccess.enabled` for `POST /v1/tasks`, `?rover=...`, and `?rover_shortcut=...`
+- `aiAccess.enabled` for `POST /v1/a2w/runs`, `?rover=...`, and `?rover_shortcut=...`
 - `aiAccess.allowCloudBrowser`
 - `aiAccess.allowDelegatedHandoffs`
 - `aiAccess.debugStreaming`
@@ -699,11 +699,9 @@ off(); // unsubscribe
 | `auth_required` | `{ code, missing, message }` | Authentication needed |
 | `navigation_guardrail` | `{ url, policy }` | Out-of-scope navigation intercepted |
 | `mode_change` | `{ mode }` | Switched between `controller` and `observer` |
-| `task_started` | `{ reason }` | New task started |
-| `task_ended` | `{ reason }` | Task ended |
-| `run_started` | `{ taskId, runId, taskBoundaryId, state, taskComplete, needsUserInput, summary? }` | Public run lifecycle start event |
-| `run_state_transition` | `{ taskId, runId, taskBoundaryId, state, taskComplete, needsUserInput, summary?, error? }` | Public run lifecycle transition event |
-| `run_completed` | `{ taskId, runId, taskBoundaryId, state, taskComplete, needsUserInput, summary?, error? }` | Terminal public run lifecycle event |
+| `run_started` | `{ runId, executionId, runBoundaryId, state, runComplete, needsUserInput, summary? }` | Public run lifecycle start event |
+| `run_state_transition` | `{ runId, executionId, runBoundaryId, state, runComplete, needsUserInput, summary?, error? }` | Public run lifecycle transition event |
+| `run_completed` | `{ runId, executionId, runBoundaryId, state, runComplete, needsUserInput, summary?, error? }` | Terminal public run lifecycle event |
 | `context_restored` | - | Session restored from checkpoint |
 | `checkpoint_state` | `{ state, reason?, action?, code?, message? }` | Checkpoint sync state updates |
 | `checkpoint_error` | `{ action, code?, message, ... }` | Checkpoint request failure details |

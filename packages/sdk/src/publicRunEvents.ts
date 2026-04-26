@@ -10,7 +10,7 @@ export type NormalizedPromptContextEntry = {
 };
 
 export type RunCompletionStateLike = {
-  taskComplete: boolean;
+  runComplete?: boolean;
   needsUserInput: boolean;
   terminalState: 'waiting_input' | 'in_progress' | 'completed' | 'failed';
   continuationReason?: 'loop_continue' | 'same_tab_navigation_handoff' | 'awaiting_user';
@@ -19,9 +19,9 @@ export type RunCompletionStateLike = {
 
 type CommonPayloadParams = {
   msg: any;
-  taskId?: string;
-  currentTaskBoundaryId?: string;
-  normalizeTaskBoundaryId?: (value: unknown) => string | undefined;
+  runId?: string;
+  currentRunBoundaryId?: string;
+  normalizeRunBoundaryId?: (value: unknown) => string | undefined;
   pageUrl?: string;
   now?: number;
 };
@@ -40,14 +40,18 @@ export function normalizePromptContextEntry(
 }
 
 export function buildPublicRunStartedPayload(params: CommonPayloadParams): Record<string, unknown> {
-  const normalizeTaskBoundaryId = params.normalizeTaskBoundaryId || (value => String(value || '').trim() || undefined);
+  const normalizeRunBoundaryId = params.normalizeRunBoundaryId || (value => String(value || '').trim() || undefined);
+  const executionId =
+    typeof params.msg?.executionId === 'string' && params.msg.executionId.trim()
+      ? params.msg.executionId.trim()
+      : (typeof params.msg?.runId === 'string' ? params.msg.runId : undefined);
   return {
-    taskId: String(params.taskId || '').trim() || undefined,
-    runId: typeof params.msg?.runId === 'string' ? params.msg.runId : undefined,
-    taskBoundaryId:
-      typeof params.msg?.taskBoundaryId === 'string'
-        ? normalizeTaskBoundaryId(params.msg.taskBoundaryId)
-        : normalizeTaskBoundaryId(params.currentTaskBoundaryId),
+    runId: String(params.runId || '').trim() || undefined,
+    executionId,
+    runBoundaryId:
+      typeof params.msg?.runBoundaryId === 'string'
+        ? normalizeRunBoundaryId(params.msg.runBoundaryId)
+        : normalizeRunBoundaryId(params.currentRunBoundaryId),
     text: typeof params.msg?.text === 'string' ? params.msg.text : undefined,
     startedAt: params.now || Date.now(),
     pageUrl: params.pageUrl,
@@ -60,10 +64,12 @@ export function buildPublicRunLifecyclePayload(
     latestSummary?: string;
   },
 ): Record<string, unknown> {
-  const normalizeTaskBoundaryId = params.normalizeTaskBoundaryId || (value => String(value || '').trim() || undefined);
-  const runId =
-    typeof params.msg?.runId === 'string' && params.msg.runId.trim()
-      ? params.msg.runId.trim()
+  const normalizeRunBoundaryId = params.normalizeRunBoundaryId || (value => String(value || '').trim() || undefined);
+  const executionId =
+    typeof params.msg?.executionId === 'string' && params.msg.executionId.trim()
+      ? params.msg.executionId.trim()
+      : typeof params.msg?.runId === 'string' && params.msg.runId.trim()
+        ? params.msg.runId.trim()
       : undefined;
   const terminalState =
     params.completionState.terminalState === 'waiting_input'
@@ -90,15 +96,15 @@ export function buildPublicRunLifecyclePayload(
           ? 'partial'
           : 'abandoned';
   return {
-    taskId: String(params.taskId || '').trim() || undefined,
-    runId,
-    taskBoundaryId:
-      typeof params.msg?.taskBoundaryId === 'string'
-        ? normalizeTaskBoundaryId(params.msg.taskBoundaryId)
-        : normalizeTaskBoundaryId(params.currentTaskBoundaryId),
+    runId: String(params.runId || '').trim() || undefined,
+    executionId,
+    runBoundaryId:
+      typeof params.msg?.runBoundaryId === 'string'
+        ? normalizeRunBoundaryId(params.msg.runBoundaryId)
+        : normalizeRunBoundaryId(params.currentRunBoundaryId),
     terminalState,
     continuationReason: params.completionState.continuationReason,
-    taskComplete: params.completionState.taskComplete,
+    runComplete: params.completionState.runComplete === true,
     needsUserInput: params.completionState.needsUserInput,
     summary,
     error,
@@ -109,4 +115,3 @@ export function buildPublicRunLifecyclePayload(
     pageUrl: params.pageUrl,
   };
 }
-

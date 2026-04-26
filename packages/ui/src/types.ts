@@ -46,6 +46,30 @@ export type RoverTimelineKind =
 
 export type RoverExecutionMode = 'controller' | 'observer';
 
+export type RoverActionCueKind =
+  | 'click'
+  | 'type'
+  | 'select'
+  | 'clear'
+  | 'focus'
+  | 'hover'
+  | 'press'
+  | 'scroll'
+  | 'drag'
+  | 'navigate'
+  | 'read'
+  | 'wait'
+  | 'unknown';
+
+export type RoverActionCue = {
+  kind: RoverActionCueKind;
+  toolCallId?: string;
+  primaryElementId?: number;
+  elementIds?: number[];
+  valueRedacted?: boolean;
+  targetLabel?: string;
+};
+
 export type RoverTimelineEvent = {
   id?: string;
   kind: RoverTimelineKind;
@@ -56,6 +80,7 @@ export type RoverTimelineEvent = {
   ts?: number;
   elementId?: number;
   toolName?: string;
+  actionCue?: RoverActionCue;
 };
 
 export type RoverMessageBlock =
@@ -205,6 +230,7 @@ export type RoverExperienceConfig = {
     intensity?: 'calm' | 'balanced' | 'expressive';
     reducedMotionFallback?: 'reduce' | 'remove';
     performanceBudget?: 'standard' | 'high';
+    actionSpotlight?: boolean;
     filaments?: boolean;
     particles?: boolean;
     palimpsest?: boolean;

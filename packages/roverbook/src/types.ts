@@ -59,14 +59,14 @@ export type AgentIdentityTrust =
   | 'heuristic'
   | 'anonymous';
 export type AgentIdentitySource =
-  | 'public_task_agent'
+  | 'public_run_agent'
   | 'handoff_agent'
   | 'webmcp_agent'
   | 'signature_agent'
   | 'user_agent'
   | 'owner_resolver'
   | 'anonymous';
-export type LaunchSource = 'public_task_api' | 'delegated_handoff' | 'webmcp' | 'embedded_widget';
+export type LaunchSource = 'public_run_api' | 'delegated_handoff' | 'webmcp' | 'embedded_widget';
 export type VisitOutcome = 'success' | 'failure' | 'partial' | 'abandoned' | 'input_required';
 export type VisitStatus = 'active' | 'completed' | 'failed' | 'abandoned' | 'input_required';
 export type RunTerminalState = 'waiting_input' | 'in_progress' | 'completed' | 'failed';
@@ -121,7 +121,7 @@ export type RoverBookExperimentConfig = {
 
 export type RoverBookWebMCPConfig = {
   enabled?: boolean;
-  registerTaskTool?: boolean;
+  registerRunTool?: boolean;
   registerPageDataTool?: boolean;
   registerFeedbackTool?: boolean;
   registerMemoryTool?: boolean;
@@ -166,7 +166,7 @@ export type RoverRunSummary = {
   terminalState?: RunTerminalState;
   continuationReason?: string;
   outcome: VisitOutcome;
-  taskComplete: boolean;
+  runComplete: boolean;
   needsUserInput: boolean;
   summary?: string;
   error?: string;
@@ -216,8 +216,8 @@ export type RoverVisit = {
 };
 
 export type RoverBookEventType =
-  | 'task_started'
-  | 'task_ended'
+  | 'visit_started'
+  | 'visit_ended'
   | 'run_started'
   | 'run_state_transition'
   | 'run_completed'
@@ -417,7 +417,7 @@ export type RunLifecyclePayload = {
   taskBoundaryId?: string;
   terminalState?: RunTerminalState;
   continuationReason?: string;
-  taskComplete?: boolean;
+  runComplete?: boolean;
   needsUserInput?: boolean;
   summary?: string;
   error?: string;

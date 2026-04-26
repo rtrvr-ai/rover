@@ -20,6 +20,113 @@ export const effectsStyles = `
       stroke-dasharray: 6 4;
     }
 
+    /* ── Action Spotlight (agent target highlight) ── */
+    .actionSpotlightLayer {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      pointer-events: none;
+      z-index: 2147483645;
+    }
+
+    .actionSpotlightRing {
+      position: fixed;
+      left: 0;
+      top: 0;
+      border-radius: 10px;
+      border: 2px solid var(--rv-accent, #ff4c00);
+      background: rgba(255, 76, 0, 0.045);
+      box-shadow:
+        0 0 0 2px rgba(255, 255, 255, 0.74),
+        0 0 0 6px rgba(255, 76, 0, 0.12),
+        0 12px 32px rgba(255, 76, 0, 0.18);
+      opacity: 1;
+      transform-origin: center;
+      will-change: transform, width, height, opacity;
+      transition: opacity 420ms ease, box-shadow 220ms ease;
+    }
+
+    .actionSpotlightRing.pulse {
+      animation: actionSpotlightPulse 720ms var(--rv-ease-decel) 1;
+    }
+
+    .actionSpotlightRing.fading {
+      opacity: 0;
+      box-shadow:
+        0 0 0 1px rgba(255, 255, 255, 0.4),
+        0 0 0 2px rgba(255, 76, 0, 0);
+    }
+
+    .actionSpotlightChip {
+      position: fixed;
+      left: 0;
+      top: 0;
+      max-width: 180px;
+      min-height: 26px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      background: rgba(26, 26, 25, 0.88);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      box-shadow: 0 10px 28px rgba(10, 14, 24, 0.16);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      font: 700 11px/1.35 'Manrope', system-ui, -apple-system, sans-serif;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      opacity: 1;
+      will-change: transform, opacity;
+      transition: opacity 420ms ease;
+    }
+
+    .actionSpotlightChip.fading {
+      opacity: 0;
+    }
+
+    :host(.dark) .actionSpotlightRing {
+      background: rgba(255, 76, 0, 0.07);
+      box-shadow:
+        0 0 0 2px rgba(15, 17, 23, 0.72),
+        0 0 0 6px rgba(255, 76, 0, 0.16),
+        0 12px 32px rgba(255, 76, 0, 0.22);
+    }
+
+    @keyframes actionSpotlightPulse {
+      0% {
+        opacity: 0.2;
+        box-shadow:
+          0 0 0 0 rgba(255, 255, 255, 0.74),
+          0 0 0 0 rgba(255, 76, 0, 0.22),
+          0 12px 32px rgba(255, 76, 0, 0.12);
+      }
+      55% {
+        opacity: 1;
+        box-shadow:
+          0 0 0 2px rgba(255, 255, 255, 0.74),
+          0 0 0 10px rgba(255, 76, 0, 0.06),
+          0 12px 32px rgba(255, 76, 0, 0.2);
+      }
+      100% {
+        opacity: 1;
+        box-shadow:
+          0 0 0 2px rgba(255, 255, 255, 0.74),
+          0 0 0 6px rgba(255, 76, 0, 0.12),
+          0 12px 32px rgba(255, 76, 0, 0.18);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .actionSpotlightRing.pulse {
+        animation: none;
+      }
+      .actionSpotlightRing,
+      .actionSpotlightChip {
+        transition: opacity 120ms ease;
+      }
+    }
+
     /* ── Tool Ripple ── */
     .tool-ripple {
       position: fixed;

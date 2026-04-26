@@ -35,7 +35,7 @@ One product, two planes:
 | Reads DOM | No | Vision/pixels | Direct DOM + a11y tree |
 | Latency | N/A | Seconds per action | Milliseconds |
 | Infrastructure | Iframe/server | Remote VM | Zero, runs in-browser |
-| AI / agent access | No | No | `POST /v1/tasks`, handoffs, WebMCP |
+| AI / agent access | No | No | `POST /v1/a2w/runs`, handoffs, WebMCP |
 | Open Source | Varies | No | FSL-1.1-Apache-2.0 |
 
 ### For websites
@@ -44,7 +44,7 @@ Drop in Rover and users get an assistant that can actually use the page.
 
 ### For AI agents
 
-Rover exposes machine-readable task resources at `POST https://agent.rtrvr.ai/v1/tasks`, delegated handoffs, workflow lineage, optional WebMCP task/tools discovery, and helper utilities for publishing `/.well-known/rover-site.json`, `/.well-known/agent-card.json`, and `service-desc` discovery metadata.
+Rover exposes machine-readable A2W run resources at `POST https://agent.rtrvr.ai/v1/a2w/runs`, delegated handoffs, workflow lineage, optional WebMCP tools discovery, and helper utilities for publishing `/.well-known/rover-site.json`, `/.well-known/agent-card.json`, and `service-desc` discovery metadata.
 
 ### For site owners
 
@@ -71,7 +71,7 @@ The same core runtime works in websites, Chrome extensions, Electron apps, and o
 ### Script tag
 
 ```html
-<script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
+<script type="application/agent+json">{"a2w":"https://agent.rtrvr.ai/v1/a2w/runs","run":"https://agent.rtrvr.ai/v1/a2w/runs"}</script>
 <script>
   (function () {
     var r = window.rover = window.rover || function () {
@@ -299,7 +299,7 @@ Use the hosted API when you want signed-in preview creation, preview tokens, hos
 ## Features
 
 - **Browser-first deep links**: trigger tasks via `?rover=` and `?rover_shortcut=`
-- **Agent Task Protocol (ATP)**: `POST /v1/tasks` for public machine-readable task execution
+- **Agent-to-Web Protocol (A2W)**: `POST /v1/a2w/runs` for public machine-readable site execution
 - **Cross-site workflows and handoffs**: delegate from one Rover-enabled site to another with shared workflow lineage
 - **WebMCP support**: discoverable Rover and RoverBook tools for compatible agents
 - **Universal DOM agent**: websites, extensions, Electron, any DOM environment
@@ -316,16 +316,16 @@ Use the hosted API when you want signed-in preview creation, preview tokens, hos
 
 ---
 
-## AI / Agent Access - Agent Task Protocol (ATP)
+## Agent-to-Web Protocol (A2W)
 
-Rover-enabled sites support browser-first convenience and machine-first task resources.
+Rover-enabled sites support browser-first convenience and machine-first A2W runs.
 
 ### Machine path
 
-This is the canonical public task protocol:
+This is the canonical public A2W protocol:
 
 ```http
-POST https://agent.rtrvr.ai/v1/tasks
+POST https://agent.rtrvr.ai/v1/a2w/runs
 Content-Type: application/json
 
 {
@@ -343,7 +343,7 @@ Content-Type: application/json
 Or:
 
 ```http
-POST https://agent.rtrvr.ai/v1/tasks
+POST https://agent.rtrvr.ai/v1/a2w/runs
 Content-Type: application/json
 
 {
@@ -352,7 +352,7 @@ Content-Type: application/json
 }
 ```
 
-The response returns a canonical task URL that supports:
+The response returns a canonical run URL that supports:
 
 - JSON polling / final result
 - SSE
@@ -365,21 +365,21 @@ The response returns a canonical task URL that supports:
 
 Anonymous AI callers do **not** need `siteId`, `publicKey`, or `siteKeyId`. Those values are only for website owners installing Rover.
 
-If the site emits the discovery marker below, AI tools can detect ATP support directly from HTML:
+If the site emits the discovery marker below, AI tools can detect A2W support directly from HTML:
 
 ```html
-<script type="application/agent+json">{"task":"https://agent.rtrvr.ai/v1/tasks"}</script>
+<script type="application/agent+json">{"a2w":"https://agent.rtrvr.ai/v1/a2w/runs","run":"https://agent.rtrvr.ai/v1/a2w/runs"}</script>
 ```
 
 For stronger discovery, publish `/.well-known/rover-site.json` as Rover's authoritative rich profile, publish `/.well-known/agent-card.json` as the broad interop card, add a `Link: </.well-known/agent-card.json>; rel="service-desc"` header for generic agents, and include source-visible discovery tags from the SDK helper `createRoverAgentDiscoveryTags(...)`.
 
 ### Delegated handoffs
 
-Rover tasks can delegate part of a workflow to another Rover-enabled site:
+A2W runs can delegate part of a workflow to another Rover-enabled site:
 
-- create the root task with `POST /v1/tasks`
-- delegate with `POST /v1/tasks/{id}/handoffs`
-- follow aggregated lineage with `GET /v1/workflows/{id}`
+- create the root run with `POST /v1/a2w/runs`
+- delegate with `POST /v1/a2w/runs/{id}/handoffs`
+- follow aggregated lineage with `GET /v1/a2w/workflows/{id}`
 
 Handoff creation also accepts optional `agent` metadata. If the child request does not provide a new `agent`, the parent attribution is inherited.
 
@@ -414,7 +414,7 @@ Shortcut deep links:
 https://example.com?rover_shortcut=checkout_flow
 ```
 
-These are browser convenience flows. If you need structured task results back, use `/v1/tasks`.
+These are browser convenience flows. If you need structured progress or results back, use `/v1/a2w/runs`.
 
 For the full external-agent contract, see [SKILLS.md](SKILLS.md).
 
@@ -438,8 +438,8 @@ Rover executes the task. RoverBook records and surfaces what happened:
 
 RoverBook uses Rover's real runtime boundaries:
 
-- **visit** = one Rover task (`visitId = taskId`)
-- **run** = one execution attempt inside that visit
+- **visit** = one Rover A2W run (`visitId = runId`)
+- **execution** = one worker/model attempt inside that visit
 - **event** = lifecycle or tool event emitted during that run
 
 Important contract split:
@@ -481,7 +481,7 @@ Rover and RoverBook use a tiered attribution model for visiting agents.
 Resolution order:
 
 1. verified signed signal
-2. explicit `agent` metadata on public tasks, handoffs, or WebMCP tools
+2. explicit `agent` metadata on A2W runs, handoffs, or WebMCP tools
 3. heuristic attribution from headers / user-agent
 4. advanced owner `identityResolver`
 5. anonymous fallback
@@ -512,10 +512,10 @@ See [docs/AGENT_IDENTITY.md](docs/AGENT_IDENTITY.md) for the full model.
 
 RoverBook is explicit about what it can and cannot see:
 
-- full-fidelity trajectories are guaranteed for **Rover-managed tasks**
-- third-party agents that never touch Rover, WebMCP, or public Rover tasks are not magically reconstructed
+- full-fidelity trajectories are guaranteed for **Rover-managed runs**
+- third-party agents that never touch Rover, WebMCP, or A2W runs are not magically reconstructed
 - derived reviews and interview answers are marked `derived`, not presented as literal quoted agent text
-- delegated cross-site work uses public Rover tasks and handoffs, not an ad hoc `postMessage` side channel
+- delegated cross-site work uses A2W runs and handoffs, not an ad hoc `postMessage` side channel
 
 ---
 
@@ -598,7 +598,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full end-to-end picture
 | [RoverBook Package](packages/roverbook/README.md) | Integrators | RoverBook config, memory, reviews, interviews, board, experiments |
 | [Integration Guide](docs/INTEGRATION.md) | Integrators | Setup, Workspace flow, RoverBook install path, troubleshooting |
 | [Agent Identity](docs/AGENT_IDENTITY.md) | Integrators | Trust tiers, attribution order, memory keys, runtime propagation |
-| [External Agent Guide](SKILLS.md) | AI / CLI / agents | Discovery marker, `/v1/tasks`, workflows, handoffs, SSE, NDJSON, continuation |
+| [External Agent Guide](SKILLS.md) | AI / CLI / agents | Discovery marker, `/v1/a2w/runs`, workflows, handoffs, SSE, NDJSON, continuation |
 | [Architecture](docs/ARCHITECTURE.md) | Contributors | Package graph, runtime flow, RoverBook integration points |
 | [Security Model](docs/SECURITY_MODEL.md) | Security | Threat model, owner/runtime auth split, attribution trust tiers |
 | [Guardrails](docs/EXECUTION_GUARDRAILS.md) | Security | Domain scoping, navigation policies |

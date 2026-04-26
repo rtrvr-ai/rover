@@ -25,19 +25,12 @@ export type ResolvedDeepLinkConfig = {
 
 export type DeepLinkAiAccessInput = {
   enabled?: boolean;
-  allowPromptLaunch?: boolean;
-  allowShortcutLaunch?: boolean;
 } | null | undefined;
 
-export type ResolvedRuntimeDeepLinkConfig = ResolvedDeepLinkConfig & {
-  promptLaunchEnabled: boolean;
-  shortcutLaunchEnabled: boolean;
-};
+export type ResolvedRuntimeDeepLinkConfig = ResolvedDeepLinkConfig;
 
 export type ResolvedAiLaunchAccess = {
   enabled: boolean;
-  promptLaunchEnabled: boolean;
-  shortcutLaunchEnabled: boolean;
 };
 
 export type RoverDeepLinkRequest =
@@ -106,27 +99,10 @@ export function resolveDeepLinkConfig(raw?: DeepLinkConfigInput): ResolvedDeepLi
 }
 
 export function resolveAiLaunchAccess(aiAccess?: DeepLinkAiAccessInput): ResolvedAiLaunchAccess {
-  const hasCanonicalEnabled = typeof aiAccess?.enabled === 'boolean';
-  const hasLegacyPromptLaunch = typeof aiAccess?.allowPromptLaunch === 'boolean';
-  const hasLegacyShortcutLaunch = typeof aiAccess?.allowShortcutLaunch === 'boolean';
-  const canonicalEnabled = aiAccess?.enabled === true;
-
-  const promptLaunchEnabled = hasCanonicalEnabled
-    ? canonicalEnabled && aiAccess?.allowPromptLaunch !== false
-    : hasLegacyPromptLaunch
-      ? aiAccess?.allowPromptLaunch === true
-      : false;
-
-  const shortcutLaunchEnabled = hasCanonicalEnabled
-    ? canonicalEnabled && aiAccess?.allowShortcutLaunch !== false
-    : hasLegacyShortcutLaunch
-      ? aiAccess?.allowShortcutLaunch === true
-      : false;
+  const enabled = aiAccess?.enabled === true;
 
   return {
-    enabled: promptLaunchEnabled || shortcutLaunchEnabled,
-    promptLaunchEnabled,
-    shortcutLaunchEnabled,
+    enabled,
   };
 }
 
@@ -136,8 +112,6 @@ export function resolveRuntimeDeepLinkConfig(
 ): ResolvedRuntimeDeepLinkConfig {
   const normalized = normalizeDeepLinkConfig(rawConfig);
   const hasExplicitEnabled = typeof normalized.enabled === 'boolean';
-  const hasLegacyPromptLaunch = typeof aiAccess?.allowPromptLaunch === 'boolean';
-  const hasLegacyShortcutLaunch = typeof aiAccess?.allowShortcutLaunch === 'boolean';
   const launchAccess = resolveAiLaunchAccess(aiAccess);
   const enabled = hasExplicitEnabled
     ? normalized.enabled === true
@@ -147,16 +121,6 @@ export function resolveRuntimeDeepLinkConfig(
     promptParam: normalized.promptParam,
     shortcutParam: normalized.shortcutParam,
     consume: normalized.consume,
-    promptLaunchEnabled: !enabled
-      ? false
-      : hasExplicitEnabled
-        ? (hasLegacyPromptLaunch ? aiAccess?.allowPromptLaunch === true : true)
-        : launchAccess.promptLaunchEnabled,
-    shortcutLaunchEnabled: !enabled
-      ? false
-      : hasExplicitEnabled
-        ? (hasLegacyShortcutLaunch ? aiAccess?.allowShortcutLaunch === true : true)
-        : launchAccess.shortcutLaunchEnabled,
   };
 }
 

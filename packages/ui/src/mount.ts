@@ -12,6 +12,8 @@ export type {
   RoverAskUserAnswerMeta,
   RoverTimelineKind,
   RoverExecutionMode,
+  RoverActionCueKind,
+  RoverActionCue,
   RoverTimelineEvent,
   RoverMessageBlock,
   RoverTaskSuggestion,
@@ -48,6 +50,7 @@ import type {
   ConversationListItem,
   RoverPresenceState,
   RoverVoiceConfig,
+  RoverTimelineEvent,
 } from './types.js';
 import type { VoiceRecognitionError, VoiceTranscriber } from './voice.js';
 
@@ -87,6 +90,7 @@ import { createCommandBar } from './components/command-bar.js';
 import { createParticleSystem } from './components/particles.js';
 import { createFilamentSystem } from './components/filaments.js';
 import { createLiveStack } from './components/live-stack.js';
+import { createActionSpotlightSystem, deriveElementLabel } from './components/action-spotlight.js';
 
 // Style imports
 import { baseStyles } from './styles/base.css.js';
@@ -314,6 +318,14 @@ export function mountWidget(opts: MountOptions): RoverUi {
     resolveElement: opts.resolveElement,
   });
 
+  // ── Action Spotlight System ──
+  const actionSpotlightSystem = createActionSpotlightSystem({
+    container: wrapper,
+    panel: win.panel,
+    resolveElement: opts.resolveElement,
+    reducedMotion: prefersReducedMotion(),
+  });
+
   // ── Audio Analyser ──
   const audioAnalyser = createAudioAnalyser({
     onFrequencyData: (avg) => {
@@ -372,6 +384,22 @@ export function mountWidget(opts: MountOptions): RoverUi {
     } catch {
       setTimeout(() => ripple.remove(), 500);
     }
+  }
+
+  function withResolvedActionCueLabel(event: RoverTimelineEvent): RoverTimelineEvent {
+    const cue = event.actionCue;
+    if (!cue || cue.targetLabel) return event;
+    const primaryElementId = cue.primaryElementId ?? event.elementId;
+    const el = primaryElementId != null ? opts.resolveElement?.(primaryElementId) : null;
+    const targetLabel = deriveElementLabel(el);
+    if (!targetLabel) return event;
+    return {
+      ...event,
+      actionCue: {
+        ...cue,
+        targetLabel,
+      },
+    };
   }
 
   // ── Voice State ──
@@ -1222,6 +1250,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
       waitingForFirstModelSignal = false;
       filamentSystem.clearAll();
+      actionSpotlightSystem.clearAll();
 
       // Open canvas with results if task completed and panel isn't already open
       if (wasRunning && stateMachine.getState() !== 'window') {
@@ -1330,6 +1359,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     // Re-evaluate motion config flags
     if (experience.motion?.particles === false) particleSystem.setMode('idle');
     if (experience.motion?.filaments === false) filamentSystem.clearAll();
+    if (experience.motion?.actionSpotlight === false) actionSpotlightSystem.clearAll();
     if (experience.motion?.palimpsest === false) win.backdrop.classList.remove('palimpsest');
     syncTaskStage(); renderArtifactStage(); seed.applyPosition();
   }
@@ -1346,6 +1376,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     liveStack.destroy();
     particleSystem.destroy();
     filamentSystem.destroy();
+    actionSpotlightSystem.destroy();
     audioAnalyser.dispose();
     window.removeEventListener('resize', handleViewportMutation);
     window.removeEventListener('orientationchange', handleViewportMutation);
@@ -1435,7 +1466,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   return {
     addMessage,
     setTranscript: (messages, timeline) => {
-      feedComp.setTranscript(messages, timeline);
+      feedComp.setTranscript(messages, timeline.map(withResolvedActionCueLabel));
       hasMessages = messages.length > 0 || timeline.length > 0;
       const latestUserMessage = [...messages].reverse().find(message => message.role === 'user');
       latestTaskTitle = latestUserMessage ? sanitizeText(latestUserMessage.text) : '';
@@ -1445,14 +1476,16 @@ export function mountWidget(opts: MountOptions): RoverUi {
     setQuestionPrompt,
     clearMessages,
     addTimelineEvent: (event) => {
-      feedComp.addTimelineEvent(event);
-      liveStack.addTimelineEvent(event);
-      captureArtifactFromBlocks(event.detailBlocks);
-      if (event.kind === 'thought' && isRunning && waitingForFirstModelSignal) { waitingForFirstModelSignal = false; syncProcessingIndicator(); }
-      if ((event.title || '').toLowerCase() === 'run completed') {
+      const displayEvent = withResolvedActionCueLabel(event);
+      feedComp.addTimelineEvent(displayEvent);
+      liveStack.addTimelineEvent(displayEvent);
+      captureArtifactFromBlocks(displayEvent.detailBlocks);
+      if (displayEvent.kind === 'thought' && isRunning && waitingForFirstModelSignal) { waitingForFirstModelSignal = false; syncProcessingIndicator(); }
+      if ((displayEvent.title || '').toLowerCase() === 'run completed') {
         feedComp.setTraceExpanded(false, experience.stream?.maxVisibleLiveCards);
+        actionSpotlightSystem.clearAll();
       }
-      const status = event.status || (event.kind === 'error' ? 'error' : event.kind === 'tool_result' ? 'success' : 'pending');
+      const status = displayEvent.status || (displayEvent.kind === 'error' ? 'error' : displayEvent.kind === 'tool_result' ? 'success' : 'pending');
       if (status === 'error') stateMachine.setMood('error', 2200);
       else if (status === 'success') stateMachine.setMood('success', 1200);
       else stateMachine.setMood('running', 800);
@@ -1463,30 +1496,34 @@ export function mountWidget(opts: MountOptions): RoverUi {
       syncTaskStage();
 
       // Tide-line tracking
-      if (event.kind === 'tool_start') {
+      if (displayEvent.kind === 'tool_start') {
         toolStartCount++;
         updateTideProgress();
+        if (experience.motion?.actionSpotlight !== false) {
+          actionSpotlightSystem.addEvent(displayEvent);
+        }
         // Filaments + ripples
-        if (event.elementId != null && experience.motion?.filaments !== false) {
-          filamentSystem.addTarget(event.elementId, event.toolName);
-          const el = opts.resolveElement?.(event.elementId);
+        if (displayEvent.elementId != null && experience.motion?.filaments !== false) {
+          filamentSystem.addTarget(displayEvent.elementId, displayEvent.toolName);
+          const el = opts.resolveElement?.(displayEvent.elementId);
           if (el) {
             const rect = el.getBoundingClientRect();
-            spawnToolRipple(rect.left + rect.width / 2, rect.top + rect.height / 2);
+            if (!prefersReducedMotion()) spawnToolRipple(rect.left + rect.width / 2, rect.top + rect.height / 2);
             // Update palimpsest center
             wrapper.style.setProperty('--rv-palimpsest-x', `${rect.left + rect.width / 2}px`);
             wrapper.style.setProperty('--rv-palimpsest-y', `${rect.top + rect.height / 2}px`);
           } else {
             // Ripple from panel edge center
             const panelRect = win.panel.getBoundingClientRect();
-            spawnToolRipple(panelRect.left, panelRect.top + panelRect.height / 2);
+            if (!prefersReducedMotion()) spawnToolRipple(panelRect.left, panelRect.top + panelRect.height / 2);
           }
         }
       }
-      if (event.kind === 'tool_result') {
+      if (displayEvent.kind === 'tool_result') {
         toolResultCount++;
         updateTideProgress();
-        if (event.elementId != null) filamentSystem.fadeTarget(event.elementId);
+        actionSpotlightSystem.fadeEvent(displayEvent);
+        if (displayEvent.elementId != null) filamentSystem.fadeTarget(displayEvent.elementId);
       }
 
       // Pulse badge step count
@@ -1498,6 +1535,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       feedComp.clearTimeline(); liveStack.clear(); latestArtifactBlock = null; artifactExpanded = false; renderArtifactStage(); syncTaskStage();
       toolStartCount = 0; toolResultCount = 0; updateTideProgress();
       filamentSystem.clearAll();
+      actionSpotlightSystem.clearAll();
       pulseBadge.textContent = '0';
     },
     setTaskSuggestion,

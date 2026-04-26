@@ -84,7 +84,7 @@
     "build": "tsc -b && node ./scripts/copy-worker.mjs && node ./scripts/bundle.mjs && node ./scripts/build-embed.mjs",
     "lint": "eslint .",
     "type-check": "tsc --noEmit",
-    "test": "node --test tests/**/*.test.mjs"
+    "test": "node --test --test-force-exit tests/**/*.test.mjs"
   },
   "dependencies": {
     "@rover/bridge": "workspace:*",

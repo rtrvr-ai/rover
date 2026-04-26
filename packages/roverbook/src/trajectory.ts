@@ -51,7 +51,7 @@ function mapOutcome(payload?: RunLifecyclePayload): VisitOutcome {
   }
   if (payload?.needsUserInput) return 'input_required';
   if (payload?.terminalState === 'failed' || payload?.ok === false) return 'failure';
-  if (payload?.taskComplete || payload?.terminalState === 'completed') return 'success';
+  if (payload?.runComplete || payload?.terminalState === 'completed') return 'success';
   return 'partial';
 }
 
@@ -150,8 +150,8 @@ function inferEventStepType(type: RoverBookEventType, payload: Record<string, un
   if (type === 'navigation_guardrail') return 'backtrack';
   if (
     type === 'status'
-    || type === 'task_started'
-    || type === 'task_ended'
+    || type === 'visit_started'
+    || type === 'visit_ended'
     || type === 'run_started'
     || type === 'run_state_transition'
     || type === 'run_completed'
@@ -286,13 +286,13 @@ export class VisitTracker {
     return Array.from(this.visits.values()).map(visit => this.snapshotVisit(visit)!);
   }
 
-  handleTaskStarted(payload: { taskId?: string; reason?: string }): TrackingUpdate | null {
+  handleVisitStarted(payload: { taskId?: string; reason?: string }): TrackingUpdate | null {
     const taskId = asString(payload.taskId) || createId('visit');
     const visit = this.ensureVisit(taskId);
     visit.startedAt = Date.now();
     this.activeVisitId = visit.visitId;
     return {
-      event: createEvent(visit, 'task_started', {
+      event: createEvent(visit, 'visit_started', {
         taskId,
         reason: payload.reason,
       }),
@@ -311,7 +311,7 @@ export class VisitTracker {
       prompt: asString(payload.text),
       startedAt: Number(payload.startedAt || Date.now()) || Date.now(),
       outcome: 'partial',
-      taskComplete: false,
+      runComplete: false,
       needsUserInput: false,
       stepCount: 0,
       errorCount: 0,
@@ -473,7 +473,7 @@ export class VisitTracker {
     visit.taskBoundaryId = run.run.taskBoundaryId || visit.taskBoundaryId;
     run.run.terminalState = payload.terminalState;
     run.run.continuationReason = asString(payload.continuationReason);
-    run.run.taskComplete = payload.taskComplete === true;
+    run.run.runComplete = payload.runComplete === true;
     run.run.needsUserInput = payload.needsUserInput === true;
     run.run.summary = asString(payload.summary) || run.run.summary;
     run.run.error = asString(payload.error) || run.run.error;
@@ -492,7 +492,7 @@ export class VisitTracker {
       taskBoundaryId: run.run.taskBoundaryId,
       terminalState: run.run.terminalState,
       continuationReason: run.run.continuationReason,
-      taskComplete: run.run.taskComplete,
+      runComplete: run.run.runComplete,
       needsUserInput: run.run.needsUserInput,
       summary: run.run.summary,
       error: run.run.error,
@@ -503,7 +503,7 @@ export class VisitTracker {
     const shouldFinalize =
       run.run.outcome === 'success'
       || run.run.outcome === 'failure'
-      || (type === 'run_completed' && payload.needsUserInput !== true && payload.taskComplete !== false && payload.terminalState === 'completed');
+      || (type === 'run_completed' && payload.needsUserInput !== true && payload.runComplete !== false && payload.terminalState === 'completed');
     if (shouldFinalize) {
       this.finalizeVisit(visit, run.run.outcome, run.run.endedAt);
     } else if (run.run.outcome === 'input_required') {
@@ -518,7 +518,7 @@ export class VisitTracker {
     };
   }
 
-  handleTaskEnded(payload: { taskId?: string; reason?: string; endedAt?: number }): TrackingUpdate | null {
+  handleVisitEnded(payload: { taskId?: string; reason?: string; endedAt?: number }): TrackingUpdate | null {
     const taskId = asString(payload.taskId) || this.activeVisitId;
     if (!taskId) return null;
     const visit = this.visits.get(taskId);
@@ -527,7 +527,7 @@ export class VisitTracker {
       this.finalizeVisit(visit, 'abandoned', Number(payload.endedAt || Date.now()) || Date.now());
     }
     return {
-      event: createEvent(visit, 'task_ended', {
+      event: createEvent(visit, 'visit_ended', {
         taskId: visit.taskId,
         reason: payload.reason,
         endedAt: payload.endedAt,
@@ -663,7 +663,7 @@ export class VisitTracker {
       terminalState: run.terminalState,
       continuationReason: run.continuationReason,
       outcome: run.outcome,
-      taskComplete: run.taskComplete,
+      runComplete: run.runComplete,
       needsUserInput: run.needsUserInput,
       summary: run.summary,
       error: run.error,

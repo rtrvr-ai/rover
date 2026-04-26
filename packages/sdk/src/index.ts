@@ -10,6 +10,7 @@ import {
   ROVER_WIDGET_LAUNCHER_MOBILE_SIZE_PX,
   ROVER_WIDGET_MOBILE_BREAKPOINT_PX,
   type ConversationListItem,
+  type RoverActionCue,
   type RoverAskUserAnswerMeta,
   type RoverAskUserQuestion,
   type RoverExecutionMode,
@@ -97,6 +98,10 @@ import {
   normalizePromptContextEntry as normalizePromptContextEntryHelper,
 } from './publicRunEvents.js';
 import {
+  buildRoverActionCue,
+  buildToolStartDetailBlocks,
+} from './actionCue.js';
+import {
   writeCrossDomainResumeCookie,
   readCrossDomainResumeCookie,
   clearCrossDomainResumeCookie,
@@ -155,8 +160,8 @@ import {
   resolveRoverBases,
   type TabEventDecisionResponse,
   type RoverLaunchAttachResponse,
-  type RoverPublicTaskPayload,
-  type RoverTaskBrowserClaimResponse,
+  type RoverPublicRunPayload,
+  type RoverRunBrowserClaimResponse,
   type RoverLaunchIngestEvent,
   type RoverServerProjection,
   type RoverServerPolicy,
@@ -221,8 +226,6 @@ export type RoverDeepLinkConfig = {
 
 type RoverAiAccessConfig = {
   enabled?: boolean;
-  allowPromptLaunch?: boolean;
-  allowShortcutLaunch?: boolean;
   allowCloudBrowser?: boolean;
   allowDelegatedHandoffs?: boolean;
   debugStreaming?: boolean;
@@ -414,6 +417,8 @@ export type RoverEventName =
   | 'ready'
   | 'updated'
   | 'status'
+  | 'visit_started'
+  | 'visit_ended'
   | 'run_started'
   | 'run_state_transition'
   | 'run_completed'
@@ -423,8 +428,6 @@ export type RoverEventName =
   | 'auth_required'
   | 'navigation_guardrail'
   | 'mode_change'
-  | 'task_started'
-  | 'task_ended'
   | 'task_suggested_reset'
   | 'context_restored'
   | 'checkpoint_state'
@@ -829,18 +832,18 @@ let runtimeServerEpoch = 1;
 let serverAcceptedRunId: string | undefined;
 let lastAppliedServerSnapshotKey = '';
 let taskOrchestrator: TaskOrchestrator | null = null;
-type ActivePublicTaskContext = {
-  taskId: string;
-  taskUrl: string;
-  taskAccessToken?: string;
+type ActivePublicRunContext = {
+  runId: string;
+  runUrl: string;
+  runAccessToken?: string;
   workflowId?: string;
   workflowUrl?: string;
   workflowAccessToken?: string;
-  taskBoundaryId?: string;
-  runId?: string;
+  runBoundaryId?: string;
+  executionId?: string;
   updatedAt: number;
 };
-let activePublicTaskContext: ActivePublicTaskContext | null = null;
+let activePublicRunContext: ActivePublicRunContext | null = null;
 type RoverRuntimeAgentAttribution = {
   agentKey: string;
   agentName?: string;
@@ -848,7 +851,7 @@ type RoverRuntimeAgentAttribution = {
   agentModel?: string;
   agentTrust?: 'verified_signed' | 'signed_directory_only' | 'self_reported' | 'heuristic' | 'anonymous';
   agentSource?:
-    | 'public_task_agent'
+    | 'public_run_agent'
     | 'handoff_agent'
     | 'webmcp_agent'
     | 'signature_agent'
@@ -856,7 +859,7 @@ type RoverRuntimeAgentAttribution = {
     | 'owner_resolver'
     | 'anonymous';
   agentMemoryKey?: string;
-  launchSource?: 'public_task_api' | 'delegated_handoff' | 'webmcp' | 'embedded_widget';
+  launchSource?: 'public_run_api' | 'delegated_handoff' | 'webmcp' | 'embedded_widget';
 };
 const promptContextProviders = new Set<RoverPromptContextProvider>();
 let browserReceiptLastHandledKey = '';
@@ -876,14 +879,14 @@ type HandoffToolArgs = {
   contextSummary?: string;
   expectedOutput?: string;
   execution?: 'auto' | 'browser' | 'cloud';
-  task?: string;
+  run?: string;
   answer?: string;
 };
 let builtInToolsRegistered = false;
 const RUN_SCOPED_WORKER_MESSAGE_TYPES = new Set([
-  'run_started',
-  'run_state_transition',
-  'run_completed',
+  'execution_started',
+  'execution_state_transition',
+  'execution_completed',
   'assistant',
   'status',
   'tool_start',
@@ -974,9 +977,9 @@ async function resolvePromptContextEntries(
 function buildPublicRunStartedPayload(msg: any): Record<string, unknown> {
   return buildPublicRunStartedPayloadHelper({
     msg,
-    taskId: String(runtimeState?.activeTask?.taskId || getActiveTaskRecord()?.taskId || '').trim() || undefined,
-    currentTaskBoundaryId: runtimeState?.pendingRun?.taskBoundaryId || currentTaskBoundaryId,
-    normalizeTaskBoundaryId: value => normalizeTaskBoundaryId(typeof value === 'string' ? value : undefined),
+    runId: String(runtimeState?.activeTask?.taskId || getActiveTaskRecord()?.taskId || '').trim() || undefined,
+    currentRunBoundaryId: runtimeState?.pendingRun?.taskBoundaryId || currentTaskBoundaryId,
+    normalizeRunBoundaryId: value => normalizeTaskBoundaryId(typeof value === 'string' ? value : undefined),
     pageUrl: typeof window !== 'undefined' ? window.location.href : undefined,
     now: Date.now(),
   });
@@ -986,17 +989,18 @@ function buildPublicRunLifecyclePayload(
   msg: any,
   completionState: ReturnType<typeof normalizeRunCompletionState>,
 ): Record<string, unknown> {
-  const runId =
+  const executionId =
     typeof msg?.runId === 'string' && msg.runId.trim()
       ? msg.runId.trim()
       : String(runtimeState?.pendingRun?.id || '').trim() || undefined;
+  const runId = String(runtimeState?.activeTask?.taskId || getActiveTaskRecord()?.taskId || '').trim() || undefined;
   return buildPublicRunLifecyclePayloadHelper({
-    msg: runId ? { ...msg, runId } : msg,
-    taskId: String(runtimeState?.activeTask?.taskId || getActiveTaskRecord()?.taskId || '').trim() || undefined,
-    currentTaskBoundaryId: runtimeState?.pendingRun?.taskBoundaryId || currentTaskBoundaryId,
-    normalizeTaskBoundaryId: value => normalizeTaskBoundaryId(typeof value === 'string' ? value : undefined),
+    msg: executionId ? { ...msg, executionId } : msg,
+    runId,
+    currentRunBoundaryId: runtimeState?.pendingRun?.taskBoundaryId || currentTaskBoundaryId,
+    normalizeRunBoundaryId: value => normalizeTaskBoundaryId(typeof value === 'string' ? value : undefined),
     completionState,
-    latestSummary: runId ? latestAssistantByRunId.get(runId) : undefined,
+    latestSummary: executionId ? latestAssistantByRunId.get(executionId) : undefined,
     pageUrl: typeof window !== 'undefined' ? window.location.href : undefined,
     now: Date.now(),
   });
@@ -1201,7 +1205,7 @@ function isAgentDiscoveryAgentModeActive(): boolean {
   return !!(
     agentDiscoveryExplicitHandshake
     || runtimeState?.uiOpen
-    || activePublicTaskContext
+    || activePublicRunContext
     || activeLaunchBinding?.requestId
   );
 }
@@ -1652,7 +1656,7 @@ function syncAgentDiscoveryLandmark(cfg: RoverInit | null): void {
   if (!state.visibleCapabilities.length) {
     landmark.innerHTML = [
       `<strong>${escapeHtml(state.beaconLabel)}</strong>`,
-      '<div class="rover-discovery-summary">Rover is published on this page and ready through the task protocol, page manifest, and semantic surface.</div>',
+      '<div class="rover-discovery-summary">Rover is published on this page and ready through the A2W run protocol, page manifest, and semantic surface.</div>',
     ].join('');
     return;
   }
@@ -2598,7 +2602,7 @@ function readRuntimeAgentAttribution(token?: string): RoverRuntimeAgentAttributi
             ? 'verified_signed'
           : undefined,
       agentSource:
-        agentSource === 'public_task_agent'
+        agentSource === 'public_run_agent'
         || agentSource === 'handoff_agent'
         || agentSource === 'webmcp_agent'
         || agentSource === 'signature_agent'
@@ -2609,7 +2613,7 @@ function readRuntimeAgentAttribution(token?: string): RoverRuntimeAgentAttributi
           : undefined,
       agentMemoryKey,
       launchSource:
-        launchSource === 'public_task_api'
+        launchSource === 'public_run_api'
         || launchSource === 'delegated_handoff'
         || launchSource === 'webmcp'
         || launchSource === 'embedded_widget'
@@ -3443,9 +3447,9 @@ function shouldIgnoreRunScopedWorkerMessage(msg: any): boolean {
 
   const messageRunId = typeof msg?.runId === 'string' && msg.runId ? msg.runId : undefined;
   const messageTaskBoundaryId =
-    typeof msg?.taskBoundaryId === 'string' && msg.taskBoundaryId
-      ? msg.taskBoundaryId
-      : undefined;
+    typeof msg?.runBoundaryId === 'string' && msg.runBoundaryId
+      ? msg.runBoundaryId
+      : (typeof msg?.taskBoundaryId === 'string' && msg.taskBoundaryId ? msg.taskBoundaryId : undefined);
   const authoritativeActiveRunId =
     String(roverServerRuntime?.getActiveRunId() || serverAcceptedRunId || '').trim() || undefined;
   return shouldIgnoreRunScopedMessage({
@@ -3686,7 +3690,7 @@ function resolveCanonicalTaskInputForRun(runId?: string): string | undefined {
 }
 
 function normalizeRunCompletionState(msg: any): {
-  taskComplete: boolean;
+  runComplete: boolean;
   needsUserInput: boolean;
   terminalState: 'waiting_input' | 'in_progress' | 'completed' | 'failed';
   contextResetRecommended: boolean;
@@ -3695,7 +3699,7 @@ function normalizeRunCompletionState(msg: any): {
 } {
   if (!msg || typeof msg !== 'object') {
     return {
-      taskComplete: false,
+      runComplete: false,
       needsUserInput: false,
       terminalState: 'in_progress',
       contextResetRecommended: false,
@@ -3708,12 +3712,12 @@ function normalizeRunCompletionState(msg: any): {
       ? incomingTerminal
       : needsUserInput
         ? 'waiting_input'
-        : msg.taskComplete === true
+        : msg.runComplete === true
           ? 'completed'
           : msg.ok === false
             ? 'failed'
             : 'in_progress';
-  const taskComplete = inferredTerminalState === 'completed' || (msg.taskComplete === true && inferredTerminalState !== 'waiting_input');
+  const runComplete = inferredTerminalState === 'completed' || (msg.runComplete === true && inferredTerminalState !== 'waiting_input');
   const questions = normalizeAskUserQuestions(msg.questions);
   const continuationRaw = String(msg.continuationReason || '').trim().toLowerCase();
   const continuationReason =
@@ -3727,7 +3731,7 @@ function normalizeRunCompletionState(msg: any): {
           ? 'loop_continue'
           : undefined;
   return {
-    taskComplete,
+    runComplete,
     needsUserInput: inferredTerminalState === 'waiting_input' || needsUserInput,
     terminalState: inferredTerminalState,
     contextResetRecommended: msg.contextResetRecommended === true || inferredTerminalState === 'completed',
@@ -4018,6 +4022,58 @@ function sanitizeUiMessages(input: any): PersistedUiMessage[] {
   return out.filter(message => !!message.text || !!message.blocks?.length);
 }
 
+const VALID_ACTION_CUE_KINDS = new Set([
+  'click',
+  'type',
+  'select',
+  'clear',
+  'focus',
+  'hover',
+  'press',
+  'scroll',
+  'drag',
+  'navigate',
+  'read',
+  'wait',
+  'unknown',
+]);
+
+function sanitizePositiveElementIds(input: unknown): number[] | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const seen = new Set<number>();
+  const ids: number[] = [];
+  for (const value of input) {
+    const id = Math.trunc(Number(value));
+    if (!Number.isFinite(id) || id <= 0 || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids.length ? ids : undefined;
+}
+
+function sanitizeActionCue(input: unknown): RoverActionCue | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const raw = input as Record<string, unknown>;
+  const kind = String(raw.kind || '').trim();
+  if (!VALID_ACTION_CUE_KINDS.has(kind)) return undefined;
+  const primaryElementId = Math.trunc(Number(raw.primaryElementId));
+  const elementIds = sanitizePositiveElementIds(raw.elementIds);
+  const toolCallId = typeof raw.toolCallId === 'string' && raw.toolCallId.trim()
+    ? truncateText(raw.toolCallId.trim(), 128)
+    : undefined;
+  const targetLabel = typeof raw.targetLabel === 'string' && raw.targetLabel.trim()
+    ? truncateText(raw.targetLabel.trim(), 64)
+    : undefined;
+  return {
+    kind: kind as RoverActionCue['kind'],
+    toolCallId,
+    primaryElementId: Number.isFinite(primaryElementId) && primaryElementId > 0 ? primaryElementId : undefined,
+    elementIds,
+    valueRedacted: typeof raw.valueRedacted === 'boolean' ? raw.valueRedacted : undefined,
+    targetLabel,
+  };
+}
+
 function sanitizeTimelineEvents(input: any): PersistedTimelineEvent[] {
   if (!Array.isArray(input)) return [];
   const out: PersistedTimelineEvent[] = [];
@@ -4039,6 +4095,9 @@ function sanitizeTimelineEvents(input: any): PersistedTimelineEvent[] {
           : undefined,
       ts: Number(event?.ts) || Date.now(),
       sourceRuntimeId: typeof event?.sourceRuntimeId === 'string' ? event.sourceRuntimeId : undefined,
+      elementId: Number.isFinite(Number(event?.elementId)) ? Math.trunc(Number(event.elementId)) : undefined,
+      toolName: typeof event?.toolName === 'string' ? truncateText(event.toolName, 120) : undefined,
+      actionCue: sanitizeActionCue(event?.actionCue),
     });
   }
   return out;
@@ -5149,7 +5208,7 @@ function markTaskFailed(reason = 'worker_task_failed', timestamp = Date.now()): 
   removeTitlePrefix();
 }
 
-function markTaskEnded(reason = 'worker_task_ended', timestamp = Date.now()): void {
+function markTaskEnded(reason = 'worker_visit_ended', timestamp = Date.now()): void {
   // FSM-first: dispatch to orchestrator before kernel
   if (taskOrchestrator) {
     const activeTask = taskOrchestrator.getActiveTask();
@@ -5476,6 +5535,7 @@ function appendTimelineEvent(
     sourceRuntimeId: event.sourceRuntimeId,
     elementId: event.elementId,
     toolName: event.toolName,
+    actionCue: event.actionCue,
   };
 
   ui?.addTimelineEvent(timelineEvent);
@@ -5498,6 +5558,9 @@ function appendTimelineEvent(
       detailBlocks: timelineEvent.detailBlocks,
       status: timelineEvent.status,
       ts: timelineEvent.ts,
+      elementId: timelineEvent.elementId,
+      toolName: timelineEvent.toolName,
+      actionCue: timelineEvent.actionCue,
     });
   }
 
@@ -5517,6 +5580,9 @@ function replayTimeline(events: PersistedTimelineEvent[]): void {
         status: event.status,
         ts: event.ts,
         sourceRuntimeId: event.sourceRuntimeId,
+        elementId: event.elementId,
+        toolName: event.toolName,
+        actionCue: event.actionCue,
         publishShared: false,
       },
       false,
@@ -7719,6 +7785,9 @@ function finalizeSuccessfulRunTimeline(runId?: string): void {
 
 function handleWorkerMessage(msg: any): void {
   if (!msg || typeof msg !== 'object') return;
+  if (typeof msg.executionId === 'string' && msg.executionId.trim() && !msg.runId) {
+    msg = { ...msg, runId: msg.executionId.trim() };
+  }
   if (shouldIgnoreRunScopedWorkerMessage(msg)) return;
 
   if (msg.type === 'assistant') {
@@ -7819,14 +7888,17 @@ function handleWorkerMessage(msg: any): void {
   }
 
   if (msg.type === 'tool_start') {
-    const toolStartElementId = typeof msg.call?.args?.element_id === 'number' ? msg.call.args.element_id : undefined;
+    const actionCue = buildRoverActionCue(msg.call, msg.toolCallId);
+    const toolStartElementId = actionCue?.primaryElementId
+      ?? (typeof msg.call?.args?.element_id === 'number' ? msg.call.args.element_id : undefined);
     appendTimelineEvent({
       kind: 'tool_start',
       title: `Running ${msg.call?.name || 'tool'}`,
-      detail: safeSerialize(msg.call?.args),
+      detailBlocks: buildToolStartDetailBlocks(msg.call),
       status: 'pending',
       elementId: toolStartElementId,
       toolName: msg.call?.name,
+      actionCue,
     });
     emit('tool_start', msg);
     enqueueLaunchRuntimeEvent('tool_start', buildLaunchToolStartData(msg), {
@@ -7847,15 +7919,17 @@ function handleWorkerMessage(msg: any): void {
       }
     }
     const detailBlocks = sanitizeMessageBlocks(msg.detailBlocks) || buildToolResultBlocks(msg.result);
-    const toolResultElementId = typeof msg.call?.args?.element_id === 'number' ? msg.call.args.element_id : undefined;
+    const actionCue = buildRoverActionCue(msg.call, msg.toolCallId);
+    const toolResultElementId = actionCue?.primaryElementId
+      ?? (typeof msg.call?.args?.element_id === 'number' ? msg.call.args.element_id : undefined);
     appendTimelineEvent({
       kind: 'tool_result',
       title: `${msg.call?.name || 'tool'} completed`,
-      detail: safeSerialize(msg.result),
       detailBlocks,
       status: msg?.result?.success === false ? 'error' : 'success',
       elementId: toolResultElementId,
       toolName: msg.call?.name,
+      actionCue,
     });
     emit('tool_result', msg);
     enqueueLaunchRuntimeEvent('tool_result', buildLaunchToolResultData(msg), {
@@ -7991,15 +8065,7 @@ function handleWorkerMessage(msg: any): void {
     return;
   }
 
-  if (msg.type === 'task_started') {
-    emit('task_started', {
-      taskId: msg.taskId,
-      reason: 'worker',
-    });
-    return;
-  }
-
-  if (msg.type === 'run_started') {
+  if (msg.type === 'execution_started') {
     lastStatusSignature = '';
     hideTaskSuggestion();
     if (typeof msg.runId === 'string' && msg.runId) {
@@ -8011,7 +8077,9 @@ function handleWorkerMessage(msg: any): void {
     }
     const existing = runtimeState?.pendingRun;
     const messageTaskBoundaryId =
-      typeof msg?.taskBoundaryId === 'string' ? normalizeTaskBoundaryId(msg.taskBoundaryId) : undefined;
+      typeof msg?.runBoundaryId === 'string'
+        ? normalizeTaskBoundaryId(msg.runBoundaryId)
+        : (typeof msg?.taskBoundaryId === 'string' ? normalizeTaskBoundaryId(msg.taskBoundaryId) : undefined);
     if (typeof msg.runId === 'string' && msg.runId) {
       removeIgnoredRunId(msg.runId);
     }
@@ -8066,7 +8134,7 @@ function handleWorkerMessage(msg: any): void {
     return;
   }
 
-  if (msg.type === 'run_completed' || msg.type === 'run_state_transition') {
+  if (msg.type === 'execution_completed' || msg.type === 'execution_state_transition') {
     lastStatusSignature = '';
     autoResumeAttempted = false;
     autoResumeSessionWaitAttempts = 0;
@@ -8094,7 +8162,9 @@ function handleWorkerMessage(msg: any): void {
     if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
     const completedRunId = typeof msg.runId === 'string' && msg.runId ? msg.runId : undefined;
     const messageTaskBoundaryId =
-      typeof msg?.taskBoundaryId === 'string' ? normalizeTaskBoundaryId(msg.taskBoundaryId) : undefined;
+      typeof msg?.runBoundaryId === 'string'
+        ? normalizeTaskBoundaryId(msg.runBoundaryId)
+        : (typeof msg?.taskBoundaryId === 'string' ? normalizeTaskBoundaryId(msg.taskBoundaryId) : undefined);
     if (isTerminalRunCompletion) {
       const pendingBeforeClear = sanitizePendingRun(runtimeState?.pendingRun);
       const completedInput = String(
@@ -8203,7 +8273,7 @@ function handleWorkerMessage(msg: any): void {
       if (!isTaskRunning()) {
         return;
       }
-      const taskComplete = completionState.taskComplete;
+      const runComplete = completionState.runComplete;
       const needsUserInput = completionState.needsUserInput;
       const completionQuestions = completionState.questions || normalizeAskUserQuestions(msg.questions);
       const pendingStateQuestions = normalizeAskUserQuestions(runtimeState?.workerState?.pendingAskUser?.questions);
@@ -8236,7 +8306,7 @@ function handleWorkerMessage(msg: any): void {
           detail: typeof msg.error === 'string' ? msg.error : 'Run reported failure state.',
           status: 'error',
         });
-      } else if (taskComplete || terminalState === 'completed') {
+      } else if (runComplete || terminalState === 'completed') {
         if (completedRunId) {
           void roverServerRuntime?.controlRun({
             action: 'end_task',
@@ -8354,7 +8424,7 @@ function handleWorkerMessage(msg: any): void {
       finalizeLaunchObservationForRun(completedRunId);
     }
     emit('run_state_transition', publicRunPayload);
-    if (msg.type === 'run_completed' || isTerminalRunCompletion) {
+    if (msg.type === 'execution_completed' || isTerminalRunCompletion) {
       emit('run_completed', publicRunPayload);
     }
     syncOrchestratorConversationList();
@@ -8540,8 +8610,6 @@ function sanitizeAiAccessConfig(raw: unknown): RoverAiAccessConfig | undefined {
   const input = raw as RoverServerAiAccessConfig;
   const next: RoverAiAccessConfig = {};
   if (typeof input.enabled === 'boolean') next.enabled = input.enabled;
-  if (typeof input.allowPromptLaunch === 'boolean') next.allowPromptLaunch = input.allowPromptLaunch;
-  if (typeof input.allowShortcutLaunch === 'boolean') next.allowShortcutLaunch = input.allowShortcutLaunch;
   if (typeof input.allowCloudBrowser === 'boolean') next.allowCloudBrowser = input.allowCloudBrowser;
   if (typeof input.allowDelegatedHandoffs === 'boolean') next.allowDelegatedHandoffs = input.allowDelegatedHandoffs;
   if (typeof input.debugStreaming === 'boolean') next.debugStreaming = input.debugStreaming;
@@ -8652,6 +8720,9 @@ function sanitizeExperienceConfig(raw: unknown): RoverServerExperienceConfig | u
     }
     if (motionInput.performanceBudget === 'standard' || motionInput.performanceBudget === 'high') {
       motion.performanceBudget = motionInput.performanceBudget;
+    }
+    if (typeof motionInput.actionSpotlight === 'boolean') {
+      motion.actionSpotlight = motionInput.actionSpotlight;
     }
     if (Object.keys(motion).length) next.motion = motion;
   }
@@ -9201,8 +9272,11 @@ function buildLaunchStatusEventData(msg: any): Record<string, unknown> {
 }
 
 function buildLaunchToolStartData(msg: any): Record<string, unknown> {
+  const actionCue = buildRoverActionCue(msg?.call, msg?.toolCallId);
   const data: Record<string, unknown> = {
     toolName: typeof msg?.call?.name === 'string' ? msg.call.name : 'tool',
+    actionKind: actionCue?.kind,
+    valueRedacted: actionCue?.valueRedacted,
   };
   if (shouldIncludeLaunchFullData()) {
     data.args = msg?.call?.args;
@@ -9211,9 +9285,12 @@ function buildLaunchToolStartData(msg: any): Record<string, unknown> {
 }
 
 function buildLaunchToolResultData(msg: any): Record<string, unknown> {
+  const actionCue = buildRoverActionCue(msg?.call, msg?.toolCallId);
   const data: Record<string, unknown> = {
     toolName: typeof msg?.call?.name === 'string' ? msg.call.name : 'tool',
     success: msg?.result?.success !== false,
+    actionKind: actionCue?.kind,
+    valueRedacted: actionCue?.valueRedacted,
   };
   if (shouldIncludeLaunchFullData()) {
     data.result = msg?.result;
@@ -9282,7 +9359,7 @@ function handleLaunchAttachFailure(
 }
 
 function shouldDispatchLaunchInputForResponse(
-  response: RoverLaunchAttachResponse | RoverTaskBrowserClaimResponse,
+  response: RoverLaunchAttachResponse | RoverRunBrowserClaimResponse,
 ): boolean {
   const requestId = String(response.requestId || '').trim();
   if (!requestId) return false;
@@ -9296,7 +9373,7 @@ function shouldDispatchLaunchInputForResponse(
   return !String(response.runId || '').trim();
 }
 
-function dispatchLaunchInput(response: RoverLaunchAttachResponse | RoverTaskBrowserClaimResponse): void {
+function dispatchLaunchInput(response: RoverLaunchAttachResponse | RoverRunBrowserClaimResponse): void {
   const input = response.input;
   if (!input || typeof input.prompt !== 'string' || !input.prompt.trim()) {
     throw new Error('Launch attach response did not include a prompt.');
@@ -9553,7 +9630,7 @@ function handleDeepLinkShortcutNotFound(
   consumeHandledDeepLink(config, request);
 }
 
-function resolveAgentTaskBaseUrl(): string {
+function resolveAgentRunBaseUrl(): string {
   const rawBase = String(currentConfig?.apiBase || 'https://agent.rtrvr.ai').trim().replace(/\/+$/, '');
   if (!rawBase) return 'https://agent.rtrvr.ai';
   if (rawBase.endsWith('/extensionRouter/v2/rover')) {
@@ -9565,8 +9642,8 @@ function resolveAgentTaskBaseUrl(): string {
   return rawBase;
 }
 
-function extractTaskAccessToken(taskUrl?: string): string | undefined {
-  const raw = String(taskUrl || '').trim();
+function extractRunAccessToken(runUrl?: string): string | undefined {
+  const raw = String(runUrl || '').trim();
   if (!raw) return undefined;
   try {
     const parsed = new URL(raw);
@@ -9577,8 +9654,8 @@ function extractTaskAccessToken(taskUrl?: string): string | undefined {
   }
 }
 
-function buildAgentTaskUrl(taskId: string, accessToken?: string): string {
-  const url = new URL(`${resolveAgentTaskBaseUrl()}/v1/tasks/${encodeURIComponent(taskId)}`);
+function buildA2WRunUrl(runId: string, accessToken?: string): string {
+  const url = new URL(`${resolveAgentRunBaseUrl()}/v1/a2w/runs/${encodeURIComponent(runId)}`);
   if (accessToken) {
     url.searchParams.set('access', accessToken);
   }
@@ -9586,44 +9663,44 @@ function buildAgentTaskUrl(taskId: string, accessToken?: string): string {
 }
 
 function buildAgentWorkflowUrl(workflowId: string, accessToken?: string): string {
-  const url = new URL(`${resolveAgentTaskBaseUrl()}/v1/workflows/${encodeURIComponent(workflowId)}`);
+  const url = new URL(`${resolveAgentRunBaseUrl()}/v1/a2w/workflows/${encodeURIComponent(workflowId)}`);
   if (accessToken) {
     url.searchParams.set('access', accessToken);
   }
   return url.toString();
 }
 
-function bindPublicTaskContext(input: {
-  taskId: string;
-  taskUrl?: string;
-  taskAccessToken?: string;
+function bindPublicRunContext(input: {
+  runId: string;
+  runUrl?: string;
+  runAccessToken?: string;
   workflowId?: string;
   workflowUrl?: string;
   workflowAccessToken?: string;
-  runId?: string;
+  executionId?: string;
 }): void {
-  const taskId = String(input.taskId || '').trim();
-  if (!taskId) return;
-  const taskAccessToken = String(input.taskAccessToken || extractTaskAccessToken(input.taskUrl) || '').trim() || undefined;
+  const runId = String(input.runId || '').trim();
+  if (!runId) return;
+  const runAccessToken = String(input.runAccessToken || extractRunAccessToken(input.runUrl) || '').trim() || undefined;
   const workflowId = String(input.workflowId || '').trim() || undefined;
-  const workflowAccessToken = String(input.workflowAccessToken || extractTaskAccessToken(input.workflowUrl) || '').trim() || undefined;
-  activePublicTaskContext = {
-    taskId,
-    taskUrl: String(input.taskUrl || buildAgentTaskUrl(taskId, taskAccessToken)).trim(),
-    taskAccessToken,
+  const workflowAccessToken = String(input.workflowAccessToken || extractRunAccessToken(input.workflowUrl) || '').trim() || undefined;
+  activePublicRunContext = {
+    runId,
+    runUrl: String(input.runUrl || buildA2WRunUrl(runId, runAccessToken)).trim(),
+    runAccessToken,
     workflowId,
     workflowUrl: workflowId
       ? String(input.workflowUrl || buildAgentWorkflowUrl(workflowId, workflowAccessToken)).trim()
       : undefined,
     workflowAccessToken,
-    taskBoundaryId: normalizeTaskBoundaryId(currentTaskBoundaryId || runtimeState?.workerState?.taskBoundaryId),
-    runId: String(input.runId || runtimeState?.pendingRun?.id || '').trim() || undefined,
+    runBoundaryId: normalizeTaskBoundaryId(currentTaskBoundaryId || runtimeState?.workerState?.taskBoundaryId),
+    executionId: String(input.executionId || runtimeState?.pendingRun?.id || '').trim() || undefined,
     updatedAt: Date.now(),
   };
   syncAgentDiscoverySurfaces(currentConfig);
 }
 
-function getCurrentPublicTaskBoundaryId(): string {
+function getCurrentPublicRunBoundaryId(): string {
   return normalizeTaskBoundaryId(currentTaskBoundaryId || runtimeState?.workerState?.taskBoundaryId) || '';
 }
 
@@ -9633,18 +9710,22 @@ function normalizeHandoffExecution(value: unknown): 'auto' | 'browser' | 'cloud'
   return 'auto';
 }
 
-function isTerminalPublicTaskStatus(status: unknown): boolean {
+function isTerminalPublicRunStatus(status: unknown): boolean {
   const normalized = String(status || '').trim().toLowerCase();
   return normalized === 'completed' || normalized === 'failed' || normalized === 'cancelled' || normalized === 'expired';
 }
 
-function extractTaskIdFromTaskUrl(taskUrlOrId: string): string | undefined {
-  const raw = String(taskUrlOrId || '').trim();
+function extractRunIdFromRunUrl(runUrlOrId: string): string | undefined {
+  const raw = String(runUrlOrId || '').trim();
   if (!raw) return undefined;
   if (!/^https?:\/\//i.test(raw)) return raw;
   try {
     const parsed = new URL(raw);
     const parts = parsed.pathname.split('/').filter(Boolean);
+    const runIndex = parts.lastIndexOf('runs');
+    if (runIndex >= 0 && parts[runIndex + 1]) {
+      return decodeURIComponent(parts[runIndex + 1]);
+    }
     const taskIndex = parts.lastIndexOf('tasks');
     if (taskIndex >= 0 && parts[taskIndex + 1]) {
       return decodeURIComponent(parts[taskIndex + 1]);
@@ -9677,16 +9758,16 @@ function buildFallbackRootWorkflowPrompt(): string {
   return `Continue the current Rover workflow on ${window.location.hostname}.`;
 }
 
-async function ensureRootPublicTaskContextForHandoff(): Promise<ActivePublicTaskContext> {
-  const boundaryId = getCurrentPublicTaskBoundaryId();
-  const existing = activePublicTaskContext;
+async function ensureRootPublicRunContextForHandoff(): Promise<ActivePublicRunContext> {
+  const boundaryId = getCurrentPublicRunBoundaryId();
+  const existing = activePublicRunContext;
   if (
     existing
-    && existing.taskId
-    && existing.taskAccessToken
-    && (!boundaryId || existing.taskBoundaryId === boundaryId)
+    && existing.runId
+    && existing.runAccessToken
+    && (!boundaryId || existing.runBoundaryId === boundaryId)
   ) {
-    existing.runId = String(runtimeState?.pendingRun?.id || existing.runId || '').trim() || undefined;
+    existing.executionId = String(runtimeState?.pendingRun?.id || existing.executionId || '').trim() || undefined;
     existing.updatedAt = Date.now();
     return existing;
   }
@@ -9698,57 +9779,58 @@ async function ensureRootPublicTaskContextForHandoff(): Promise<ActivePublicTask
     throw new Error('Rover server runtime is unavailable.');
   }
   const prompt = resolveCanonicalTaskInputForRun(runtimeState?.pendingRun?.id) || buildFallbackRootWorkflowPrompt();
-  const created = await roverServerRuntime.createSessionRootTask({
+  const created = await roverServerRuntime.createSessionRootRun({
     url: window.location.href,
     prompt,
-    runId: String(runtimeState?.pendingRun?.id || '').trim() || undefined,
+    executionId: String(runtimeState?.pendingRun?.id || '').trim() || undefined,
   });
-  if (!created?.id || !created.task) {
-    throw new Error('Failed to create the root public workflow task.');
+  const createdRunUrl = String(created?.run || '').trim();
+  if (!created?.id || !createdRunUrl) {
+    throw new Error('Failed to create the root A2W workflow run.');
   }
-  bindPublicTaskContext({
-    taskId: created.id,
-    taskUrl: created.task,
-    taskAccessToken: extractTaskAccessToken(created.task),
-    workflowId: extractTaskIdFromTaskUrl(created.workflow || ''),
+  bindPublicRunContext({
+    runId: String(created.runId || created.id || '').trim(),
+    runUrl: createdRunUrl,
+    runAccessToken: extractRunAccessToken(createdRunUrl),
+    workflowId: extractRunIdFromRunUrl(created.workflow || ''),
     workflowUrl: created.workflow,
-    workflowAccessToken: extractTaskAccessToken(created.workflow),
-    runId: String(runtimeState?.pendingRun?.id || '').trim() || undefined,
+    workflowAccessToken: extractRunAccessToken(created.workflow),
+    executionId: String(runtimeState?.pendingRun?.id || '').trim() || undefined,
   });
-  if (!activePublicTaskContext?.taskAccessToken) {
-    throw new Error('Root public workflow task is missing an access token.');
+  if (!activePublicRunContext?.runAccessToken) {
+    throw new Error('Root A2W workflow run is missing an access token.');
   }
   recordTelemetryEvent('status', {
-    event: 'handoff_root_task_created',
-    taskId: activePublicTaskContext.taskId,
-    workflowId: activePublicTaskContext.workflowId,
+    event: 'handoff_root_run_created',
+    runId: activePublicRunContext.runId,
+    workflowId: activePublicRunContext.workflowId,
   });
-  return activePublicTaskContext;
+  return activePublicRunContext;
 }
 
-async function followPublicTaskUntilStable(
-  taskUrlOrId: string,
+async function followPublicRunUntilStable(
+  runUrlOrId: string,
   accessToken?: string,
   timeoutMs = DEFAULT_ACTION_TIMEOUT_MS,
-): Promise<RoverPublicTaskPayload | null> {
+): Promise<RoverPublicRunPayload | null> {
   if (!currentConfig) return null;
   await ensureRoverServerRuntime(currentConfig);
   if (!roverServerRuntime) {
     throw new Error('Rover server runtime is unavailable.');
   }
   const deadlineAt = Date.now() + Math.max(0, timeoutMs);
-  let latest: RoverPublicTaskPayload | null = null;
+  let latest: RoverPublicRunPayload | null = null;
   while (true) {
     const remainingMs = deadlineAt - Date.now();
     const waitSeconds = remainingMs > 0
       ? Math.max(1, Math.min(HANDOFF_TOOL_POLL_SLICE_SECONDS, Math.ceil(remainingMs / 1000)))
       : 0;
-    latest = await roverServerRuntime.getPublicTask(taskUrlOrId, {
+    latest = await roverServerRuntime.getPublicRun(runUrlOrId, {
       accessToken,
       waitSeconds,
     });
     if (!latest) return latest;
-    if (isTerminalPublicTaskStatus(latest.status) || latest.status === 'input_required') {
+    if (isTerminalPublicRunStatus(latest.status) || latest.status === 'input_required') {
       return latest;
     }
     if (remainingMs <= 0) {
@@ -9757,7 +9839,7 @@ async function followPublicTaskUntilStable(
   }
 }
 
-function tryOpenDelegatedBrowserTask(task: RoverPublicTaskPayload, execution: 'auto' | 'browser' | 'cloud'): {
+function tryOpenDelegatedBrowserRun(run: RoverPublicRunPayload, execution: 'auto' | 'browser' | 'cloud'): {
   opened: boolean;
   targetUrl?: string;
   error?: string;
@@ -9765,7 +9847,7 @@ function tryOpenDelegatedBrowserTask(task: RoverPublicTaskPayload, execution: 'a
   if (execution === 'cloud') {
     return { opened: false };
   }
-  const targetUrl = String(task.open || task.browserLink || '').trim();
+  const targetUrl = String(run.open || run.browserLink || '').trim();
   if (!targetUrl) {
     return { opened: false };
   }
@@ -9789,30 +9871,30 @@ function tryOpenDelegatedBrowserTask(task: RoverPublicTaskPayload, execution: 'a
 }
 
 function buildHandoffToolResult(
-  task: RoverPublicTaskPayload,
+  run: RoverPublicRunPayload,
   options?: { browserOpen?: { opened: boolean; targetUrl?: string; error?: string } },
 ): Record<string, unknown> {
-  const status = String(task.status || 'pending').trim().toLowerCase();
-  const taskUrl = String(task.task || '').trim();
-  const workflowUrl = String(task.workflow || '').trim();
-  const summary = String(task.result?.summary || task.result?.text || task.input?.message || '').trim();
-  const questions = normalizeAskUserQuestions(task.input?.questions);
+  const status = String(run.status || 'pending').trim().toLowerCase();
+  const runUrl = String(run.run || '').trim();
+  const workflowUrl = String(run.workflow || '').trim();
+  const summary = String(run.result?.summary || run.result?.text || run.input?.message || '').trim();
+  const questions = normalizeAskUserQuestions(run.input?.questions);
   const browserOpen = options?.browserOpen;
   const base: Record<string, unknown> = {
     success: status === 'completed',
     status,
-    task: taskUrl || undefined,
+    run: runUrl || undefined,
     workflow: workflowUrl || undefined,
-    open: task.open,
-    browserLink: task.browserLink,
-    result: task.result,
-    handoff: task.handoff,
-    summary: task.result?.summary,
-    text: task.result?.text || summary || undefined,
-    observation: task.result?.observation,
-    transcript: task.result?.transcript,
-    artifacts: task.result?.artifacts,
-    taskStatus: status,
+    open: run.open,
+    browserLink: run.browserLink,
+    result: run.result,
+    handoff: run.handoff,
+    summary: run.result?.summary,
+    text: run.result?.text || summary || undefined,
+    observation: run.result?.observation,
+    transcript: run.result?.transcript,
+    artifacts: run.result?.artifacts,
+    runStatus: status,
     ...(browserOpen?.targetUrl ? { browserOpenUrl: browserOpen.targetUrl } : {}),
     ...(browserOpen?.opened ? { browserOpened: true } : {}),
     ...(browserOpen?.error ? { browserOpenError: browserOpen.error } : {}),
@@ -9821,9 +9903,9 @@ function buildHandoffToolResult(
   if (status === 'completed') {
     return {
       ...base,
-      taskComplete: true,
+      runComplete: true,
       terminalState: 'completed',
-      message: summary || 'Delegated Rover task completed.',
+      message: summary || 'Delegated A2W run completed.',
     };
   }
 
@@ -9831,23 +9913,23 @@ function buildHandoffToolResult(
     return {
       ...base,
       success: false,
-      taskComplete: false,
+      runComplete: false,
       terminalState: 'waiting_input',
       continuationReason: 'awaiting_user',
       needsUserInput: true,
       waitingForUserInput: true,
-      questions: questions.length ? questions : task.input?.questions,
-      input: task.input,
-      message: String(task.input?.message || summary || 'Delegated Rover task needs more input.').trim(),
+      questions: questions.length ? questions : run.input?.questions,
+      input: run.input,
+      message: String(run.input?.message || summary || 'Delegated A2W run needs more input.').trim(),
     };
   }
 
   if (status === 'failed' || status === 'cancelled' || status === 'expired') {
-    const errorMessage = String(task.result?.error || summary || `Delegated Rover task ${status}.`).trim();
+    const errorMessage = String(run.result?.error || summary || `Delegated A2W run ${status}.`).trim();
     return {
       ...base,
       success: false,
-      taskComplete: false,
+      runComplete: false,
       terminalState: 'failed',
       error: errorMessage,
       message: errorMessage,
@@ -9856,12 +9938,12 @@ function buildHandoffToolResult(
 
   const runningMessage =
     status === 'waiting_browser'
-      ? 'Delegated Rover task is waiting for a browser attachment. Re-open the returned URL or call again with execution="cloud" for a browserless run.'
-      : 'Delegated Rover task is still running. Call handoff_to_rover_site again with the returned task URL to keep following it.';
+      ? 'Delegated A2W run is waiting for a browser attachment. Re-open the returned URL or call again with execution="cloud" for a browserless run.'
+      : 'Delegated A2W run is still running. Call handoff_to_rover_site again with the returned run URL to keep following it.';
   return {
     ...base,
     success: false,
-    taskComplete: false,
+    runComplete: false,
     terminalState: 'in_progress',
     continuationReason: 'loop_continue',
     message: runningMessage,
@@ -9880,20 +9962,20 @@ async function handleBuiltInRoverHandoff(rawArgs: HandoffToolArgs | undefined): 
 
   const execution = normalizeHandoffExecution(args.execution);
   const answer = String(args.answer || '').trim();
-  const existingTaskUrl = String(args.task || '').trim();
+  const existingRunUrl = String(args.run || '').trim();
 
-  if (existingTaskUrl) {
-    const accessToken = extractTaskAccessToken(existingTaskUrl);
+  if (existingRunUrl) {
+    const accessToken = extractRunAccessToken(existingRunUrl);
     let latest = answer
-      ? await roverServerRuntime.continuePublicTask(existingTaskUrl, answer, { accessToken })
-      : await roverServerRuntime.getPublicTask(existingTaskUrl, { accessToken });
+      ? await roverServerRuntime.continuePublicRun(existingRunUrl, answer, { accessToken })
+      : await roverServerRuntime.getPublicRun(existingRunUrl, { accessToken });
     if (!latest) {
-      throw new Error('Delegated Rover task could not be loaded.');
+      throw new Error('Delegated A2W run could not be loaded.');
     }
     let browserOpen: { opened: boolean; targetUrl?: string; error?: string } | undefined;
-    if (!isTerminalPublicTaskStatus(latest.status) && latest.status !== 'input_required') {
-      browserOpen = tryOpenDelegatedBrowserTask(latest, execution);
-      latest = (await followPublicTaskUntilStable(existingTaskUrl, accessToken, DEFAULT_ACTION_TIMEOUT_MS)) || latest;
+    if (!isTerminalPublicRunStatus(latest.status) && latest.status !== 'input_required') {
+      browserOpen = tryOpenDelegatedBrowserRun(latest, execution);
+      latest = (await followPublicRunUntilStable(existingRunUrl, accessToken, DEFAULT_ACTION_TIMEOUT_MS)) || latest;
     }
     return buildHandoffToolResult(latest, browserOpen ? { browserOpen } : undefined);
   }
@@ -9903,16 +9985,16 @@ async function handleBuiltInRoverHandoff(rawArgs: HandoffToolArgs | undefined): 
   const instruction = String(args.instruction || '').trim();
   const prompt = String(args.prompt || '').trim();
   if (!targetUrl) {
-    throw new Error('handoff_to_rover_site requires url or task.');
+    throw new Error('handoff_to_rover_site requires url or run.');
   }
   if (!shortcutId && !instruction && !prompt) {
     throw new Error('handoff_to_rover_site requires instruction, prompt, or shortcutId when creating a new handoff.');
   }
 
-  const parentContext = await ensureRootPublicTaskContextForHandoff();
-  const created = await roverServerRuntime.createTaskHandoff({
-    parentTaskId: parentContext.taskId,
-    taskAccessToken: String(parentContext.taskAccessToken || '').trim(),
+  const parentContext = await ensureRootPublicRunContextForHandoff();
+  const created = await roverServerRuntime.createRunHandoff({
+    parentRunId: parentContext.runId,
+    runAccessToken: String(parentContext.runAccessToken || '').trim(),
     url: targetUrl,
     ...(shortcutId ? { shortcutId } : {}),
     ...(!shortcutId && instruction ? { instruction } : {}),
@@ -9934,18 +10016,19 @@ async function handleBuiltInRoverHandoff(rawArgs: HandoffToolArgs | undefined): 
   }
 
   let browserOpen: { opened: boolean; targetUrl?: string; error?: string } | undefined;
-  if (!isTerminalPublicTaskStatus(created.status) && created.status !== 'input_required') {
-    browserOpen = tryOpenDelegatedBrowserTask(created, execution);
+  if (!isTerminalPublicRunStatus(created.status) && created.status !== 'input_required') {
+    browserOpen = tryOpenDelegatedBrowserRun(created, execution);
   }
-  const accessToken = extractTaskAccessToken(created.task);
-  const latest = (!isTerminalPublicTaskStatus(created.status) && created.status !== 'input_required')
-    ? ((await followPublicTaskUntilStable(created.task, accessToken, DEFAULT_ACTION_TIMEOUT_MS)) || created)
+  const createdRunUrl = String(created.run || '').trim();
+  const accessToken = extractRunAccessToken(createdRunUrl);
+  const latest = (!isTerminalPublicRunStatus(created.status) && created.status !== 'input_required')
+    ? ((await followPublicRunUntilStable(createdRunUrl, accessToken, DEFAULT_ACTION_TIMEOUT_MS)) || created)
     : created;
   recordTelemetryEvent('status', {
-    event: 'handoff_task_created',
-    parentTaskId: parentContext.taskId,
-    childTaskId: latest.id,
-    workflowId: extractTaskIdFromTaskUrl(latest.workflow || '') || parentContext.workflowId,
+    event: 'handoff_run_created',
+    parentRunId: parentContext.runId,
+    childRunId: String(latest.runId || latest.id || '').trim(),
+    workflowId: extractRunIdFromRunUrl(latest.workflow || '') || parentContext.workflowId,
     targetHost: (() => {
       try { return new URL(targetUrl).hostname; } catch { return undefined; }
     })(),
@@ -9968,7 +10051,7 @@ const BUILT_IN_HANDOFF_TOOL_DEF: ClientToolDefinition = {
     },
     prompt: {
       type: 'string',
-      description: 'Prompt alias for instruction when creating a delegated task.',
+      description: 'Prompt alias for instruction when creating a delegated A2W run.',
     },
     shortcutId: {
       type: 'string',
@@ -9987,23 +10070,23 @@ const BUILT_IN_HANDOFF_TOOL_DEF: ClientToolDefinition = {
       enum: ['auto', 'browser', 'cloud'],
       description: 'Use browser to try a new tab first, cloud for guaranteed browserless execution, or auto for browser-first hybrid behavior.',
     },
-    task: {
+    run: {
       type: 'string',
-      description: 'Existing delegated task URL or task ID to keep following or resume after user input.',
+      description: 'Existing delegated A2W run URL or run ID to keep following or resume after user input.',
     },
     answer: {
       type: 'string',
-      description: 'Answer to send when resuming a delegated task that is waiting for user input.',
+      description: 'Answer to send when resuming a delegated run that is waiting for user input.',
     },
   },
   outputSchema: {
-    type: 'object',
-    properties: {
-      success: { type: 'boolean', description: 'Whether the delegated Rover task completed or reached a stable state.' },
-      status: { type: 'string', description: 'Current delegated task status.' },
+      type: 'object',
+      properties: {
+      success: { type: 'boolean', description: 'Whether the delegated A2W run completed or reached a stable state.' },
+      status: { type: 'string', description: 'Current delegated run status.' },
       summary: { type: 'string', description: 'High-level summary of what the delegated site returned.' },
-      task: { type: 'string', description: 'Canonical delegated task URL.' },
-      workflow: { type: 'string', description: 'Canonical workflow URL spanning the parent and child tasks.' },
+      run: { type: 'string', description: 'Canonical delegated A2W run URL.' },
+      workflow: { type: 'string', description: 'Canonical workflow URL spanning the parent and child runs.' },
     },
   },
   annotations: {
@@ -10081,7 +10164,7 @@ function scheduleBrowserReceiptRetry(handleKey: string, deadlineAt: number): voi
   }, RECEIPT_CLAIM_RETRY_MS);
 }
 
-function dispatchClaimedBrowserTask(response: RoverTaskBrowserClaimResponse): void {
+function dispatchClaimedBrowserRun(response: RoverRunBrowserClaimResponse): void {
   const input = response.input;
   if (!input || typeof input.prompt !== 'string' || !input.prompt.trim()) {
     throw new Error('Browser receipt claim did not include a prompt.');
@@ -10159,7 +10242,7 @@ function maybeHandleBrowserReceipt(
         scheduleBrowserReceiptRetry(handleKey, deadlineAt);
         return;
       }
-      const response = await roverServerRuntime.claimBrowserTaskReceipt({
+      const response = await roverServerRuntime.claimBrowserRunReceipt({
         receipt: request.receipt,
       });
       if (!response) {
@@ -10168,18 +10251,19 @@ function maybeHandleBrowserReceipt(
       }
 
       clearPendingBrowserReceipt();
-      bindPublicTaskContext({
-        taskId: response.taskId,
-        taskAccessToken: response.taskAccessToken,
+      bindPublicRunContext({
+        runId: response.runId,
+        runAccessToken: response.runAccessToken,
         workflowId: response.workflowId,
         workflowAccessToken: response.workflowAccessToken,
-        runId: response.runId,
+        executionId: response.executionId,
       });
-      dispatchClaimedBrowserTask(response);
+      dispatchClaimedBrowserRun(response);
       recordTelemetryEvent('status', {
         event: 'browser_receipt_claimed',
         source,
-        taskId: response.taskId,
+        runId: response.runId,
+        executionId: response.executionId,
       });
       browserReceiptLastHandledKey = handleKey;
       consumeHandledBrowserReceipt(request, { consumeDeepLink: true });
@@ -10242,7 +10326,7 @@ function maybeHandleDeepLink(source: 'boot' | 'update' | 'navigation' | 'site_co
     return;
   }
 
-  if ((request.kind === 'prompt' && !config.promptLaunchEnabled) || (request.kind === 'shortcut' && !config.shortcutLaunchEnabled)) {
+  if (!config.enabled) {
     clearPendingDeepLinkShortcut();
     if (deepLinkLastIgnoredDisabledKey !== handleKey) {
       recordTelemetryEvent('status', {
@@ -12258,7 +12342,7 @@ export function shutdown(): void {
   clearPendingBrowserReceipt();
   browserReceiptLastHandledKey = '';
   browserReceiptClaimInFlightKey = '';
-  activePublicTaskContext = null;
+  activePublicRunContext = null;
   agentDiscoveryActionSheetOpen = false;
   agentDiscoveryExplicitHandshake = false;
   promptContextProviders.clear();
@@ -12529,8 +12613,8 @@ export function newTask(options?: { reason?: string; clearUi?: boolean }): void 
     ...buildWorkerBoundaryConfig(),
   });
   void roverServerRuntime?.controlRun({ action: 'new_task', reason });
-  emit('task_started', {
-    taskId: nextTask.taskId,
+  emit('visit_started', {
+    visitId: nextTask.taskId,
     reason,
     taskEpoch,
   });
@@ -12603,8 +12687,8 @@ export function endTask(options?: { reason?: string }): void {
     detail: 'Start a new task when you are ready.',
     status: 'info',
   });
-  emit('task_ended', {
-    taskId: task.taskId,
+  emit('visit_ended', {
+    visitId: task.taskId,
     reason,
     endedAt: task.endedAt,
   });

@@ -51,11 +51,10 @@ function createAgentDiscoverySnapshot(cardLike: unknown): Record<string, unknown
   const rover = asObject(asObject(card.extensions)?.rover);
   if (!rover) return undefined;
   const siteUrl = text(rover.siteUrl, 2048);
-  const taskEndpoint = text(rover.taskEndpoint || card.url, 2048);
+  const runEndpoint = text(rover.runEndpoint || card.url, 2048);
   const workflowEndpoint = text(rover.workflowEndpoint, 2048);
-  if (!siteUrl || !taskEndpoint || !workflowEndpoint) return undefined;
-  const promptLaunchEnabled = rover.promptLaunchEnabled === true;
-  const shortcutLaunchEnabled = rover.shortcutLaunchEnabled === true;
+  if (!siteUrl || !runEndpoint || !workflowEndpoint) return undefined;
+  const a2wRunsEnabled = rover.a2wRunsEnabled === true;
   const delegatedHandoffs = rover.delegatedHandoffs === true;
   const webmcpAvailable = asObject(rover.webmcp)?.available === true;
   const skills = Array.isArray(card.skills)
@@ -74,7 +73,7 @@ function createAgentDiscoverySnapshot(cardLike: unknown): Record<string, unknown
             source: text(skillRover?.source, 40) || undefined,
             deepLink: text(skillRover?.deepLink, 2048) || undefined,
             toolName: text(skillRover?.toolName, 120) || undefined,
-            taskPayload: asObject(asObject(skillRover?.task)?.payload),
+            runPayload: asObject(asObject(skillRover?.run)?.payload),
           };
         })
         .filter(Boolean)
@@ -83,15 +82,14 @@ function createAgentDiscoverySnapshot(cardLike: unknown): Record<string, unknown
     ? rover.instructions.map(value => text(value, 280)).filter(Boolean)
     : [];
   return {
-    roverEnabled: promptLaunchEnabled || shortcutLaunchEnabled || webmcpAvailable,
+    roverEnabled: a2wRunsEnabled || webmcpAvailable,
     siteUrl,
-    taskEndpoint,
+    runEndpoint,
     workflowEndpoint,
     serviceDescUrl: text(rover.serviceDescUrl, 2048) || undefined,
     llmsUrl: text(rover.llmsUrl, 2048) || undefined,
     preferredExecution: text(rover.preferredExecution, 40) || 'auto',
-    promptLaunchEnabled,
-    shortcutLaunchEnabled,
+    a2wRunsEnabled,
     delegatedHandoffs,
     webmcpAvailable,
     skills,
@@ -187,7 +185,7 @@ export function registerWebMCPTools(
 ): (() => void) | null {
   const settings = {
     enabled: true,
-    registerTaskTool: true,
+    registerRunTool: true,
     registerPageDataTool: true,
     registerFeedbackTool: true,
     registerMemoryTool: true,
@@ -200,16 +198,16 @@ export function registerWebMCPTools(
 
   const cleanups: Array<() => void> = [];
 
-  if (settings.registerTaskTool !== false) {
-    const name = 'rover_run_task';
+  if (settings.registerRunTool !== false) {
+    const name = 'rover_start_run';
     const publicDefinition: DiscoverableWebMCPToolDefinition = {
       name,
-      title: 'Run Rover Task',
-      description: `Run an explicit Rover task on ${typeof window !== 'undefined' ? window.location.hostname : 'this site'}. Use this when the site already exposes a stable Rover path for the user's goal and you want structured progress, continuation, and final results instead of direct DOM automation.`,
+      title: 'Start Rover Run',
+      description: `Start an explicit A2W run on ${typeof window !== 'undefined' ? window.location.hostname : 'this site'}. Use this when the site already exposes a stable Rover path for the user's goal and you want structured progress, continuation, and final results instead of direct DOM automation.`,
       inputSchema: {
         type: 'object',
         properties: {
-          task: { type: 'string', description: 'Natural-language task to execute on the current site.' },
+          prompt: { type: 'string', description: 'Natural-language goal for the A2W run.' },
           agent: {
             type: 'object',
             description: 'Optional self-reported agent identity metadata.',
@@ -223,7 +221,7 @@ export function registerWebMCPTools(
             },
           },
         },
-        required: ['task'],
+        required: ['prompt'],
       },
       outputSchema: {
         type: 'object',
@@ -241,9 +239,9 @@ export function registerWebMCPTools(
         requiresConfirmation: true,
         preferredInterface: 'webmcp',
         whenToUse: 'Use this when the user wants the site to complete a goal through Rover itself rather than through low-level clicks and typing.',
-        whyUse: 'Rover tasks expose structured task state, continuation, and workflow lineage, which are more reliable than raw DOM actuation for supported site flows.',
+        whyUse: 'A2W runs expose structured run state, continuation, and workflow lineage, which are more reliable than raw DOM actuation for supported site flows.',
         examples: [
-          'Run a Rover task to find the pricing page.',
+          'Start a Rover run to find the pricing page.',
           'Ask Rover to start the checkout flow on this site.',
         ],
       },
@@ -253,7 +251,7 @@ export function registerWebMCPTools(
       name,
       description: publicDefinition.description,
       inputSchema: publicDefinition.inputSchema,
-      async execute({ task, agent }: { task: string; agent?: Record<string, unknown> }) {
+      async execute({ prompt, agent }: { prompt: string; agent?: Record<string, unknown> }) {
         applyAgentInput(context, agent);
         const startedAfter = Date.now();
         return new Promise(resolve => {
@@ -275,10 +273,10 @@ export function registerWebMCPTools(
             };
             resolve(responsePayload(
               status === 'completed'
-                ? 'Rover task completed.'
+                ? 'Rover run completed.'
                 : status === 'input_required'
-                  ? 'Rover task needs more input.'
-                  : 'Rover task failed.',
+                  ? 'Rover run needs more input.'
+                  : 'Rover run failed.',
               result,
             ));
           };
@@ -305,12 +303,12 @@ export function registerWebMCPTools(
               finish('failed', payload);
               return;
             }
-            if (payload?.taskComplete || payload?.terminalState === 'completed') {
+            if (payload?.runComplete || payload?.terminalState === 'completed') {
               finish('completed', payload);
             }
           });
-          const timer = setTimeout(() => finish('failed', { error: 'Timed out waiting for task completion.' }), 90_000);
-          instance.send(String(task || ''));
+          const timer = setTimeout(() => finish('failed', { error: 'Timed out waiting for run completion.' }), 90_000);
+          instance.send(String(prompt || ''));
         });
       },
     });

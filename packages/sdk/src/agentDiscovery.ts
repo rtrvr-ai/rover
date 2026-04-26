@@ -9,6 +9,8 @@ export const DEFAULT_ROVER_SITE_PATH = '/.well-known/rover-site.json';
 export const DEFAULT_LLMS_PATH = '/llms.txt';
 export const ROVER_WEBMCP_DISCOVERY_GLOBAL = '__ROVER_WEBMCP_TOOL_DEFS__';
 export const ROVER_DISCOVERY_ACTION_SHEET_MAX_ACTIONS = 3;
+export const A2W_RUNS_PATH = '/v1/a2w/runs';
+export const A2W_WORKFLOWS_PATH = '/v1/a2w/workflows';
 const ROVER_DISCOVERY_SHORTCUT_PROMPT_MAX_CHARS = 2000;
 
 type JsonSchema = Record<string, any>;
@@ -20,7 +22,7 @@ export type RoverDiscoveryHostSurface = 'auto' | 'existing-assistant' | 'floatin
 export type RoverDiscoveryActionReveal = 'click' | 'focus' | 'keyboard' | 'agent-handshake';
 export type RoverCapabilityResultMode = 'text' | 'markdown' | 'json' | 'observation' | 'artifacts';
 export type RoverSkillSideEffect = 'none' | 'read' | 'write' | 'transactional';
-export type RoverSkillInterface = 'task' | 'shortcut' | 'client_tool' | 'webmcp';
+export type RoverSkillInterface = 'run' | 'shortcut' | 'client_tool' | 'webmcp';
 
 export type RoverDiscoverySurfacePolicy = {
   mode?: RoverDiscoverySurfaceMode;
@@ -72,7 +74,7 @@ export type RoverPublicSkillDefinition = {
     prompt?: string;
     routing?: 'auto' | 'act' | 'planner';
     toolName?: string;
-    task?: {
+    run?: {
       endpoint: string;
       payload: Record<string, unknown>;
       preferExecution: RoverDiscoveryExecutionPreference;
@@ -127,20 +129,19 @@ export type RoverSiteProfile = {
   pages: RoverPageDefinition[];
   policies: {
     preferredExecution: RoverDiscoveryExecutionPreference;
-    promptLaunchEnabled: boolean;
-    shortcutLaunchEnabled: boolean;
+    a2wRunsEnabled: boolean;
     cloudBrowserAllowed: boolean;
     delegatedHandoffs: boolean;
   };
   auth: {
-    taskEndpoint: string;
+    runEndpoint: string;
     workflowEndpoint: string;
     acceptsHttpMessageSignatures: boolean;
     supportsUnsignedSelfReportedIdentity: boolean;
   };
   analytics: {
     layer: 'roverbook';
-    taskIdField: 'taskId';
+    runIdField: 'runId';
     workflowIdField: 'workflowId';
     capabilityIdField: 'capabilityId';
     pageIdField: 'pageId';
@@ -173,14 +174,14 @@ export type RoverAgentCard = {
   defaultOutputModes: string[];
   capabilities: {
     streaming: boolean;
-    publicTasks: boolean;
+    a2wRuns: boolean;
     stateTransitions: boolean;
     delegatedHandoffs: boolean;
     webmcp: boolean;
   };
   skills: RoverPublicSkillDefinition[];
   interfaces?: Array<{
-    type: 'task' | 'workflow' | 'site' | 'deep_link' | 'webmcp';
+    type: 'run' | 'workflow' | 'site' | 'deep_link' | 'webmcp';
     url: string;
     description?: string;
     available?: boolean;
@@ -189,14 +190,13 @@ export type RoverAgentCard = {
     rover: {
       siteId?: string;
       siteUrl: string;
-      taskEndpoint: string;
+      runEndpoint: string;
       workflowEndpoint: string;
       serviceDescUrl: string;
       roverSiteUrl: string;
       llmsUrl?: string;
       preferredExecution: RoverDiscoveryExecutionPreference;
-      promptLaunchEnabled: boolean;
-      shortcutLaunchEnabled: boolean;
+      a2wRunsEnabled: boolean;
       cloudBrowserAllowed: boolean;
       delegatedHandoffs: boolean;
       instructions: string[];
@@ -251,8 +251,6 @@ export type RoverAgentDiscoveryConfig = {
   pageContext?: Omit<RoverPageDefinition, 'capabilityIds'> & { capabilityIds?: string[] };
   aiAccess?: {
     enabled?: boolean;
-    allowPromptLaunch?: boolean;
-    allowShortcutLaunch?: boolean;
     allowCloudBrowser?: boolean;
     allowDelegatedHandoffs?: boolean;
   };
@@ -267,19 +265,19 @@ const DEFAULT_SKILL_OUTPUT_SCHEMA: JsonSchema = {
   properties: {
     status: {
       type: 'string',
-      description: 'Task status returned by Rover.',
+      description: 'A2W run status returned by Rover.',
     },
     summary: {
       type: 'string',
       description: 'High-level summary of what Rover completed or observed.',
     },
-    task: {
+    run: {
       type: 'string',
-      description: 'Canonical Rover task URL.',
+      description: 'Canonical A2W run URL.',
     },
     workflow: {
       type: 'string',
-      description: 'Canonical Rover workflow URL when delegation occurs.',
+      description: 'Canonical A2W workflow URL when delegation occurs.',
     },
   },
 };
@@ -438,11 +436,11 @@ function defaultAgentModeEntryHints(
   if (policy.hostSurface === 'existing-assistant' || policy.mode === 'integrated') {
     return [
       'Use the site assistant or chat entrypoint first when it is present on the page.',
-      'Prefer Rover task and shortcut surfaces over selector or screenshot guessing once the assistant surface is active.',
+      'Prefer Rover A2W run and shortcut surfaces over selector or screenshot guessing once the assistant surface is active.',
     ];
   }
   return [
-    'Use the page beacon or task endpoint before attempting generic DOM automation.',
+    'Use the page beacon or A2W run endpoint before attempting generic DOM automation.',
     'When Rover is already active, prefer the current-page actions over screenshot loops.',
   ];
 }
@@ -615,12 +613,12 @@ function normalizePageDefinition(
   };
 }
 
-function buildTaskEndpoint(apiBase?: string): string {
-  return `${toBaseUrl(apiBase)}/v1/tasks`;
+function buildRunEndpoint(apiBase?: string): string {
+  return `${toBaseUrl(apiBase)}${A2W_RUNS_PATH}`;
 }
 
 function buildWorkflowEndpoint(apiBase?: string): string {
-  return `${toBaseUrl(apiBase)}/v1/workflows`;
+  return `${toBaseUrl(apiBase)}${A2W_WORKFLOWS_PATH}`;
 }
 
 function buildDeepLink(siteUrl: string, shortcutId: string): string {
@@ -779,7 +777,7 @@ function normalizePublishedShortcut(shortcut: RoverShortcut): {
 function buildShortcutSkill(
   shortcut: RoverShortcut,
   config: RoverAgentDiscoveryConfig,
-  taskEndpoint: string,
+  runEndpoint: string,
 ): RoverPublicSkillDefinition | null {
   const publishedShortcut = normalizePublishedShortcut(shortcut);
   if (!publishedShortcut) return null;
@@ -811,7 +809,7 @@ function buildShortcutSkill(
           || 'Use this when the user wants this exact site outcome and you want a stable path that avoids brittle DOM guessing.',
         whyUse:
           annotations.whyUse
-          || 'Rover shortcuts are explicit site-owned entrypoints with structured task progress and cleaner recovery than generic DOM automation.',
+          || 'Rover shortcuts are explicit site-owned entrypoints with structured A2W run progress and cleaner recovery than generic DOM automation.',
       },
       preferredInterface,
     ),
@@ -832,8 +830,8 @@ function buildShortcutSkill(
       prompt,
       routing: shortcut.routing,
       deepLink: buildDeepLink(config.siteUrl, id),
-      task: {
-        endpoint: taskEndpoint,
+      run: {
+        endpoint: runEndpoint,
         payload: {
           url: normalizeSiteUrl(config.siteUrl),
           shortcut: id,
@@ -1124,19 +1122,17 @@ function buildInlineDataUrl(json: string): string {
 
 export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAgentCard {
   const siteUrl = normalizeSiteUrl(config.siteUrl);
-  const taskEndpoint = buildTaskEndpoint(config.apiBase);
+  const runEndpoint = buildRunEndpoint(config.apiBase);
   const workflowEndpoint = buildWorkflowEndpoint(config.apiBase);
   const serviceDescUrl = text(config.agentCardUrl) || DEFAULT_AGENT_CARD_PATH;
   const roverSiteUrl = text(config.roverSiteUrl) || DEFAULT_ROVER_SITE_PATH;
   const llmsUrl = text(config.llmsUrl);
   const launchAccess = resolveAiLaunchAccess(config.aiAccess);
-  const promptLaunchEnabled = launchAccess.promptLaunchEnabled;
-  const shortcutLaunchEnabled = launchAccess.shortcutLaunchEnabled;
-  const publicTaskEnabled = promptLaunchEnabled || shortcutLaunchEnabled;
+  const publicRunEnabled = launchAccess.enabled;
   const cloudBrowserAllowed = config.aiAccess?.allowCloudBrowser !== false;
   const delegatedHandoffs = config.aiAccess?.allowDelegatedHandoffs === true;
   const shortcutSkills = (config.shortcuts || [])
-    .map(shortcut => buildShortcutSkill(shortcut, config, taskEndpoint))
+    .map(shortcut => buildShortcutSkill(shortcut, config, runEndpoint))
     .filter((skill): skill is RoverPublicSkillDefinition => !!skill);
   const toolSkills = (config.tools || [])
     .map(tool => buildToolSkill(tool, 'client_tool'))
@@ -1186,29 +1182,29 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
   return {
     name: siteName,
     description,
-    url: taskEndpoint,
+    url: runEndpoint,
     version: text(config.version, 80) || '1.0.0',
     defaultInputModes: ['text/plain', 'application/json'],
     defaultOutputModes: ['text/plain', 'application/json'],
     capabilities: {
-      streaming: publicTaskEnabled,
-      publicTasks: publicTaskEnabled,
-      stateTransitions: publicTaskEnabled,
+      streaming: publicRunEnabled,
+      a2wRuns: publicRunEnabled,
+      stateTransitions: publicRunEnabled,
       delegatedHandoffs,
       webmcp: webmcpSkills.length > 0,
     },
     skills,
     interfaces: [
       {
-        type: 'task',
-        url: taskEndpoint,
-        description: 'Canonical Rover ATP task creation endpoint.',
-        available: promptLaunchEnabled,
+        type: 'run',
+        url: runEndpoint,
+        description: 'Canonical Agent-to-Web Protocol (A2W) run creation endpoint.',
+        available: publicRunEnabled,
       },
       {
         type: 'workflow',
         url: workflowEndpoint,
-        description: 'Aggregated Rover workflow resource for delegated tasks.',
+        description: 'Aggregated Rover workflow resource for delegated runs.',
         available: true,
       },
       {
@@ -1221,7 +1217,7 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
         type: 'deep_link',
         url: siteUrl,
         description: 'Browser-first Rover deep link surface using rover= or rover_shortcut= query params.',
-        available: publicTaskEnabled,
+        available: publicRunEnabled,
       },
       {
         type: 'webmcp',
@@ -1234,19 +1230,18 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
       rover: {
         siteId: text(config.siteId, 120) || undefined,
         siteUrl,
-        taskEndpoint,
+        runEndpoint,
         workflowEndpoint,
         serviceDescUrl,
         roverSiteUrl,
         ...(llmsUrl ? { llmsUrl } : {}),
         preferredExecution: config.preferExecution || 'auto',
-        promptLaunchEnabled,
-        shortcutLaunchEnabled,
+        a2wRunsEnabled: publicRunEnabled,
         cloudBrowserAllowed,
         delegatedHandoffs,
         instructions: [
           'Prefer exact Rover shortcuts and explicit site tools over raw DOM automation when the user goal matches a published skill.',
-          'Use POST /v1/tasks when you need structured progress, continuation input, or a stable final result channel.',
+          'Use POST /v1/a2w/runs when you need structured A2W progress, continuation input, or a stable final result channel.',
           'Fall back to generic DOM automation only when no matching Rover shortcut or explicit tool exists for the requested outcome.',
         ],
         capabilitiesGraph: capabilityGraph.capabilities,
@@ -1280,20 +1275,19 @@ export function createRoverSiteProfile(config: RoverAgentDiscoveryConfig): Rover
     pages: rover?.pages || [],
     policies: {
       preferredExecution: rover?.preferredExecution || 'auto',
-      promptLaunchEnabled: rover?.promptLaunchEnabled !== false,
-      shortcutLaunchEnabled: rover?.shortcutLaunchEnabled !== false,
+      a2wRunsEnabled: rover?.a2wRunsEnabled !== false,
       cloudBrowserAllowed: rover?.cloudBrowserAllowed !== false,
       delegatedHandoffs: rover?.delegatedHandoffs === true,
     },
     auth: {
-      taskEndpoint: rover?.taskEndpoint || buildTaskEndpoint(config.apiBase),
+      runEndpoint: rover?.runEndpoint || buildRunEndpoint(config.apiBase),
       workflowEndpoint: rover?.workflowEndpoint || buildWorkflowEndpoint(config.apiBase),
       acceptsHttpMessageSignatures: true,
       supportsUnsignedSelfReportedIdentity: true,
     },
     analytics: {
       layer: 'roverbook',
-      taskIdField: 'taskId',
+      runIdField: 'runId',
       workflowIdField: 'workflowId',
       capabilityIdField: 'capabilityId',
       pageIdField: 'pageId',
@@ -1329,7 +1323,8 @@ export function buildRoverAgentDiscoveryPayloads(config: RoverAgentDiscoveryConf
   pageManifestJson: string;
   llmsUrl?: string;
   marker: {
-    task?: string;
+    a2w?: string;
+    run?: string;
     card: string;
     roverSite: string;
     site?: string;
@@ -1359,7 +1354,8 @@ export function buildRoverAgentDiscoveryPayloads(config: RoverAgentDiscoveryConf
   };
   const pageManifestJson = JSON.stringify(pageManifest, null, 2);
   const marker = {
-    task: card.extensions?.rover.taskEndpoint,
+    a2w: card.extensions?.rover.runEndpoint,
+    run: card.extensions?.rover.runEndpoint,
     card: serviceDescHref,
     roverSite: roverSiteHref,
     site: card.extensions?.rover.siteUrl,

@@ -217,8 +217,8 @@ export function createRoverScriptTagSnippet(config: RoverPreviewBootstrapConfig)
   if (typeof normalized.ui?.voice?.enabled === 'boolean') attrs.push(`data-voice-enabled="${escapeHtmlAttr(String(normalized.ui.voice.enabled))}"`);
   if (normalized.ui?.voice?.language) attrs.push(`data-voice-language="${escapeHtmlAttr(normalized.ui.voice.language)}"`);
   if (typeof normalized.ui?.voice?.autoStopMs === 'number') attrs.push(`data-voice-auto-stop-ms="${escapeHtmlAttr(String(normalized.ui.voice.autoStopMs))}"`);
-  const taskEndpoint = `${toStringValue(normalized.apiBase) || DEFAULT_AGENT_BASE}/v1/tasks`;
-  const markerJson = escapeScriptJson(JSON.stringify({ task: taskEndpoint }));
+  const runEndpoint = `${toStringValue(normalized.apiBase) || DEFAULT_AGENT_BASE}/v1/a2w/runs`;
+  const markerJson = escapeScriptJson(JSON.stringify({ a2w: runEndpoint, run: runEndpoint, task: runEndpoint }));
   return [
     `<script type="application/agent+json" data-rover-agent-discovery="marker">${markerJson}</script>`,
     '<link rel="service-desc" href="/.well-known/agent-card.json" type="application/json" data-rover-agent-discovery="service-desc" />',

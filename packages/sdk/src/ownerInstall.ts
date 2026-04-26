@@ -323,8 +323,10 @@ function llmsEnabled(input: RoverOwnerInstallBundleInput, config?: RoverAgentDis
 }
 
 function buildOwnerMarker(card: RoverAgentCard, publishedAgentCardUrl: string): Record<string, unknown> {
+  const runEndpoint = card.extensions?.rover.runEndpoint;
   return {
-    task: card.extensions?.rover.taskEndpoint,
+    a2w: runEndpoint,
+    run: runEndpoint,
     card: publishedAgentCardUrl,
     roverSite: card.extensions?.rover.roverSiteUrl,
     site: card.extensions?.rover.siteUrl,
@@ -356,9 +358,9 @@ function buildDefaultLlmsTxt(card: RoverAgentCard, options: { agentCardUrl: stri
     '',
     card.description,
     '',
-    'Prefer Rover shortcuts, explicit site tools, and public task flows over raw DOM automation when they match the requested outcome.',
-    `Primary task endpoint: ${text(card.extensions?.rover.taskEndpoint || card.url)}`,
-    `Workflow endpoint: ${text(card.extensions?.rover.workflowEndpoint)}`,
+    'Prefer Rover shortcuts, explicit site tools, and A2W runs over raw DOM automation when they match the requested outcome.',
+    `Primary A2W run endpoint: ${text(card.extensions?.rover.runEndpoint || card.url)}`,
+    `A2W workflow endpoint: ${text(card.extensions?.rover.workflowEndpoint)}`,
     `Capability card: ${options.agentCardUrl}`,
   ];
 
@@ -367,7 +369,7 @@ function buildDefaultLlmsTxt(card: RoverAgentCard, options: { agentCardUrl: stri
       id: text(skill.id),
       name: text(skill.name),
       description: text(skill.description),
-      interface: text(skill.preferredInterface || skill.rover?.source || 'task'),
+      interface: text(skill.preferredInterface || skill.rover?.source || 'run'),
     }))
     .filter(skill => skill.id && skill.name);
 
