@@ -7,6 +7,10 @@ export type ToolCallLike = {
   args?: Record<string, unknown>;
 };
 
+export type BuildRoverActionCueOptions = {
+  logicalTabId?: number;
+};
+
 const SENSITIVE_KEY_PATTERN = /(?:password|passcode|secret|token|api[_-]?key|authorization|cookie|session|credit|card|cvv|cvc|ssn|otp|mfa|email|phone)/i;
 const VALUE_KEY_PATTERN = /^(?:text|value|input|content|typed_text|field_value|option_value|search_text|query)$/i;
 
@@ -30,6 +34,14 @@ export function extractElementIdsFromToolArgs(args?: Record<string, unknown>): n
     }
   }
   return out;
+}
+
+export function extractLogicalTabIdFromToolArgs(args?: Record<string, unknown>): number | undefined {
+  if (!args || typeof args !== 'object') return undefined;
+  return positiveInteger(args.logical_tab_id)
+    ?? positiveInteger(args.tab_id)
+    ?? positiveInteger(args.logicalTabId)
+    ?? positiveInteger(args.tabId);
 }
 
 export function classifyToolActionKind(toolName?: string): RoverActionCueKind {
@@ -103,17 +115,23 @@ export function sanitizeToolArgsForDisplay(args: unknown, kind: RoverActionCueKi
   };
 }
 
-export function buildRoverActionCue(call?: ToolCallLike, toolCallId?: string): RoverActionCue | undefined {
+export function buildRoverActionCue(
+  call?: ToolCallLike,
+  toolCallId?: string,
+  options: BuildRoverActionCueOptions = {},
+): RoverActionCue | undefined {
   if (!call || typeof call !== 'object') return undefined;
   const kind = classifyToolActionKind(call.name);
   const elementIds = extractElementIdsFromToolArgs(call.args);
   const primaryElementId = elementIds[0];
+  const logicalTabId = extractLogicalTabIdFromToolArgs(call.args) ?? positiveInteger(options.logicalTabId);
   const safeArgs = sanitizeToolArgsForDisplay(call.args, kind);
   return {
     kind,
     toolCallId: String(toolCallId || call.id || '').trim() || undefined,
     primaryElementId,
     elementIds: elementIds.length ? elementIds : undefined,
+    logicalTabId,
     valueRedacted: safeArgs.valueRedacted || undefined,
   };
 }

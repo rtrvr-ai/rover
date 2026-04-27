@@ -327,6 +327,9 @@ export class Bridge {
 
     const args = call?.args || {};
     const hasElementContext = hasAnyElementContext(args);
+    if (hasElementContext) {
+      await this.ensureListenerScan();
+    }
     const iframeContext = getDocumentContext(document, args.iframe_id);
     if (args.iframe_id != null && iframeContext.unresolvedPath.length > 0 && !hasElementContext) {
       return this.iframeContextUnavailableResponse(args.iframe_id, iframeContext);

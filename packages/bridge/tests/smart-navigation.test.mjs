@@ -188,6 +188,40 @@ test('click targets with target="_blank" prefer opening a new tab', (t) => {
   });
 });
 
+test('element-targeted actions refresh annotations before resolving targets', async (t) => {
+  const env = installBrowserEnv();
+  t.after(() => env.restore());
+  let flushCalls = 0;
+  env.doc.defaultView.__RTRVR_INTERNAL_KEY__ = '__RTRVR_INTERNAL__';
+  env.doc.defaultView.__RTRVR_INTERNAL__ = {
+    flushScan: async () => {
+      flushCalls += 1;
+    },
+  };
+  const anchor = new FakeAnchorElement('https://app.example.com/checkout', {
+    'rtrvr-label': '[id=1] Link',
+  });
+  env.doc.body.appendChild(anchor);
+
+  const bridge = createBridge({
+    root: env.doc.body,
+    instrumentationStarted: true,
+    openUrlInNewTab: async (targetUrl) => ({
+      success: true,
+      output: { url: targetUrl, navigationOutcome: 'new_tab_opened' },
+    }),
+  });
+
+  const result = await bridge.executeTool({
+    name: 'click_element',
+    args: { element_id: 1, open_in_new_tab: true },
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.output.url, 'https://app.example.com/checkout');
+  assert.equal(flushCalls, 1);
+});
+
 test('open_new_tab reuses an exact target tab instead of duplicating it', async (t) => {
   const env = installBrowserEnv();
   t.after(() => env.restore());
