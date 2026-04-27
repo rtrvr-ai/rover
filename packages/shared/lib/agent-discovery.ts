@@ -53,7 +53,7 @@ function normalizeExecutionPreference(value: unknown): RoverDiscoveryExecutionPr
 }
 
 function normalizePreferredInterface(value: unknown): RoverDiscoverySkillInterface | undefined {
-  return value === 'task' || value === 'shortcut' || value === 'client_tool' || value === 'webmcp'
+  return value === 'run' || value === 'shortcut' || value === 'client_tool' || value === 'webmcp'
     ? value
     : undefined;
 }

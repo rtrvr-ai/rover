@@ -2,6 +2,7 @@ import type { RoverPageCaptureConfig } from '@rover/shared/lib/types/index.js';
 import type { RoverShortcut, RoverVoiceConfig } from '@rover/ui';
 import {
   DEFAULT_AGENT_CARD_PATH,
+  DEFAULT_LLMS_PATH,
   DEFAULT_ROVER_SITE_PATH,
   createRoverAgentCard,
   createRoverAgentCardJson,
@@ -458,21 +459,24 @@ function buildRoverBookAttachScript(config: JsonRecord, options?: { pollInterval
 export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInput): RoverOwnerInstallBundle {
   const bootConfig = materializeCloudSandboxBootConfig(input.bootConfig);
   const discoveryConfig = discoveryEnabled(input.discovery) ? input.discovery : null;
+  const publishLlmsTxt = llmsEnabled(input, discoveryConfig);
   const publishedAgentCardUrl = discoveryConfig ? text(discoveryConfig.agentCardUrl) || DEFAULT_AGENT_CARD_PATH : '';
   const publishedRoverSiteUrl = discoveryConfig ? text(discoveryConfig.roverSiteUrl) || DEFAULT_ROVER_SITE_PATH : '';
-  const publishLlmsTxt = llmsEnabled(input, discoveryConfig);
-  const publishedLlmsUrl = discoveryConfig ? text(discoveryConfig.llmsUrl) : '';
+  const publishedLlmsUrl = discoveryConfig ? text(discoveryConfig.llmsUrl) || (publishLlmsTxt ? DEFAULT_LLMS_PATH : '') : '';
+  const effectiveDiscoveryConfig = discoveryConfig && publishedLlmsUrl && !text(discoveryConfig.llmsUrl)
+    ? { ...discoveryConfig, llmsUrl: publishedLlmsUrl }
+    : discoveryConfig;
   const embedScriptUrl = text(input.embedScriptUrl) || DEFAULT_EMBED_SCRIPT_URL;
   const roverBookEnabled = input.roverBook?.enabled !== false && hasObjectEntries(input.roverBook?.config);
   const roverBookScriptUrl = roverBookEnabled
     ? (text(input.roverBook?.scriptUrl) || DEFAULT_ROVERBOOK_SCRIPT_URL)
     : '';
 
-  const agentCard = discoveryConfig ? createRoverAgentCard(discoveryConfig) : undefined;
-  const agentCardJson = discoveryConfig ? createRoverAgentCardJson(discoveryConfig) : undefined;
-  const roverSite = discoveryConfig ? createRoverSiteProfile(discoveryConfig) : undefined;
-  const roverSiteJson = discoveryConfig ? createRoverSiteProfileJson(discoveryConfig) : undefined;
-  const pageManifestJson = discoveryConfig
+  const agentCard = effectiveDiscoveryConfig ? createRoverAgentCard(effectiveDiscoveryConfig) : undefined;
+  const agentCardJson = effectiveDiscoveryConfig ? createRoverAgentCardJson(effectiveDiscoveryConfig) : undefined;
+  const roverSite = effectiveDiscoveryConfig ? createRoverSiteProfile(effectiveDiscoveryConfig) : undefined;
+  const roverSiteJson = effectiveDiscoveryConfig ? createRoverSiteProfileJson(effectiveDiscoveryConfig) : undefined;
+  const pageManifestJson = effectiveDiscoveryConfig
     ? JSON.stringify(agentCard?.extensions?.rover.currentPage || null, null, 2)
     : undefined;
   const marker = agentCard && publishedAgentCardUrl

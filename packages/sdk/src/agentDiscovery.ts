@@ -703,7 +703,7 @@ function normalizeAnnotations(value: unknown): RoverToolAnnotations {
         ? annotations.requiresConfirmation
         : undefined,
     preferredInterface:
-      annotations.preferredInterface === 'task'
+      annotations.preferredInterface === 'run'
       || annotations.preferredInterface === 'shortcut'
       || annotations.preferredInterface === 'client_tool'
       || annotations.preferredInterface === 'webmcp'
@@ -1445,15 +1445,15 @@ export function createRoverAgentDiscoveryTags(config: RoverAgentDiscoveryConfig)
   const escapedRoverSiteJson = escapeScriptJson(roverSiteJson);
   const escapedPageManifestJson = escapeScriptJson(pageManifestJson);
   const lines = [
-    `<script type="application/agent+json">${markerJson}</script>`,
-    `<link rel="service-desc" href="${escapeHtmlAttr(serviceDescHref)}" type="application/json" />`,
+    `<script type="application/agent+json" data-rover-agent-discovery="marker">${markerJson}</script>`,
+    `<link rel="service-desc" href="${escapeHtmlAttr(serviceDescHref)}" type="application/json" data-rover-agent-discovery="service-desc" />`,
   ];
   if (llmsUrl) {
-    lines.push(`<link rel="service-doc" href="${escapeHtmlAttr(llmsUrl)}" type="text/markdown" />`);
+    lines.push(`<link rel="service-doc" href="${escapeHtmlAttr(llmsUrl)}" type="text/markdown" data-rover-agent-discovery="service-doc" />`);
   }
-  lines.push(`<script type="application/rover-site+json">${escapedRoverSiteJson}</script>`);
-  lines.push(`<script type="application/rover-page+json">${escapedPageManifestJson}</script>`);
-  lines.push(`<script type="application/agent-card+json">${escapedCardJson}</script>`);
+  lines.push(`<script type="application/rover-site+json" data-rover-agent-discovery="rover-site">${escapedRoverSiteJson}</script>`);
+  lines.push(`<script type="application/rover-page+json" data-rover-agent-discovery="page">${escapedPageManifestJson}</script>`);
+  lines.push(`<script type="application/agent-card+json" data-rover-agent-discovery="agent-card">${escapedCardJson}</script>`);
   return lines.join('\n');
 }
 

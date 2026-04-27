@@ -249,6 +249,7 @@ export type RoverInit = {
   pageConfig?: RoverPageCaptureConfig;
   allowedDomains?: string[];
   domainScopeMode?: 'host_only' | 'registrable_domain';
+  cloudSandboxEnabled?: boolean;
   tabPolicy?: {
     observerByDefault?: boolean;
     actionLeaseMs?: number;
@@ -8862,7 +8863,28 @@ function resolveEffectivePageCaptureConfig(cfg: RoverInit | null): RoverPageCapt
 
 function resolveEffectiveAiAccessConfig(cfg: RoverInit | null): RoverAiAccessConfig | undefined {
   if (!cfg) return undefined;
-  return sanitizeAiAccessConfig(backendSiteConfig?.aiAccess);
+  const fromBackend = sanitizeAiAccessConfig(backendSiteConfig?.aiAccess);
+  const fromInit = sanitizeAiAccessConfig(cfg.agentDiscovery?.aiAccess);
+  if (!fromBackend && !fromInit) return undefined;
+  return {
+    ...(fromBackend || {}),
+    ...(fromInit || {}),
+  };
+}
+
+function materializeCloudSandboxRuntimeConfig<T extends Partial<RoverInit>>(cfg: T): T {
+  if (cfg.cloudSandboxEnabled !== true) return cfg;
+  return {
+    ...cfg,
+    tools: {
+      ...(cfg.tools || {}),
+      web: {
+        ...(cfg.tools?.web || {}),
+        enableExternalWebContext: true,
+        scrapeMode: 'on_demand',
+      },
+    },
+  };
 }
 
 function syncEffectivePageCaptureConfig(cfg: RoverInit | null): void {
@@ -9023,7 +9045,7 @@ function sanitizeShortcut(raw: any): RoverShortcut | null {
     sc.requiresConfirmation = raw.requiresConfirmation;
   }
   if (
-    raw.preferredInterface === 'task'
+    raw.preferredInterface === 'run'
     || raw.preferredInterface === 'shortcut'
     || raw.preferredInterface === 'client_tool'
     || raw.preferredInterface === 'webmcp'
@@ -10563,7 +10585,7 @@ function buildBusinessTypeShortcuts(type?: RoverBusinessType): RoverShortcut[] {
     id: `suggested_${normalized}_${shortcut.id}`,
     enabled: true,
     order: 10_000 + index,
-    preferredInterface: 'task',
+    preferredInterface: 'run',
   }));
 }
 
@@ -11621,6 +11643,7 @@ function createRuntime(cfg: RoverInit): void {
 }
 
 export function boot(cfg: RoverInit): RoverInstance {
+  cfg = materializeCloudSandboxRuntimeConfig(cfg);
   if (instance) {
     update(cfg);
     return instance;
@@ -12019,6 +12042,7 @@ export function init(cfg: RoverInit): RoverInstance {
 
 export function update(cfg: Partial<RoverInit>): void {
   if (!instance || !worker || !currentConfig) return;
+  cfg = materializeCloudSandboxRuntimeConfig(cfg);
   currentConfig = {
     ...currentConfig,
     ...cfg,

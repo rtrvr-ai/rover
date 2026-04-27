@@ -11,6 +11,16 @@ import {
   sanitizeRoverAgentDiscoveryRuntimeConfig,
 } from '../dist/agentDiscovery.js';
 
+const LEGACY_A2W_PROTOCOL_PATTERN = new RegExp([
+  '"tas' + 'k":',
+  'task' + 'Endpoint',
+  'public' + 'Tasks',
+  'Agent ' + 'Task Protocol',
+  '\\bA' + 'TP\\b',
+  '\\/v1\\/' + 'tasks',
+  '\\/v1\\/' + 'workflows',
+].join('|'));
+
 test('agent card maps shortcuts and explicit tools into published skills', () => {
   const card = createRoverAgentCard({
     siteId: 'site_123',
@@ -273,11 +283,17 @@ test('discovery tags include marker, service description, and inline agent card'
   });
 
   assert.match(html, /application\/agent\+json/);
+  assert.match(html, /data-rover-agent-discovery="marker"/);
   assert.match(html, /rel="service-desc"/);
+  assert.match(html, /data-rover-agent-discovery="service-desc"/);
   assert.match(html, /application\/agent-card\+json/);
+  assert.match(html, /data-rover-agent-discovery="agent-card"/);
   assert.match(html, /application\/rover-site\+json/);
+  assert.match(html, /data-rover-agent-discovery="rover-site"/);
   assert.match(html, /application\/rover-page\+json/);
+  assert.match(html, /data-rover-agent-discovery="page"/);
   assert.match(html, /checkout_flow/);
+  assert.doesNotMatch(html, LEGACY_A2W_PROTOCOL_PATTERN);
 });
 
 test('well-known card helper and Link header helper produce deployable outputs', () => {

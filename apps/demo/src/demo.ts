@@ -49,6 +49,7 @@ type DemoState = {
 };
 
 type DemoConfig = {
+  siteId?: string;
   publicKey?: string;
   siteKeyId?: string;
   apiKey?: string;
@@ -56,6 +57,33 @@ type DemoConfig = {
   visitorId: string;
   allowedDomains: string[];
   domainScopeMode: 'host_only' | 'registrable_domain';
+  cloudSandboxEnabled?: boolean;
+  pageConfig?: {
+    disableAutoScroll?: boolean;
+  };
+  agentDiscovery?: {
+    enabled?: boolean;
+    siteUrl?: string;
+    siteName?: string;
+    description?: string;
+    agentCardUrl?: string;
+    roverSiteUrl?: string;
+    llmsUrl?: string;
+    preferExecution?: 'auto' | 'browser' | 'cloud';
+    aiAccess?: {
+      enabled?: boolean;
+      allowCloudBrowser?: boolean;
+      allowDelegatedHandoffs?: boolean;
+    };
+    discoverySurface?: {
+      mode?: 'silent' | 'beacon' | 'integrated' | 'debug';
+      branding?: 'site' | 'co' | 'rover';
+      hostSurface?: 'auto' | 'existing-assistant' | 'floating-corner' | 'inline-primary';
+      actionReveal?: 'click' | 'focus' | 'keyboard' | 'agent-handshake';
+      beaconLabel?: string;
+      agentModeEntryHints?: string[];
+    };
+  };
   ui?: {
     agent?: {
       name?: string;
@@ -66,6 +94,13 @@ type DemoConfig = {
       mp4Url?: string;
       webmUrl?: string;
       soundEnabled?: boolean;
+    };
+    experience?: {
+      presence?: Record<string, unknown>;
+      inputs?: Record<string, unknown>;
+      motion?: {
+        actionSpotlight?: boolean;
+      };
     };
   };
   tools?: {
@@ -84,6 +119,7 @@ const STORAGE_KEY = 'rover_demo_state_v2';
 const CONFIG_KEY = 'rover_demo_config_v1';
 const WEBSITE_CONFIG_GLOBAL = '__ROVER_WEBSITE_CONFIG__';
 const DEFAULT_API_BASE = 'https://agent.rtrvr.ai';
+const DEFAULT_SITE_ID = 'localhost-04-27-cquU3w';
 const VISITOR_ID_KEY = 'rover_demo_visitor_id_v1';
 
 const SHIPPING_COST: Record<ShippingMethod, number> = {
@@ -166,7 +202,7 @@ function start(): void {
   if (roverInstance) {
     enableRoverBook(roverInstance, {
       apiBase: 'https://roverbook.rtrvr.ai',
-      siteId: 'rover-local-demo-AK5vXw',
+      siteId: config.siteId || DEFAULT_SITE_ID,
       identityResolver: () => ({
         key: 'rover-demo-agent',
         name: 'Rover Demo Agent',
@@ -219,7 +255,7 @@ function initRover(config: DemoConfig): ReturnType<typeof init> {
   const workerUrl = new URL('./worker.ts', import.meta.url).toString();
 
   const instance = init({
-    siteId: 'rover-local-demo-AK5vXw',
+    siteId: config.siteId || DEFAULT_SITE_ID,
     apiBase: config.apiBase || DEFAULT_API_BASE,
     publicKey: config.publicKey || undefined,
     siteKeyId: config.siteKeyId || undefined,
@@ -229,6 +265,7 @@ function initRover(config: DemoConfig): ReturnType<typeof init> {
     sessionScope: 'shared_site',
     allowedDomains: config.allowedDomains || ['localhost'],
     domainScopeMode: config.domainScopeMode,
+    cloudSandboxEnabled: config.cloudSandboxEnabled === true,
     tabPolicy: { observerByDefault: true, actionLeaseMs: 12000 },
     taskRouting: {
       mode: 'act',
@@ -252,13 +289,20 @@ function initRover(config: DemoConfig): ReturnType<typeof init> {
     apiMode: true,
     openOnInit: false,
     tools: config.tools,
+    pageConfig: config.pageConfig,
+    agentDiscovery: config.agentDiscovery,
     visitor: {
       name: 'Demo User',
     },
     ui: {
       ...config.ui,
       experience: {
-        presence: { persistPosition: false, defaultAnchor: 'bottom-center' },
+        ...(config.ui?.experience || {}),
+        presence: {
+          ...(config.ui?.experience?.presence || {}),
+          persistPosition: false,
+          defaultAnchor: 'bottom-center',
+        },
       },
       showTaskControls: true,
       greeting: {
@@ -322,10 +366,16 @@ function bindRoverControls(config: DemoConfig): void {
 
   saveConfigBtn?.addEventListener('click', () => {
     const nextConfig: DemoConfig = {
+      siteId: config.siteId,
+      publicKey: config.publicKey,
+      siteKeyId: config.siteKeyId,
       apiBase: (apiBaseInput?.value || '').trim() || DEFAULT_API_BASE,
       visitorId: config.visitorId,
       allowedDomains: config.allowedDomains,
       domainScopeMode: config.domainScopeMode,
+      cloudSandboxEnabled: config.cloudSandboxEnabled,
+      pageConfig: config.pageConfig,
+      agentDiscovery: config.agentDiscovery,
       ui: config.ui,
       tools: config.tools,
     };
@@ -336,7 +386,7 @@ function bindRoverControls(config: DemoConfig): void {
     });
 
     setInlineNote('rover-config-status', 'Saved Rover config for this demo browser session.', 'success');
-    setRoverStatus(nextConfig.apiKey ? 'Rover config updated' : 'Config updated. API key still missing.', nextConfig.apiKey ? 'success' : 'warning');
+    setRoverStatus(nextConfig.publicKey || nextConfig.apiKey ? 'Rover config updated' : 'Config updated. Public site key still missing.', nextConfig.publicKey || nextConfig.apiKey ? 'success' : 'warning');
     pushToast('Rover config saved. You can now prompt new actions.');
   });
 }
@@ -1010,6 +1060,7 @@ function loadConfig(): DemoConfig {
   const visitorId = getOrCreateDemoVisitorId();
   const defaultAllowedDomains = [window.location.hostname].filter(Boolean);
   const fallback: DemoConfig = {
+    siteId: DEFAULT_SITE_ID,
     apiKey: '',
     apiBase: DEFAULT_API_BASE,
     visitorId,
@@ -1025,11 +1076,17 @@ function loadConfig(): DemoConfig {
     const raw = window.localStorage.getItem(CONFIG_KEY);
     if (!raw) {
       return {
+        siteId: website.siteId || fallback.siteId,
+        publicKey: website.publicKey || fallback.publicKey,
+        siteKeyId: website.siteKeyId || fallback.siteKeyId,
         apiKey: website.apiKey || fallback.apiKey,
         apiBase: website.apiBase || fallback.apiBase,
         visitorId: website.visitorId || fallback.visitorId,
         allowedDomains: website.allowedDomains?.length ? website.allowedDomains : fallback.allowedDomains,
         domainScopeMode: website.domainScopeMode || fallback.domainScopeMode,
+        cloudSandboxEnabled: website.cloudSandboxEnabled ?? fallback.cloudSandboxEnabled,
+        pageConfig: website.pageConfig || fallback.pageConfig,
+        agentDiscovery: website.agentDiscovery || fallback.agentDiscovery,
         ui: website.ui || fallback.ui,
         tools: website.tools || fallback.tools,
       };
@@ -1037,6 +1094,9 @@ function loadConfig(): DemoConfig {
     const parsed = JSON.parse(raw) as Partial<DemoConfig>;
 
     return {
+      siteId: (parsed.siteId || '').trim() || website.siteId || fallback.siteId,
+      publicKey: (parsed.publicKey || '').trim() || website.publicKey || fallback.publicKey,
+      siteKeyId: (parsed.siteKeyId || '').trim() || website.siteKeyId || fallback.siteKeyId,
       apiKey: (parsed.apiKey || '').trim() || website.apiKey || fallback.apiKey,
       apiBase: (parsed.apiBase || '').trim() || website.apiBase || fallback.apiBase,
       visitorId: (parsed.visitorId || '').trim() || website.visitorId || fallback.visitorId,
@@ -1045,16 +1105,25 @@ function loadConfig(): DemoConfig {
           ? normalizeDomainList(parsed.allowedDomains)
           : (website.allowedDomains?.length ? website.allowedDomains : fallback.allowedDomains),
       domainScopeMode: normalizeDomainScopeMode(parsed.domainScopeMode) || website.domainScopeMode || fallback.domainScopeMode,
+      cloudSandboxEnabled: parsed.cloudSandboxEnabled ?? website.cloudSandboxEnabled ?? fallback.cloudSandboxEnabled,
+      pageConfig: parsed.pageConfig || website.pageConfig || fallback.pageConfig,
+      agentDiscovery: parsed.agentDiscovery || website.agentDiscovery || fallback.agentDiscovery,
       ui: parsed.ui || website.ui || fallback.ui,
       tools: parsed.tools || website.tools || fallback.tools,
     };
   } catch {
     return {
+      siteId: website.siteId || fallback.siteId,
+      publicKey: website.publicKey || fallback.publicKey,
+      siteKeyId: website.siteKeyId || fallback.siteKeyId,
       apiKey: website.apiKey || fallback.apiKey,
       apiBase: website.apiBase || fallback.apiBase,
       visitorId: website.visitorId || fallback.visitorId,
       allowedDomains: website.allowedDomains?.length ? website.allowedDomains : fallback.allowedDomains,
       domainScopeMode: website.domainScopeMode || fallback.domainScopeMode,
+      cloudSandboxEnabled: website.cloudSandboxEnabled ?? fallback.cloudSandboxEnabled,
+      pageConfig: website.pageConfig || fallback.pageConfig,
+      agentDiscovery: website.agentDiscovery || fallback.agentDiscovery,
       ui: website.ui || fallback.ui,
       tools: website.tools || fallback.tools,
     };
@@ -1064,12 +1133,17 @@ function loadConfig(): DemoConfig {
 function loadWebsiteConfig(): DemoConfig {
   const raw = window[WEBSITE_CONFIG_GLOBAL];
   const allowedDomains = normalizeDomainList(raw?.allowedDomains);
+  const siteId = typeof raw?.siteId === 'string' ? raw.siteId.trim() : '';
+  const publicKey = typeof raw?.publicKey === 'string' ? raw.publicKey.trim() : '';
+  const siteKeyId = typeof raw?.siteKeyId === 'string' ? raw.siteKeyId.trim() : '';
   const uiAgentName = typeof raw?.ui?.agent?.name === 'string' ? raw.ui.agent.name.trim() : undefined;
   const mascotDisabled = typeof raw?.ui?.mascot?.disabled === 'boolean' ? raw.ui.mascot.disabled : undefined;
   const mascotImageUrl = typeof raw?.ui?.mascot?.imageUrl === 'string' ? raw.ui.mascot.imageUrl.trim() : undefined;
   const mascotMp4Url = typeof raw?.ui?.mascot?.mp4Url === 'string' ? raw.ui.mascot.mp4Url.trim() : undefined;
   const mascotWebmUrl = typeof raw?.ui?.mascot?.webmUrl === 'string' ? raw.ui.mascot.webmUrl.trim() : undefined;
   const mascotSoundEnabled = raw?.ui?.mascot?.soundEnabled === true ? true : undefined;
+  const actionSpotlight = raw?.ui?.experience?.motion?.actionSpotlight;
+  const hasExperience = typeof actionSpotlight === 'boolean';
   const toolsWebAllowDomains = normalizeDomainList(raw?.tools?.web?.allowDomains);
   const toolsWebDenyDomains = normalizeDomainList(raw?.tools?.web?.denyDomains);
   const hasMascot =
@@ -1078,7 +1152,7 @@ function loadWebsiteConfig(): DemoConfig {
     || !!mascotMp4Url
     || !!mascotWebmUrl
     || mascotSoundEnabled === true;
-  const hasUi = !!uiAgentName || hasMascot;
+  const hasUi = !!uiAgentName || hasMascot || hasExperience;
   const hasWebTools =
     typeof raw?.tools?.web?.enableExternalWebContext === 'boolean'
     || raw?.tools?.web?.scrapeMode === 'on_demand'
@@ -1086,11 +1160,17 @@ function loadWebsiteConfig(): DemoConfig {
     || toolsWebDenyDomains.length > 0;
 
   return {
+    siteId,
+    publicKey,
+    siteKeyId,
     apiKey: typeof raw?.apiKey === 'string' ? raw.apiKey.trim() : '',
     apiBase: typeof raw?.apiBase === 'string' && raw.apiBase.trim() ? raw.apiBase.trim() : DEFAULT_API_BASE,
     visitorId: typeof raw?.visitorId === 'string' ? raw.visitorId.trim() : '',
     allowedDomains,
     domainScopeMode: normalizeDomainScopeMode(raw?.domainScopeMode) || 'registrable_domain',
+    cloudSandboxEnabled: raw?.cloudSandboxEnabled === true,
+    pageConfig: normalizePageConfig(raw?.pageConfig),
+    agentDiscovery: normalizeAgentDiscoveryConfig(raw?.agentDiscovery),
     ui: hasUi
       ? {
           ...(uiAgentName ? { agent: { name: uiAgentName } } : {}),
@@ -1102,6 +1182,15 @@ function loadWebsiteConfig(): DemoConfig {
                   ...(mascotMp4Url ? { mp4Url: mascotMp4Url } : {}),
                   ...(mascotWebmUrl ? { webmUrl: mascotWebmUrl } : {}),
                   ...(mascotSoundEnabled ? { soundEnabled: true } : {}),
+                },
+              }
+            : {}),
+          ...(hasExperience
+            ? {
+                experience: {
+                  motion: {
+                    actionSpotlight,
+                  },
                 },
               }
             : {}),
@@ -1119,6 +1208,79 @@ function loadWebsiteConfig(): DemoConfig {
           },
         }
       : undefined,
+  };
+}
+
+function normalizePageConfig(raw: unknown): DemoConfig['pageConfig'] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const input = raw as { disableAutoScroll?: unknown };
+  return input.disableAutoScroll === true ? { disableAutoScroll: true } : undefined;
+}
+
+function normalizeAgentDiscoveryConfig(raw: unknown): DemoConfig['agentDiscovery'] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const input = raw as NonNullable<DemoConfig['agentDiscovery']>;
+  const discoverySurface = input.discoverySurface && typeof input.discoverySurface === 'object'
+    ? input.discoverySurface
+    : undefined;
+  const aiAccess = input.aiAccess && typeof input.aiAccess === 'object'
+    ? input.aiAccess
+    : undefined;
+  return {
+    ...(typeof input.enabled === 'boolean' ? { enabled: input.enabled } : {}),
+    ...(typeof input.siteUrl === 'string' && input.siteUrl.trim() ? { siteUrl: input.siteUrl.trim() } : {}),
+    ...(typeof input.siteName === 'string' && input.siteName.trim() ? { siteName: input.siteName.trim() } : {}),
+    ...(typeof input.description === 'string' && input.description.trim() ? { description: input.description.trim() } : {}),
+    ...(typeof input.agentCardUrl === 'string' && input.agentCardUrl.trim() ? { agentCardUrl: input.agentCardUrl.trim() } : {}),
+    ...(typeof input.roverSiteUrl === 'string' && input.roverSiteUrl.trim() ? { roverSiteUrl: input.roverSiteUrl.trim() } : {}),
+    ...(typeof input.llmsUrl === 'string' && input.llmsUrl.trim() ? { llmsUrl: input.llmsUrl.trim() } : {}),
+    ...(input.preferExecution === 'browser' || input.preferExecution === 'cloud' || input.preferExecution === 'auto'
+      ? { preferExecution: input.preferExecution }
+      : {}),
+    ...(aiAccess
+      ? {
+          aiAccess: {
+            ...(typeof aiAccess.enabled === 'boolean' ? { enabled: aiAccess.enabled } : {}),
+            ...(typeof aiAccess.allowCloudBrowser === 'boolean' ? { allowCloudBrowser: aiAccess.allowCloudBrowser } : {}),
+            ...(typeof aiAccess.allowDelegatedHandoffs === 'boolean' ? { allowDelegatedHandoffs: aiAccess.allowDelegatedHandoffs } : {}),
+          },
+        }
+      : {}),
+    ...(discoverySurface
+      ? {
+          discoverySurface: {
+            ...(discoverySurface.mode === 'silent' || discoverySurface.mode === 'beacon' || discoverySurface.mode === 'integrated' || discoverySurface.mode === 'debug'
+              ? { mode: discoverySurface.mode }
+              : {}),
+            ...(discoverySurface.branding === 'site' || discoverySurface.branding === 'co' || discoverySurface.branding === 'rover'
+              ? { branding: discoverySurface.branding }
+              : {}),
+            ...(discoverySurface.hostSurface === 'auto'
+              || discoverySurface.hostSurface === 'existing-assistant'
+              || discoverySurface.hostSurface === 'floating-corner'
+              || discoverySurface.hostSurface === 'inline-primary'
+              ? { hostSurface: discoverySurface.hostSurface }
+              : {}),
+            ...(discoverySurface.actionReveal === 'click'
+              || discoverySurface.actionReveal === 'focus'
+              || discoverySurface.actionReveal === 'keyboard'
+              || discoverySurface.actionReveal === 'agent-handshake'
+              ? { actionReveal: discoverySurface.actionReveal }
+              : {}),
+            ...(typeof discoverySurface.beaconLabel === 'string' && discoverySurface.beaconLabel.trim()
+              ? { beaconLabel: discoverySurface.beaconLabel.trim() }
+              : {}),
+            ...(Array.isArray(discoverySurface.agentModeEntryHints)
+              ? {
+                  agentModeEntryHints: discoverySurface.agentModeEntryHints
+                    .map(value => String(value || '').trim())
+                    .filter(Boolean)
+                    .slice(0, 8),
+                }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -1171,8 +1333,8 @@ function describeConfigSource(): string {
   const website = loadWebsiteConfig();
   const rawStored = window.localStorage.getItem(CONFIG_KEY);
   if (rawStored) return 'Using browser-saved Rover config (local override).';
-  if (website.apiKey) return `Using website config from window.${WEBSITE_CONFIG_GLOBAL}.`;
-  return `No API key set yet. Configure window.${WEBSITE_CONFIG_GLOBAL} or use this panel.`;
+  if (website.publicKey || website.apiKey) return `Using website config from window.${WEBSITE_CONFIG_GLOBAL}.`;
+  return `No public site key set yet. Configure window.${WEBSITE_CONFIG_GLOBAL} or use this panel.`;
 }
 
 function saveConfig(config: DemoConfig): void {

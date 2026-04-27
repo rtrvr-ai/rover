@@ -111,7 +111,7 @@ export type RoverDiscoveryExecutionPreference = 'auto' | 'browser' | 'cloud';
 
 export type RoverDiscoveryResultMode = 'text' | 'markdown' | 'json' | 'observation' | 'artifacts';
 
-export type RoverDiscoverySkillInterface = 'task' | 'shortcut' | 'client_tool' | 'webmcp';
+export type RoverDiscoverySkillInterface = 'run' | 'shortcut' | 'client_tool' | 'webmcp';
 
 export type RoverDiscoverySkillSource = 'shortcut' | 'client_tool' | 'webmcp' | 'additional';
 
