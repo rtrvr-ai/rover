@@ -54,6 +54,14 @@
       muted: true,
     },
   };
+  if (typeof state.cloudSandboxEnabled === 'boolean') {
+    bootConfig.cloudSandboxEnabled = state.cloudSandboxEnabled;
+  }
+  if (state.pageConfig && typeof state.pageConfig === 'object' && typeof state.pageConfig.disableAutoScroll === 'boolean') {
+    bootConfig.pageConfig = {
+      disableAutoScroll: state.pageConfig.disableAutoScroll,
+    };
+  }
   if (state.ui && typeof state.ui === 'object') {
     const voice = state.ui.voice;
     if (voice && typeof voice === 'object') {
@@ -67,6 +75,18 @@
         bootConfig.ui.voice = nextVoice;
       }
     }
+    const actionSpotlight = state.ui.experience?.motion?.actionSpotlight;
+    bootConfig.ui.experience = {
+      motion: {
+        actionSpotlight: actionSpotlight !== false,
+      },
+    };
+  } else {
+    bootConfig.ui.experience = {
+      motion: {
+        actionSpotlight: true,
+      },
+    };
   }
   if (publicKey) bootConfig.publicKey = publicKey;
   if (sessionToken) bootConfig.sessionToken = sessionToken;

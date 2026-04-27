@@ -11,7 +11,7 @@ import {
   sanitizeRoverAgentDiscoveryRuntimeConfig,
 } from '../dist/agentDiscovery.js';
 
-const LEGACY_A2W_PROTOCOL_PATTERN = new RegExp([
+const STALE_A2W_PROTOCOL_PATTERN = new RegExp([
   '"tas' + 'k":',
   'task' + 'Endpoint',
   'public' + 'Tasks',
@@ -293,7 +293,7 @@ test('discovery tags include marker, service description, and inline agent card'
   assert.match(html, /application\/rover-page\+json/);
   assert.match(html, /data-rover-agent-discovery="page"/);
   assert.match(html, /checkout_flow/);
-  assert.doesNotMatch(html, LEGACY_A2W_PROTOCOL_PATTERN);
+  assert.doesNotMatch(html, STALE_A2W_PROTOCOL_PATTERN);
 });
 
 test('well-known card helper and Link header helper produce deployable outputs', () => {

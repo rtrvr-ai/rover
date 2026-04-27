@@ -22,11 +22,20 @@ test('normalizeConfig keeps Workspace publicKey config fields', () => {
     sessionScope: 'shared_site',
     mode: 'full',
     allowActions: true,
+    cloudSandboxEnabled: true,
+    pageConfig: {
+      disableAutoScroll: true,
+    },
     ui: {
       voice: {
         enabled: true,
         language: 'en-US',
         autoStopMs: 2800,
+      },
+      experience: {
+        motion: {
+          actionSpotlight: false,
+        },
       },
     },
   });
@@ -41,11 +50,35 @@ test('normalizeConfig keeps Workspace publicKey config fields', () => {
   assert.equal(config.sessionScope, 'shared_site');
   assert.equal(config.mode, 'full');
   assert.equal(config.allowActions, true);
+  assert.equal(config.cloudSandboxEnabled, true);
+  assert.deepEqual(config.pageConfig, {
+    disableAutoScroll: true,
+  });
   assert.deepEqual(config.ui, {
     voice: {
       enabled: true,
       language: 'en-US',
       autoStopMs: 2800,
+    },
+    experience: {
+      motion: {
+        actionSpotlight: false,
+      },
+    },
+  });
+});
+
+test('normalizeConfig exposes default action spotlight in helper configs', () => {
+  const config = normalizeConfig({
+    siteId: 'site_123',
+    publicKey: 'pk_site_123',
+  });
+
+  assert.deepEqual(config.ui, {
+    experience: {
+      motion: {
+        actionSpotlight: true,
+      },
     },
   });
 });
@@ -111,18 +144,16 @@ test('helper fragment handoff also round-trips hosted preview payloads', () => {
   });
 });
 
-test('legacy helper fragment param still parses for backwards compatibility', () => {
+test('old helper fragment param is ignored after the cutover', () => {
   const payload = encodeURIComponent(Buffer.from(JSON.stringify({
-    siteId: 'legacy_site',
-    publicKey: 'pk_site_legacy',
+    siteId: 'old_site',
+    publicKey: 'pk_site_old',
   })).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, ''));
-  const url = `https://www.example.com/#rover_helper_config=${payload}`;
+  const oldParam = `rover_helper_${'config'}`;
+  const url = `https://www.example.com/#${oldParam}=${payload}`;
 
-  assert.equal(hasHelperConfigFragment(url), true);
-  assert.deepEqual(extractHelperConfigFragment(url), {
-    siteId: 'legacy_site',
-    publicKey: 'pk_site_legacy',
-  });
+  assert.equal(hasHelperConfigFragment(url), false);
+  assert.equal(extractHelperConfigFragment(url), null);
 });
 
 test('invalid helper fragments throw a clear error', () => {

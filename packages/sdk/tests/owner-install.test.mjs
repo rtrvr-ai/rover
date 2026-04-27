@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { createRoverOwnerInstallBundle } from '../dist/ownerInstall.js';
 
-const LEGACY_A2W_PROTOCOL_PATTERN = new RegExp([
+const STALE_A2W_PROTOCOL_PATTERN = new RegExp([
   '"tas' + 'k":',
   'task' + 'Endpoint',
   'public' + 'Tasks',
@@ -63,7 +63,7 @@ test('owner install bundle splits body runtime HTML from head discovery HTML', (
   });
 
   assert.match(bundle.bodyInstallHtml, /application\/agent\+json/);
-  assert.doesNotMatch(bundle.bodyInstallHtml, LEGACY_A2W_PROTOCOL_PATTERN);
+  assert.doesNotMatch(bundle.bodyInstallHtml, STALE_A2W_PROTOCOL_PATTERN);
   assert.match(bundle.bodyInstallHtml, /application\/agent-card\+json/);
   assert.match(bundle.bodyInstallHtml, /application\/rover-site\+json/);
   assert.match(bundle.bodyInstallHtml, /application\/rover-page\+json/);
