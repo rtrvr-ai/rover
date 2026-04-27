@@ -43,7 +43,10 @@ Reusable wildcard config (recommended for testing):
   "mode": "full",
   "allowActions": true,
   "capabilities": { "roverEmbed": true },
-  "ui": { "voice": { "enabled": true } }
+  "ui": {
+    "voice": { "enabled": true },
+    "experience": { "motion": { "actionSpotlight": true } }
+  }
 }
 ```
 
@@ -61,7 +64,12 @@ Exact site-scoped config (when you need policy-accurate domain validation):
   "openOnInit": true,
   "mode": "full",
   "allowActions": true,
-  "ui": { "voice": { "enabled": true } }
+  "cloudSandboxEnabled": true,
+  "pageConfig": { "disableAutoScroll": true },
+  "ui": {
+    "voice": { "enabled": true },
+    "experience": { "motion": { "actionSpotlight": true } }
+  }
 }
 ```
 
@@ -89,7 +97,7 @@ The helper can auto-hydrate from the temporary handoff payload that Rover puts o
 
 After the helper fetches the hosted preview config, it also preserves Rover's preview session continuity fields like `sessionId` and `sessionScope`.
 
-Legacy query-param handoff still works for compatibility, but new Rover links use the fragment payload instead. You do not need to paste JSON for this path.
+Rover links use the private fragment payload. You do not need to paste JSON for this path.
 
 ## Build and load
 

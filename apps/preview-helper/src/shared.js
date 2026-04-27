@@ -3,7 +3,6 @@ export const PREVIEW_ID_PARAM = 'rover_preview_id';
 export const PREVIEW_TOKEN_PARAM = 'rover_preview_token';
 export const PREVIEW_API_PARAM = 'rover_preview_api';
 export const HELPER_PAYLOAD_FRAGMENT_PARAM = 'rover_helper_payload';
-export const LEGACY_HELPER_CONFIG_FRAGMENT_PARAM = 'rover_helper_config';
 const DEFAULT_EMBED_SCRIPT_URL = 'https://rover.rtrvr.ai/embed.js';
 const DEFAULT_API_BASE = 'https://agent.rtrvr.ai';
 const VOICE_AUTO_STOP_MIN_MS = 800;
@@ -53,14 +52,27 @@ function normalizeVoiceConfig(value) {
 }
 
 function normalizeUiConfig(value) {
-  if (!value || typeof value !== 'object') return undefined;
-  const raw = value;
+  const raw = value && typeof value === 'object' ? value : {};
   const ui = {};
   const voice = normalizeVoiceConfig(raw.voice);
   if (voice) {
     ui.voice = voice;
   }
+  const actionSpotlight = raw.experience?.motion?.actionSpotlight;
+  ui.experience = {
+    motion: {
+      actionSpotlight: actionSpotlight !== false,
+    },
+  };
   return Object.keys(ui).length ? ui : undefined;
+}
+
+function normalizePageConfig(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  if (typeof value.disableAutoScroll === 'boolean') {
+    return { disableAutoScroll: value.disableAutoScroll };
+  }
+  return undefined;
 }
 
 function encodeBase64Url(bytes) {
@@ -155,6 +167,8 @@ export function normalizeConfig(input = {}) {
   const openOnInit = input.openOnInit !== false;
   const mode = ['safe', 'full'].includes(String(input.mode || '').trim()) ? String(input.mode).trim() : '';
   const allowActions = typeof input.allowActions === 'boolean' ? input.allowActions : undefined;
+  const cloudSandboxEnabled = typeof input.cloudSandboxEnabled === 'boolean' ? input.cloudSandboxEnabled : undefined;
+  const pageConfig = normalizePageConfig(input.pageConfig);
   const previewLabel = String(input.previewLabel || 'Rover Preview').trim();
   const configRefreshedAt = Number(input.configRefreshedAt);
   const ui = normalizeUiConfig(input.ui);
@@ -181,6 +195,8 @@ export function normalizeConfig(input = {}) {
     openOnInit,
     mode,
     allowActions,
+    cloudSandboxEnabled,
+    pageConfig,
     ui,
     previewLabel,
     configRefreshedAt: Number.isFinite(configRefreshedAt) ? configRefreshedAt : 0,
@@ -208,9 +224,7 @@ function getHelperFragmentValue(rawHash) {
   if (!rawHash || !rawHash.includes('=')) return '';
   const params = new URLSearchParams(rawHash);
   return String(
-    params.get(HELPER_PAYLOAD_FRAGMENT_PARAM)
-    || params.get(LEGACY_HELPER_CONFIG_FRAGMENT_PARAM)
-    || '',
+    params.get(HELPER_PAYLOAD_FRAGMENT_PARAM) || '',
   ).trim();
 }
 
@@ -249,7 +263,6 @@ export function stripPreviewLaunchParams(urlString) {
     if (rawHash && rawHash.includes('=')) {
       const params = new URLSearchParams(rawHash);
       params.delete(HELPER_PAYLOAD_FRAGMENT_PARAM);
-      params.delete(LEGACY_HELPER_CONFIG_FRAGMENT_PARAM);
       const nextHash = params.toString();
       url.hash = nextHash ? nextHash : '';
     }
@@ -291,6 +304,8 @@ export function serializeConfigForSeed(config) {
     openOnInit: config.openOnInit,
     mode: config.mode,
     allowActions: config.allowActions,
+    cloudSandboxEnabled: config.cloudSandboxEnabled,
+    pageConfig: config.pageConfig,
     ui: config.ui,
     previewLabel: config.previewLabel,
     targetHost: config.targetHost,
