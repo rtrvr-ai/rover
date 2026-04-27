@@ -53,7 +53,7 @@ test('Rover docs no longer present pre-vNext canonical guidance', () => {
     'visible AI-ready cue',
     'Compatibility aliases',
     '/v1/' + 'tasks',
-    '"task":"https://agent.rtrvr.ai/v1/a2w/runs"',
+    '"tas' + 'k":"https://agent.rtrvr.ai/v1/a2w/runs"',
   ];
 
   for (const phrase of forbidden) {

@@ -3,6 +3,16 @@ import test from 'node:test';
 
 import { createRoverOwnerInstallBundle } from '../dist/ownerInstall.js';
 
+const LEGACY_A2W_PROTOCOL_PATTERN = new RegExp([
+  '"tas' + 'k":',
+  'task' + 'Endpoint',
+  'public' + 'Tasks',
+  'Agent ' + 'Task Protocol',
+  '\\bA' + 'TP\\b',
+  '\\/v1\\/' + 'tasks',
+  '\\/v1\\/' + 'workflows',
+].join('|'));
+
 test('owner install bundle splits body runtime HTML from head discovery HTML', () => {
   const bundle = createRoverOwnerInstallBundle({
     bootConfig: {
@@ -53,6 +63,7 @@ test('owner install bundle splits body runtime HTML from head discovery HTML', (
   });
 
   assert.match(bundle.bodyInstallHtml, /application\/agent\+json/);
+  assert.doesNotMatch(bundle.bodyInstallHtml, LEGACY_A2W_PROTOCOL_PATTERN);
   assert.match(bundle.bodyInstallHtml, /application\/agent-card\+json/);
   assert.match(bundle.bodyInstallHtml, /application\/rover-site\+json/);
   assert.match(bundle.bodyInstallHtml, /application\/rover-page\+json/);
@@ -77,6 +88,33 @@ test('owner install bundle splits body runtime HTML from head discovery HTML', (
   assert.equal(bundle.roverSite?.display?.compactActionMaxActions, 3);
   assert.equal(bundle.roverSite?.artifacts.roverSiteUrl, '/.well-known/rover-site.json');
   assert.match(bundle.roverSiteJson || '', /"siteId": "site_123"/);
+});
+
+test('owner install bundle advertises generated llms.txt with the default service-doc URL', () => {
+  const bundle = createRoverOwnerInstallBundle({
+    bootConfig: {
+      siteId: 'site_llms',
+      publicKey: 'pk_site_llms',
+    },
+    discovery: {
+      siteId: 'site_llms',
+      siteUrl: 'https://example.com/',
+      siteName: 'LLMS Store',
+      aiAccess: {
+        enabled: true,
+      },
+    },
+    emitLlmsTxt: true,
+  });
+
+  assert.match(bundle.headDiscoveryHtml, /href="\/llms\.txt"/);
+  assert.equal(
+    bundle.serviceDescLinkHeader,
+    '</.well-known/agent-card.json>; rel="service-desc"; type="application/json", </llms.txt>; rel="service-doc"; type="text/markdown"',
+  );
+  assert.equal(bundle.agentCard?.extensions?.rover?.llmsUrl, '/llms.txt');
+  assert.equal(bundle.roverSite?.artifacts?.llmsUrl, '/llms.txt');
+  assert.match(bundle.llmsTxt || '', /Primary A2W run endpoint/);
 });
 
 test('owner install bundle keeps runtime install valid when public discovery is disabled', () => {

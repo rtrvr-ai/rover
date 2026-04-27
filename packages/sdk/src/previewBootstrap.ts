@@ -9,8 +9,15 @@ export type RoverPreviewBootstrapVoiceConfig = {
   autoStopMs?: number;
 };
 
+export type RoverPreviewBootstrapExperienceConfig = {
+  motion?: {
+    actionSpotlight?: boolean;
+  };
+};
+
 export type RoverPreviewBootstrapUiConfig = {
   voice?: RoverPreviewBootstrapVoiceConfig;
+  experience?: RoverPreviewBootstrapExperienceConfig;
 };
 
 export type RoverPreviewBootstrapConfig = {
@@ -24,10 +31,14 @@ export type RoverPreviewBootstrapConfig = {
   workerUrl?: string;
   allowedDomains?: string[];
   domainScopeMode?: 'host_only' | 'registrable_domain';
+  cloudSandboxEnabled?: boolean;
   sessionScope?: 'shared_site' | 'tab';
   openOnInit?: boolean;
   mode?: 'safe' | 'full';
   allowActions?: boolean;
+  pageConfig?: {
+    disableAutoScroll?: boolean;
+  };
   ui?: RoverPreviewBootstrapUiConfig;
   attachLaunch?: RoverPreviewAttachLaunch;
 };
@@ -93,11 +104,26 @@ function normalizeVoiceConfig(value: RoverPreviewBootstrapVoiceConfig | undefine
   return Object.keys(voice).length ? voice : undefined;
 }
 
+function normalizeExperienceConfig(value: RoverPreviewBootstrapExperienceConfig | undefined): RoverPreviewBootstrapExperienceConfig | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const experience: RoverPreviewBootstrapExperienceConfig = {};
+  if (value.motion && typeof value.motion === 'object') {
+    const motion: NonNullable<RoverPreviewBootstrapExperienceConfig['motion']> = {};
+    if (typeof value.motion.actionSpotlight === 'boolean') {
+      motion.actionSpotlight = value.motion.actionSpotlight;
+    }
+    if (Object.keys(motion).length) experience.motion = motion;
+  }
+  return Object.keys(experience).length ? experience : undefined;
+}
+
 function normalizeUiConfig(value: RoverPreviewBootstrapUiConfig | undefined): RoverPreviewBootstrapUiConfig | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const ui: RoverPreviewBootstrapUiConfig = {};
   const voice = normalizeVoiceConfig(value.voice);
   if (voice) ui.voice = voice;
+  const experience = normalizeExperienceConfig(value.experience);
+  if (experience) ui.experience = experience;
   return Object.keys(ui).length ? ui : undefined;
 }
 
@@ -125,11 +151,13 @@ function buildBootstrapPayload(config: RoverPreviewBootstrapConfig): Record<stri
   if (normalized.workerUrl) payload.workerUrl = normalized.workerUrl;
   if (normalized.allowedDomains?.length) payload.allowedDomains = normalized.allowedDomains;
   if (normalized.domainScopeMode) payload.domainScopeMode = normalized.domainScopeMode;
+  if (typeof normalized.cloudSandboxEnabled === 'boolean') payload.cloudSandboxEnabled = normalized.cloudSandboxEnabled;
   if (normalized.sessionScope) payload.sessionScope = normalized.sessionScope;
   if (typeof normalized.openOnInit === 'boolean') payload.openOnInit = normalized.openOnInit;
   if (normalized.mode) payload.mode = normalized.mode;
   if (typeof normalized.allowActions === 'boolean') payload.allowActions = normalized.allowActions;
-  if (normalized.ui?.voice) payload.ui = { voice: normalized.ui.voice };
+  if (normalized.pageConfig?.disableAutoScroll === true) payload.pageConfig = { disableAutoScroll: true };
+  if (normalized.ui) payload.ui = normalized.ui;
   return payload;
 }
 
@@ -210,15 +238,20 @@ export function createRoverScriptTagSnippet(config: RoverPreviewBootstrapConfig)
   if (normalized.workerUrl) attrs.push(`data-worker-url="${escapeHtmlAttr(normalized.workerUrl)}"`);
   if (normalized.allowedDomains?.length) attrs.push(`data-allowed-domains="${escapeHtmlAttr(normalized.allowedDomains.join(','))}"`);
   if (normalized.domainScopeMode) attrs.push(`data-domain-scope-mode="${escapeHtmlAttr(normalized.domainScopeMode)}"`);
+  if (typeof normalized.cloudSandboxEnabled === 'boolean') attrs.push(`data-cloud-sandbox-enabled="${escapeHtmlAttr(String(normalized.cloudSandboxEnabled))}"`);
   if (normalized.sessionScope) attrs.push(`data-session-scope="${escapeHtmlAttr(normalized.sessionScope)}"`);
   if (typeof normalized.openOnInit === 'boolean') attrs.push(`data-open-on-init="${escapeHtmlAttr(String(normalized.openOnInit))}"`);
   if (normalized.mode) attrs.push(`data-mode="${escapeHtmlAttr(normalized.mode)}"`);
   if (typeof normalized.allowActions === 'boolean') attrs.push(`data-allow-actions="${escapeHtmlAttr(String(normalized.allowActions))}"`);
+  if (normalized.pageConfig?.disableAutoScroll === true) attrs.push('data-disable-auto-scroll="true"');
   if (typeof normalized.ui?.voice?.enabled === 'boolean') attrs.push(`data-voice-enabled="${escapeHtmlAttr(String(normalized.ui.voice.enabled))}"`);
   if (normalized.ui?.voice?.language) attrs.push(`data-voice-language="${escapeHtmlAttr(normalized.ui.voice.language)}"`);
   if (typeof normalized.ui?.voice?.autoStopMs === 'number') attrs.push(`data-voice-auto-stop-ms="${escapeHtmlAttr(String(normalized.ui.voice.autoStopMs))}"`);
+  if (typeof normalized.ui?.experience?.motion?.actionSpotlight === 'boolean') {
+    attrs.push(`data-action-spotlight="${escapeHtmlAttr(String(normalized.ui.experience.motion.actionSpotlight))}"`);
+  }
   const runEndpoint = `${toStringValue(normalized.apiBase) || DEFAULT_AGENT_BASE}/v1/a2w/runs`;
-  const markerJson = escapeScriptJson(JSON.stringify({ a2w: runEndpoint, run: runEndpoint, task: runEndpoint }));
+  const markerJson = escapeScriptJson(JSON.stringify({ a2w: runEndpoint, run: runEndpoint }));
   return [
     `<script type="application/agent+json" data-rover-agent-discovery="marker">${markerJson}</script>`,
     '<link rel="service-desc" href="/.well-known/agent-card.json" type="application/json" data-rover-agent-discovery="service-desc" />',
@@ -261,6 +294,9 @@ export function readRoverScriptDataAttributes(
     config.domainScopeMode = domainScopeMode;
   }
 
+  const cloudSandboxEnabled = parseBooleanAttr(scriptEl.getAttribute('data-cloud-sandbox-enabled'));
+  if (typeof cloudSandboxEnabled === 'boolean') config.cloudSandboxEnabled = cloudSandboxEnabled;
+
   const sessionScope = toStringValue(scriptEl.getAttribute('data-session-scope'));
   if (sessionScope === 'shared_site' || sessionScope === 'tab') {
     config.sessionScope = sessionScope;
@@ -277,16 +313,25 @@ export function readRoverScriptDataAttributes(
   const allowActions = parseBooleanAttr(scriptEl.getAttribute('data-allow-actions'));
   if (typeof allowActions === 'boolean') config.allowActions = allowActions;
 
+  const disableAutoScroll = parseBooleanAttr(scriptEl.getAttribute('data-disable-auto-scroll'));
+  if (disableAutoScroll === true) config.pageConfig = { disableAutoScroll: true };
+
   const voiceEnabled = parseBooleanAttr(scriptEl.getAttribute('data-voice-enabled'));
   const voiceLanguage = toStringValue(scriptEl.getAttribute('data-voice-language'));
   const voiceAutoStopMs = parseIntegerAttr(scriptEl.getAttribute('data-voice-auto-stop-ms'));
-  if (typeof voiceEnabled === 'boolean' || voiceLanguage || typeof voiceAutoStopMs === 'number') {
+  const actionSpotlight = parseBooleanAttr(scriptEl.getAttribute('data-action-spotlight'));
+  const voice = normalizeVoiceConfig({
+    ...(typeof voiceEnabled === 'boolean' ? { enabled: voiceEnabled } : {}),
+    ...(voiceLanguage ? { language: voiceLanguage } : {}),
+    ...(typeof voiceAutoStopMs === 'number' ? { autoStopMs: voiceAutoStopMs } : {}),
+  });
+  const experience = normalizeExperienceConfig({
+    ...(typeof actionSpotlight === 'boolean' ? { motion: { actionSpotlight } } : {}),
+  });
+  if (voice || experience) {
     config.ui = {
-      voice: {
-        ...(typeof voiceEnabled === 'boolean' ? { enabled: voiceEnabled } : {}),
-        ...(voiceLanguage ? { language: voiceLanguage } : {}),
-        ...(typeof voiceAutoStopMs === 'number' ? { autoStopMs: voiceAutoStopMs } : {}),
-      },
+      ...(voice ? { voice } : {}),
+      ...(experience ? { experience } : {}),
     };
   }
 

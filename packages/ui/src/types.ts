@@ -17,7 +17,7 @@ export type RoverShortcut = {
   outputSchema?: Record<string, any>;
   sideEffect?: 'none' | 'read' | 'write' | 'transactional';
   requiresConfirmation?: boolean;
-  preferredInterface?: 'task' | 'shortcut' | 'client_tool' | 'webmcp';
+  preferredInterface?: 'run' | 'shortcut' | 'client_tool' | 'webmcp';
 };
 
 export type RoverAskUserQuestion = {
