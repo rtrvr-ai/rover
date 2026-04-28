@@ -29,6 +29,7 @@ window.__ROVER_WEBSITE_CONFIG__ = {
     experience: {
       motion: {
         actionSpotlight: true,
+        actionSpotlightColor: '#FF4C00',
       },
     },
   },

@@ -5,6 +5,7 @@ import {
   buildRoverActionCue,
   classifyToolActionKind,
   extractElementIdsFromToolArgs,
+  extractLogicalTabIdFromToolArgs,
   sanitizeToolArgsForDisplay,
 } from '../dist/actionCue.js';
 
@@ -43,8 +44,38 @@ test('builds action cues with stable call id and primary element', () => {
       toolCallId: 'call-1',
       primaryElementId: 7,
       elementIds: [7, 11],
+      logicalTabId: undefined,
       valueRedacted: undefined,
     },
+  );
+});
+
+test('preserves explicit and fallback logical tab ids on action cues', () => {
+  assert.equal(extractLogicalTabIdFromToolArgs({ logical_tab_id: 4 }), 4);
+  assert.equal(extractLogicalTabIdFromToolArgs({ tab_id: '5' }), 5);
+
+  assert.deepEqual(
+    buildRoverActionCue({
+      id: 'call-tab',
+      name: 'click_element',
+      args: { element_id: 3, tab_id: 8 },
+    }, undefined, { logicalTabId: 2 }),
+    {
+      kind: 'click',
+      toolCallId: 'call-tab',
+      primaryElementId: 3,
+      elementIds: [3],
+      logicalTabId: 8,
+      valueRedacted: undefined,
+    },
+  );
+
+  assert.equal(
+    buildRoverActionCue({
+      name: 'scroll_to_element',
+      args: { element_id: 9 },
+    }, 'call-fallback', { logicalTabId: 12 })?.logicalTabId,
+    12,
   );
 });
 

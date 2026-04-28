@@ -64,6 +64,7 @@ import {
   sanitizeText,
   normalizeVoiceAutoStopMs,
   deriveAccentTokens,
+  deriveActionSpotlightTokens,
   DEFAULT_AGENT_NAME,
   DEFAULT_ATTACHMENT_LIMIT,
   VOICE_AUTO_STOP_DEFAULT_MS,
@@ -90,7 +91,7 @@ import { createCommandBar } from './components/command-bar.js';
 import { createParticleSystem } from './components/particles.js';
 import { createFilamentSystem } from './components/filaments.js';
 import { createLiveStack } from './components/live-stack.js';
-import { createActionSpotlightSystem, deriveElementLabel } from './components/action-spotlight.js';
+import { createActionSpotlightSystem, deriveElementLabel, isActionCueForLocalTab } from './components/action-spotlight.js';
 
 // Style imports
 import { baseStyles } from './styles/base.css.js';
@@ -323,6 +324,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     container: wrapper,
     panel: win.panel,
     resolveElement: opts.resolveElement,
+    getLocalLogicalTabId: opts.getLocalLogicalTabId,
     reducedMotion: prefersReducedMotion(),
   });
 
@@ -389,6 +391,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   function withResolvedActionCueLabel(event: RoverTimelineEvent): RoverTimelineEvent {
     const cue = event.actionCue;
     if (!cue || cue.targetLabel) return event;
+    if (!isActionCueForLocalTab(event, opts.getLocalLogicalTabId?.())) return event;
     const primaryElementId = cue.primaryElementId ?? event.elementId;
     const el = primaryElementId != null ? opts.resolveElement?.(primaryElementId) : null;
     const targetLabel = deriveElementLabel(el);
@@ -923,13 +926,22 @@ export function mountWidget(opts: MountOptions): RoverUi {
   renderArtifactStage();
   syncTaskStage();
 
-  // Apply accent tokens
-  if (experience.theme?.accentColor) {
-    const tokens = deriveAccentTokens(experience.theme.accentColor);
+  function applyColorTokens(): void {
+    const tokens = deriveAccentTokens(experience.theme?.accentColor || '#FF4C00');
     for (const [key, value] of Object.entries(tokens)) {
       wrapper.style.setProperty(key, value);
     }
+    const spotlightTokens = deriveActionSpotlightTokens(
+      experience.motion?.actionSpotlightColor,
+      experience.theme?.accentColor,
+    );
+    for (const [key, value] of Object.entries(spotlightTokens)) {
+      wrapper.style.setProperty(key, value);
+    }
   }
+
+  // Apply color tokens
+  applyColorTokens();
 
   // ── Minimize / Maximize / CloseFromBar ──
   function minimize(): void {
@@ -1348,10 +1360,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     liveStack.setStreamConfig(experience.stream);
     feedComp.setThoughtStyle(opts.thoughtStyle);
     liveStack.setThoughtStyle(opts.thoughtStyle);
-    if (experience.theme?.accentColor) {
-      const tokens = deriveAccentTokens(experience.theme.accentColor);
-      for (const [key, value] of Object.entries(tokens)) wrapper.style.setProperty(key, value);
-    }
+    applyColorTokens();
     if (experience.theme?.fontFamily) {
       wrapper.style.setProperty('font-family', `${experience.theme.fontFamily}, Manrope, sans-serif`);
     }
@@ -1499,11 +1508,12 @@ export function mountWidget(opts: MountOptions): RoverUi {
       if (displayEvent.kind === 'tool_start') {
         toolStartCount++;
         updateTideProgress();
-        if (experience.motion?.actionSpotlight !== false) {
+        const isLocalActionTarget = isActionCueForLocalTab(displayEvent, opts.getLocalLogicalTabId?.());
+        if (isLocalActionTarget && experience.motion?.actionSpotlight !== false) {
           actionSpotlightSystem.addEvent(displayEvent);
         }
         // Filaments + ripples
-        if (displayEvent.elementId != null && experience.motion?.filaments !== false) {
+        if (isLocalActionTarget && displayEvent.elementId != null && experience.motion?.filaments !== false) {
           filamentSystem.addTarget(displayEvent.elementId, displayEvent.toolName);
           const el = opts.resolveElement?.(displayEvent.elementId);
           if (el) {
@@ -1522,8 +1532,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
       if (displayEvent.kind === 'tool_result') {
         toolResultCount++;
         updateTideProgress();
-        actionSpotlightSystem.fadeEvent(displayEvent);
-        if (displayEvent.elementId != null) filamentSystem.fadeTarget(displayEvent.elementId);
+        const isLocalActionTarget = isActionCueForLocalTab(displayEvent, opts.getLocalLogicalTabId?.());
+        if (isLocalActionTarget) actionSpotlightSystem.fadeEvent(displayEvent);
+        if (isLocalActionTarget && displayEvent.elementId != null) filamentSystem.fadeTarget(displayEvent.elementId);
       }
 
       // Pulse badge step count

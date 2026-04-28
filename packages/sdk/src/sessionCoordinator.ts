@@ -342,6 +342,7 @@ function sanitizeActionCue(input: unknown): RoverActionCue | undefined {
   const kind = String(raw.kind || '').trim();
   if (!VALID_ACTION_CUE_KINDS.has(kind)) return undefined;
   const primaryElementId = Math.trunc(Number(raw.primaryElementId));
+  const logicalTabId = Math.trunc(Number(raw.logicalTabId));
   const elementIds = sanitizePositiveIds(raw.elementIds);
   const toolCallId = typeof raw.toolCallId === 'string' && raw.toolCallId.trim()
     ? raw.toolCallId.trim().slice(0, 128)
@@ -354,6 +355,7 @@ function sanitizeActionCue(input: unknown): RoverActionCue | undefined {
     toolCallId,
     primaryElementId: Number.isFinite(primaryElementId) && primaryElementId > 0 ? primaryElementId : undefined,
     elementIds,
+    logicalTabId: Number.isFinite(logicalTabId) && logicalTabId > 0 ? logicalTabId : undefined,
     valueRedacted: typeof raw.valueRedacted === 'boolean' ? raw.valueRedacted : undefined,
     targetLabel,
   };

@@ -101,6 +101,7 @@ import {
   buildRoverActionCue,
   buildToolStartDetailBlocks,
 } from './actionCue.js';
+import { resolveRoverActionElement } from './actionTarget.js';
 import {
   writeCrossDomainResumeCookie,
   readCrossDomainResumeCookie,
@@ -825,6 +826,7 @@ function evictOldestSetEntry(set: Set<string>, maxSize: number): void {
 }
 
 const latestAssistantByRunId = new Map<string, string>();
+const toolLifecycleLogicalTabIds = new Map<string, number>();
 const ignoredRunIds = new Set<string>();
 let roverServerRuntime: RoverServerRuntimeClient | null = null;
 let runtimeSessionToken: string | undefined;
@@ -3924,6 +3926,43 @@ function extractTabIdsFromToolResult(result: unknown): number[] {
   return dedupePositiveTabIds(candidates);
 }
 
+function toolLifecycleKey(msg: any): string {
+  const id = typeof msg?.toolCallId === 'string' && msg.toolCallId.trim()
+    ? msg.toolCallId.trim()
+    : typeof msg?.call?.id === 'string' && msg.call.id.trim()
+      ? msg.call.id.trim()
+      : '';
+  return id.slice(0, 128);
+}
+
+function resolveToolLifecycleLogicalTabId(msg: any): number | undefined {
+  const key = toolLifecycleKey(msg);
+  const explicit = toPositiveTabId(msg?.logicalTabId)
+    ?? toPositiveTabId(msg?.logical_tab_id)
+    ?? extractTabIdsFromToolArgs(msg?.call?.args)[0];
+  if (explicit) {
+    if (key) {
+      toolLifecycleLogicalTabIds.set(key, explicit);
+      evictOldestMapEntry(toolLifecycleLogicalTabIds, 80);
+    }
+    return explicit;
+  }
+  const remembered = key ? toolLifecycleLogicalTabIds.get(key) : undefined;
+  if (remembered) return remembered;
+  const fallback = sessionCoordinator?.getActiveLogicalTabId()
+    ?? sessionCoordinator?.getLocalLogicalTabId();
+  if (fallback && key) {
+    toolLifecycleLogicalTabIds.set(key, fallback);
+    evictOldestMapEntry(toolLifecycleLogicalTabIds, 80);
+  }
+  return fallback;
+}
+
+function forgetToolLifecycleLogicalTabId(msg: any): void {
+  const key = toolLifecycleKey(msg);
+  if (key) toolLifecycleLogicalTabIds.delete(key);
+}
+
 function isToolResultFailure(result: unknown): boolean {
   if (!result || typeof result !== 'object') return false;
   const record = result as Record<string, unknown>;
@@ -4058,6 +4097,7 @@ function sanitizeActionCue(input: unknown): RoverActionCue | undefined {
   const kind = String(raw.kind || '').trim();
   if (!VALID_ACTION_CUE_KINDS.has(kind)) return undefined;
   const primaryElementId = Math.trunc(Number(raw.primaryElementId));
+  const logicalTabId = Math.trunc(Number(raw.logicalTabId));
   const elementIds = sanitizePositiveElementIds(raw.elementIds);
   const toolCallId = typeof raw.toolCallId === 'string' && raw.toolCallId.trim()
     ? truncateText(raw.toolCallId.trim(), 128)
@@ -4070,6 +4110,7 @@ function sanitizeActionCue(input: unknown): RoverActionCue | undefined {
     toolCallId,
     primaryElementId: Number.isFinite(primaryElementId) && primaryElementId > 0 ? primaryElementId : undefined,
     elementIds,
+    logicalTabId: Number.isFinite(logicalTabId) && logicalTabId > 0 ? logicalTabId : undefined,
     valueRedacted: typeof raw.valueRedacted === 'boolean' ? raw.valueRedacted : undefined,
     targetLabel,
   };
@@ -7889,7 +7930,8 @@ function handleWorkerMessage(msg: any): void {
   }
 
   if (msg.type === 'tool_start') {
-    const actionCue = buildRoverActionCue(msg.call, msg.toolCallId);
+    const logicalTabId = resolveToolLifecycleLogicalTabId(msg);
+    const actionCue = buildRoverActionCue(msg.call, msg.toolCallId, { logicalTabId });
     const toolStartElementId = actionCue?.primaryElementId
       ?? (typeof msg.call?.args?.element_id === 'number' ? msg.call.args.element_id : undefined);
     appendTimelineEvent({
@@ -7920,7 +7962,8 @@ function handleWorkerMessage(msg: any): void {
       }
     }
     const detailBlocks = sanitizeMessageBlocks(msg.detailBlocks) || buildToolResultBlocks(msg.result);
-    const actionCue = buildRoverActionCue(msg.call, msg.toolCallId);
+    const logicalTabId = resolveToolLifecycleLogicalTabId(msg);
+    const actionCue = buildRoverActionCue(msg.call, msg.toolCallId, { logicalTabId });
     const toolResultElementId = actionCue?.primaryElementId
       ?? (typeof msg.call?.args?.element_id === 'number' ? msg.call.args.element_id : undefined);
     appendTimelineEvent({
@@ -7936,6 +7979,7 @@ function handleWorkerMessage(msg: any): void {
     enqueueLaunchRuntimeEvent('tool_result', buildLaunchToolResultData(msg), {
       runId: typeof msg.runId === 'string' ? msg.runId : undefined,
     });
+    forgetToolLifecycleLogicalTabId(msg);
     return;
   }
 
@@ -8579,6 +8623,13 @@ function sanitizeResolvedPageCaptureConfig(raw: unknown): RoverPageCaptureConfig
   return sanitizeRoverPageCaptureConfig(raw);
 }
 
+function sanitizeHexColor(raw: unknown): string | undefined {
+  const value = String(raw || '').trim();
+  if (!value) return undefined;
+  const match = value.match(/^#?([0-9a-fA-F]{6})$/);
+  return match ? `#${match[1].toUpperCase()}` : undefined;
+}
+
 function normalizeVoiceAutoStopMs(input: unknown): number | undefined {
   const parsed = Number(input);
   if (!Number.isFinite(parsed)) return undefined;
@@ -8724,6 +8775,10 @@ function sanitizeExperienceConfig(raw: unknown): RoverServerExperienceConfig | u
     }
     if (typeof motionInput.actionSpotlight === 'boolean') {
       motion.actionSpotlight = motionInput.actionSpotlight;
+    }
+    const actionSpotlightColor = sanitizeHexColor(motionInput.actionSpotlightColor);
+    if (actionSpotlightColor) {
+      motion.actionSpotlightColor = actionSpotlightColor;
     }
     if (Object.keys(motion).length) next.motion = motion;
   }
@@ -9294,10 +9349,12 @@ function buildLaunchStatusEventData(msg: any): Record<string, unknown> {
 }
 
 function buildLaunchToolStartData(msg: any): Record<string, unknown> {
-  const actionCue = buildRoverActionCue(msg?.call, msg?.toolCallId);
+  const logicalTabId = resolveToolLifecycleLogicalTabId(msg);
+  const actionCue = buildRoverActionCue(msg?.call, msg?.toolCallId, { logicalTabId });
   const data: Record<string, unknown> = {
     toolName: typeof msg?.call?.name === 'string' ? msg.call.name : 'tool',
     actionKind: actionCue?.kind,
+    logicalTabId: actionCue?.logicalTabId,
     valueRedacted: actionCue?.valueRedacted,
   };
   if (shouldIncludeLaunchFullData()) {
@@ -9307,11 +9364,13 @@ function buildLaunchToolStartData(msg: any): Record<string, unknown> {
 }
 
 function buildLaunchToolResultData(msg: any): Record<string, unknown> {
-  const actionCue = buildRoverActionCue(msg?.call, msg?.toolCallId);
+  const logicalTabId = resolveToolLifecycleLogicalTabId(msg);
+  const actionCue = buildRoverActionCue(msg?.call, msg?.toolCallId, { logicalTabId });
   const data: Record<string, unknown> = {
     toolName: typeof msg?.call?.name === 'string' ? msg.call.name : 'tool',
     success: msg?.result?.success !== false,
     actionKind: actionCue?.kind,
+    logicalTabId: actionCue?.logicalTabId,
     valueRedacted: actionCue?.valueRedacted,
   };
   if (shouldIncludeLaunchFullData()) {
@@ -11380,8 +11439,9 @@ function createRuntime(cfg: RoverInit): void {
   } = {
     siteId: cfg.siteId,
     resolveElement: (elementId: number) => {
-      return document.querySelector(`[data-rveid="${elementId}"]`) || null;
+      return resolveRoverActionElement(elementId);
     },
+    getLocalLogicalTabId: () => sessionCoordinator?.getLocalLogicalTabId(),
     panel: {
       resizable: cfg.ui?.panel?.resizable !== false,
     },

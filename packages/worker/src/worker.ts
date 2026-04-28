@@ -453,6 +453,20 @@ function cloneToolCall(call: FunctionCall & { id?: string }, toolCallId: string)
   };
 }
 
+function positiveLogicalTabId(value: unknown): number | undefined {
+  const id = Math.trunc(Number(value));
+  return Number.isFinite(id) && id > 0 ? id : undefined;
+}
+
+function extractToolLifecycleLogicalTabId(args: unknown): number | undefined {
+  if (!args || typeof args !== 'object') return undefined;
+  const record = args as Record<string, unknown>;
+  return positiveLogicalTabId(record.logical_tab_id)
+    ?? positiveLogicalTabId(record.tab_id)
+    ?? positiveLogicalTabId(record.logicalTabId)
+    ?? positiveLogicalTabId(record.tabId);
+}
+
 function postToolLifecycleEvent(type: 'tool_start' | 'tool_result', payload: {
   call: FunctionCall & { id?: string };
   toolCallId: string;
@@ -464,6 +478,7 @@ function postToolLifecycleEvent(type: 'tool_start' | 'tool_result', payload: {
     type,
     call: payload.call,
     toolCallId: payload.toolCallId,
+    logicalTabId: extractToolLifecycleLogicalTabId(payload.call.args),
     result: payload.result,
     executionId: activeRun?.runId,
   });

@@ -42,6 +42,7 @@ export type RoverServerExperienceConfig = {
     reducedMotionFallback?: 'reduce' | 'remove';
     performanceBudget?: 'standard' | 'high';
     actionSpotlight?: boolean;
+    actionSpotlightColor?: string;
   };
   theme?: {
     mode?: 'auto' | 'light' | 'dark';

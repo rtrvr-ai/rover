@@ -43,9 +43,10 @@ Reusable wildcard config (recommended for testing):
   "mode": "full",
   "allowActions": true,
   "capabilities": { "roverEmbed": true },
+  "pageConfig": { "disableAutoScroll": true },
   "ui": {
     "voice": { "enabled": true },
-    "experience": { "motion": { "actionSpotlight": true } }
+    "experience": { "motion": { "actionSpotlight": true, "actionSpotlightColor": "#FF4C00" } }
   }
 }
 ```
@@ -68,7 +69,7 @@ Exact site-scoped config (when you need policy-accurate domain validation):
   "pageConfig": { "disableAutoScroll": true },
   "ui": {
     "voice": { "enabled": true },
-    "experience": { "motion": { "actionSpotlight": true } }
+    "experience": { "motion": { "actionSpotlight": true, "actionSpotlightColor": "#FF4C00" } }
   }
 }
 ```

@@ -40,6 +40,7 @@ test('preview bootstrap preserves ui voice, experience, cloud sandbox, and page 
       experience: {
         motion: {
           actionSpotlight: false,
+          actionSpotlightColor: '#2563eb',
         },
       },
     },
@@ -55,6 +56,7 @@ test('preview bootstrap preserves ui voice, experience, cloud sandbox, and page 
   assert.match(consoleSnippet, /"cloudSandboxEnabled":\s*true/);
   assert.match(consoleSnippet, /"disableAutoScroll":\s*true/);
   assert.match(consoleSnippet, /"actionSpotlight":\s*false/);
+  assert.match(consoleSnippet, /"actionSpotlightColor":\s*"#2563EB"/);
   assert.match(consoleSnippet, /"sessionId":\s*"sess_123"/);
   assert.match(consoleSnippet, /"sessionScope":\s*"shared_site"/);
   assert.match(scriptSnippet, /data-session-id="sess_123"/);
@@ -65,6 +67,7 @@ test('preview bootstrap preserves ui voice, experience, cloud sandbox, and page 
   assert.match(scriptSnippet, /data-voice-language="en-US"/);
   assert.match(scriptSnippet, /data-voice-auto-stop-ms="2800"/);
   assert.match(scriptSnippet, /data-action-spotlight="false"/);
+  assert.match(scriptSnippet, /data-action-spotlight-color="#2563EB"/);
 
   const parsed = readRoverScriptDataAttributes({
     getAttribute(name) {
@@ -79,6 +82,7 @@ test('preview bootstrap preserves ui voice, experience, cloud sandbox, and page 
         'data-voice-language': 'en-US',
         'data-voice-auto-stop-ms': '2800',
         'data-action-spotlight': 'false',
+        'data-action-spotlight-color': '#2563eb',
       };
       return attrs[name] ?? null;
     },
@@ -99,7 +103,33 @@ test('preview bootstrap preserves ui voice, experience, cloud sandbox, and page 
     experience: {
       motion: {
         actionSpotlight: false,
+        actionSpotlightColor: '#2563EB',
       },
     },
   });
+});
+
+test('preview bootstrap preserves explicit auto-scroll enabled data attribute', () => {
+  const scriptSnippet = createRoverScriptTagSnippet({
+    siteId: 'site_scroll_on',
+    publicKey: 'pk_site_scroll_on',
+    pageConfig: {
+      disableAutoScroll: false,
+    },
+  });
+
+  assert.match(scriptSnippet, /data-disable-auto-scroll="false"/);
+
+  const parsed = readRoverScriptDataAttributes({
+    getAttribute(name) {
+      const attrs = {
+        'data-site-id': 'site_scroll_on',
+        'data-public-key': 'pk_site_scroll_on',
+        'data-disable-auto-scroll': 'false',
+      };
+      return attrs[name] ?? null;
+    },
+  });
+
+  assert.deepEqual(parsed?.pageConfig, { disableAutoScroll: false });
 });

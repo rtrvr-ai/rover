@@ -35,12 +35,12 @@ export const effectsStyles = `
       left: 0;
       top: 0;
       border-radius: 10px;
-      border: 2px solid var(--rv-accent, #ff4c00);
-      background: rgba(255, 76, 0, 0.045);
+      border: 2px solid var(--rv-action-spotlight, var(--rv-accent, #ff4c00));
+      background: var(--rv-action-spotlight-fill, rgba(255, 76, 0, 0.045));
       box-shadow:
         0 0 0 2px rgba(255, 255, 255, 0.74),
-        0 0 0 6px rgba(255, 76, 0, 0.12),
-        0 12px 32px rgba(255, 76, 0, 0.18);
+        0 0 0 6px var(--rv-action-spotlight-halo, rgba(255, 76, 0, 0.12)),
+        0 12px 32px var(--rv-action-spotlight-glow, rgba(255, 76, 0, 0.18));
       opacity: 1;
       transform-origin: center;
       will-change: transform, width, height, opacity;
@@ -55,7 +55,7 @@ export const effectsStyles = `
       opacity: 0;
       box-shadow:
         0 0 0 1px rgba(255, 255, 255, 0.4),
-        0 0 0 2px rgba(255, 76, 0, 0);
+        0 0 0 2px rgba(var(--rv-action-spotlight-rgb, 255, 76, 0), 0);
     }
 
     .actionSpotlightChip {
@@ -86,11 +86,11 @@ export const effectsStyles = `
     }
 
     :host(.dark) .actionSpotlightRing {
-      background: rgba(255, 76, 0, 0.07);
+      background: var(--rv-action-spotlight-dark-fill, rgba(255, 76, 0, 0.07));
       box-shadow:
         0 0 0 2px rgba(15, 17, 23, 0.72),
-        0 0 0 6px rgba(255, 76, 0, 0.16),
-        0 12px 32px rgba(255, 76, 0, 0.22);
+        0 0 0 6px var(--rv-action-spotlight-dark-halo, rgba(255, 76, 0, 0.16)),
+        0 12px 32px var(--rv-action-spotlight-dark-glow, rgba(255, 76, 0, 0.22));
     }
 
     @keyframes actionSpotlightPulse {
@@ -98,22 +98,22 @@ export const effectsStyles = `
         opacity: 0.2;
         box-shadow:
           0 0 0 0 rgba(255, 255, 255, 0.74),
-          0 0 0 0 rgba(255, 76, 0, 0.22),
-          0 12px 32px rgba(255, 76, 0, 0.12);
+          0 0 0 0 var(--rv-action-spotlight-pulse, rgba(255, 76, 0, 0.22)),
+          0 12px 32px var(--rv-action-spotlight-halo, rgba(255, 76, 0, 0.12));
       }
       55% {
         opacity: 1;
         box-shadow:
           0 0 0 2px rgba(255, 255, 255, 0.74),
-          0 0 0 10px rgba(255, 76, 0, 0.06),
-          0 12px 32px rgba(255, 76, 0, 0.2);
+          0 0 0 10px var(--rv-action-spotlight-pulse-soft, rgba(255, 76, 0, 0.06)),
+          0 12px 32px var(--rv-action-spotlight-glow, rgba(255, 76, 0, 0.2));
       }
       100% {
         opacity: 1;
         box-shadow:
           0 0 0 2px rgba(255, 255, 255, 0.74),
-          0 0 0 6px rgba(255, 76, 0, 0.12),
-          0 12px 32px rgba(255, 76, 0, 0.18);
+          0 0 0 6px var(--rv-action-spotlight-halo, rgba(255, 76, 0, 0.12)),
+          0 12px 32px var(--rv-action-spotlight-glow, rgba(255, 76, 0, 0.18));
       }
     }
 

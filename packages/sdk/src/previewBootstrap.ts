@@ -12,6 +12,7 @@ export type RoverPreviewBootstrapVoiceConfig = {
 export type RoverPreviewBootstrapExperienceConfig = {
   motion?: {
     actionSpotlight?: boolean;
+    actionSpotlightColor?: string;
   };
 };
 
@@ -91,6 +92,13 @@ function parseIntegerAttr(value: string | null): number | undefined {
   return Number.isFinite(parsed) ? Math.trunc(parsed) : undefined;
 }
 
+function normalizeHexColor(value: unknown): string | undefined {
+  const raw = toStringValue(value);
+  if (!raw) return undefined;
+  const match = raw.match(/^#?([0-9a-fA-F]{6})$/);
+  return match ? `#${match[1].toUpperCase()}` : undefined;
+}
+
 function normalizeVoiceConfig(value: RoverPreviewBootstrapVoiceConfig | undefined): RoverPreviewBootstrapVoiceConfig | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const voice: RoverPreviewBootstrapVoiceConfig = {};
@@ -111,6 +119,10 @@ function normalizeExperienceConfig(value: RoverPreviewBootstrapExperienceConfig 
     const motion: NonNullable<RoverPreviewBootstrapExperienceConfig['motion']> = {};
     if (typeof value.motion.actionSpotlight === 'boolean') {
       motion.actionSpotlight = value.motion.actionSpotlight;
+    }
+    const actionSpotlightColor = normalizeHexColor(value.motion.actionSpotlightColor);
+    if (actionSpotlightColor) {
+      motion.actionSpotlightColor = actionSpotlightColor;
     }
     if (Object.keys(motion).length) experience.motion = motion;
   }
@@ -156,7 +168,9 @@ function buildBootstrapPayload(config: RoverPreviewBootstrapConfig): Record<stri
   if (typeof normalized.openOnInit === 'boolean') payload.openOnInit = normalized.openOnInit;
   if (normalized.mode) payload.mode = normalized.mode;
   if (typeof normalized.allowActions === 'boolean') payload.allowActions = normalized.allowActions;
-  if (normalized.pageConfig?.disableAutoScroll === true) payload.pageConfig = { disableAutoScroll: true };
+  if (typeof normalized.pageConfig?.disableAutoScroll === 'boolean') {
+    payload.pageConfig = { disableAutoScroll: normalized.pageConfig.disableAutoScroll };
+  }
   if (normalized.ui) payload.ui = normalized.ui;
   return payload;
 }
@@ -243,12 +257,17 @@ export function createRoverScriptTagSnippet(config: RoverPreviewBootstrapConfig)
   if (typeof normalized.openOnInit === 'boolean') attrs.push(`data-open-on-init="${escapeHtmlAttr(String(normalized.openOnInit))}"`);
   if (normalized.mode) attrs.push(`data-mode="${escapeHtmlAttr(normalized.mode)}"`);
   if (typeof normalized.allowActions === 'boolean') attrs.push(`data-allow-actions="${escapeHtmlAttr(String(normalized.allowActions))}"`);
-  if (normalized.pageConfig?.disableAutoScroll === true) attrs.push('data-disable-auto-scroll="true"');
+  if (typeof normalized.pageConfig?.disableAutoScroll === 'boolean') {
+    attrs.push(`data-disable-auto-scroll="${escapeHtmlAttr(String(normalized.pageConfig.disableAutoScroll))}"`);
+  }
   if (typeof normalized.ui?.voice?.enabled === 'boolean') attrs.push(`data-voice-enabled="${escapeHtmlAttr(String(normalized.ui.voice.enabled))}"`);
   if (normalized.ui?.voice?.language) attrs.push(`data-voice-language="${escapeHtmlAttr(normalized.ui.voice.language)}"`);
   if (typeof normalized.ui?.voice?.autoStopMs === 'number') attrs.push(`data-voice-auto-stop-ms="${escapeHtmlAttr(String(normalized.ui.voice.autoStopMs))}"`);
   if (typeof normalized.ui?.experience?.motion?.actionSpotlight === 'boolean') {
     attrs.push(`data-action-spotlight="${escapeHtmlAttr(String(normalized.ui.experience.motion.actionSpotlight))}"`);
+  }
+  if (normalized.ui?.experience?.motion?.actionSpotlightColor) {
+    attrs.push(`data-action-spotlight-color="${escapeHtmlAttr(normalized.ui.experience.motion.actionSpotlightColor)}"`);
   }
   const runEndpoint = `${toStringValue(normalized.apiBase) || DEFAULT_AGENT_BASE}/v1/a2w/runs`;
   const markerJson = escapeScriptJson(JSON.stringify({ a2w: runEndpoint, run: runEndpoint }));
@@ -314,19 +333,22 @@ export function readRoverScriptDataAttributes(
   if (typeof allowActions === 'boolean') config.allowActions = allowActions;
 
   const disableAutoScroll = parseBooleanAttr(scriptEl.getAttribute('data-disable-auto-scroll'));
-  if (disableAutoScroll === true) config.pageConfig = { disableAutoScroll: true };
+  if (typeof disableAutoScroll === 'boolean') config.pageConfig = { disableAutoScroll };
 
   const voiceEnabled = parseBooleanAttr(scriptEl.getAttribute('data-voice-enabled'));
   const voiceLanguage = toStringValue(scriptEl.getAttribute('data-voice-language'));
   const voiceAutoStopMs = parseIntegerAttr(scriptEl.getAttribute('data-voice-auto-stop-ms'));
   const actionSpotlight = parseBooleanAttr(scriptEl.getAttribute('data-action-spotlight'));
+  const actionSpotlightColor = normalizeHexColor(scriptEl.getAttribute('data-action-spotlight-color'));
   const voice = normalizeVoiceConfig({
     ...(typeof voiceEnabled === 'boolean' ? { enabled: voiceEnabled } : {}),
     ...(voiceLanguage ? { language: voiceLanguage } : {}),
     ...(typeof voiceAutoStopMs === 'number' ? { autoStopMs: voiceAutoStopMs } : {}),
   });
   const experience = normalizeExperienceConfig({
-    ...(typeof actionSpotlight === 'boolean' ? { motion: { actionSpotlight } } : {}),
+    ...(typeof actionSpotlight === 'boolean' || actionSpotlightColor
+      ? { motion: { ...(typeof actionSpotlight === 'boolean' ? { actionSpotlight } : {}), ...(actionSpotlightColor ? { actionSpotlightColor } : {}) } }
+      : {}),
   });
   if (voice || experience) {
     config.ui = {

@@ -14,6 +14,7 @@ export type ActionSpotlightSystemOptions = {
   container: HTMLElement;
   panel: HTMLElement;
   resolveElement?: (elementId: number) => Element | null;
+  getLocalLogicalTabId?: () => number | undefined;
   mobileBreakpoint?: number;
   reducedMotion?: boolean;
 };
@@ -153,6 +154,19 @@ function isVisibleRect(rect: RectLike, viewport: RectLike): boolean {
     && rect.bottom >= 0
     && rect.left <= viewport.width
     && rect.top <= viewport.height;
+}
+
+function positiveTabId(value: unknown): number | undefined {
+  const id = Math.trunc(Number(value));
+  return Number.isFinite(id) && id > 0 ? id : undefined;
+}
+
+export function isActionCueForLocalTab(event: RoverTimelineEvent, localLogicalTabId?: number): boolean {
+  const targetTabId = positiveTabId(event.actionCue?.logicalTabId);
+  if (!targetTabId) return true;
+  const localTabId = positiveTabId(localLogicalTabId);
+  if (!localTabId) return true;
+  return targetTabId === localTabId;
 }
 
 function toRectLike(rect: DOMRect | RectLike): RectLike {
@@ -351,21 +365,27 @@ export function createActionSpotlightSystem(opts: ActionSpotlightSystemOptions):
     });
   }
 
+  function stopLoop(): void {
+    if (rafId != null) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+  }
+
   function updatePositions(): void {
-    if (destroyed || active.length === 0) {
-      if (rafId != null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
+    rafId = null;
+    if (destroyed || active.length === 0 || document.hidden) {
       return;
     }
     const occupied: RectLike[] = [];
     for (const spotlight of active) updateOne(spotlight, occupied);
-    rafId = requestAnimationFrame(updatePositions);
+    if (!destroyed && active.length > 0 && !document.hidden) {
+      rafId = requestAnimationFrame(updatePositions);
+    }
   }
 
   function startLoop(): void {
-    if (rafId != null || destroyed) return;
+    if (rafId != null || destroyed || document.hidden) return;
     rafId = requestAnimationFrame(updatePositions);
   }
 
@@ -410,6 +430,7 @@ export function createActionSpotlightSystem(opts: ActionSpotlightSystemOptions):
 
   function addEvent(event: RoverTimelineEvent): void {
     if (destroyed) return;
+    if (!isActionCueForLocalTab(event, opts.getLocalLogicalTabId?.())) return;
     const ids = cueElementIds(event);
     if (!ids.length) return;
     const newIds = ids.filter(elementId => !active.some(item => item.elementId === elementId));
@@ -432,6 +453,7 @@ export function createActionSpotlightSystem(opts: ActionSpotlightSystemOptions):
   }
 
   function fadeEvent(event: RoverTimelineEvent): void {
+    if (!isActionCueForLocalTab(event, opts.getLocalLogicalTabId?.())) return;
     const ids = cueElementIds(event);
     if (!ids.length) return;
     for (const elementId of ids) {
@@ -442,17 +464,22 @@ export function createActionSpotlightSystem(opts: ActionSpotlightSystemOptions):
 
   function clearAll(): void {
     while (active.length) removeSpotlight(active[0]);
-    if (rafId != null) {
-      cancelAnimationFrame(rafId);
-      rafId = null;
-    }
+    stopLoop();
   }
 
   const scheduleUpdate = () => startLoop();
+  const handleVisibilityChange = () => {
+    if (document.hidden) {
+      stopLoop();
+      return;
+    }
+    startLoop();
+  };
   window.addEventListener('scroll', scheduleUpdate, true);
   window.addEventListener('resize', scheduleUpdate);
   window.visualViewport?.addEventListener('resize', scheduleUpdate);
   window.visualViewport?.addEventListener('scroll', scheduleUpdate);
+  document.addEventListener('visibilitychange', handleVisibilityChange);
 
   return {
     overlay,
@@ -466,6 +493,7 @@ export function createActionSpotlightSystem(opts: ActionSpotlightSystemOptions):
       window.removeEventListener('resize', scheduleUpdate);
       window.visualViewport?.removeEventListener('resize', scheduleUpdate);
       window.visualViewport?.removeEventListener('scroll', scheduleUpdate);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       overlay.remove();
     },
   };

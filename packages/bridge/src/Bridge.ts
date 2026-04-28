@@ -1,6 +1,6 @@
 import type { FrameworkElementMetadataWire, MainWorldToolRequest } from '@rover/shared/lib/system-tools/wire.js';
 import type { FrameworkElementMetadata, FrameworkName } from '@rover/shared/lib/utils/main-listener-utils.js';
-import type { PageConfig } from '@rover/shared';
+import { DEFAULT_PAGE_CONFIG, type PageConfig } from '@rover/shared';
 import { SYSTEM_TOOLS_ELEMENT_ID_KEYS, SystemToolNames, normalizeDescribeImageIds } from '@rover/shared/lib/system-tools/tools.js';
 import { FrameworkNameToCode, ToolNameToOpcode } from '@rover/shared/lib/system-tools/wire.js';
 import { getDocumentContext, resolveInteractiveElementById, sanitizeRoverPageCaptureConfig } from '@rover/shared/lib/page/index.js';
@@ -213,6 +213,7 @@ export class Bridge {
     await this.ensureListenerScan();
     const requestedPageConfig = sanitizeRoverPageCaptureConfig(params?.pageConfig);
     const pageConfig: PageConfig = {
+      ...DEFAULT_PAGE_CONFIG,
       ...(requestedPageConfig || {}),
       adaptiveSettleDebounceMs:
         typeof requestedPageConfig?.adaptiveSettleDebounceMs === 'number'
@@ -327,6 +328,9 @@ export class Bridge {
 
     const args = call?.args || {};
     const hasElementContext = hasAnyElementContext(args);
+    if (hasElementContext) {
+      await this.ensureListenerScan();
+    }
     const iframeContext = getDocumentContext(document, args.iframe_id);
     if (args.iframe_id != null && iframeContext.unresolvedPath.length > 0 && !hasElementContext) {
       return this.iframeContextUnavailableResponse(args.iframe_id, iframeContext);

@@ -66,6 +66,7 @@ export type RoverActionCue = {
   toolCallId?: string;
   primaryElementId?: number;
   elementIds?: number[];
+  logicalTabId?: number;
   valueRedacted?: boolean;
   targetLabel?: string;
 };
@@ -231,6 +232,7 @@ export type RoverExperienceConfig = {
     reducedMotionFallback?: 'reduce' | 'remove';
     performanceBudget?: 'standard' | 'high';
     actionSpotlight?: boolean;
+    actionSpotlightColor?: string;
     filaments?: boolean;
     particles?: boolean;
     palimpsest?: boolean;
@@ -246,6 +248,7 @@ export type RoverExperienceConfig = {
 
 export type MountOptions = {
   resolveElement?: (elementId: number) => Element | null;
+  getLocalLogicalTabId?: () => number | undefined;
   onSend: (text: string, meta?: { askUserAnswers?: RoverAskUserAnswerMeta; attachments?: File[] }) => void;
   onVoiceTelemetry?: (event: RoverVoiceTelemetryEvent, payload?: Record<string, unknown>) => void;
   onOpen?: () => void;
