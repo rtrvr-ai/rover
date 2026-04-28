@@ -518,6 +518,8 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `cloudSandboxEnabled` | `boolean` | `false` | Owner-facing shorthand for cloud execution plus approved third-party browsing. When `true`, Rover materializes `tools.web.enableExternalWebContext=true` and `tools.web.scrapeMode='on_demand'`. |
 | `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | — | Greeting bubble config (`{name}` token supported) |
 | `ui.voice` | `{ enabled?: boolean; language?: string; autoStopMs?: number }` | — | Browser dictation for supported Chromium browsers. Rover fills the draft live, waits for post-speech silence before stopping, and the user still sends manually. |
+| `ui.experience.motion.actionSpotlight` | `boolean` | `true` | Highlights the element Rover is clicking, typing into, selecting, or scrolling to. |
+| `ui.experience.motion.actionSpotlightColor` | `"#RRGGBB"` | `"#FF4C00"` | Ring and glow color for Action Spotlight. |
 
 ### Web Tools
 
@@ -530,7 +532,7 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `tools.web.denyDomains` | `string[]` | `[]` | External context denylist |
 | `tools.client` | `ClientToolDefinition[]` | `[]` | Runtime-registered client tools. Tool definitions can include `title`, `outputSchema`, and `annotations` (`whenToUse`, `whyUse`, `examples`, `sideEffect`, `requiresConfirmation`) to improve model tool selection and discovery-card quality. |
 | `agentDiscovery` | `{ enabled?, siteName?, description?, version?, siteUrl?, agentCardUrl?, roverSiteUrl?, llmsUrl?, hostSurfaceSelector?, preferExecution?, discoverySurface?, additionalSkills? }` | — | Optional overrides for Rover's generated discovery surfaces. `rover-site.json` is the authoritative rich profile, `agent-card.json` is the interop card, and `discoverySurface.beaconLabel` now feeds the visible seed/presence CTA text in production. Legacy `visibleCue` / `visibleCueLabel` remain compatibility inputs only. |
-| `pageConfig` | `RoverPageCaptureConfig` | — | Optional per-site page-capture overrides such as `disableAutoScroll`, settle timing, and sparse-tree retry settings |
+| `pageConfig` | `RoverPageCaptureConfig` | `{ disableAutoScroll: true }` for generated installs | Optional per-site page-capture overrides such as `disableAutoScroll`, settle timing, and sparse-tree retry settings. Set `disableAutoScroll: false` only when automatic page-capture scrolling is desired. |
 
 ### AI-Callable URLs (Deep Links)
 

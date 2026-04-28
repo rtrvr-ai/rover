@@ -11,6 +11,7 @@ export const DEFAULT_ATTACHMENT_LIMIT = 6;
 export const DEFAULT_ATTACHMENT_MAX_FILE_SIZE_MB = 12;
 export const SHORTCUTS_RENDER_LIMIT = 12;
 export const GREETING_REVEAL_DELAY_MS = 800;
+export const DEFAULT_ACTION_SPOTLIGHT_COLOR = '#FF4C00';
 
 // Voice constants
 export const VOICE_AUTO_STOP_DEFAULT_MS = 2600;
@@ -59,6 +60,13 @@ export const STRUCTURED_MAX_DEPTH = 4;
 
 export function sanitizeText(text: string): string {
   return String(text || '').trim();
+}
+
+export function normalizeHexColor(input: unknown): string | undefined {
+  const raw = String(input || '').trim();
+  if (!raw) return undefined;
+  const match = raw.match(/^#?([0-9a-fA-F]{6})$/);
+  return match ? `#${match[1].toUpperCase()}` : undefined;
 }
 
 export function normalizeVoiceLanguage(input?: string): string | undefined {
@@ -196,6 +204,7 @@ export function sanitizeExperienceConfig(input?: RoverExperienceConfig): RoverEx
           ? input.motion.performanceBudget
           : undefined,
       actionSpotlight: typeof input.motion.actionSpotlight === 'boolean' ? input.motion.actionSpotlight : undefined,
+      actionSpotlightColor: normalizeHexColor(input.motion.actionSpotlightColor),
       filaments: typeof input.motion.filaments === 'boolean' ? input.motion.filaments : undefined,
       particles: typeof input.motion.particles === 'boolean' ? input.motion.particles : undefined,
       palimpsest: typeof input.motion.palimpsest === 'boolean' ? input.motion.palimpsest : undefined,
@@ -265,13 +274,17 @@ export function resolveMountExperienceConfig(opts: MountOptions, agentName: stri
       reducedMotionFallback: explicit.motion?.reducedMotionFallback || 'reduce',
       performanceBudget: explicit.motion?.performanceBudget || 'standard',
       actionSpotlight: explicit.motion?.actionSpotlight ?? true,
+      actionSpotlightColor:
+        explicit.motion?.actionSpotlightColor ||
+        normalizeHexColor(explicit.theme?.accentColor) ||
+        DEFAULT_ACTION_SPOTLIGHT_COLOR,
       filaments: explicit.motion?.filaments,
       particles: explicit.motion?.particles,
       palimpsest: explicit.motion?.palimpsest,
     },
     theme: {
       mode: explicit.theme?.mode || 'auto',
-      accentColor: explicit.theme?.accentColor || '#FF4C00',
+      accentColor: explicit.theme?.accentColor || DEFAULT_ACTION_SPOTLIGHT_COLOR,
       surfaceStyle: explicit.theme?.surfaceStyle || 'glass',
       radius: explicit.theme?.radius || 'pill',
       fontFamily: explicit.theme?.fontFamily,
@@ -315,7 +328,9 @@ export function buildAttachmentAccept(acceptedMimeGroups?: Array<'images' | 'pdf
 
 /** Derive accent-related CSS variables from a hex color. */
 export function deriveAccentTokens(hex: string): Record<string, string> {
-  const clean = hex.replace('#', '');
+  const normalized = normalizeHexColor(hex);
+  if (!normalized) return {};
+  const clean = normalized.replace('#', '');
   const r = parseInt(clean.slice(0, 2), 16);
   const g = parseInt(clean.slice(2, 4), 16);
   const b = parseInt(clean.slice(4, 6), 16);
@@ -324,11 +339,35 @@ export function deriveAccentTokens(hex: string): Record<string, string> {
   }
   const darken = (v: number, amt: number) => Math.max(0, Math.round(v * (1 - amt)));
   return {
-    '--rv-accent': hex,
+    '--rv-accent': normalized,
     '--rv-accent-rgb': `${r}, ${g}, ${b}`,
     '--rv-accent-hover': `#${darken(r, 0.1).toString(16).padStart(2, '0')}${darken(g, 0.1).toString(16).padStart(2, '0')}${darken(b, 0.1).toString(16).padStart(2, '0')}`,
     '--rv-accent-soft': `rgba(${r}, ${g}, ${b}, 0.06)`,
     '--rv-accent-border': `rgba(${r}, ${g}, ${b}, 0.14)`,
     '--rv-accent-glow': `rgba(${r}, ${g}, ${b}, 0.10)`,
+  };
+}
+
+/** Derive dedicated Action Spotlight CSS variables from a hex color. */
+export function deriveActionSpotlightTokens(hex?: string, fallbackHex = DEFAULT_ACTION_SPOTLIGHT_COLOR): Record<string, string> {
+  const normalized = normalizeHexColor(hex) || normalizeHexColor(fallbackHex) || DEFAULT_ACTION_SPOTLIGHT_COLOR;
+  const clean = normalized.replace('#', '');
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  if (isNaN(r) || isNaN(g) || isNaN(b)) {
+    return {};
+  }
+  return {
+    '--rv-action-spotlight': normalized,
+    '--rv-action-spotlight-rgb': `${r}, ${g}, ${b}`,
+    '--rv-action-spotlight-fill': `rgba(${r}, ${g}, ${b}, 0.045)`,
+    '--rv-action-spotlight-halo': `rgba(${r}, ${g}, ${b}, 0.12)`,
+    '--rv-action-spotlight-glow': `rgba(${r}, ${g}, ${b}, 0.18)`,
+    '--rv-action-spotlight-pulse': `rgba(${r}, ${g}, ${b}, 0.22)`,
+    '--rv-action-spotlight-pulse-soft': `rgba(${r}, ${g}, ${b}, 0.06)`,
+    '--rv-action-spotlight-dark-fill': `rgba(${r}, ${g}, ${b}, 0.07)`,
+    '--rv-action-spotlight-dark-halo': `rgba(${r}, ${g}, ${b}, 0.16)`,
+    '--rv-action-spotlight-dark-glow': `rgba(${r}, ${g}, ${b}, 0.22)`,
   };
 }

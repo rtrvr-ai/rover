@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { sanitizeRoverPageCaptureConfig } from '../dist/lib/page/index.js';
+import { DEFAULT_PAGE_CONFIG } from '../dist/lib/utils/constants.js';
+
+test('DEFAULT_PAGE_CONFIG disables auto scroll by default', () => {
+  assert.equal(DEFAULT_PAGE_CONFIG.disableAutoScroll, true);
+});
 
 test('sanitizeRoverPageCaptureConfig keeps only supported keys and clamps numeric values', () => {
   const result = sanitizeRoverPageCaptureConfig({

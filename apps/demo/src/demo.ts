@@ -100,6 +100,7 @@ type DemoConfig = {
       inputs?: Record<string, unknown>;
       motion?: {
         actionSpotlight?: boolean;
+        actionSpotlightColor?: string;
       };
     };
   };
@@ -1143,7 +1144,8 @@ function loadWebsiteConfig(): DemoConfig {
   const mascotWebmUrl = typeof raw?.ui?.mascot?.webmUrl === 'string' ? raw.ui.mascot.webmUrl.trim() : undefined;
   const mascotSoundEnabled = raw?.ui?.mascot?.soundEnabled === true ? true : undefined;
   const actionSpotlight = raw?.ui?.experience?.motion?.actionSpotlight;
-  const hasExperience = typeof actionSpotlight === 'boolean';
+  const actionSpotlightColor = normalizeHexColor(raw?.ui?.experience?.motion?.actionSpotlightColor);
+  const hasExperience = typeof actionSpotlight === 'boolean' || !!actionSpotlightColor;
   const toolsWebAllowDomains = normalizeDomainList(raw?.tools?.web?.allowDomains);
   const toolsWebDenyDomains = normalizeDomainList(raw?.tools?.web?.denyDomains);
   const hasMascot =
@@ -1189,7 +1191,8 @@ function loadWebsiteConfig(): DemoConfig {
             ? {
                 experience: {
                   motion: {
-                    actionSpotlight,
+                    ...(typeof actionSpotlight === 'boolean' ? { actionSpotlight } : {}),
+                    ...(actionSpotlightColor ? { actionSpotlightColor } : {}),
                   },
                 },
               }
@@ -1214,7 +1217,14 @@ function loadWebsiteConfig(): DemoConfig {
 function normalizePageConfig(raw: unknown): DemoConfig['pageConfig'] {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
   const input = raw as { disableAutoScroll?: unknown };
-  return input.disableAutoScroll === true ? { disableAutoScroll: true } : undefined;
+  return typeof input.disableAutoScroll === 'boolean' ? { disableAutoScroll: input.disableAutoScroll } : undefined;
+}
+
+function normalizeHexColor(raw: unknown): string | undefined {
+  const value = String(raw || '').trim();
+  if (!value) return undefined;
+  const match = value.match(/^#?([0-9a-fA-F]{6})$/);
+  return match ? `#${match[1].toUpperCase()}` : undefined;
 }
 
 function normalizeAgentDiscoveryConfig(raw: unknown): DemoConfig['agentDiscovery'] {

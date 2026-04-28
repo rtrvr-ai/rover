@@ -64,6 +64,7 @@ import {
   sanitizeText,
   normalizeVoiceAutoStopMs,
   deriveAccentTokens,
+  deriveActionSpotlightTokens,
   DEFAULT_AGENT_NAME,
   DEFAULT_ATTACHMENT_LIMIT,
   VOICE_AUTO_STOP_DEFAULT_MS,
@@ -925,13 +926,22 @@ export function mountWidget(opts: MountOptions): RoverUi {
   renderArtifactStage();
   syncTaskStage();
 
-  // Apply accent tokens
-  if (experience.theme?.accentColor) {
-    const tokens = deriveAccentTokens(experience.theme.accentColor);
+  function applyColorTokens(): void {
+    const tokens = deriveAccentTokens(experience.theme?.accentColor || '#FF4C00');
     for (const [key, value] of Object.entries(tokens)) {
       wrapper.style.setProperty(key, value);
     }
+    const spotlightTokens = deriveActionSpotlightTokens(
+      experience.motion?.actionSpotlightColor,
+      experience.theme?.accentColor,
+    );
+    for (const [key, value] of Object.entries(spotlightTokens)) {
+      wrapper.style.setProperty(key, value);
+    }
   }
+
+  // Apply color tokens
+  applyColorTokens();
 
   // ── Minimize / Maximize / CloseFromBar ──
   function minimize(): void {
@@ -1350,10 +1360,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     liveStack.setStreamConfig(experience.stream);
     feedComp.setThoughtStyle(opts.thoughtStyle);
     liveStack.setThoughtStyle(opts.thoughtStyle);
-    if (experience.theme?.accentColor) {
-      const tokens = deriveAccentTokens(experience.theme.accentColor);
-      for (const [key, value] of Object.entries(tokens)) wrapper.style.setProperty(key, value);
-    }
+    applyColorTokens();
     if (experience.theme?.fontFamily) {
       wrapper.style.setProperty('font-family', `${experience.theme.fontFamily}, Manrope, sans-serif`);
     }

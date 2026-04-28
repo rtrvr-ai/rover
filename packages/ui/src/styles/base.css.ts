@@ -16,6 +16,16 @@ export const baseStyles = `
       --rv-accent-soft: rgba(255, 76, 0, 0.06);
       --rv-accent-border: rgba(255, 76, 0, 0.14);
       --rv-accent-glow: rgba(255, 76, 0, 0.10);
+      --rv-action-spotlight: #FF4C00;
+      --rv-action-spotlight-rgb: 255, 76, 0;
+      --rv-action-spotlight-fill: rgba(255, 76, 0, 0.045);
+      --rv-action-spotlight-halo: rgba(255, 76, 0, 0.12);
+      --rv-action-spotlight-glow: rgba(255, 76, 0, 0.18);
+      --rv-action-spotlight-pulse: rgba(255, 76, 0, 0.22);
+      --rv-action-spotlight-pulse-soft: rgba(255, 76, 0, 0.06);
+      --rv-action-spotlight-dark-fill: rgba(255, 76, 0, 0.07);
+      --rv-action-spotlight-dark-halo: rgba(255, 76, 0, 0.16);
+      --rv-action-spotlight-dark-glow: rgba(255, 76, 0, 0.22);
       --rv-bg: #FAFAF7;
       --rv-bg-alt: #F3F1EC;
       --rv-surface: #FFFFFF;

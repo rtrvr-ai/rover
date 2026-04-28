@@ -183,7 +183,7 @@ export const BLANK_URL = 'about:blank';
 export const DEFAULT_PAGE_CONFIG: PageConfig = {
   maxParallelTabs: 4,
   pageLoadDelay: 2000,
-  disableAutoScroll: false,
+  disableAutoScroll: true,
   makeNewTabsActive: false,
   writeRowProcessingTime: false,
 

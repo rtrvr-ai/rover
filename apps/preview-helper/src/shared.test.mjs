@@ -35,6 +35,7 @@ test('normalizeConfig keeps Workspace publicKey config fields', () => {
       experience: {
         motion: {
           actionSpotlight: false,
+          actionSpotlightColor: '#2563eb',
         },
       },
     },
@@ -63,6 +64,7 @@ test('normalizeConfig keeps Workspace publicKey config fields', () => {
     experience: {
       motion: {
         actionSpotlight: false,
+        actionSpotlightColor: '#2563EB',
       },
     },
   });
@@ -78,8 +80,12 @@ test('normalizeConfig exposes default action spotlight in helper configs', () =>
     experience: {
       motion: {
         actionSpotlight: true,
+        actionSpotlightColor: '#FF4C00',
       },
     },
+  });
+  assert.deepEqual(config.pageConfig, {
+    disableAutoScroll: true,
   });
 });
 

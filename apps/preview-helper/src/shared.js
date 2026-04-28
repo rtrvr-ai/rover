@@ -7,6 +7,7 @@ const DEFAULT_EMBED_SCRIPT_URL = 'https://rover.rtrvr.ai/embed.js';
 const DEFAULT_API_BASE = 'https://agent.rtrvr.ai';
 const VOICE_AUTO_STOP_MIN_MS = 800;
 const VOICE_AUTO_STOP_MAX_MS = 5000;
+const DEFAULT_ACTION_SPOTLIGHT_COLOR = '#FF4C00';
 
 export function readCurrentTabId(tabId) {
   const value = Number(tabId);
@@ -51,6 +52,13 @@ function normalizeVoiceConfig(value) {
   return Object.keys(voice).length ? voice : undefined;
 }
 
+function normalizeHexColor(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return undefined;
+  const match = raw.match(/^#?([0-9a-fA-F]{6})$/);
+  return match ? `#${match[1].toUpperCase()}` : undefined;
+}
+
 function normalizeUiConfig(value) {
   const raw = value && typeof value === 'object' ? value : {};
   const ui = {};
@@ -59,9 +67,11 @@ function normalizeUiConfig(value) {
     ui.voice = voice;
   }
   const actionSpotlight = raw.experience?.motion?.actionSpotlight;
+  const actionSpotlightColor = normalizeHexColor(raw.experience?.motion?.actionSpotlightColor) || DEFAULT_ACTION_SPOTLIGHT_COLOR;
   ui.experience = {
     motion: {
       actionSpotlight: actionSpotlight !== false,
+      actionSpotlightColor,
     },
   };
   return Object.keys(ui).length ? ui : undefined;
@@ -168,7 +178,7 @@ export function normalizeConfig(input = {}) {
   const mode = ['safe', 'full'].includes(String(input.mode || '').trim()) ? String(input.mode).trim() : '';
   const allowActions = typeof input.allowActions === 'boolean' ? input.allowActions : undefined;
   const cloudSandboxEnabled = typeof input.cloudSandboxEnabled === 'boolean' ? input.cloudSandboxEnabled : undefined;
-  const pageConfig = normalizePageConfig(input.pageConfig);
+  const pageConfig = normalizePageConfig(input.pageConfig) || { disableAutoScroll: true };
   const previewLabel = String(input.previewLabel || 'Rover Preview').trim();
   const configRefreshedAt = Number(input.configRefreshedAt);
   const ui = normalizeUiConfig(input.ui);

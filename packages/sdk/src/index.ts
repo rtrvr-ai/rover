@@ -8623,6 +8623,13 @@ function sanitizeResolvedPageCaptureConfig(raw: unknown): RoverPageCaptureConfig
   return sanitizeRoverPageCaptureConfig(raw);
 }
 
+function sanitizeHexColor(raw: unknown): string | undefined {
+  const value = String(raw || '').trim();
+  if (!value) return undefined;
+  const match = value.match(/^#?([0-9a-fA-F]{6})$/);
+  return match ? `#${match[1].toUpperCase()}` : undefined;
+}
+
 function normalizeVoiceAutoStopMs(input: unknown): number | undefined {
   const parsed = Number(input);
   if (!Number.isFinite(parsed)) return undefined;
@@ -8768,6 +8775,10 @@ function sanitizeExperienceConfig(raw: unknown): RoverServerExperienceConfig | u
     }
     if (typeof motionInput.actionSpotlight === 'boolean') {
       motion.actionSpotlight = motionInput.actionSpotlight;
+    }
+    const actionSpotlightColor = sanitizeHexColor(motionInput.actionSpotlightColor);
+    if (actionSpotlightColor) {
+      motion.actionSpotlightColor = actionSpotlightColor;
     }
     if (Object.keys(motion).length) next.motion = motion;
   }

@@ -38,6 +38,11 @@
     ? state.sessionScope
     : '';
   const allowedDomains = allowed.length ? allowed : [location.hostname];
+  const normalizeSpotlightColor = (value) => {
+    const raw = String(value || '').trim();
+    const match = raw.match(/^#?([0-9a-fA-F]{6})$/);
+    return match ? `#${match[1].toUpperCase()}` : undefined;
+  };
 
   const rover = window.rover = window.rover || function () {
     (rover.q = rover.q || []).push(arguments);
@@ -76,15 +81,18 @@
       }
     }
     const actionSpotlight = state.ui.experience?.motion?.actionSpotlight;
+    const actionSpotlightColor = normalizeSpotlightColor(state.ui.experience?.motion?.actionSpotlightColor) || '#FF4C00';
     bootConfig.ui.experience = {
       motion: {
         actionSpotlight: actionSpotlight !== false,
+        actionSpotlightColor,
       },
     };
   } else {
     bootConfig.ui.experience = {
       motion: {
         actionSpotlight: true,
+        actionSpotlightColor: '#FF4C00',
       },
     };
   }

@@ -232,6 +232,7 @@ export type RoverExperienceConfig = {
     reducedMotionFallback?: 'reduce' | 'remove';
     performanceBudget?: 'standard' | 'high';
     actionSpotlight?: boolean;
+    actionSpotlightColor?: string;
     filaments?: boolean;
     particles?: boolean;
     palimpsest?: boolean;

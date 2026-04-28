@@ -506,11 +506,14 @@ For owner-facing installs, prefer `cloudSandboxEnabled: true` instead of hand-wi
 | `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced). Shortcuts can also carry agent-facing metadata such as `tags`, `examples`, `inputSchema`, `outputSchema`, `sideEffect`, and `requiresConfirmation`. |
 | `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | - | Greeting bubble config; supports `{name}` placeholder |
 | `ui.voice` | `{ enabled?: boolean; language?: string; autoStopMs?: number }` | - | Browser dictation on supported Chromium browsers. Transcript fills the draft live, Rover waits for post-speech silence before stopping, and the user manually sends. |
-| `pageConfig` | `RoverPageCaptureConfig` | - | Optional per-site page-capture overrides such as `disableAutoScroll`, settle timing, and sparse-tree retry settings |
+| `ui.experience.motion.actionSpotlight` | `boolean` | `true` | Show the visual Action Spotlight ring when Rover clicks, types, selects, or scrolls to page elements. Generated Workspace and Webflow installs make this explicit. |
+| `ui.experience.motion.actionSpotlightColor` | `"#RRGGBB"` | `"#FF4C00"` | Ring and glow color for Action Spotlight. Invalid values fall back to the configured accent color, then Rover orange. |
+| `pageConfig` | `RoverPageCaptureConfig` | `{ disableAutoScroll: true }` for generated installs | Optional per-site page-capture overrides such as `disableAutoScroll`, settle timing, and sparse-tree retry settings. Set `disableAutoScroll: false` only when automatic page-capture scrolling is desired. |
 
 With site keys (or a valid `rvrsess_*` token), Rover fetches cloud site config via `POST /v2/rover/session/open` (shortcuts + `businessType` + sparse `siteConfig.experience` overrides + voice compatibility + `aiAccess` + `pageConfig`).
 If boot config and cloud config define the same field, boot config takes precedence.
 `siteConfig.aiAccess.enabled` is the canonical owner-facing launch switch in Workspace/Webflow. `deepLink` remains boot/runtime only for advanced manual overrides such as custom param names, explicit enable/disable, or disabling URL param consumption.
+New Workspace and Webflow install generation emits `ui.experience.motion.actionSpotlightColor` plus `pageConfig.disableAutoScroll: true` by default so snippets stay self-documenting.
 
 For AI and CLI-triggered entrypoints, prefer exact shortcut IDs for repeatable flows:
 
