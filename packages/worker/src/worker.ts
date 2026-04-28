@@ -23,6 +23,7 @@ import { isApiKeyRequiredError, toRoverErrorEnvelope } from './agent/errors.js';
 import { resolveRuntimeTabs } from './agent/runtimeTabs.js';
 import { shouldClearHistoryForRun } from './runHistoryGuards.js';
 import { classifyNavigationContinuation } from './navigationContinuation.js';
+import { extractActionNarrationFromArgs, stripToolUiHintsFromArgs } from './agent/uiHints.js';
 import type { LLMDataInput } from '@rover/shared/lib/types/workflow-types.js';
 import { ROVER_V2_PERSIST_CAPS } from '@rover/shared';
 
@@ -66,9 +67,22 @@ type RoverWorkerConfig = RoverAgentConfig & {
     adversarialGate?: 'pre_tool_block';
   };
   tools?: { client?: ClientToolDefinition[]; web?: ExternalWebConfig } | ClientToolDefinition[];
+  siteName?: string;
+  siteUrl?: string;
   ui?: {
     agent?: {
       name?: string;
+    };
+    experience?: {
+      presence?: {
+        assistantName?: string;
+      };
+      audio?: {
+        narration?: {
+          enabled?: boolean;
+          defaultMode?: 'guided' | 'always' | 'off';
+        };
+      };
     };
   };
   sessionId?: string;
@@ -177,14 +191,59 @@ let lastStatusKey = '';
 let seenStatusKeys = new Set<string>();
 let lastRuntimeTabsDiagnosticsKey = '';
 const terminalRuns = new Map<string, TerminalRunResult>();
+let activeActionNarration = false;
 
 let RPC_TIMEOUT_MS = 30_000;
 const DETACHED_EXTERNAL_TAB_MAX_AGE_MS = 90_000;
 const PENDING_ATTACH_TAB_MAX_AGE_MS = 20_000;
 function resolveAgentName(config: RoverWorkerConfig | null): string {
-  const raw = String(config?.ui?.agent?.name || '').trim();
+  const raw = String(config?.ui?.agent?.name || config?.ui?.experience?.presence?.assistantName || '').trim();
   if (!raw) return 'Rover';
   return raw.slice(0, 64);
+}
+
+function normalizeNarrationRunKind(input: unknown): 'guide' | 'task' | undefined {
+  return input === 'guide' || input === 'task' ? input : undefined;
+}
+
+function classifyNarrationRunKind(input?: string): 'guide' | 'task' {
+  const text = String(input || '').toLowerCase();
+  if (/\b(show me|walk me through|guide me|give me a tour|demo|tutorial|teach me|how do i|how to|explain how)\b/.test(text)) {
+    return 'guide';
+  }
+  return 'task';
+}
+
+function resolveActionNarrationHints(
+  config: RoverWorkerConfig | null,
+  userInput?: string,
+  options?: {
+    narrationEnabledForRun?: boolean;
+    narrationPreferenceSource?: 'default' | 'visitor';
+    narrationRunKind?: 'guide' | 'task';
+  },
+): {
+  actionNarration?: boolean;
+  runKind?: 'guide' | 'task';
+} {
+  if (options?.narrationEnabledForRun === false) return {};
+  const narration = config?.ui?.experience?.audio?.narration;
+  if (narration?.enabled === false) return {};
+  const defaultMode = narration?.defaultMode === 'always' || narration?.defaultMode === 'off'
+    ? narration.defaultMode
+    : 'guided';
+  const runKind = normalizeNarrationRunKind(options?.narrationRunKind) || classifyNarrationRunKind(userInput || rootUserInput);
+  if (options?.narrationPreferenceSource === 'visitor' && options.narrationEnabledForRun === true) {
+    return {
+      runKind,
+      actionNarration: true,
+    };
+  }
+  if (defaultMode === 'off') return {};
+  return {
+    runKind,
+    ...(defaultMode === 'always' || runKind === 'guide' ? { actionNarration: true } : {}),
+  };
 }
 
 function hostFromUrl(url?: string): string | undefined {
@@ -204,8 +263,11 @@ function extractWebToolsConfig(config: RoverWorkerConfig | null): ExternalWebCon
 
 function buildRoverRuntimeContext(params: {
   tabs: RoverTab[];
+  config: RoverWorkerConfig | null;
   agentName: string;
   taskBoundaryId?: string;
+  actionNarration?: boolean;
+  runKind?: 'guide' | 'task';
 }): RoverRuntimeContext {
   const externalTabs = params.tabs
     .map((tab, index): RoverRuntimeContextExternalTab | undefined => {
@@ -225,11 +287,37 @@ function buildRoverRuntimeContext(params: {
     .filter((tab): tab is RoverRuntimeContextExternalTab => !!tab)
     .slice(0, 8);
 
+  const primaryTab = params.tabs.find(tab => !tab.external && !!tab.url) || params.tabs.find(tab => !!tab.url);
+  const siteUrlRaw = String(params.config?.siteUrl || primaryTab?.url || '').trim();
+  const siteUrl = siteUrlRaw ? siteUrlRaw.slice(0, 240) : undefined;
+  const siteHost = hostFromUrl(siteUrl)
+    || (Array.isArray(params.config?.allowedDomains) ? String(params.config?.allowedDomains[0] || '').replace(/^[=*.]+/, '').trim().toLowerCase() : '')
+    || undefined;
+  const siteId = String(params.config?.siteId || '').trim().slice(0, 128) || undefined;
+  const siteName = String(params.config?.siteName || '').trim().slice(0, 120) || undefined;
+  const site = siteId || siteName || siteUrl || siteHost
+    ? {
+        ...(siteId ? { siteId } : {}),
+        ...(siteName ? { siteName } : {}),
+        ...(siteUrl ? { siteUrl } : {}),
+        ...(siteHost ? { host: siteHost.slice(0, 120) } : {}),
+      }
+    : undefined;
+
   return {
     mode: 'rover_embed',
     agentName: params.agentName,
+    ...(site ? { site } : {}),
     tabIdContract: 'tree_index_mapped_by_tab_order',
     taskBoundaryId: params.taskBoundaryId,
+    ...(params.actionNarration || params.runKind
+      ? {
+          uiHints: {
+            ...(params.actionNarration ? { actionNarration: true } : {}),
+            ...(params.runKind ? { runKind: params.runKind } : {}),
+          },
+        }
+      : {}),
     ...(externalTabs.length ? { externalTabs } : {}),
   };
 }
@@ -303,6 +391,22 @@ function mergeWorkerUi(
     agent: {
       ...(current?.agent || {}),
       ...(incoming.agent || {}),
+    },
+    experience: {
+      ...(current?.experience || {}),
+      ...(incoming.experience || {}),
+      presence: {
+        ...(current?.experience?.presence || {}),
+        ...(incoming.experience?.presence || {}),
+      },
+      audio: {
+        ...(current?.experience?.audio || {}),
+        ...(incoming.experience?.audio || {}),
+        narration: {
+          ...(current?.experience?.audio?.narration || {}),
+          ...(incoming.experience?.audio?.narration || {}),
+        },
+      },
     },
   };
 }
@@ -428,7 +532,7 @@ function compactThought(message: string, thought?: string): string {
   return source.length <= 120 ? source : `${source.slice(0, 119)}…`;
 }
 
-function postStatus(message: string, thought?: string, stage?: StatusStage) {
+function postStatus(message: string, thought?: string, stage?: StatusStage, meta?: { narration?: string; narrationActive?: boolean }) {
   const resolvedStage = inferStatusStage(message, thought, stage);
   const compact = compactThought(message, thought);
   const runId = activeRun?.runId || 'no-run';
@@ -441,15 +545,25 @@ function postStatus(message: string, thought?: string, stage?: StatusStage) {
     const recent = Array.from(seenStatusKeys).slice(-30);
     seenStatusKeys = new Set(recent);
   }
-  (self as any).postMessage({ type: 'status', message, thought, stage: resolvedStage, compactThought: compact, executionId: activeRun?.runId });
+  (self as any).postMessage({
+    type: 'status',
+    message,
+    thought,
+    stage: resolvedStage,
+    compactThought: compact,
+    executionId: activeRun?.runId,
+    narration: meta?.narration,
+    narrationActive: meta?.narrationActive ?? (activeActionNarration || undefined),
+  });
   postStateSnapshot();
 }
 
 function cloneToolCall(call: FunctionCall & { id?: string }, toolCallId: string): FunctionCall & { id?: string } {
+  const args = cloneUnknown(call.args || {}) || {};
   return {
     ...call,
     id: toolCallId,
-    args: cloneUnknown(call.args || {}) || {},
+    args: stripToolUiHintsFromArgs(args as Record<string, any>),
   };
 }
 
@@ -470,6 +584,7 @@ function extractToolLifecycleLogicalTabId(args: unknown): number | undefined {
 function postToolLifecycleEvent(type: 'tool_start' | 'tool_result', payload: {
   call: FunctionCall & { id?: string };
   toolCallId: string;
+  narration?: string;
   result?: unknown;
 }): void {
   const runId = activeRun?.runId || 'no-run';
@@ -478,6 +593,8 @@ function postToolLifecycleEvent(type: 'tool_start' | 'tool_result', payload: {
     type,
     call: payload.call,
     toolCallId: payload.toolCallId,
+    narration: type === 'tool_start' ? payload.narration : undefined,
+    narrationActive: activeActionNarration || undefined,
     logicalTabId: extractToolLifecycleLogicalTabId(payload.call.args),
     result: payload.result,
     executionId: activeRun?.runId,
@@ -496,18 +613,19 @@ function wrapBridgeRpcWithToolLifecycle(
     }
 
     const toolCallId = typeof rawCall.id === 'string' && rawCall.id.trim() ? rawCall.id.trim() : crypto.randomUUID();
+    const narration = extractActionNarrationFromArgs(rawCall.args);
     const call = cloneToolCall(rawCall, toolCallId);
-    postToolLifecycleEvent('tool_start', { call, toolCallId });
+    postToolLifecycleEvent('tool_start', { call, toolCallId, narration });
     try {
       const result = await rawBridgeRpc(method, { ...(params || {}), call });
-      postToolLifecycleEvent('tool_result', { call, toolCallId, result: cloneUnknown(result) });
+      postToolLifecycleEvent('tool_result', { call, toolCallId, narration, result: cloneUnknown(result) });
       return result;
     } catch (err: any) {
       const result = {
         success: false,
         error: err?.message || String(err),
       };
-      postToolLifecycleEvent('tool_result', { call, toolCallId, result });
+      postToolLifecycleEvent('tool_result', { call, toolCallId, narration, result });
       throw err;
     }
   };
@@ -2011,6 +2129,9 @@ async function handleUserMessage(
     files?: LLMDataInput[];
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: AskUserAnswerMeta;
+    narrationEnabledForRun?: boolean;
+    narrationPreferenceSource?: 'default' | 'visitor';
+    narrationRunKind?: 'guide' | 'task';
   },
 ): Promise<RunOutcome> {
   if (!config) throw new Error('Worker not initialized');
@@ -2161,10 +2282,18 @@ async function handleUserMessage(
     tabularStore = new TabularStore(`rover-${taskTrajectoryId}`);
   }
   const agentName = resolveAgentName(config);
+  const narrationHints = resolveActionNarrationHints(config, rootUserInput, {
+    narrationEnabledForRun: options?.narrationEnabledForRun,
+    narrationPreferenceSource: options?.narrationPreferenceSource,
+    narrationRunKind: options?.narrationRunKind,
+  });
+  activeActionNarration = narrationHints.actionNarration === true;
   const runtimeContext = buildRoverRuntimeContext({
     tabs: tabsForRun,
+    config,
     agentName,
     taskBoundaryId,
+    ...narrationHints,
   });
   const ctx = createAgentContext(
     {
@@ -2636,6 +2765,9 @@ async function runUserMessage(
     files?: LLMDataInput[];
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: AskUserAnswerMeta;
+    narrationEnabledForRun?: boolean;
+    narrationPreferenceSource?: 'default' | 'visitor';
+    narrationRunKind?: 'guide' | 'task';
   },
 ): Promise<void> {
   const runId = meta?.runId || crypto.randomUUID();
@@ -2703,6 +2835,9 @@ async function runUserMessage(
       files: Array.isArray(meta?.files) ? sanitizeAttachedFiles(meta.files) : undefined,
       routing: meta?.routing,
       askUserAnswers: meta?.askUserAnswers,
+      narrationEnabledForRun: meta?.narrationEnabledForRun,
+      narrationPreferenceSource: meta?.narrationPreferenceSource,
+      narrationRunKind: meta?.narrationRunKind,
     }));
     const isTerminalOutcome =
       outcome.terminalState === 'completed'
@@ -2786,6 +2921,7 @@ async function runUserMessage(
   } finally {
     activeAbortController = null;
     activeRun = null;
+    activeActionNarration = false;
     postStateSnapshot();
   }
 }
@@ -2912,6 +3048,9 @@ async function runUserMessage(
         files: Array.isArray(data.files) ? sanitizeAttachedFiles(data.files) : undefined,
         routing: data.routing,
         askUserAnswers: data.askUserAnswers,
+        narrationEnabledForRun: typeof data.narrationEnabledForRun === 'boolean' ? data.narrationEnabledForRun : undefined,
+        narrationPreferenceSource: data.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
+        narrationRunKind: data.narrationRunKind === 'guide' || data.narrationRunKind === 'task' ? data.narrationRunKind : undefined,
       });
       return;
     }
@@ -2927,6 +3066,9 @@ async function runUserMessage(
         seedChatLog: Array.isArray(seedChatLogInput) ? normalizeFollowupChatLog(seedChatLogInput) : undefined,
         files: Array.isArray(data.files) ? sanitizeAttachedFiles(data.files) : undefined,
         askUserAnswers: data.askUserAnswers,
+        narrationEnabledForRun: typeof data.narrationEnabledForRun === 'boolean' ? data.narrationEnabledForRun : undefined,
+        narrationPreferenceSource: data.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
+        narrationRunKind: data.narrationRunKind === 'guide' || data.narrationRunKind === 'task' ? data.narrationRunKind : undefined,
       });
       return;
     }

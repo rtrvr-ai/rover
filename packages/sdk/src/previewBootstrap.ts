@@ -10,6 +10,15 @@ export type RoverPreviewBootstrapVoiceConfig = {
 };
 
 export type RoverPreviewBootstrapExperienceConfig = {
+  audio?: {
+    narration?: {
+      enabled?: boolean;
+      defaultMode?: 'guided' | 'always' | 'off';
+      rate?: number;
+      language?: string;
+      voicePreference?: 'auto' | 'system' | 'natural';
+    };
+  };
   motion?: {
     actionSpotlight?: boolean;
     actionSpotlightColor?: string;
@@ -50,6 +59,8 @@ const DEFAULT_EMBED_SCRIPT_URL = 'https://rover.rtrvr.ai/embed.js';
 const DEFAULT_AGENT_BASE = 'https://agent.rtrvr.ai';
 const VOICE_AUTO_STOP_MIN_MS = 800;
 const VOICE_AUTO_STOP_MAX_MS = 5000;
+const NARRATION_RATE_MIN = 0.85;
+const NARRATION_RATE_MAX = 1.15;
 
 function toStringValue(value: unknown): string {
   return String(value || '').trim();
@@ -115,6 +126,36 @@ function normalizeVoiceConfig(value: RoverPreviewBootstrapVoiceConfig | undefine
 function normalizeExperienceConfig(value: RoverPreviewBootstrapExperienceConfig | undefined): RoverPreviewBootstrapExperienceConfig | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const experience: RoverPreviewBootstrapExperienceConfig = {};
+  if (value.audio && typeof value.audio === 'object') {
+    const narrationInput = value.audio.narration && typeof value.audio.narration === 'object'
+      ? value.audio.narration
+      : undefined;
+    if (narrationInput) {
+      const narration: NonNullable<NonNullable<RoverPreviewBootstrapExperienceConfig['audio']>['narration']> = {};
+      if (typeof narrationInput.enabled === 'boolean') narration.enabled = narrationInput.enabled;
+      if (
+        narrationInput.defaultMode === 'guided' ||
+        narrationInput.defaultMode === 'always' ||
+        narrationInput.defaultMode === 'off'
+      ) {
+        narration.defaultMode = narrationInput.defaultMode;
+      }
+      const rate = Number(narrationInput.rate);
+      if (Number.isFinite(rate)) {
+        narration.rate = Math.max(NARRATION_RATE_MIN, Math.min(NARRATION_RATE_MAX, rate));
+      }
+      const language = toStringValue(narrationInput.language).replace(/[^a-zA-Z0-9-]/g, '').slice(0, 24);
+      if (language) narration.language = language;
+      if (
+        narrationInput.voicePreference === 'auto' ||
+        narrationInput.voicePreference === 'system' ||
+        narrationInput.voicePreference === 'natural'
+      ) {
+        narration.voicePreference = narrationInput.voicePreference;
+      }
+      if (Object.keys(narration).length) experience.audio = { narration };
+    }
+  }
   if (value.motion && typeof value.motion === 'object') {
     const motion: NonNullable<RoverPreviewBootstrapExperienceConfig['motion']> = {};
     if (typeof value.motion.actionSpotlight === 'boolean') {
@@ -263,6 +304,12 @@ export function createRoverScriptTagSnippet(config: RoverPreviewBootstrapConfig)
   if (typeof normalized.ui?.voice?.enabled === 'boolean') attrs.push(`data-voice-enabled="${escapeHtmlAttr(String(normalized.ui.voice.enabled))}"`);
   if (normalized.ui?.voice?.language) attrs.push(`data-voice-language="${escapeHtmlAttr(normalized.ui.voice.language)}"`);
   if (typeof normalized.ui?.voice?.autoStopMs === 'number') attrs.push(`data-voice-auto-stop-ms="${escapeHtmlAttr(String(normalized.ui.voice.autoStopMs))}"`);
+  const narration = normalized.ui?.experience?.audio?.narration;
+  if (typeof narration?.enabled === 'boolean') attrs.push(`data-narration-enabled="${escapeHtmlAttr(String(narration.enabled))}"`);
+  if (narration?.defaultMode) attrs.push(`data-narration-default-mode="${escapeHtmlAttr(narration.defaultMode)}"`);
+  if (typeof narration?.rate === 'number') attrs.push(`data-narration-rate="${escapeHtmlAttr(String(narration.rate))}"`);
+  if (narration?.language) attrs.push(`data-narration-language="${escapeHtmlAttr(narration.language)}"`);
+  if (narration?.voicePreference) attrs.push(`data-narration-voice-preference="${escapeHtmlAttr(narration.voicePreference)}"`);
   if (typeof normalized.ui?.experience?.motion?.actionSpotlight === 'boolean') {
     attrs.push(`data-action-spotlight="${escapeHtmlAttr(String(normalized.ui.experience.motion.actionSpotlight))}"`);
   }
@@ -338,6 +385,11 @@ export function readRoverScriptDataAttributes(
   const voiceEnabled = parseBooleanAttr(scriptEl.getAttribute('data-voice-enabled'));
   const voiceLanguage = toStringValue(scriptEl.getAttribute('data-voice-language'));
   const voiceAutoStopMs = parseIntegerAttr(scriptEl.getAttribute('data-voice-auto-stop-ms'));
+  const narrationEnabled = parseBooleanAttr(scriptEl.getAttribute('data-narration-enabled'));
+  const narrationDefaultMode = toStringValue(scriptEl.getAttribute('data-narration-default-mode'));
+  const narrationRate = Number(toStringValue(scriptEl.getAttribute('data-narration-rate')));
+  const narrationLanguage = toStringValue(scriptEl.getAttribute('data-narration-language'));
+  const narrationVoicePreference = toStringValue(scriptEl.getAttribute('data-narration-voice-preference'));
   const actionSpotlight = parseBooleanAttr(scriptEl.getAttribute('data-action-spotlight'));
   const actionSpotlightColor = normalizeHexColor(scriptEl.getAttribute('data-action-spotlight-color'));
   const voice = normalizeVoiceConfig({
@@ -346,6 +398,23 @@ export function readRoverScriptDataAttributes(
     ...(typeof voiceAutoStopMs === 'number' ? { autoStopMs: voiceAutoStopMs } : {}),
   });
   const experience = normalizeExperienceConfig({
+    ...(typeof narrationEnabled === 'boolean' || narrationDefaultMode || Number.isFinite(narrationRate) || narrationLanguage || narrationVoicePreference
+      ? {
+        audio: {
+          narration: {
+            ...(typeof narrationEnabled === 'boolean' ? { enabled: narrationEnabled } : {}),
+            ...(narrationDefaultMode === 'guided' || narrationDefaultMode === 'always' || narrationDefaultMode === 'off'
+              ? { defaultMode: narrationDefaultMode }
+              : {}),
+            ...(Number.isFinite(narrationRate) ? { rate: narrationRate } : {}),
+            ...(narrationLanguage ? { language: narrationLanguage } : {}),
+            ...(narrationVoicePreference === 'auto' || narrationVoicePreference === 'system' || narrationVoicePreference === 'natural'
+              ? { voicePreference: narrationVoicePreference }
+              : {}),
+          },
+        },
+      }
+      : {}),
     ...(typeof actionSpotlight === 'boolean' || actionSpotlightColor
       ? { motion: { ...(typeof actionSpotlight === 'boolean' ? { actionSpotlight } : {}), ...(actionSpotlightColor ? { actionSpotlightColor } : {}) } }
       : {}),

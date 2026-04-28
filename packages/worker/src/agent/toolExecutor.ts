@@ -11,6 +11,7 @@ import { attachSheetData, buildHeaders, publishObjectsToMemory, publishRowsToMem
 import { isMemorySheetId } from '../tabular-memory/tabular-store.js';
 import { toRoverErrorEnvelope } from './errors.js';
 import { resolveRuntimeTabs } from './runtimeTabs.js';
+import { extractActionNarrationFromArgs, stripToolUiHintsFromArgs } from './uiHints.js';
 
 const MAX_AGENT_CHATLOG_ENTRIES = 12;
 
@@ -181,7 +182,7 @@ async function callExtensionRouterWithCancel(ctx: AgentContext, action: string, 
 export async function executeToolFromPlan(context: ToolExecutionContext): Promise<ToolExecutionResult> {
   const {
     toolName,
-    toolArgs,
+    toolArgs: rawToolArgs,
     userInput,
     tabs,
     scopedTabIds,
@@ -236,6 +237,16 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
   }
   const tabOrder = resolvedTabs.tabOrder.length ? resolvedTabs.tabOrder : fallbackTabs.map(tab => tab.id);
   const effectiveAgentLog = normalizeAgentLog(agentLog);
+  const plannerNarration = extractActionNarrationFromArgs(rawToolArgs);
+  const toolArgs = stripToolUiHintsFromArgs(rawToolArgs || {});
+  const emitPlannerNarration = (message = plannerNarration): void => {
+    if (!message) return;
+    onStatusUpdate?.(message, undefined, 'execute', {
+      narration: message,
+      narrationActive: true,
+    });
+  };
+  emitPlannerNarration();
 
   try {
     switch (toolName as PLANNER_FUNCTION_CALLS) {
@@ -566,12 +577,22 @@ export async function executeToolFromPlan(context: ToolExecutionContext): Promis
           }
           const name = call.tool_name || call.name;
           const args = call.tool_args || call.args || {};
+          const nestedNarration = extractActionNarrationFromArgs(args);
+          const cleanArgs = stripToolUiHintsFromArgs(args);
           try {
             let res: any;
             if (name && systemToolNamesSet.has(name)) {
+              // bridgeRpc is lifecycle-wrapped; pass ui hints through so it can emit sanitized narration,
+              // then strip them before the browser bridge actually executes.
               res = await bridgeRpc?.('executeTool', { call: { name, args } });
             } else {
-              res = await bridgeRpc?.('executeClientTool', { name, args });
+              if (nestedNarration) {
+                onStatusUpdate?.(nestedNarration, undefined, 'execute', {
+                  narration: nestedNarration,
+                  narrationActive: true,
+                });
+              }
+              res = await bridgeRpc?.('executeClientTool', { name, args: cleanArgs });
             }
             if (isExecutionCancelled(effectiveCtx)) {
               return { error: 'Run cancelled', output: results };

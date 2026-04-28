@@ -11,6 +11,7 @@ export type RoverShortcut = {
   enabled?: boolean;
   order?: number;
   routing?: 'auto' | 'act' | 'planner';
+  runKind?: 'guide' | 'task';
   tags?: string[];
   examples?: string[];
   inputSchema?: Record<string, any>;
@@ -81,6 +82,8 @@ export type RoverTimelineEvent = {
   ts?: number;
   elementId?: number;
   toolName?: string;
+  narration?: string;
+  narrationActive?: boolean;
   actionCue?: RoverActionCue;
 };
 
@@ -227,6 +230,15 @@ export type RoverExperienceConfig = {
     attachmentLimit?: number;
     maxFileSizeMb?: number;
   };
+  audio?: {
+    narration?: {
+      enabled?: boolean;
+      defaultMode?: 'guided' | 'always' | 'off';
+      rate?: number;
+      language?: string;
+      voicePreference?: 'auto' | 'system' | 'natural';
+    };
+  };
   motion?: {
     intensity?: 'calm' | 'balanced' | 'expressive';
     reducedMotionFallback?: 'reduce' | 'remove';
@@ -249,8 +261,15 @@ export type RoverExperienceConfig = {
 export type MountOptions = {
   resolveElement?: (elementId: number) => Element | null;
   getLocalLogicalTabId?: () => number | undefined;
-  onSend: (text: string, meta?: { askUserAnswers?: RoverAskUserAnswerMeta; attachments?: File[] }) => void;
+  onSend: (text: string, meta?: {
+    askUserAnswers?: RoverAskUserAnswerMeta;
+    attachments?: File[];
+    narrationEnabledForRun?: boolean;
+    narrationPreferenceSource?: 'default' | 'visitor';
+    narrationRunKind?: 'guide' | 'task';
+  }) => void;
   onVoiceTelemetry?: (event: RoverVoiceTelemetryEvent, payload?: Record<string, unknown>) => void;
+  onNarrationPreferenceChange?: (enabled: boolean, available: boolean, source: 'default' | 'visitor') => void;
   onOpen?: () => void;
   onClose?: () => void;
   onRequestControl?: () => void;

@@ -23,6 +23,8 @@ export type PersistedTimelineEvent = {
   sourceRuntimeId?: string;
   elementId?: number;
   toolName?: string;
+  narration?: string;
+  narrationActive?: boolean;
   actionCue?: RoverActionCue;
 };
 

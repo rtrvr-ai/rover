@@ -646,6 +646,8 @@ let lastEffectivePageCaptureConfigJson = '';
 let suppressCheckpointSync = false;
 let lastQuestionPromptFlushSignature = '';
 let currentMode: RoverExecutionMode = 'controller';
+let narrationEnabledForRun = false;
+let narrationPreferenceSource: 'default' | 'visitor' = 'default';
 let workerReady = false;
 let sessionReady = false;
 let isTransportController = true; // default to true for single-tab mode
@@ -4139,6 +4141,8 @@ function sanitizeTimelineEvents(input: any): PersistedTimelineEvent[] {
       sourceRuntimeId: typeof event?.sourceRuntimeId === 'string' ? event.sourceRuntimeId : undefined,
       elementId: Number.isFinite(Number(event?.elementId)) ? Math.trunc(Number(event.elementId)) : undefined,
       toolName: typeof event?.toolName === 'string' ? truncateText(event.toolName, 120) : undefined,
+      narration: typeof event?.narration === 'string' ? truncateText(event.narration.replace(/\s+/g, ' ').trim(), 220) : undefined,
+      narrationActive: typeof event?.narrationActive === 'boolean' ? event.narrationActive : undefined,
       actionCue: sanitizeActionCue(event?.actionCue),
     });
   }
@@ -5577,6 +5581,8 @@ function appendTimelineEvent(
     sourceRuntimeId: event.sourceRuntimeId,
     elementId: event.elementId,
     toolName: event.toolName,
+    narration: event.narration,
+    narrationActive: event.narrationActive,
     actionCue: event.actionCue,
   };
 
@@ -5602,6 +5608,8 @@ function appendTimelineEvent(
       ts: timelineEvent.ts,
       elementId: timelineEvent.elementId,
       toolName: timelineEvent.toolName,
+      narration: timelineEvent.narration,
+      narrationActive: timelineEvent.narrationActive,
       actionCue: timelineEvent.actionCue,
     });
   }
@@ -5624,6 +5632,8 @@ function replayTimeline(events: PersistedTimelineEvent[]): void {
         sourceRuntimeId: event.sourceRuntimeId,
         elementId: event.elementId,
         toolName: event.toolName,
+        narration: event.narration,
+        narrationActive: event.narrationActive,
         actionCue: event.actionCue,
         publishShared: false,
       },
@@ -6217,10 +6227,21 @@ async function executeRoverExternalContextToolCall(params: {
 
 function buildWorkerBoundaryConfig(extra?: Record<string, unknown>): Record<string, unknown> {
   const scopedTabIds = getTaskScopedTabIds();
+  const discovery = currentConfig ? resolveEffectiveAgentDiscoveryRuntimeConfig(currentConfig) : undefined;
+  const siteUrl = String(discovery?.siteUrl || currentConfig?.agentDiscovery?.siteUrl || (typeof window !== 'undefined' ? `${window.location.origin}/` : '')).trim();
+  const siteName = String(
+    discovery?.siteName
+    || currentConfig?.ui?.agent?.name
+    || currentConfig?.ui?.experience?.presence?.assistantName
+    || (typeof document !== 'undefined' ? document.title : '')
+    || '',
+  ).trim();
   return {
     taskBoundaryId: currentTaskBoundaryId,
     taskTabScope: toWorkerTaskTabScopePayload(),
     scopedTabIds,
+    ...(siteName ? { siteName: siteName.slice(0, 120) } : {}),
+    ...(siteUrl ? { siteUrl: siteUrl.slice(0, 240) } : {}),
     ...(extra || {}),
   };
 }
@@ -6248,6 +6269,9 @@ function postRun(
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: RoverAskUserAnswerMeta;
     files?: LLMDataInput[];
+    narrationEnabledForRun?: boolean;
+    narrationPreferenceSource?: 'default' | 'visitor';
+    narrationRunKind?: 'guide' | 'task';
   },
 ): void {
   const trimmed = String(text || '').trim();
@@ -6369,6 +6393,11 @@ function postRun(
     routing: options?.routing,
     askUserAnswers: options?.askUserAnswers,
     files: sanitizeAttachedFileDescriptors(options?.files),
+    narrationEnabledForRun: options?.narrationEnabledForRun === true,
+    narrationPreferenceSource: options?.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
+    narrationRunKind: options?.narrationRunKind === 'guide' || options?.narrationRunKind === 'task'
+      ? options.narrationRunKind
+      : undefined,
     scopedTabIds,
     taskTabScope: toWorkerTaskTabScopePayload(),
   });
@@ -6406,6 +6435,9 @@ async function dispatchUserPromptAsync(
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: RoverAskUserAnswerMeta;
     attachments?: File[];
+    narrationEnabledForRun?: boolean;
+    narrationPreferenceSource?: 'default' | 'visitor';
+    narrationRunKind?: 'guide' | 'task';
     continueExistingRun?: boolean;
     continueRunId?: string;
   },
@@ -6635,6 +6667,8 @@ async function dispatchUserPromptAsync(
     }
   }
 
+  const effectiveNarrationEnabledForRun = options?.narrationEnabledForRun ?? narrationEnabledForRun;
+  const effectiveNarrationPreferenceSource = options?.narrationPreferenceSource || narrationPreferenceSource;
   postRun(trimmed, {
     runId,
     appendUserMessage: true,
@@ -6645,6 +6679,11 @@ async function dispatchUserPromptAsync(
     routing,
     askUserAnswers: options?.askUserAnswers,
     files: uploadedFiles,
+    narrationEnabledForRun: effectiveNarrationEnabledForRun === true,
+    narrationPreferenceSource: effectiveNarrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
+    narrationRunKind: options?.narrationRunKind === 'guide' || options?.narrationRunKind === 'task'
+      ? options.narrationRunKind
+      : undefined,
   });
 }
 
@@ -6657,6 +6696,9 @@ function dispatchUserPrompt(
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: RoverAskUserAnswerMeta;
     attachments?: File[];
+    narrationEnabledForRun?: boolean;
+    narrationPreferenceSource?: 'default' | 'visitor';
+    narrationRunKind?: 'guide' | 'task';
     continueExistingRun?: boolean;
     continueRunId?: string;
   },
@@ -7887,6 +7929,8 @@ function handleWorkerMessage(msg: any): void {
             title: thoughtText,
             detail: msg.thought ? String(msg.thought) : compactThought,
             status: 'pending',
+            narration: typeof msg.narration === 'string' ? msg.narration : undefined,
+            narrationActive: typeof msg.narrationActive === 'boolean' ? msg.narrationActive : undefined,
           });
         } else {
           const title = stage ? `${formatStageLabel(stage)}: ${message}` : message;
@@ -7895,6 +7939,8 @@ function handleWorkerMessage(msg: any): void {
             title,
             detail: compactThought || (msg.thought ? String(msg.thought) : undefined),
             status: stage === 'complete' ? 'success' : 'info',
+            narration: typeof msg.narration === 'string' ? msg.narration : undefined,
+            narrationActive: typeof msg.narrationActive === 'boolean' ? msg.narrationActive : undefined,
           });
         }
       }
@@ -7941,6 +7987,8 @@ function handleWorkerMessage(msg: any): void {
       status: 'pending',
       elementId: toolStartElementId,
       toolName: msg.call?.name,
+      narration: typeof msg.narration === 'string' ? msg.narration : undefined,
+      narrationActive: typeof msg.narrationActive === 'boolean' ? msg.narrationActive : undefined,
       actionCue,
     });
     emit('tool_start', msg);
@@ -7973,6 +8021,8 @@ function handleWorkerMessage(msg: any): void {
       status: msg?.result?.success === false ? 'error' : 'success',
       elementId: toolResultElementId,
       toolName: msg.call?.name,
+      narration: typeof msg.narration === 'string' ? msg.narration : undefined,
+      narrationActive: typeof msg.narrationActive === 'boolean' ? msg.narrationActive : undefined,
       actionCue,
     });
     emit('tool_result', msg);
@@ -8761,6 +8811,37 @@ function sanitizeExperienceConfig(raw: unknown): RoverServerExperienceConfig | u
     if (Object.keys(inputsCfg).length) next.inputs = inputsCfg;
   }
 
+  if (input.audio && typeof input.audio === 'object') {
+    const audioInput = input.audio as Record<string, unknown>;
+    const narrationInput = audioInput.narration && typeof audioInput.narration === 'object'
+      ? audioInput.narration as Record<string, unknown>
+      : undefined;
+    if (narrationInput) {
+      const narration: NonNullable<NonNullable<RoverServerExperienceConfig['audio']>['narration']> = {};
+      if (typeof narrationInput.enabled === 'boolean') narration.enabled = narrationInput.enabled;
+      if (
+        narrationInput.defaultMode === 'guided' ||
+        narrationInput.defaultMode === 'always' ||
+        narrationInput.defaultMode === 'off'
+      ) {
+        narration.defaultMode = narrationInput.defaultMode;
+      }
+      if (Number.isFinite(Number(narrationInput.rate))) {
+        narration.rate = Math.max(0.85, Math.min(1.15, Number(narrationInput.rate)));
+      }
+      const language = String(narrationInput.language || '').trim();
+      if (language) narration.language = language.slice(0, 24);
+      if (
+        narrationInput.voicePreference === 'auto' ||
+        narrationInput.voicePreference === 'system' ||
+        narrationInput.voicePreference === 'natural'
+      ) {
+        narration.voicePreference = narrationInput.voicePreference;
+      }
+      if (Object.keys(narration).length) next.audio = { narration };
+    }
+  }
+
   if (input.motion && typeof input.motion === 'object') {
     const motionInput = input.motion as Record<string, unknown>;
     const motion: NonNullable<RoverServerExperienceConfig['motion']> = {};
@@ -9081,6 +9162,7 @@ function sanitizeShortcut(raw: any): RoverShortcut | null {
   if (raw.description) sc.description = String(raw.description).trim().slice(0, SHORTCUT_DESCRIPTION_MAX_CHARS);
   if (raw.icon) sc.icon = String(raw.icon).trim().slice(0, SHORTCUT_ICON_MAX_CHARS);
   if (raw.routing === 'auto' || raw.routing === 'act' || raw.routing === 'planner') sc.routing = raw.routing;
+  if (raw.runKind === 'guide' || raw.runKind === 'task') sc.runKind = raw.runKind;
   const order = Number(raw.order);
   if (Number.isFinite(order)) sc.order = Math.trunc(order);
   const tags = sanitizeShortcutStringList(raw.tags, { maxItems: 16, maxChars: 40 });
@@ -9356,6 +9438,7 @@ function buildLaunchToolStartData(msg: any): Record<string, unknown> {
     actionKind: actionCue?.kind,
     logicalTabId: actionCue?.logicalTabId,
     valueRedacted: actionCue?.valueRedacted,
+    narration: typeof msg?.narration === 'string' ? truncateText(msg.narration.replace(/\s+/g, ' ').trim(), 220) : undefined,
   };
   if (shouldIncludeLaunchFullData()) {
     data.args = msg?.call?.args;
@@ -9480,6 +9563,7 @@ function dispatchLaunchInput(response: RoverLaunchAttachResponse | RoverRunBrows
       dispatchUserPrompt(input.prompt, {
         reason: 'launch_shortcut',
         routing: input.routing,
+        narrationRunKind: input.runKind,
       });
     } else {
       dispatchUserPrompt(input.prompt, { reason: 'launch_prompt' });
@@ -10255,6 +10339,7 @@ function dispatchClaimedBrowserRun(response: RoverRunBrowserClaimResponse): void
     dispatchUserPrompt(input.prompt, {
       reason: 'browser_receipt_shortcut',
       routing: input.routing,
+      narrationRunKind: input.runKind,
     });
     return;
   }
@@ -10454,6 +10539,7 @@ function maybeHandleDeepLink(source: 'boot' | 'update' | 'navigation' | 'site_co
     dispatchUserPrompt(shortcut.prompt, {
       reason: 'deep_link_shortcut',
       routing: shortcut.routing,
+      narrationRunKind: shortcut.runKind,
     });
     recordTelemetryEvent('status', {
       event: 'deep_link_dispatched',
@@ -11457,13 +11543,25 @@ function createRuntime(cfg: RoverInit): void {
     onShortcutClick: (shortcut) => {
       const text = String(shortcut.prompt || '').trim();
       if (!text) return;
-      dispatchUserPrompt(text, { routing: shortcut.routing });
+      dispatchUserPrompt(text, {
+        routing: shortcut.routing,
+        narrationEnabledForRun,
+        narrationPreferenceSource,
+        narrationRunKind: shortcut.runKind,
+      });
     },
     onSend: (text, meta) => {
       dispatchUserPrompt(text, {
         askUserAnswers: meta?.askUserAnswers,
         attachments: meta?.attachments,
+        narrationEnabledForRun: meta?.narrationEnabledForRun === true,
+        narrationPreferenceSource: meta?.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
+        narrationRunKind: meta?.narrationRunKind,
       });
+    },
+    onNarrationPreferenceChange: (enabled, available, source) => {
+      narrationEnabledForRun = available && enabled;
+      narrationPreferenceSource = source === 'visitor' ? 'visitor' : 'default';
     },
     onRequestControl: () => {
       const claimed = takeControlOfActiveRun();

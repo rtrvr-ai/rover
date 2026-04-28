@@ -41,6 +41,7 @@ test('agent card maps shortcuts and explicit tools into published skills', () =>
         description: 'Launch the checkout flow directly.',
         prompt: 'start checkout',
         routing: 'act',
+        runKind: 'guide',
         tags: ['checkout', 'commerce'],
         examples: ['Start checkout for the current cart.'],
         sideEffect: 'transactional',
@@ -109,6 +110,8 @@ test('agent card maps shortcuts and explicit tools into published skills', () =>
   assert.equal(checkoutSkill.preferredInterface, 'shortcut');
   assert.equal(checkoutSkill.rover.run.endpoint, 'https://agent.rtrvr.ai/v1/a2w/runs');
   assert.equal(checkoutSkill.rover.run.payload.shortcut, 'start_checkout');
+  assert.equal(checkoutSkill.rover.runKind, 'guide');
+  assert.equal(card.extensions.rover.shortcuts[0].runKind, 'guide');
 
   const reviewTool = card.skills.find(skill => skill.id === 'roverbook_leave_review');
   assert.equal(reviewTool.category, 'secondary');

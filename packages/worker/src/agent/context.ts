@@ -8,6 +8,7 @@ import type {
   ExternalWebConfig,
   RoverRuntimeContext,
   RoverRuntimeContextExternalTab,
+  RoverRuntimeSiteContext,
 } from './types.js';
 import type { FunctionDeclaration } from './types.js';
 import { TabularStore } from '../tabular-memory/tabular-store.js';
@@ -24,6 +25,8 @@ export type RoverAgentConfig = {
   sessionSeq?: number;
   authToken?: string;
   siteId?: string;
+  siteName?: string;
+  siteUrl?: string;
   allowedDomains?: string[];
   llmIntegration?: Partial<LLMIntegration>;
   model?: string;
@@ -41,6 +44,22 @@ export type RoverAgentConfig = {
     web?: ExternalWebConfig;
   };
   runtimeContext?: RoverRuntimeContext;
+  ui?: {
+    agent?: {
+      name?: string;
+    };
+    experience?: {
+      presence?: {
+        assistantName?: string;
+      };
+      audio?: {
+        narration?: {
+          enabled?: boolean;
+          defaultMode?: 'guided' | 'always' | 'off';
+        };
+      };
+    };
+  };
   signal?: AbortSignal;
 };
 
@@ -183,6 +202,21 @@ function normalizeRuntimeExternalTabs(input?: RoverRuntimeContextExternalTab[]):
   return Array.from(deduped.values());
 }
 
+function normalizeRuntimeSiteContext(input?: RoverRuntimeSiteContext): RoverRuntimeSiteContext | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const siteId = String(input.siteId || '').trim().slice(0, 128);
+  const siteName = String(input.siteName || '').trim().slice(0, 120);
+  const siteUrl = String(input.siteUrl || '').trim().slice(0, 240);
+  const host = (String(input.host || '').trim().toLowerCase() || hostFromUrl(siteUrl) || '').slice(0, 120);
+  const next: RoverRuntimeSiteContext = {
+    ...(siteId ? { siteId } : {}),
+    ...(siteName ? { siteName } : {}),
+    ...(siteUrl ? { siteUrl } : {}),
+    ...(host ? { host } : {}),
+  };
+  return Object.keys(next).length ? next : undefined;
+}
+
 function selectExternalIntent(
   requestedIntent: RequestedExternalIntent | undefined,
   message?: string,
@@ -251,11 +285,14 @@ function buildRoverRuntimeContext(config: RoverAgentConfig): RoverRuntimeContext
   const runtimeContext = config.runtimeContext;
   if (!runtimeContext || runtimeContext.mode !== 'rover_embed') return undefined;
   const compactExternalTabs = normalizeRuntimeExternalTabs(runtimeContext.externalTabs).slice(0, 8);
+  const site = normalizeRuntimeSiteContext(runtimeContext.site);
 
   return {
     mode: 'rover_embed',
     agentName: normalizeAgentName(runtimeContext.agentName) || 'Rover',
+    ...(site ? { site } : {}),
     tabIdContract: runtimeContext.tabIdContract || 'tree_index_mapped_by_tab_order',
+    ...(runtimeContext.uiHints ? { uiHints: runtimeContext.uiHints } : {}),
     ...(compactExternalTabs.length ? { externalTabs: compactExternalTabs } : {}),
   };
 }

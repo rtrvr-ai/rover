@@ -73,6 +73,7 @@ export type RoverPublicSkillDefinition = {
     shortcutId?: string;
     prompt?: string;
     routing?: 'auto' | 'act' | 'planner';
+    runKind?: 'guide' | 'task';
     toolName?: string;
     run?: {
       endpoint: string;
@@ -758,6 +759,7 @@ function normalizePublishedShortcut(shortcut: RoverShortcut): {
   prompt: string;
   description?: string;
   routing?: 'auto' | 'act' | 'planner';
+  runKind?: 'guide' | 'task';
 } | null {
   const id = text(shortcut.id, 80);
   const label = text(shortcut.label, 120);
@@ -771,6 +773,7 @@ function normalizePublishedShortcut(shortcut: RoverShortcut): {
     prompt,
     ...(description ? { description } : {}),
     ...(shortcut.routing ? { routing: shortcut.routing } : {}),
+    ...(shortcut.runKind === 'guide' || shortcut.runKind === 'task' ? { runKind: shortcut.runKind } : {}),
   };
 }
 
@@ -829,6 +832,7 @@ function buildShortcutSkill(
       shortcutId: id,
       prompt,
       routing: shortcut.routing,
+      runKind: shortcut.runKind,
       deepLink: buildDeepLink(config.siteUrl, id),
       run: {
         endpoint: runEndpoint,

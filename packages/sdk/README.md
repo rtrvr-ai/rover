@@ -514,10 +514,15 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `ui.thoughtStyle` | `'concise_cards' \| 'minimal'` | `'concise_cards'` | Thought rendering style |
 | `ui.panel.resizable` | `boolean` | `true` | Enables desktop freeform resizing plus phone/tablet snap-height resizing with per-device memory |
 | `ui.showTaskControls` | `boolean` | `true` | Show new/end task controls |
-| `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced). Shortcuts can also publish agent-facing metadata such as `tags`, `examples`, `inputSchema`, `outputSchema`, `sideEffect`, and `requiresConfirmation`. |
+| `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced). Set `runKind: 'guide'` for onboarding/demo journeys that should narrate under the guided default. Shortcuts can also publish agent-facing metadata such as `tags`, `examples`, `inputSchema`, `outputSchema`, `sideEffect`, and `requiresConfirmation`. |
 | `cloudSandboxEnabled` | `boolean` | `false` | Owner-facing shorthand for cloud execution plus approved third-party browsing. When `true`, Rover materializes `tools.web.enableExternalWebContext=true` and `tools.web.scrapeMode='on_demand'`. |
 | `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | — | Greeting bubble config (`{name}` token supported) |
 | `ui.voice` | `{ enabled?: boolean; language?: string; autoStopMs?: number }` | — | Browser dictation for supported Chromium browsers. Rover fills the draft live, waits for post-speech silence before stopping, and the user still sends manually. |
+| `ui.experience.audio.narration.enabled` | `boolean` | `true` | Owner gate for Web Speech step narration. Visitors get a site-scoped speaker toggle when supported. |
+| `ui.experience.audio.narration.defaultMode` | `'guided' \| 'always' \| 'off'` | `'guided'` | Speak guided/demo runs by default, every run, or stay off unless the visitor enables it. |
+| `ui.experience.audio.narration.rate` | `number` | `1` | Web Speech playback rate, clamped to `0.85`-`1.15`. |
+| `ui.experience.audio.narration.language` | `string` | `'en-US'` | Preferred narration language for voice matching. |
+| `ui.experience.audio.narration.voicePreference` | `'auto' \| 'system' \| 'natural'` | `'auto'` | Voice matching preference; `natural` prefers higher-quality browser voices when available. |
 | `ui.experience.motion.actionSpotlight` | `boolean` | `true` | Highlights the element Rover is clicking, typing into, selecting, or scrolling to. |
 | `ui.experience.motion.actionSpotlightColor` | `"#RRGGBB"` | `"#FF4C00"` | Ring and glow color for Action Spotlight. |
 
