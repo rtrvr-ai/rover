@@ -39,12 +39,24 @@ export type RoverRuntimeContextExternalTab = {
   reason?: string;
 };
 
+export type RoverRuntimeSiteContext = {
+  siteId?: string;
+  siteName?: string;
+  siteUrl?: string;
+  host?: string;
+};
+
 export type RoverRuntimeContext = {
   mode: 'rover_embed';
   agentName?: string;
+  site?: RoverRuntimeSiteContext;
   tabIdContract?: 'tree_index_mapped_by_tab_order';
   taskBoundaryId?: string;
   externalTabs?: RoverRuntimeContextExternalTab[];
+  uiHints?: {
+    actionNarration?: boolean;
+    runKind?: 'guide' | 'task';
+  };
 };
 
 export type ChatMessage = {
@@ -132,6 +144,10 @@ export type AgentLogState = {
 };
 
 export type StatusStage = 'analyze' | 'route' | 'execute' | 'verify' | 'complete';
+export type StatusUpdateMeta = {
+  narration?: string;
+  narrationActive?: boolean;
+};
 
 export type TaskRoutingMode = 'auto' | 'act' | 'planner';
 
@@ -219,7 +235,7 @@ export type MessageOrchestratorOptions = {
   files?: any[];
   recordingContext?: string;
   previousSteps?: PlannerPreviousStep[];
-  onStatusUpdate?: (message: string, thought?: string, stage?: StatusStage) => void;
+  onStatusUpdate?: (message: string, thought?: string, stage?: StatusStage, meta?: StatusUpdateMeta) => void;
   toolFunctions?: Record<string, any>;
   allowActions?: boolean;
   onAgentCall?: (creditsUsed: number) => void;
@@ -242,7 +258,7 @@ export type PlannerOptions = {
   files?: any[];
   trajectoryId: string;
   recordingContext?: string;
-  onStatusUpdate?: (message: string, thought?: string, stage?: StatusStage) => void;
+  onStatusUpdate?: (message: string, thought?: string, stage?: StatusStage, meta?: StatusUpdateMeta) => void;
   toolFunctions?: Record<string, any>;
   previousSteps?: PlannerPreviousStep[];
   continuePlanning?: boolean;
@@ -268,7 +284,7 @@ export type ToolExecutionContext = {
   trajectoryId: string;
   plannerPrevSteps?: PlannerPreviousStep[];
   files?: any[];
-  onStatusUpdate?: (message: string, thought?: string, stage?: StatusStage) => void;
+  onStatusUpdate?: (message: string, thought?: string, stage?: StatusStage, meta?: StatusUpdateMeta) => void;
   toolFunctions?: Record<string, any>;
   previousMessages?: ChatMessage[];
   recordingContext?: string;

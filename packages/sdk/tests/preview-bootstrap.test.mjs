@@ -38,6 +38,15 @@ test('preview bootstrap preserves ui voice, experience, cloud sandbox, and page 
         autoStopMs: 2800,
       },
       experience: {
+        audio: {
+          narration: {
+            enabled: false,
+            defaultMode: 'always',
+            rate: 1.2,
+            language: 'en-US<script>',
+            voicePreference: 'natural',
+          },
+        },
         motion: {
           actionSpotlight: false,
           actionSpotlightColor: '#2563eb',
@@ -55,6 +64,9 @@ test('preview bootstrap preserves ui voice, experience, cloud sandbox, and page 
   assert.match(consoleSnippet, /"autoStopMs":\s*2800/);
   assert.match(consoleSnippet, /"cloudSandboxEnabled":\s*true/);
   assert.match(consoleSnippet, /"disableAutoScroll":\s*true/);
+  assert.match(consoleSnippet, /"narration":\s*\{/);
+  assert.match(consoleSnippet, /"defaultMode":\s*"always"/);
+  assert.match(consoleSnippet, /"rate":\s*1\.15/);
   assert.match(consoleSnippet, /"actionSpotlight":\s*false/);
   assert.match(consoleSnippet, /"actionSpotlightColor":\s*"#2563EB"/);
   assert.match(consoleSnippet, /"sessionId":\s*"sess_123"/);
@@ -66,6 +78,11 @@ test('preview bootstrap preserves ui voice, experience, cloud sandbox, and page 
   assert.match(scriptSnippet, /data-voice-enabled="true"/);
   assert.match(scriptSnippet, /data-voice-language="en-US"/);
   assert.match(scriptSnippet, /data-voice-auto-stop-ms="2800"/);
+  assert.match(scriptSnippet, /data-narration-enabled="false"/);
+  assert.match(scriptSnippet, /data-narration-default-mode="always"/);
+  assert.match(scriptSnippet, /data-narration-rate="1.15"/);
+  assert.match(scriptSnippet, /data-narration-language="en-USscript"/);
+  assert.match(scriptSnippet, /data-narration-voice-preference="natural"/);
   assert.match(scriptSnippet, /data-action-spotlight="false"/);
   assert.match(scriptSnippet, /data-action-spotlight-color="#2563EB"/);
 
@@ -81,6 +98,11 @@ test('preview bootstrap preserves ui voice, experience, cloud sandbox, and page 
         'data-voice-enabled': 'true',
         'data-voice-language': 'en-US',
         'data-voice-auto-stop-ms': '2800',
+        'data-narration-enabled': 'false',
+        'data-narration-default-mode': 'always',
+        'data-narration-rate': '1.2',
+        'data-narration-language': 'en-US<script>',
+        'data-narration-voice-preference': 'natural',
         'data-action-spotlight': 'false',
         'data-action-spotlight-color': '#2563eb',
       };
@@ -101,6 +123,15 @@ test('preview bootstrap preserves ui voice, experience, cloud sandbox, and page 
       autoStopMs: 2800,
     },
     experience: {
+      audio: {
+        narration: {
+          enabled: false,
+          defaultMode: 'always',
+          rate: 1.15,
+          language: 'en-USscript',
+          voicePreference: 'natural',
+        },
+      },
       motion: {
         actionSpotlight: false,
         actionSpotlightColor: '#2563EB',

@@ -37,6 +37,15 @@ export type RoverServerExperienceConfig = {
     attachmentLimit?: number;
     maxFileSizeMb?: number;
   };
+  audio?: {
+    narration?: {
+      enabled?: boolean;
+      defaultMode?: 'guided' | 'always' | 'off';
+      rate?: number;
+      language?: string;
+      voicePreference?: 'auto' | 'system' | 'natural';
+    };
+  };
   motion?: {
     intensity?: 'calm' | 'balanced' | 'expressive';
     reducedMotionFallback?: 'reduce' | 'remove';
@@ -162,6 +171,7 @@ export type RoverLaunchInputSpec =
       prompt: string;
       shortcutId: string;
       routing?: 'act' | 'planner' | 'auto';
+      runKind?: 'guide' | 'task';
     };
 
 export type RoverLaunchAttachResponse = {

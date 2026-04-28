@@ -36,6 +36,8 @@ export type SharedTimelineEvent = {
   sourceRuntimeId?: string;
   elementId?: number;
   toolName?: string;
+  narration?: string;
+  narrationActive?: boolean;
   actionCue?: RoverActionCue;
 };
 
@@ -376,6 +378,8 @@ function sanitizeSharedTimeline(input: unknown): SharedTimelineEvent[] {
       sourceRuntimeId: typeof event?.sourceRuntimeId === 'string' ? event.sourceRuntimeId : undefined,
       elementId: Number.isFinite(Number(event?.elementId)) ? Math.trunc(Number(event.elementId)) : undefined,
       toolName: typeof event?.toolName === 'string' ? event.toolName.slice(0, 120) : undefined,
+      narration: typeof event?.narration === 'string' ? event.narration.replace(/\s+/g, ' ').trim().slice(0, 220) || undefined : undefined,
+      narrationActive: typeof event?.narrationActive === 'boolean' ? event.narrationActive : undefined,
       actionCue: sanitizeActionCue(event?.actionCue),
     }))
     .filter((event: SharedTimelineEvent) => !!event.title);
@@ -1441,6 +1445,8 @@ export class SessionCoordinator {
       sourceRuntimeId: this.runtimeId,
       elementId: Number.isFinite(Number(event.elementId)) ? Math.trunc(Number(event.elementId)) : undefined,
       toolName: typeof event.toolName === 'string' ? event.toolName.slice(0, 120) : undefined,
+      narration: typeof event.narration === 'string' ? event.narration.replace(/\s+/g, ' ').trim().slice(0, 220) || undefined : undefined,
+      narrationActive: typeof event.narrationActive === 'boolean' ? event.narrationActive : undefined,
       actionCue: sanitizeActionCue(event.actionCue),
     };
 

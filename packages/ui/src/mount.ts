@@ -75,8 +75,8 @@ import {
   SHORTCUTS_RENDER_LIMIT,
   GREETING_REVEAL_DELAY_MS,
 } from './config.js';
-import { resolveMascotMutePreference } from './audio.js';
-import { composeVoiceDraft, formatTime, renderMessageBlock, summarizeTaskText } from './dom-helpers.js';
+import { resolveMascotMutePreference, resolveNarrationPreference } from './audio.js';
+import { composeVoiceDraft, deriveActionCueText, formatTime, renderMessageBlock, summarizeTaskText } from './dom-helpers.js';
 import { createStateMachine } from './state-machine.js';
 import { morphSeedToWindow, morphWindowToSeed, morphBarToSeed, morphSeedToBar, prefersReducedMotion, scaleDuration } from './animation.js';
 import { createSeed } from './components/seed.js';
@@ -86,6 +86,7 @@ import { createComposer } from './components/composer.js';
 import { createShortcuts } from './components/shortcuts.js';
 import { createWindow } from './components/window.js';
 import { createBrowserVoiceTranscriber, createAudioAnalyser } from './voice.js';
+import { createWebSpeechNarrator } from './narrator.js';
 import { createInputBar } from './components/input-bar.js';
 import { createCommandBar } from './components/command-bar.js';
 import { createParticleSystem } from './components/particles.js';
@@ -105,7 +106,7 @@ import { inputBarStyles } from './styles/input-bar.css.js';
 import { liveStackStyles } from './styles/live-stack.css.js';
 
 export function mountWidget(opts: MountOptions): RoverUi {
-  const agentName = resolveAgentName(opts.agent?.name);
+  const agentName = resolveAgentName(opts.agent?.name || opts.experience?.presence?.assistantName);
   const agentInitial = deriveAgentInitial(agentName);
   const launcherToken = deriveLauncherToken(agentName);
   const mascotDisabled = opts.mascot?.disabled === true;
@@ -174,6 +175,118 @@ export function mountWidget(opts: MountOptions): RoverUi {
     inputBar.setMuted(isMuted);
   }
 
+  // ── Step Narration ──
+  const createNarratorForExperience = (config: RoverExperienceConfig) => createWebSpeechNarrator({
+    lang: config.audio?.narration?.language,
+    rate: config.audio?.narration?.rate,
+    voicePreference: config.audio?.narration?.voicePreference,
+  });
+  const getNarrationDefaultOn = (config: RoverExperienceConfig): boolean => (
+    config.audio?.narration?.defaultMode !== 'off'
+  );
+
+  let narrator = createNarratorForExperience(experience);
+  let narrationUnlocked = false;
+  let narrationPreference = resolveNarrationPreference({
+    siteId: opts.siteId,
+    host: window.location.hostname,
+    enabled: experience.audio?.narration?.enabled,
+    defaultOn: getNarrationDefaultOn(experience),
+    readStored: (key) => {
+      try {
+        return localStorage.getItem(key);
+      } catch {
+        return null;
+      }
+    },
+  });
+  let narrationConfigSignature = JSON.stringify(experience.audio?.narration || {});
+  let allowNarrationToggle = narrationPreference.supportedByConfig && narrator.isSupported();
+  let isNarrationEnabled = allowNarrationToggle && narrationPreference.enabled;
+  narrator.setEnabled(isNarrationEnabled);
+  opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source);
+
+  function syncNarrationConfig(): void {
+    const nextSignature = JSON.stringify(experience.audio?.narration || {});
+    if (nextSignature !== narrationConfigSignature) {
+      narrationConfigSignature = nextSignature;
+      narrator.dispose();
+      narrator = createNarratorForExperience(experience);
+      if (narrationUnlocked) narrator.unlock();
+    }
+
+    narrationPreference = resolveNarrationPreference({
+      siteId: opts.siteId,
+      host: window.location.hostname,
+      enabled: experience.audio?.narration?.enabled,
+      defaultOn: getNarrationDefaultOn(experience),
+      readStored: (key) => {
+        try {
+          return localStorage.getItem(key);
+        } catch {
+          return null;
+        }
+      },
+    });
+    allowNarrationToggle = narrationPreference.supportedByConfig && narrator.isSupported();
+    isNarrationEnabled = allowNarrationToggle && narrationPreference.enabled;
+    narrator.setEnabled(isNarrationEnabled);
+    headerComp?.setNarrationAvailable(allowNarrationToggle);
+    headerComp?.setNarrationEnabled(isNarrationEnabled);
+    opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source);
+  }
+
+  function unlockNarration(): void {
+    if (!allowNarrationToggle) return;
+    narrationUnlocked = true;
+    narrator.unlock();
+  }
+
+  function toggleNarration(): void {
+    if (!allowNarrationToggle) return;
+    isNarrationEnabled = !isNarrationEnabled;
+    if (narrationPreference.storageKey) {
+      try { localStorage.setItem(narrationPreference.storageKey, String(isNarrationEnabled)); } catch { /* ignore */ }
+    }
+    narrationPreference = {
+      ...narrationPreference,
+      enabled: isNarrationEnabled,
+      source: 'visitor',
+    };
+    narrator.setEnabled(isNarrationEnabled);
+    if (isNarrationEnabled) unlockNarration();
+    headerComp.setNarrationEnabled(isNarrationEnabled);
+    opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source);
+  }
+
+  function buildNarrationSendMeta(runKind?: RoverShortcut['runKind']): {
+    narrationEnabledForRun: boolean;
+    narrationPreferenceSource: 'default' | 'visitor';
+    narrationRunKind?: 'guide' | 'task';
+  } {
+    return {
+      narrationEnabledForRun: allowNarrationToggle && isNarrationEnabled,
+      narrationPreferenceSource: narrationPreference.source,
+      ...(runKind === 'guide' || runKind === 'task' ? { narrationRunKind: runKind } : {}),
+    };
+  }
+
+  function normalizeNarrationText(input: unknown): string {
+    return sanitizeText(String(input || '').replace(/\s+/g, ' ')).slice(0, 220).trim();
+  }
+
+  function maybeSpeakTimelineEvent(event: RoverTimelineEvent): void {
+    if (!allowNarrationToggle || !isNarrationEnabled) return;
+    if (event.kind === 'tool_result') return;
+    const explicit = normalizeNarrationText(event.narration);
+    const fallback = !explicit && event.kind === 'tool_start' && event.narrationActive === true
+      ? normalizeNarrationText(deriveActionCueText(event))
+      : '';
+    const text = explicit || fallback;
+    if (!text) return;
+    narrator.speak(text);
+  }
+
   // ── Seed Component ──
   const seed = createSeed({
     agentName,
@@ -217,7 +330,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let pendingConfirmAction: 'new_task' | 'end_task' | null = null;
   let userMinimized = false;
 
-  const headerComp = createHeader({
+  let headerComp = createHeader({
     agentName,
     agentInitial,
     mascotDisabled,
@@ -228,6 +341,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
     showTaskControls: opts.showTaskControls !== false,
     allowSoundToggle,
     isMuted,
+    allowNarrationToggle,
+    narrationEnabled: isNarrationEnabled,
     onClose: close,
     onMinimize: () => minimize(),
     onCycleSize: () => win.cyclePanelSize(),
@@ -260,6 +375,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     onCancelRun: () => opts.onCancelRun?.(),
     onRequestControl: () => opts.onRequestControl?.(),
     onToggleMute: toggleMute,
+    onToggleNarration: toggleNarration,
     onToggleConversations: toggleConversations,
   });
 
@@ -271,15 +387,20 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   // ── Shortcuts Component ──
   const shortcutsComp = createShortcuts(agentName, visitorName);
+  function handleShortcutClick(shortcut: RoverShortcut): void {
+    unlockNarration();
+    opts.onShortcutClick?.(shortcut);
+  }
   let currentShortcuts: RoverShortcut[] = opts.shortcuts?.slice(0, SHORTCUTS_RENDER_LIMIT) || [];
   if (currentShortcuts.length > 0) {
-    shortcutsComp.render(currentShortcuts, opts.onShortcutClick);
+    shortcutsComp.render(currentShortcuts, handleShortcutClick);
   }
   feedComp.feed.appendChild(shortcutsComp.emptyState);
 
   // ── Command Bar ──
   const commandBar = createCommandBar({
     onSelect: (shortcut) => {
+      unlockNarration();
       opts.onShortcutClick?.(shortcut);
     },
     onClose: () => { /* no-op, just closes */ },
@@ -650,6 +771,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       submitComposerDraft();
     },
     onVoiceStart: () => {
+      unlockNarration();
       if (voiceState === 'listening') { stopVoiceDictation('manual'); return; }
       startVoiceDictation();
     },
@@ -677,10 +799,14 @@ export function mountWidget(opts: MountOptions): RoverUi {
     const attachments = composerComp.getPendingAttachments();
     const message = text || (attachments.length > 0 ? 'Use the attached files as context for this task.' : '');
     if (!message) return;
+    unlockNarration();
     setTaskSuggestion({ visible: false });
     latestTaskTitle = text || (attachments.length > 0 ? `Review ${attachments.length === 1 ? attachments[0].name : `${attachments.length} attachments`}` : latestTaskTitle);
     taskStartedAt = Date.now();
-    opts.onSend(message, attachments.length > 0 ? { attachments } : undefined);
+    opts.onSend(message, {
+      ...(attachments.length > 0 ? { attachments } : {}),
+      ...buildNarrationSendMeta(),
+    });
     composerComp.setText('');
     composerComp.clearAttachments();
     voiceErrorMessage = ''; voiceState = 'idle'; resetVoiceDraftState(); resetVoiceSessionState();
@@ -829,7 +955,11 @@ export function mountWidget(opts: MountOptions): RoverUi {
     const keys = currentQuestionPrompt.questions.map(q => q.key);
     const rawText = rawLines.length ? rawLines.join('\n') : keys.map(k => `${k}: (no answer provided)`).join('\n');
     const attachments = composerComp.getPendingAttachments();
-    opts.onSend(rawText, { askUserAnswers: { answersByKey, rawText, keys }, attachments: attachments.length ? attachments : undefined });
+    opts.onSend(rawText, {
+      askUserAnswers: { answersByKey, rawText, keys },
+      attachments: attachments.length ? attachments : undefined,
+      ...buildNarrationSendMeta(),
+    });
     composerComp.clearAttachments();
   });
 
@@ -1035,6 +1165,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   }
 
   function closeFromBar(): void {
+    narrator.cancel();
     userMinimized = false;
     const state = stateMachine.getState();
 
@@ -1078,6 +1209,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   // ── Seed → Bar ──
   function openToBar(): void {
     if (stateMachine.getState() !== 'seed') return;
+    unlockNarration();
     if (commandBar.isOpen()) commandBar.close();
     seed.setGreeting(null);
     clearGreetingTimers();
@@ -1114,6 +1246,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   }
 
   function close(): void {
+    narrator.cancel();
     if (stateMachine.getState() === 'bar') { closeFromBar(); return; }
     headerComp.closeOverflow();
     if (!win.panel.classList.contains('open')) { opts.onClose?.(); return; }
@@ -1259,6 +1392,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       liveStack.hide();
       inputBar.setRunning(false);
       composerComp.setSendAsStop(false, () => {});
+      narrator.cancel();
 
       waitingForFirstModelSignal = false;
       filamentSystem.clearAll();
@@ -1370,11 +1504,12 @@ export function mountWidget(opts: MountOptions): RoverUi {
     if (experience.motion?.filaments === false) filamentSystem.clearAll();
     if (experience.motion?.actionSpotlight === false) actionSpotlightSystem.clearAll();
     if (experience.motion?.palimpsest === false) win.backdrop.classList.remove('palimpsest');
+    syncNarrationConfig();
     syncTaskStage(); renderArtifactStage(); seed.applyPosition();
   }
 
   function show(): void { win.applyLayout(); wrapper.style.display = ''; seed.applyPosition(); syncShellState(); }
-  function hide(): void { close(); wrapper.style.display = 'none'; syncShellState(); }
+  function hide(): void { narrator.cancel(); close(); wrapper.style.display = 'none'; syncShellState(); }
 
   function destroy(): void {
     stateMachine.destroy();
@@ -1386,6 +1521,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     particleSystem.destroy();
     filamentSystem.destroy();
     actionSpotlightSystem.destroy();
+    narrator.dispose();
     audioAnalyser.dispose();
     window.removeEventListener('resize', handleViewportMutation);
     window.removeEventListener('orientationchange', handleViewportMutation);
@@ -1488,11 +1624,13 @@ export function mountWidget(opts: MountOptions): RoverUi {
       const displayEvent = withResolvedActionCueLabel(event);
       feedComp.addTimelineEvent(displayEvent);
       liveStack.addTimelineEvent(displayEvent);
+      maybeSpeakTimelineEvent(displayEvent);
       captureArtifactFromBlocks(displayEvent.detailBlocks);
       if (displayEvent.kind === 'thought' && isRunning && waitingForFirstModelSignal) { waitingForFirstModelSignal = false; syncProcessingIndicator(); }
       if ((displayEvent.title || '').toLowerCase() === 'run completed') {
         feedComp.setTraceExpanded(false, experience.stream?.maxVisibleLiveCards);
         actionSpotlightSystem.clearAll();
+        narrator.cancel();
       }
       const status = displayEvent.status || (displayEvent.kind === 'error' ? 'error' : displayEvent.kind === 'tool_result' ? 'success' : 'pending');
       if (status === 'error') stateMachine.setMood('error', 2200);
@@ -1543,6 +1681,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       syncPulseState();
     },
     clearTimeline: () => {
+      narrator.cancel();
       feedComp.clearTimeline(); liveStack.clear(); latestArtifactBlock = null; artifactExpanded = false; renderArtifactStage(); syncTaskStage();
       toolStartCount = 0; toolResultCount = 0; updateTideProgress();
       filamentSystem.clearAll();
@@ -1553,7 +1692,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     setStatus,
     setRunning,
     setExecutionMode,
-    setShortcuts: (shortcuts) => { shortcutsComp.render(shortcuts, opts.onShortcutClick); shortcutsComp.syncVisibility(hasMessages, isRunning, !!currentQuestionPrompt?.questions?.length); commandBar.setItems(shortcuts); },
+    setShortcuts: (shortcuts) => { shortcutsComp.render(shortcuts, handleShortcutClick); shortcutsComp.syncVisibility(hasMessages, isRunning, !!currentQuestionPrompt?.questions?.length); commandBar.setItems(shortcuts); },
     showGreeting,
     dismissGreeting,
     setVisitorName,

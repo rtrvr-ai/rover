@@ -205,6 +205,7 @@ export const windowStyles = `
     }
 
     .sizeBtn,
+    .narrationBtn,
     .overflowBtn,
     .closeBtn {
       width: 32px;
@@ -288,7 +289,18 @@ export const windowStyles = `
       stroke-width: 2;
     }
 
+    .narrationBtn svg {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
     .sizeBtn:hover,
+    .narrationBtn:hover,
     .overflowBtn:hover,
     .closeBtn:hover {
       background: var(--rv-bg-alt);
@@ -298,6 +310,12 @@ export const windowStyles = `
 
     .sizeBtn.hidden {
       display: none;
+    }
+
+    .narrationBtn.enabled {
+      color: var(--rv-accent);
+      border-color: var(--rv-accent-border);
+      background: rgba(var(--rv-accent-rgb), 0.08);
     }
 
     .closeBtn {

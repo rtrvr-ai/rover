@@ -12,6 +12,8 @@ export type HeaderOptions = {
   showTaskControls: boolean;
   allowSoundToggle: boolean;
   isMuted: boolean;
+  allowNarrationToggle: boolean;
+  narrationEnabled: boolean;
   onClose: () => void;
   onMinimize: () => void;
   onCycleSize: () => void;
@@ -20,6 +22,7 @@ export type HeaderOptions = {
   onCancelRun: () => void;
   onRequestControl: () => void;
   onToggleMute: () => void;
+  onToggleNarration: () => void;
   onToggleConversations: () => void;
 };
 
@@ -37,6 +40,8 @@ export type HeaderComponent = {
   setStatus: (text: string) => void;
   setExecutionMode: (mode: RoverExecutionMode, meta?: Record<string, unknown>) => void;
   setMuted: (muted: boolean) => void;
+  setNarrationEnabled: (enabled: boolean) => void;
+  setNarrationAvailable: (available: boolean) => void;
   closeOverflow: () => void;
   update: (experience: RoverExperienceConfig) => void;
   destroy: () => void;
@@ -102,6 +107,16 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
     opts.onToggleConversations();
   });
 
+  let narrationEnabled = opts.narrationEnabled;
+  let narrationAvailable = opts.allowNarrationToggle;
+  const narrationBtn = document.createElement('button');
+  narrationBtn.type = 'button';
+  narrationBtn.className = 'narrationBtn';
+  narrationBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    opts.onToggleNarration();
+  });
+
   const overflowBtn = document.createElement('button');
   overflowBtn.type = 'button';
   overflowBtn.className = 'overflowBtn';
@@ -127,6 +142,7 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
 
   headerActions.appendChild(sizeBtn);
   headerActions.appendChild(conversationListBtn);
+  headerActions.appendChild(narrationBtn);
   headerActions.appendChild(overflowBtn);
   headerActions.appendChild(cancelPill);
   headerActions.appendChild(closeBtn);
@@ -164,6 +180,14 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
     menuMuteToggle.textContent = isMuted ? 'Unmute sounds' : 'Mute sounds';
   });
 
+  const menuNarrationToggle = document.createElement('button');
+  menuNarrationToggle.type = 'button';
+  menuNarrationToggle.className = 'menuItem';
+  menuNarrationToggle.addEventListener('click', () => {
+    closeOverflow();
+    opts.onToggleNarration();
+  });
+
   const menuTakeControl = document.createElement('button');
   menuTakeControl.type = 'button';
   menuTakeControl.className = 'menuItem';
@@ -175,6 +199,7 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
   overflowMenu.appendChild(menuEndTask);
   overflowMenu.appendChild(menuDivider);
   overflowMenu.appendChild(menuMuteToggle);
+  overflowMenu.appendChild(menuNarrationToggle);
   overflowMenu.appendChild(menuTakeControl);
 
   if (!opts.showTaskControls) {
@@ -182,12 +207,29 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
     menuEndTask.style.display = 'none';
   }
   if (!opts.allowSoundToggle) {
-    menuDivider.style.display = 'none';
     menuMuteToggle.style.display = 'none';
   }
 
+  function syncNarrationButton(): void {
+    const label = narrationEnabled ? 'Turn off step narration' : 'Turn on step narration';
+    narrationBtn.setAttribute('aria-label', label);
+    narrationBtn.setAttribute('aria-pressed', narrationEnabled ? 'true' : 'false');
+    narrationBtn.classList.toggle('enabled', narrationEnabled);
+    narrationBtn.style.display = narrationAvailable ? '' : 'none';
+    narrationBtn.innerHTML = narrationEnabled
+      ? '<svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5Z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M18.5 5.5a9 9 0 0 1 0 13"></path></svg>'
+      : '<svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5Z"></path><path d="m19 9-4 4"></path><path d="m15 9 4 4"></path></svg>';
+    menuNarrationToggle.textContent = narrationEnabled ? 'Turn off narration' : 'Turn on narration';
+    menuNarrationToggle.style.display = narrationAvailable ? '' : 'none';
+  }
+
   function syncOverflowVisibility(): void {
-    const hasVisibleMenuItem = opts.showTaskControls || opts.allowSoundToggle || menuTakeControl.style.display !== 'none';
+    const hasVisibleMenuItem =
+      opts.showTaskControls ||
+      opts.allowSoundToggle ||
+      narrationAvailable ||
+      menuTakeControl.style.display !== 'none';
+    menuDivider.style.display = opts.allowSoundToggle || narrationAvailable ? '' : 'none';
     overflowBtn.style.display = runningState || !hasVisibleMenuItem ? 'none' : '';
   }
 
@@ -210,6 +252,7 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
   header.appendChild(headerActions);
   header.appendChild(overflowMenu);
   header.appendChild(executionBar);
+  syncNarrationButton();
   syncOverflowVisibility();
 
   return {
@@ -248,6 +291,16 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
       isMuted = muted;
       menuMuteToggle.textContent = muted ? 'Unmute sounds' : 'Mute sounds';
       avatarMedia.setMuted(muted);
+    },
+    setNarrationEnabled(enabled: boolean) {
+      narrationEnabled = enabled;
+      syncNarrationButton();
+      syncOverflowVisibility();
+    },
+    setNarrationAvailable(available: boolean) {
+      narrationAvailable = available;
+      syncNarrationButton();
+      syncOverflowVisibility();
     },
     closeOverflow,
     update(_experience: RoverExperienceConfig) {

@@ -3,8 +3,10 @@ import test from 'node:test';
 
 import {
   buildMutePreferenceStorageKey,
+  buildNarrationPreferenceStorageKey,
   isMascotSoundEnabled,
   resolveMascotMutePreference,
+  resolveNarrationPreference,
 } from '../dist/audio.js';
 
 test('mascot audio stays disabled unless the owner explicitly enables it', () => {
@@ -59,4 +61,46 @@ test('stored mute preference only applies when mascot audio is enabled', () => {
   assert.equal(otherSite.soundEnabled, true);
   assert.equal(otherSite.isMuted, true);
   assert.equal(otherSite.storageKey, 'rover:muted:site_456');
+});
+
+test('narration preference is site-scoped and owner-disabled short-circuits audio', () => {
+  assert.equal(
+    buildNarrationPreferenceStorageKey({ siteId: 'site_AbC-123', host: 'Example.com' }),
+    'rover:narration:site_abc-123',
+  );
+  assert.equal(
+    buildNarrationPreferenceStorageKey({ host: 'Docs.Example.com' }),
+    'rover:narration:docs.example.com',
+  );
+  assert.deepEqual(resolveNarrationPreference({
+    siteId: 'site_123',
+    enabled: false,
+    defaultOn: true,
+    readStored: () => 'true',
+  }), {
+    supportedByConfig: false,
+    enabled: false,
+    source: 'default',
+  });
+});
+
+test('stored narration preference overrides the owner default mode', () => {
+  const disabledByVisitor = resolveNarrationPreference({
+    siteId: 'site_123',
+    enabled: true,
+    defaultOn: true,
+    readStored: () => 'false',
+  });
+  const enabledByVisitor = resolveNarrationPreference({
+    siteId: 'site_123',
+    enabled: true,
+    defaultOn: false,
+    readStored: () => 'true',
+  });
+
+  assert.equal(disabledByVisitor.enabled, false);
+  assert.equal(disabledByVisitor.source, 'visitor');
+  assert.equal(disabledByVisitor.storageKey, 'rover:narration:site_123');
+  assert.equal(enabledByVisitor.enabled, true);
+  assert.equal(enabledByVisitor.source, 'visitor');
 });

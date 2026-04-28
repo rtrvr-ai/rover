@@ -189,6 +189,32 @@ export function sanitizeExperienceConfig(input?: RoverExperienceConfig): RoverEx
         : undefined,
     };
   }
+  if (input.audio && typeof input.audio === 'object') {
+    const narrationInput = input.audio.narration && typeof input.audio.narration === 'object'
+      ? input.audio.narration
+      : undefined;
+    if (narrationInput) {
+      next.audio = {
+        narration: {
+          enabled: typeof narrationInput.enabled === 'boolean' ? narrationInput.enabled : undefined,
+          defaultMode:
+            narrationInput.defaultMode === 'guided' || narrationInput.defaultMode === 'always' || narrationInput.defaultMode === 'off'
+              ? narrationInput.defaultMode
+              : undefined,
+          rate: Number.isFinite(Number(narrationInput.rate))
+            ? Math.max(0.85, Math.min(1.15, Number(narrationInput.rate)))
+            : undefined,
+          language: String(narrationInput.language || '').trim().slice(0, 24) || undefined,
+          voicePreference:
+            narrationInput.voicePreference === 'auto' ||
+            narrationInput.voicePreference === 'system' ||
+            narrationInput.voicePreference === 'natural'
+              ? narrationInput.voicePreference
+              : undefined,
+        },
+      };
+    }
+  }
   if (input.motion && typeof input.motion === 'object') {
     next.motion = {
       intensity:
@@ -268,6 +294,15 @@ export function resolveMountExperienceConfig(opts: MountOptions, agentName: stri
       mobileCameraCapture: explicit.inputs?.mobileCameraCapture ?? true,
       attachmentLimit: explicit.inputs?.attachmentLimit ?? DEFAULT_ATTACHMENT_LIMIT,
       maxFileSizeMb: explicit.inputs?.maxFileSizeMb ?? DEFAULT_ATTACHMENT_MAX_FILE_SIZE_MB,
+    },
+    audio: {
+      narration: {
+        enabled: explicit.audio?.narration?.enabled ?? true,
+        defaultMode: explicit.audio?.narration?.defaultMode || 'guided',
+        rate: explicit.audio?.narration?.rate ?? 1,
+        language: explicit.audio?.narration?.language || 'en-US',
+        voicePreference: explicit.audio?.narration?.voicePreference || 'auto',
+      },
     },
     motion: {
       intensity: explicit.motion?.intensity || 'balanced',

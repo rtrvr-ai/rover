@@ -30,6 +30,13 @@ export function buildMutePreferenceStorageKey(input: { siteId?: string; host?: s
   return `rover:muted:${hostScope || 'shared'}`;
 }
 
+export function buildNarrationPreferenceStorageKey(input: { siteId?: string; host?: string }): string {
+  const siteScope = normalizeStorageScope(input.siteId);
+  if (siteScope) return `rover:narration:${siteScope}`;
+  const hostScope = normalizeStorageScope(input.host);
+  return `rover:narration:${hostScope || 'shared'}`;
+}
+
 export function resolveMascotMutePreference(input: MascotAudioInput): {
   soundEnabled: boolean;
   isMuted: boolean;
@@ -56,6 +63,45 @@ export function resolveMascotMutePreference(input: MascotAudioInput): {
   return {
     soundEnabled,
     isMuted,
+    storageKey,
+  };
+}
+
+export function resolveNarrationPreference(input: {
+  siteId?: string;
+  host?: string;
+  enabled?: boolean;
+  defaultOn?: boolean;
+  readStored?: (key: string) => string | null;
+}): {
+  supportedByConfig: boolean;
+  enabled: boolean;
+  source: 'default' | 'visitor';
+  storageKey?: string;
+} {
+  const supportedByConfig = input.enabled !== false;
+  if (!supportedByConfig) {
+    return {
+      supportedByConfig,
+      enabled: false,
+      source: 'default',
+    };
+  }
+  const storageKey = buildNarrationPreferenceStorageKey({
+    siteId: input.siteId,
+    host: input.host,
+  });
+  let enabled = input.defaultOn !== false;
+  let source: 'default' | 'visitor' = 'default';
+  const stored = input.readStored?.(storageKey);
+  if (stored !== null && stored !== undefined) {
+    enabled = stored === 'true';
+    source = 'visitor';
+  }
+  return {
+    supportedByConfig,
+    enabled,
+    source,
     storageKey,
   };
 }
