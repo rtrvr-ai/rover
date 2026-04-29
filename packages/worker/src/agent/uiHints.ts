@@ -7,20 +7,56 @@ const SENSITIVE_VALUE_PATTERNS = [
   /\bsecret\b/i,
   /\btoken\b/i,
   /\bapi[-_\s]?key\b/i,
+  /\bauthorization\b/i,
+  /\bcookie\b/i,
+  /\bsession\b/i,
   /\bcredit\s*card\b/i,
   /\bcvv\b/i,
+  /\bcvc\b/i,
   /\bssn\b/i,
+  /\botp\b/i,
+  /\bmfa\b/i,
 ];
 
 const RAW_VALUE_ARG_KEYS = new Set([
+  'content',
+  'download_url',
+  'field_value',
+  'file_name',
+  'file_path',
+  'file_url',
+  'filename',
+  'gcs_uri',
   'text',
-  'value',
-  'query',
+  'input',
+  'name',
+  'option_value',
+  'path',
   'password',
   'passcode',
+  'query',
+  'search_text',
+  'storage_url',
   'token',
+  'typed_text',
+  'url',
+  'value',
   'api_key',
   'apiKey',
+]);
+
+const SHORT_RAW_VALUE_ARG_KEYS = new Set([
+  'download_url',
+  'field_value',
+  'file_name',
+  'file_path',
+  'file_url',
+  'filename',
+  'gcs_uri',
+  'option_value',
+  'path',
+  'storage_url',
+  'url',
 ]);
 
 export type ToolUiHints = {
@@ -46,7 +82,8 @@ function narrationContainsRawArgValue(narration: string, args: Record<string, un
   for (const [key, value] of Object.entries(args)) {
     if (!RAW_VALUE_ARG_KEYS.has(key) || typeof value !== 'string') continue;
     const normalizedValue = value.replace(/\s+/g, ' ').trim();
-    if (normalizedValue.length < 3) continue;
+    const minLength = SHORT_RAW_VALUE_ARG_KEYS.has(key) ? 1 : 3;
+    if (normalizedValue.length < minLength) continue;
     if (lowerNarration.includes(normalizedValue.toLowerCase())) return true;
   }
   return false;

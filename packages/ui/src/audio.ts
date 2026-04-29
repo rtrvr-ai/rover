@@ -37,6 +37,81 @@ export function buildNarrationPreferenceStorageKey(input: { siteId?: string; hos
   return `rover:narration:${hostScope || 'shared'}`;
 }
 
+export type NarrationVoicePreference = 'auto' | 'system' | 'natural';
+
+export type NarrationVisitorPreference = {
+  enabled?: boolean;
+  language?: string;
+  voiceURI?: string;
+  voicePreference?: NarrationVoicePreference;
+};
+
+function normalizeNarrationLanguage(input: unknown): string | undefined {
+  const value = String(input || '').trim();
+  if (!value || value.length > 32) return undefined;
+  if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/.test(value)) return undefined;
+  return value
+    .split('-')
+    .map((part, index) => index === 0 ? part.toLowerCase() : part.toUpperCase())
+    .join('-');
+}
+
+function normalizeVoiceUri(input: unknown): string | undefined {
+  const value = String(input || '').trim();
+  if (!value || value.length > 180) return undefined;
+  return value.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 180) || undefined;
+}
+
+function normalizeVoicePreference(input: unknown): NarrationVoicePreference | undefined {
+  return input === 'auto' || input === 'system' || input === 'natural' ? input : undefined;
+}
+
+export function parseNarrationVisitorPreference(raw: string | null | undefined): {
+  value: NarrationVisitorPreference;
+  source: 'default' | 'visitor';
+} {
+  if (raw === null || raw === undefined || raw === '') {
+    return { value: {}, source: 'default' };
+  }
+  const trimmed = String(raw).trim();
+  if (trimmed === 'true' || trimmed === 'false') {
+    return {
+      value: { enabled: trimmed === 'true' },
+      source: 'visitor',
+    };
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object') {
+      return { value: {}, source: 'default' };
+    }
+    const input = parsed as Record<string, unknown>;
+    const value: NarrationVisitorPreference = {};
+    if (typeof input.enabled === 'boolean') value.enabled = input.enabled;
+    const language = normalizeNarrationLanguage(input.language);
+    if (language) value.language = language;
+    const voiceURI = normalizeVoiceUri(input.voiceURI);
+    if (voiceURI) value.voiceURI = voiceURI;
+    const voicePreference = normalizeVoicePreference(input.voicePreference);
+    if (voicePreference) value.voicePreference = voicePreference;
+    return { value, source: Object.keys(value).length ? 'visitor' : 'default' };
+  } catch {
+    return { value: {}, source: 'default' };
+  }
+}
+
+export function serializeNarrationVisitorPreference(input: NarrationVisitorPreference): string {
+  const value: NarrationVisitorPreference = {};
+  if (typeof input.enabled === 'boolean') value.enabled = input.enabled;
+  const language = normalizeNarrationLanguage(input.language);
+  if (language) value.language = language;
+  const voiceURI = normalizeVoiceUri(input.voiceURI);
+  if (voiceURI) value.voiceURI = voiceURI;
+  const voicePreference = normalizeVoicePreference(input.voicePreference);
+  if (voicePreference) value.voicePreference = voicePreference;
+  return JSON.stringify(value);
+}
+
 export function resolveMascotMutePreference(input: MascotAudioInput): {
   soundEnabled: boolean;
   isMuted: boolean;
@@ -77,6 +152,9 @@ export function resolveNarrationPreference(input: {
   supportedByConfig: boolean;
   enabled: boolean;
   source: 'default' | 'visitor';
+  language?: string;
+  voiceURI?: string;
+  voicePreference?: NarrationVoicePreference;
   storageKey?: string;
 } {
   const supportedByConfig = input.enabled !== false;
@@ -94,14 +172,18 @@ export function resolveNarrationPreference(input: {
   let enabled = input.defaultOn !== false;
   let source: 'default' | 'visitor' = 'default';
   const stored = input.readStored?.(storageKey);
-  if (stored !== null && stored !== undefined) {
-    enabled = stored === 'true';
+  const parsed = parseNarrationVisitorPreference(stored);
+  if (parsed.source === 'visitor') {
+    if (typeof parsed.value.enabled === 'boolean') enabled = parsed.value.enabled;
     source = 'visitor';
   }
   return {
     supportedByConfig,
     enabled,
     source,
+    ...(parsed.value.language ? { language: parsed.value.language } : {}),
+    ...(parsed.value.voiceURI ? { voiceURI: parsed.value.voiceURI } : {}),
+    ...(parsed.value.voicePreference ? { voicePreference: parsed.value.voicePreference } : {}),
     storageKey,
   };
 }

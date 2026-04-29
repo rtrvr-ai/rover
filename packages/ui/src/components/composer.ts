@@ -39,6 +39,60 @@ let activePhrases: string[] = [
   'What can you do for me?',
 ];
 
+function formatFileSize(bytes: number): string {
+  const size = Math.max(0, Number(bytes) || 0);
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function normalizeFileExtension(name: string): string {
+  const dot = String(name || '').lastIndexOf('.');
+  return dot >= 0 ? String(name).slice(dot).toLowerCase() : '';
+}
+
+function isFileAcceptedByGroup(file: File, groups?: Array<'images' | 'pdfs' | 'office' | 'text'>): boolean {
+  const allowedGroups = Array.isArray(groups) && groups.length > 0
+    ? groups
+    : ['images', 'pdfs', 'office', 'text'];
+  const type = String(file.type || '').toLowerCase();
+  const extension = normalizeFileExtension(file.name);
+  for (const group of allowedGroups) {
+    if (group === 'images' && type.startsWith('image/')) return true;
+    if (group === 'pdfs' && (type === 'application/pdf' || extension === '.pdf')) return true;
+    if (group === 'text' && (
+      type.startsWith('text/')
+      || type === 'application/json'
+      || extension === '.md'
+      || extension === '.txt'
+      || extension === '.json'
+    )) return true;
+    if (group === 'office' && (
+      [
+        '.doc',
+        '.docx',
+        '.ppt',
+        '.pptx',
+        '.xls',
+        '.xlsx',
+        '.csv',
+        '.rtf',
+      ].includes(extension)
+      || [
+        'application/msword',
+        'application/rtf',
+        'application/vnd.ms-excel',
+        'application/vnd.ms-powerpoint',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'text/csv',
+      ].includes(type)
+    )) return true;
+  }
+  return false;
+}
+
 export function createComposer(opts: ComposerOptions): ComposerComponent {
   const { agentName } = opts;
   let experience = opts.experience;
@@ -71,6 +125,10 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
   attachmentButton.className = 'attachmentBtn';
   attachmentButton.setAttribute('aria-label', 'Attach files');
   attachmentButton.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>';
+  const attachmentBadge = document.createElement('span');
+  attachmentBadge.className = 'attachmentCountBadge';
+  attachmentBadge.setAttribute('aria-hidden', 'true');
+  attachmentButton.appendChild(attachmentBadge);
   composerActions.appendChild(attachmentButton);
 
   const voiceButton = document.createElement('button');
@@ -91,9 +149,6 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
   let inStopMode = false;
   let stopHandler: (() => void) | null = null;
 
-  composerRow.appendChild(composerActions);
-  composer.appendChild(composerRow);
-
   const attachmentInput = document.createElement('input');
   attachmentInput.type = 'file';
   attachmentInput.className = 'attachmentInput';
@@ -102,7 +157,11 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
 
   const attachmentStrip = document.createElement('div');
   attachmentStrip.className = 'attachmentStrip';
+  attachmentStrip.setAttribute('aria-live', 'polite');
   composer.appendChild(attachmentStrip);
+
+  composerRow.appendChild(composerActions);
+  composer.appendChild(composerRow);
 
   const composerStatus = document.createElement('div');
   composerStatus.className = 'composerStatus';
@@ -116,19 +175,41 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
     attachmentInput.accept = buildAttachmentAccept(experience.inputs?.acceptedMimeGroups);
   }
 
+  function setStatusMessage(message: string, tone: 'info' | 'error' = 'info'): void {
+    const clean = sanitizeText(message);
+    composerStatus.textContent = clean;
+    composerStatus.classList.toggle('visible', !!clean);
+    composerStatus.classList.toggle('error', tone === 'error' && !!clean);
+  }
+
   function syncAttachmentUi(): void {
     attachmentStrip.innerHTML = '';
     const maxAttachments = experience.inputs?.attachmentLimit ?? DEFAULT_ATTACHMENT_LIMIT;
     pendingAttachments = pendingAttachments.slice(0, maxAttachments);
     attachmentStrip.classList.toggle('visible', pendingAttachments.length > 0);
     attachmentButton.disabled = textarea.disabled || pendingAttachments.length >= maxAttachments;
+    attachmentButton.classList.toggle('hasAttachments', pendingAttachments.length > 0);
+    attachmentBadge.textContent = pendingAttachments.length > 0 ? String(pendingAttachments.length) : '';
+    attachmentButton.setAttribute(
+      'aria-label',
+      pendingAttachments.length > 0 ? `Attach files (${pendingAttachments.length} pending)` : 'Attach files',
+    );
     for (let index = 0; index < pendingAttachments.length; index += 1) {
       const file = pendingAttachments[index];
       const pill = document.createElement('span');
       pill.className = 'attachmentPill';
+      const icon = document.createElement('span');
+      icon.className = 'attachmentPillIcon';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.textContent = '\u25F1';
+      const body = document.createElement('span');
+      body.className = 'attachmentPillBody';
       const label = document.createElement('span');
       label.className = 'attachmentPillLabel';
       label.textContent = file.name;
+      const meta = document.createElement('span');
+      meta.className = 'attachmentPillMeta';
+      meta.textContent = formatFileSize(file.size);
       const removeBtn = document.createElement('button');
       removeBtn.type = 'button';
       removeBtn.className = 'attachmentPillRemove';
@@ -137,8 +218,12 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
       removeBtn.addEventListener('click', () => {
         pendingAttachments = pendingAttachments.filter((_, i) => i !== index);
         syncAttachmentUi();
+        setStatusMessage(pendingAttachments.length ? `${pendingAttachments.length} file${pendingAttachments.length === 1 ? '' : 's'} attached` : '', 'info');
       });
-      pill.appendChild(label);
+      body.appendChild(label);
+      body.appendChild(meta);
+      pill.appendChild(icon);
+      pill.appendChild(body);
       pill.appendChild(removeBtn);
       attachmentStrip.appendChild(pill);
     }
@@ -156,9 +241,23 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
     const maxCount = experience.inputs?.attachmentLimit ?? DEFAULT_ATTACHMENT_LIMIT;
     const maxBytes = (experience.inputs?.maxFileSizeMb ?? DEFAULT_ATTACHMENT_MAX_FILE_SIZE_MB) * 1024 * 1024;
     const remainingSlots = Math.max(0, maxCount - pendingAttachments.length);
-    const accepted = nextFiles.filter(f => f.size <= maxBytes).slice(0, remainingSlots);
+    const unsupported = nextFiles.filter(f => !isFileAcceptedByGroup(f, experience.inputs?.acceptedMimeGroups));
+    const supported = nextFiles.filter(f => isFileAcceptedByGroup(f, experience.inputs?.acceptedMimeGroups));
+    const tooLarge = supported.filter(f => f.size > maxBytes);
+    const eligible = supported.filter(f => f.size <= maxBytes);
+    const accepted = eligible.slice(0, remainingSlots);
+    const overLimit = Math.max(0, eligible.length - accepted.length);
     pendingAttachments = [...pendingAttachments, ...accepted];
     syncAttachmentUi();
+    if (unsupported.length || tooLarge.length || overLimit) {
+      const parts: string[] = [];
+      if (unsupported.length) parts.push(`${unsupported.length} unsupported`);
+      if (tooLarge.length) parts.push(`${tooLarge.length} too large`);
+      if (overLimit) parts.push(`${overLimit} over the file limit`);
+      setStatusMessage(`Some files were not attached (${parts.join(', ')}).`, 'error');
+    } else if (accepted.length) {
+      setStatusMessage(`${pendingAttachments.length} file${pendingAttachments.length === 1 ? '' : 's'} attached`, 'info');
+    }
   });
 
   voiceButton.addEventListener('click', () => {
@@ -273,12 +372,7 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
     setVoiceVisible(visible: boolean) {
       voiceButton.classList.toggle('visible', visible);
     },
-    setStatusMessage(message: string, tone: 'info' | 'error' = 'info') {
-      const clean = sanitizeText(message);
-      composerStatus.textContent = clean;
-      composerStatus.classList.toggle('visible', !!clean);
-      composerStatus.classList.toggle('error', tone === 'error' && !!clean);
-    },
+    setStatusMessage,
     setText(value: string) {
       textarea.value = value;
       syncTextareaHeight();

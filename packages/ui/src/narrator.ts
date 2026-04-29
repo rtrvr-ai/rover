@@ -7,10 +7,19 @@ export type RoverNarrator = {
   dispose: () => void;
 };
 
+export type RoverSpeechVoiceOption = {
+  voiceURI: string;
+  name: string;
+  lang: string;
+  localService: boolean;
+  default: boolean;
+};
+
 export type RoverNarratorOptions = {
   lang?: string;
   rate?: number;
   pitch?: number;
+  voiceURI?: string;
   voicePreference?: 'auto' | 'system' | 'natural';
   voiceMatcher?: (voice: SpeechSynthesisVoice) => number;
 };
@@ -77,6 +86,29 @@ function scoreVoice(
   return score;
 }
 
+export function listWebSpeechVoiceOptions(): RoverSpeechVoiceOption[] {
+  const synth: SpeechSynthesis | undefined = typeof speechSynthesis !== 'undefined' ? speechSynthesis : undefined;
+  if (!synth) return [];
+  const seen = new Set<string>();
+  const out: RoverSpeechVoiceOption[] = [];
+  for (const voice of Array.from(synth.getVoices?.() || [])) {
+    const key = String(voice.voiceURI || `${voice.name}:${voice.lang}`);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      voiceURI: String(voice.voiceURI || key),
+      name: String(voice.name || 'System voice'),
+      lang: String(voice.lang || ''),
+      localService: voice.localService === true,
+      default: voice.default === true,
+    });
+  }
+  return out.sort((a, b) => {
+    if (a.lang !== b.lang) return a.lang.localeCompare(b.lang);
+    return a.name.localeCompare(b.name);
+  });
+}
+
 export function createWebSpeechNarrator(opts: RoverNarratorOptions = {}): RoverNarrator {
   const synth: SpeechSynthesis | undefined = typeof speechSynthesis !== 'undefined' ? speechSynthesis : undefined;
   const UtteranceCtor: typeof SpeechSynthesisUtterance | undefined =
@@ -86,6 +118,7 @@ export function createWebSpeechNarrator(opts: RoverNarratorOptions = {}): RoverN
   const rate = clampRate(opts.rate);
   const pitch = Number.isFinite(Number(opts.pitch)) ? Math.max(0.7, Math.min(1.3, Number(opts.pitch))) : 1;
   const preference = opts.voicePreference || 'auto';
+  const preferredVoiceURI = String(opts.voiceURI || '').trim();
   let enabled = true;
   let unlocked = false;
   let disposed = false;
@@ -97,6 +130,13 @@ export function createWebSpeechNarrator(opts: RoverNarratorOptions = {}): RoverN
     if (!supported || !synth) return null;
     const voices = Array.from(synth.getVoices?.() || []);
     if (!voices.length) return null;
+    if (preferredVoiceURI) {
+      const exact = voices.find(voice => String(voice.voiceURI || '') === preferredVoiceURI);
+      if (exact) {
+        selectedVoice = exact;
+        return selectedVoice;
+      }
+    }
     let best: SpeechSynthesisVoice | null = null;
     let bestScore = -Infinity;
     for (const voice of voices) {

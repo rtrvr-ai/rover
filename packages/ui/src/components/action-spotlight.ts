@@ -93,6 +93,14 @@ function titleCase(input: string): string {
 }
 
 export function deriveElementLabel(el?: Element | null): string {
+  try {
+    return deriveElementLabelUnsafe(el);
+  } catch {
+    return '';
+  }
+}
+
+function deriveElementLabelUnsafe(el?: Element | null): string {
   if (!el) return '';
   const doc = el.ownerDocument || document;
   const labelledBy = normalizeLabel(el.getAttribute('aria-labelledby'), 180);
@@ -270,6 +278,9 @@ function inlineVerb(kind?: RoverActionCue['kind']): string {
     press: 'Press',
     scroll: 'Scroll',
     drag: 'Drag',
+    copy: 'Copy',
+    paste: 'Paste',
+    upload: 'Upload',
     navigate: 'Open',
     read: 'Read',
     wait: 'Wait',
@@ -293,7 +304,22 @@ export function createActionSpotlightSystem(opts: ActionSpotlightSystemOptions):
 
   const overlay = document.createElement('div');
   overlay.className = 'actionSpotlightLayer';
-  container.appendChild(overlay);
+  try { container.appendChild(overlay); } catch { /* best-effort visual layer */ }
+
+  function isLocalEvent(event: RoverTimelineEvent): boolean {
+    try {
+      return isActionCueForLocalTab(event, opts.getLocalLogicalTabId?.());
+    } catch {
+      return false;
+    }
+  }
+
+  function hideSpotlight(spotlight: ActiveSpotlight): void {
+    try { spotlight.ring.style.display = 'none'; } catch { /* best-effort */ }
+    try {
+      if (spotlight.chip) spotlight.chip.style.display = 'none';
+    } catch { /* best-effort */ }
+  }
 
   function viewportRect(): RectLike {
     const width = window.visualViewport?.width ?? window.innerWidth;
@@ -305,15 +331,13 @@ export function createActionSpotlightSystem(opts: ActionSpotlightSystemOptions):
     const el = opts.resolveElement?.(spotlight.elementId);
     const viewport = viewportRect();
     if (!el) {
-      spotlight.ring.style.display = 'none';
-      if (spotlight.chip) spotlight.chip.style.display = 'none';
+      hideSpotlight(spotlight);
       return;
     }
 
     const rect = toRectLike(el.getBoundingClientRect());
     if (!isVisibleRect(rect, viewport)) {
-      spotlight.ring.style.display = 'none';
-      if (spotlight.chip) spotlight.chip.style.display = 'none';
+      hideSpotlight(spotlight);
       return;
     }
 
@@ -324,20 +348,30 @@ export function createActionSpotlightSystem(opts: ActionSpotlightSystemOptions):
     const left = rect.left - (width - rect.width) / 2;
     const top = rect.top - (height - rect.height) / 2;
 
-    spotlight.ring.style.display = 'block';
-    spotlight.ring.style.width = `${width}px`;
-    spotlight.ring.style.height = `${height}px`;
-    spotlight.ring.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0)`;
+    try {
+      spotlight.ring.style.display = 'block';
+      spotlight.ring.style.width = `${width}px`;
+      spotlight.ring.style.height = `${height}px`;
+      spotlight.ring.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0)`;
+    } catch {
+      throw new Error('action_spotlight_style_failed');
+    }
 
     if (!spotlight.chip || mobile || spotlight.cue?.kind === 'unknown') {
-      if (spotlight.chip) spotlight.chip.style.display = 'none';
+      try {
+        if (spotlight.chip) spotlight.chip.style.display = 'none';
+      } catch { /* best-effort */ }
       return;
     }
 
     const label = deriveElementLabel(el);
-    spotlight.chip.textContent = inlineChipText(spotlight.cue, label);
-    spotlight.chip.style.display = 'block';
-    spotlight.chip.style.transform = 'translate3d(-10000px, -10000px, 0)';
+    try {
+      spotlight.chip.textContent = inlineChipText(spotlight.cue, label);
+      spotlight.chip.style.display = 'block';
+      spotlight.chip.style.transform = 'translate3d(-10000px, -10000px, 0)';
+    } catch {
+      throw new Error('action_spotlight_chip_failed');
+    }
     const chipRect = spotlight.chip.getBoundingClientRect();
     const placement = computeChipPlacement({
       target: rect,
@@ -350,11 +384,15 @@ export function createActionSpotlightSystem(opts: ActionSpotlightSystemOptions):
       occupied,
     });
     if (!placement) {
-      spotlight.chip.style.display = 'none';
+      try { spotlight.chip.style.display = 'none'; } catch { /* best-effort */ }
       return;
     }
-    spotlight.chip.dataset.side = placement.side;
-    spotlight.chip.style.transform = `translate3d(${Math.round(placement.left)}px, ${Math.round(placement.top)}px, 0)`;
+    try {
+      spotlight.chip.dataset.side = placement.side;
+      spotlight.chip.style.transform = `translate3d(${Math.round(placement.left)}px, ${Math.round(placement.top)}px, 0)`;
+    } catch {
+      throw new Error('action_spotlight_chip_place_failed');
+    }
     occupied.push({
       left: placement.left,
       top: placement.top,
@@ -367,7 +405,7 @@ export function createActionSpotlightSystem(opts: ActionSpotlightSystemOptions):
 
   function stopLoop(): void {
     if (rafId != null) {
-      cancelAnimationFrame(rafId);
+      try { cancelAnimationFrame(rafId); } catch { /* best-effort */ }
       rafId = null;
     }
   }
@@ -378,42 +416,63 @@ export function createActionSpotlightSystem(opts: ActionSpotlightSystemOptions):
       return;
     }
     const occupied: RectLike[] = [];
-    for (const spotlight of active) updateOne(spotlight, occupied);
+    for (const spotlight of [...active]) {
+      try {
+        updateOne(spotlight, occupied);
+      } catch {
+        removeSpotlight(spotlight);
+      }
+    }
     if (!destroyed && active.length > 0 && !document.hidden) {
-      rafId = requestAnimationFrame(updatePositions);
+      try { rafId = requestAnimationFrame(updatePositions); } catch { rafId = null; }
     }
   }
 
   function startLoop(): void {
     if (rafId != null || destroyed || document.hidden) return;
-    rafId = requestAnimationFrame(updatePositions);
+    try { rafId = requestAnimationFrame(updatePositions); } catch { rafId = null; }
   }
 
   function removeSpotlight(spotlight: ActiveSpotlight): void {
-    if (spotlight.fadeTimer) clearTimeout(spotlight.fadeTimer);
-    spotlight.ring.remove();
-    spotlight.chip?.remove();
+    if (spotlight.fadeTimer) {
+      try { clearTimeout(spotlight.fadeTimer); } catch { /* best-effort */ }
+    }
+    try { spotlight.ring.remove(); } catch { /* best-effort */ }
+    try { spotlight.chip?.remove(); } catch { /* best-effort */ }
     const idx = active.indexOf(spotlight);
     if (idx >= 0) active.splice(idx, 1);
   }
 
   function fadeSpotlight(spotlight: ActiveSpotlight): void {
-    if (spotlight.ring.classList.contains('fading')) return;
-    spotlight.ring.classList.add('fading');
-    spotlight.chip?.classList.add('fading');
-    spotlight.fadeTimer = setTimeout(() => removeSpotlight(spotlight), FADE_DURATION_MS);
+    try {
+      if (spotlight.ring.classList.contains('fading')) return;
+      spotlight.ring.classList.add('fading');
+      spotlight.chip?.classList.add('fading');
+      spotlight.fadeTimer = setTimeout(() => removeSpotlight(spotlight), FADE_DURATION_MS);
+    } catch {
+      removeSpotlight(spotlight);
+    }
   }
 
   function createSpotlight(elementId: number, event: RoverTimelineEvent): ActiveSpotlight {
-    const ring = document.createElement('div');
-    ring.className = 'actionSpotlightRing';
-    if (!opts.reducedMotion) ring.classList.add('pulse');
-    overlay.appendChild(ring);
+    let ring: HTMLDivElement | undefined;
+    let chip: HTMLDivElement | undefined;
+    try {
+      ring = document.createElement('div');
+      ring.className = 'actionSpotlightRing';
+      if (!opts.reducedMotion) ring.classList.add('pulse');
+      overlay.appendChild(ring);
 
-    const chip = document.createElement('div');
-    chip.className = 'actionSpotlightChip';
-    chip.textContent = inlineVerb(event.actionCue?.kind);
-    overlay.appendChild(chip);
+      chip = document.createElement('div');
+      chip.className = 'actionSpotlightChip';
+      chip.textContent = inlineVerb(event.actionCue?.kind);
+      overlay.appendChild(chip);
+    } catch (err) {
+      try { ring?.remove(); } catch { /* best-effort */ }
+      try { chip?.remove(); } catch { /* best-effort */ }
+      throw err;
+    }
+    if (!ring) throw new Error('action_spotlight_ring_missing');
 
     const spotlight: ActiveSpotlight = {
       key: String(elementId),
@@ -429,57 +488,78 @@ export function createActionSpotlightSystem(opts: ActionSpotlightSystemOptions):
   }
 
   function addEvent(event: RoverTimelineEvent): void {
-    if (destroyed) return;
-    if (!isActionCueForLocalTab(event, opts.getLocalLogicalTabId?.())) return;
-    const ids = cueElementIds(event);
-    if (!ids.length) return;
-    const newIds = ids.filter(elementId => !active.some(item => item.elementId === elementId));
-    while (active.length + newIds.length > MAX_ACTIVE_SPOTLIGHTS && active.length > 0) {
-      const oldest = active.shift();
-      if (oldest) fadeSpotlight(oldest);
-    }
-    for (const elementId of ids) {
-      const existing = active.find(item => item.elementId === elementId);
-      if (existing) {
-        existing.cue = event.actionCue;
-        existing.toolName = event.toolName;
-        existing.ring.classList.remove('fading');
-        existing.chip?.classList.remove('fading');
-      } else {
-        createSpotlight(elementId, event);
+    try {
+      if (destroyed) return;
+      if (!isLocalEvent(event)) return;
+      const ids = cueElementIds(event);
+      if (!ids.length) return;
+      const newIds = ids.filter(elementId => !active.some(item => item.elementId === elementId));
+      while (active.length + newIds.length > MAX_ACTIVE_SPOTLIGHTS && active.length > 0) {
+        const oldest = active.shift();
+        if (oldest) fadeSpotlight(oldest);
       }
+      for (const elementId of ids) {
+        try {
+          const existing = active.find(item => item.elementId === elementId);
+          if (existing) {
+            existing.cue = event.actionCue;
+            existing.toolName = event.toolName;
+            try { existing.ring.classList.remove('fading'); } catch { /* best-effort */ }
+            try { existing.chip?.classList.remove('fading'); } catch { /* best-effort */ }
+          } else {
+            createSpotlight(elementId, event);
+          }
+        } catch {
+          // Ignore this target and continue with any other targets in the event.
+        }
+      }
+      startLoop();
+    } catch {
+      // Spotlight is best-effort and must not interrupt the task UI.
     }
-    startLoop();
   }
 
   function fadeEvent(event: RoverTimelineEvent): void {
-    if (!isActionCueForLocalTab(event, opts.getLocalLogicalTabId?.())) return;
-    const ids = cueElementIds(event);
-    if (!ids.length) return;
-    for (const elementId of ids) {
-      const spotlight = active.find(item => item.elementId === elementId);
-      if (spotlight) fadeSpotlight(spotlight);
+    try {
+      if (!isLocalEvent(event)) return;
+      const ids = cueElementIds(event);
+      if (!ids.length) return;
+      for (const elementId of ids) {
+        const spotlight = active.find(item => item.elementId === elementId);
+        if (spotlight) fadeSpotlight(spotlight);
+      }
+    } catch {
+      // Spotlight is best-effort.
     }
   }
 
   function clearAll(): void {
-    while (active.length) removeSpotlight(active[0]);
-    stopLoop();
+    try {
+      while (active.length) removeSpotlight(active[0]);
+      stopLoop();
+    } catch {
+      active.splice(0, active.length);
+      stopLoop();
+    }
   }
 
   const scheduleUpdate = () => startLoop();
   const handleVisibilityChange = () => {
-    if (document.hidden) {
+    try {
+      if (document.hidden) {
+        stopLoop();
+        return;
+      }
+      startLoop();
+    } catch {
       stopLoop();
-      return;
     }
-    startLoop();
   };
-  window.addEventListener('scroll', scheduleUpdate, true);
-  window.addEventListener('resize', scheduleUpdate);
-  window.visualViewport?.addEventListener('resize', scheduleUpdate);
-  window.visualViewport?.addEventListener('scroll', scheduleUpdate);
-  document.addEventListener('visibilitychange', handleVisibilityChange);
+  try { window.addEventListener('scroll', scheduleUpdate, true); } catch { /* best-effort */ }
+  try { window.addEventListener('resize', scheduleUpdate); } catch { /* best-effort */ }
+  try { window.visualViewport?.addEventListener('resize', scheduleUpdate); } catch { /* best-effort */ }
+  try { window.visualViewport?.addEventListener('scroll', scheduleUpdate); } catch { /* best-effort */ }
+  try { document.addEventListener('visibilitychange', handleVisibilityChange); } catch { /* best-effort */ }
 
   return {
     overlay,
@@ -489,12 +569,12 @@ export function createActionSpotlightSystem(opts: ActionSpotlightSystemOptions):
     destroy(): void {
       destroyed = true;
       clearAll();
-      window.removeEventListener('scroll', scheduleUpdate, true);
-      window.removeEventListener('resize', scheduleUpdate);
-      window.visualViewport?.removeEventListener('resize', scheduleUpdate);
-      window.visualViewport?.removeEventListener('scroll', scheduleUpdate);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      overlay.remove();
+      try { window.removeEventListener('scroll', scheduleUpdate, true); } catch { /* best-effort */ }
+      try { window.removeEventListener('resize', scheduleUpdate); } catch { /* best-effort */ }
+      try { window.visualViewport?.removeEventListener('resize', scheduleUpdate); } catch { /* best-effort */ }
+      try { window.visualViewport?.removeEventListener('scroll', scheduleUpdate); } catch { /* best-effort */ }
+      try { document.removeEventListener('visibilitychange', handleVisibilityChange); } catch { /* best-effort */ }
+      try { overlay.remove(); } catch { /* best-effort */ }
     },
   };
 }

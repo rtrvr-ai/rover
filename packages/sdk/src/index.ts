@@ -91,6 +91,12 @@ import {
   type RoverCloudCheckpointPayload,
   type RoverCloudCheckpointState,
 } from './cloudCheckpoint.js';
+import {
+  RoverConversationHistoryClient,
+  buildConversationTitle,
+  createConversationHistoryStore,
+  type RoverConversationSummary,
+} from './conversationHistory.js';
 import { createRuntimeStateStore, type RuntimeStateStore } from './runtimeStorage.js';
 import {
   buildPublicRunLifecyclePayload as buildPublicRunLifecyclePayloadHelper,
@@ -599,6 +605,9 @@ let runtimeStateStore: RuntimeStateStore<PersistedRuntimeState> | null = null;
 let runtimeId: string = '';
 let sessionCoordinator: SessionCoordinator | null = null;
 let cloudCheckpointClient: RoverCloudCheckpointClient | null = null;
+let conversationHistoryStore: ReturnType<typeof createConversationHistoryStore> | null = null;
+let conversationHistoryClient: RoverConversationHistoryClient | null = null;
+let conversationHistorySyncTimer: ReturnType<typeof setTimeout> | null = null;
 let telemetryFlushTimer: ReturnType<typeof setInterval> | null = null;
 let telemetryBuffer: TelemetryEventRecord[] = [];
 let telemetryInFlight = false;
@@ -648,6 +657,7 @@ let lastQuestionPromptFlushSignature = '';
 let currentMode: RoverExecutionMode = 'controller';
 let narrationEnabledForRun = false;
 let narrationPreferenceSource: 'default' | 'visitor' = 'default';
+let narrationLanguage: string | undefined = undefined;
 let workerReady = false;
 let sessionReady = false;
 let isTransportController = true; // default to true for single-tab mode
@@ -4661,6 +4671,7 @@ function persistRuntimeStateImmediate(options?: { markCheckpointDirty?: boolean 
     if (!suppressCheckpointSync && options?.markCheckpointDirty !== false) {
       cloudCheckpointClient?.markDirty();
     }
+    scheduleConversationHistorySync('runtime_persist');
   } catch {
     // ignore storage failures
   }
@@ -4904,6 +4915,119 @@ function syncOrchestratorConversationList(): void {
   if (activeId) {
     ui.setActiveConversationId(activeId);
   }
+}
+
+function buildConversationSummaryFromTask(task: TaskRecord): RoverConversationSummary {
+  const updatedAt = Number(task.endedAt || task.lastAssistantAt || task.lastUserAt || task.startedAt || Date.now());
+  const titleSource = task.rootUserInput || task.summary || task.taskId;
+  return {
+    conversationId: task.taskId,
+    title: buildConversationTitle(titleSource),
+    preview: buildConversationTitle(task.summary || task.rootUserInput || '', ' '),
+    status: task.state,
+    createdAt: Number(task.startedAt || updatedAt),
+    updatedAt,
+  };
+}
+
+function buildActiveConversationRecord(): { summary: RoverConversationSummary; payload: Record<string, unknown> } | null {
+  if (!taskOrchestrator || !runtimeState) return null;
+  syncActiveTaskRecordFromRuntimeState();
+  const task = taskOrchestrator.getActiveTask();
+  if (!task) return null;
+  const pendingRunAny = runtimeState.pendingRun as any;
+  const uploadedAttachmentMeta = Array.isArray(pendingRunAny?.files)
+    ? pendingRunAny.files
+    : [];
+  return {
+    summary: buildConversationSummaryFromTask(task),
+    payload: {
+      uiMessages: runtimeState.uiMessages || task.uiMessages || [],
+      timeline: runtimeState.timeline || task.timeline || [],
+      taskRecord: {
+        ...task,
+        uiMessages: task.uiMessages || [],
+        timeline: task.timeline || [],
+      },
+      runMeta: {
+        activeTaskId: runtimeState.activeTaskId,
+        pendingRun: runtimeState.pendingRun
+          ? {
+              id: runtimeState.pendingRun.id,
+              status: (runtimeState.pendingRun as any).status,
+              startedAt: runtimeState.pendingRun.startedAt,
+            }
+          : undefined,
+      },
+      attachments: uploadedAttachmentMeta.map((file: any) => ({
+        id: String(file?.id || file?.fileId || ''),
+        displayName: String(file?.displayName || file?.name || '').slice(0, 180),
+        mimeType: String(file?.mimeType || '').slice(0, 120),
+        size: Number(file?.size || file?.sizeBytes || 0) || undefined,
+        storageRef: file?.storageRef || file?.uri || undefined,
+      })),
+    },
+  };
+}
+
+function scheduleConversationHistorySync(reason = 'state_persist'): void {
+  if (!conversationHistoryStore || !taskOrchestrator || !runtimeState) return;
+  if (conversationHistorySyncTimer) return;
+  conversationHistorySyncTimer = setTimeout(() => {
+    conversationHistorySyncTimer = null;
+    const record = buildActiveConversationRecord();
+    if (!record) return;
+    conversationHistoryStore?.upsert(record);
+    void conversationHistoryClient?.upsert(record).then(summary => {
+      if (summary) {
+        conversationHistoryStore?.upsert({ summary, payload: record.payload });
+        refreshConversationHistoryList('cloud_upsert').catch(() => undefined);
+      }
+    }).catch(() => {
+      recordTelemetryEvent('status', { event: 'conversation_history_sync_failed', reason });
+    });
+  }, 1000);
+}
+
+async function refreshConversationHistoryList(reason = 'manual'): Promise<void> {
+  if (!ui || !conversationHistoryStore) return;
+  let local = await conversationHistoryStore.list();
+  if (conversationHistoryClient) {
+    try {
+      const remote = await conversationHistoryClient.list();
+      for (const tombstone of remote.tombstones || []) {
+        if (tombstone?.conversationId) conversationHistoryStore.remove(tombstone.conversationId, tombstone);
+      }
+      for (const summary of remote.conversations || []) {
+        conversationHistoryStore.upsert({ summary });
+      }
+      local = await conversationHistoryStore.list();
+    } catch {
+      recordTelemetryEvent('status', { event: 'conversation_history_list_offline', reason });
+    }
+  }
+  const activeId = taskOrchestrator?.getActiveTask()?.taskId || runtimeState?.activeTaskId;
+  const mapped = local.map(item => ({
+    id: item.conversationId,
+    summary: item.title || item.preview || item.conversationId,
+    status: (item.status || 'completed') as ConversationListItem['status'],
+    updatedAt: item.updatedAt || Date.now(),
+    isActive: item.conversationId === activeId,
+  }));
+  if (!mapped.some(item => item.id === activeId) && taskOrchestrator) {
+    const active = taskOrchestrator.getActiveTask();
+    if (active) {
+      const summary = buildConversationSummaryFromTask(active);
+      mapped.unshift({
+        id: summary.conversationId,
+        summary: summary.title,
+        status: (summary.status || 'running') as ConversationListItem['status'],
+        updatedAt: summary.updatedAt,
+        isActive: true,
+      });
+    }
+  }
+  ui.setConversations(mapped);
 }
 
 function getActiveTaskRecord(): TaskRecord | undefined {
@@ -6272,6 +6396,7 @@ function postRun(
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
+    narrationLanguage?: string;
   },
 ): void {
   const trimmed = String(text || '').trim();
@@ -6398,6 +6523,7 @@ function postRun(
     narrationRunKind: options?.narrationRunKind === 'guide' || options?.narrationRunKind === 'task'
       ? options.narrationRunKind
       : undefined,
+    narrationLanguage: options?.narrationLanguage,
     scopedTabIds,
     taskTabScope: toWorkerTaskTabScopePayload(),
   });
@@ -6438,6 +6564,7 @@ async function dispatchUserPromptAsync(
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
+    narrationLanguage?: string;
     continueExistingRun?: boolean;
     continueRunId?: string;
   },
@@ -6669,6 +6796,7 @@ async function dispatchUserPromptAsync(
 
   const effectiveNarrationEnabledForRun = options?.narrationEnabledForRun ?? narrationEnabledForRun;
   const effectiveNarrationPreferenceSource = options?.narrationPreferenceSource || narrationPreferenceSource;
+  const effectiveNarrationLanguage = options?.narrationLanguage || narrationLanguage;
   postRun(trimmed, {
     runId,
     appendUserMessage: true,
@@ -6684,6 +6812,7 @@ async function dispatchUserPromptAsync(
     narrationRunKind: options?.narrationRunKind === 'guide' || options?.narrationRunKind === 'task'
       ? options.narrationRunKind
       : undefined,
+    narrationLanguage: effectiveNarrationLanguage,
   });
 }
 
@@ -6699,6 +6828,7 @@ function dispatchUserPrompt(
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
+    narrationLanguage?: string;
     continueExistingRun?: boolean;
     continueRunId?: string;
   },
@@ -9564,6 +9694,7 @@ function dispatchLaunchInput(response: RoverLaunchAttachResponse | RoverRunBrows
         reason: 'launch_shortcut',
         routing: input.routing,
         narrationRunKind: input.runKind,
+        narrationLanguage,
       });
     } else {
       dispatchUserPrompt(input.prompt, { reason: 'launch_prompt' });
@@ -10340,6 +10471,7 @@ function dispatchClaimedBrowserRun(response: RoverRunBrowserClaimResponse): void
       reason: 'browser_receipt_shortcut',
       routing: input.routing,
       narrationRunKind: input.runKind,
+      narrationLanguage,
     });
     return;
   }
@@ -10540,6 +10672,7 @@ function maybeHandleDeepLink(source: 'boot' | 'update' | 'navigation' | 'site_co
       reason: 'deep_link_shortcut',
       routing: shortcut.routing,
       narrationRunKind: shortcut.runKind,
+      narrationLanguage,
     });
     recordTelemetryEvent('status', {
       event: 'deep_link_dispatched',
@@ -11537,10 +11670,10 @@ function createRuntime(cfg: RoverInit): void {
     voice: resolveEffectiveVoiceConfig(cfg),
     thoughtStyle: cfg.ui?.thoughtStyle,
     visitorName: resolvedVisitor?.name,
-    onVoiceTelemetry: (event, payload) => {
+    onVoiceTelemetry: (event: RoverVoiceTelemetryEventName, payload?: Record<string, unknown>) => {
       recordVoiceTelemetryEvent(event, payload);
     },
-    onShortcutClick: (shortcut) => {
+    onShortcutClick: (shortcut: RoverShortcut) => {
       const text = String(shortcut.prompt || '').trim();
       if (!text) return;
       dispatchUserPrompt(text, {
@@ -11548,20 +11681,38 @@ function createRuntime(cfg: RoverInit): void {
         narrationEnabledForRun,
         narrationPreferenceSource,
         narrationRunKind: shortcut.runKind,
+        narrationLanguage,
       });
     },
-    onSend: (text, meta) => {
+    onSend: (text: string, meta?: {
+      askUserAnswers?: RoverAskUserAnswerMeta;
+      attachments?: File[];
+      narrationEnabledForRun?: boolean;
+      narrationPreferenceSource?: 'default' | 'visitor';
+      narrationRunKind?: 'guide' | 'task';
+      narrationLanguage?: string;
+    }) => {
       dispatchUserPrompt(text, {
         askUserAnswers: meta?.askUserAnswers,
         attachments: meta?.attachments,
         narrationEnabledForRun: meta?.narrationEnabledForRun === true,
         narrationPreferenceSource: meta?.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
         narrationRunKind: meta?.narrationRunKind,
+        narrationLanguage: meta?.narrationLanguage,
       });
     },
-    onNarrationPreferenceChange: (enabled, available, source) => {
+    onOpenConversations: () => {
+      void refreshConversationHistoryList('drawer_open').catch(() => undefined);
+    },
+    onNarrationPreferenceChange: (
+      enabled: boolean,
+      available: boolean,
+      source: 'default' | 'visitor',
+      language?: string,
+    ) => {
       narrationEnabledForRun = available && enabled;
       narrationPreferenceSource = source === 'visitor' ? 'visitor' : 'default';
+      narrationLanguage = language;
     },
     onRequestControl: () => {
       const claimed = takeControlOfActiveRun();
@@ -11631,7 +11782,7 @@ function createRuntime(cfg: RoverInit): void {
         bypassSuggestion: true,
       });
     },
-    onSwitchConversation: (conversationId) => {
+    onSwitchConversation: (conversationId: string) => {
       if (!taskOrchestrator || !runtimeState) return;
       // Save current task scroll position
       const currentTask = taskOrchestrator.getActiveTask();
@@ -11647,7 +11798,26 @@ function createRuntime(cfg: RoverInit): void {
       }
       // Switch to target task
       const target = taskOrchestrator.switchActiveTask(conversationId);
-      if (!target) return;
+      if (!target) {
+        void (async () => {
+          let record = await conversationHistoryStore?.get(conversationId);
+          if (!record && conversationHistoryClient) {
+            record = await conversationHistoryClient.get(conversationId).catch(() => null);
+            if (record) conversationHistoryStore?.upsert(record);
+          }
+          const taskRecord = record?.payload?.taskRecord as TaskRecord | undefined;
+          if (!taskRecord) return;
+          taskOrchestrator?.createTask('conversation_history_restore', taskRecord);
+          const restored = taskOrchestrator?.switchActiveTask(taskRecord.taskId);
+          if (!restored) return;
+          restoreRuntimeStateFromTaskRecord(restored, { replayUi: true });
+          runtimeState!.activeTaskId = restored.taskId;
+          ui?.setActiveConversationId(restored.taskId);
+          syncOrchestratorConversationList();
+          persistRuntimeState();
+        })().catch(() => undefined);
+        return;
+      }
       restoreRuntimeStateFromTaskRecord(target, { replayUi: true });
       runtimeState.activeTaskId = conversationId;
       if (ui) {
@@ -11661,13 +11831,15 @@ function createRuntime(cfg: RoverInit): void {
       syncOrchestratorConversationList();
       persistRuntimeState();
     },
-    onDeleteConversation: (conversationId) => {
+    onDeleteConversation: (conversationId: string) => {
       if (!taskOrchestrator) return;
       taskOrchestrator.deleteTask(conversationId);
+      conversationHistoryStore?.remove(conversationId, { deletedAt: Date.now() });
+      void conversationHistoryClient?.delete(conversationId).catch(() => undefined);
       syncOrchestratorConversationList();
       persistRuntimeState();
     },
-    onResumeTask: (taskId) => {
+    onResumeTask: (taskId: string) => {
       if (!taskOrchestrator) return;
       const result = taskOrchestrator.dispatch(taskId, { type: 'RESUME' });
       if (result.accepted) {
@@ -11677,7 +11849,7 @@ function createRuntime(cfg: RoverInit): void {
         persistRuntimeState();
       }
     },
-    onCancelPausedTask: (taskId) => {
+    onCancelPausedTask: (taskId: string) => {
       if (!taskOrchestrator) return;
       const result = taskOrchestrator.dispatch(taskId, { type: 'CANCEL', reason: 'user_cancelled_paused_task' });
       if (result.accepted) {
@@ -11687,7 +11859,7 @@ function createRuntime(cfg: RoverInit): void {
         persistRuntimeState();
       }
     },
-    onTabClick: (logicalTabId) => {
+    onTabClick: (logicalTabId: number) => {
       // Request tab switch via session coordinator
       sessionCoordinator?.switchToLogicalTab(logicalTabId);
     },
@@ -11733,6 +11905,8 @@ function createRuntime(cfg: RoverInit): void {
   syncTranscriptUi(runtimeState?.uiMessages || [], runtimeState?.timeline || []);
   replayTransientStatusFromRuntime(runtimeState);
   syncQuestionPromptFromWorkerState();
+  syncOrchestratorConversationList();
+  void refreshConversationHistoryList('boot').catch(() => undefined);
   if (runtimeState?.executionMode) {
     ui.setExecutionMode(runtimeState.executionMode, {
       localLogicalTabId: sessionCoordinator?.getLocalLogicalTabId(),
@@ -11814,6 +11988,16 @@ export function boot(cfg: RoverInit): RoverInstance {
   runtimeStateStore = createRuntimeStateStore<PersistedRuntimeState>();
   runtimeId = getOrCreateRuntimeId(cfg.siteId);
   resolvedVisitorId = resolveVisitorId(cfg);
+  conversationHistoryStore = createConversationHistoryStore({
+    siteId: cfg.siteId,
+    visitorId: resolvedVisitorId || runtimeId,
+  });
+  conversationHistoryClient = new RoverConversationHistoryClient({
+    apiBase: cfg.apiBase,
+    getSessionToken: () => getRuntimeSessionToken(currentConfig),
+    siteId: cfg.siteId,
+    visitorId: resolvedVisitorId || runtimeId,
+  });
   resolvedVisitor = cfg.visitor || loadPersistedVisitor(cfg.siteId);
   greetingDismissed = false;
   greetingShownInSession = false;

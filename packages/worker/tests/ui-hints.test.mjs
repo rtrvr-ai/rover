@@ -27,6 +27,35 @@ test('tool ui narration is sanitized and stripped from executable args', () => {
     }),
     undefined,
   );
+  assert.equal(
+    extractActionNarrationFromArgs({
+      option_value: 'XL',
+      ui: { narration: 'Selecting XL for the size filter.' },
+    }),
+    undefined,
+  );
+  assert.equal(
+    extractActionNarrationFromArgs({
+      file_name: 'tax-return.pdf',
+      file_url: 'https://files.example.com/private/tax-return.pdf',
+      ui: { narration: 'Uploading tax-return.pdf to the form.' },
+    }),
+    undefined,
+  );
+  assert.equal(
+    extractActionNarrationFromArgs({
+      path: '/Users/customer/private.pdf',
+      ui: { narration: 'Uploading /Users/customer/private.pdf now.' },
+    }),
+    undefined,
+  );
+  assert.equal(
+    extractActionNarrationFromArgs({
+      query: 'winter jackets',
+      ui: { narration: 'Searching for products now.' },
+    }),
+    'Searching for products now.',
+  );
 
   const stripped = stripToolUiHintsFromArgs(args);
   assert.deepEqual(stripped, {

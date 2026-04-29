@@ -56,6 +56,7 @@ export type RoverRuntimeContext = {
   uiHints?: {
     actionNarration?: boolean;
     runKind?: 'guide' | 'task';
+    narrationLanguage?: string;
   };
 };
 

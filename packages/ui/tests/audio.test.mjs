@@ -5,8 +5,10 @@ import {
   buildMutePreferenceStorageKey,
   buildNarrationPreferenceStorageKey,
   isMascotSoundEnabled,
+  parseNarrationVisitorPreference,
   resolveMascotMutePreference,
   resolveNarrationPreference,
+  serializeNarrationVisitorPreference,
 } from '../dist/audio.js';
 
 test('mascot audio stays disabled unless the owner explicitly enables it', () => {
@@ -103,4 +105,46 @@ test('stored narration preference overrides the owner default mode', () => {
   assert.equal(disabledByVisitor.storageKey, 'rover:narration:site_123');
   assert.equal(enabledByVisitor.enabled, true);
   assert.equal(enabledByVisitor.source, 'visitor');
+});
+
+test('narration preference preserves visitor language and voice choices', () => {
+  const stored = serializeNarrationVisitorPreference({
+    enabled: false,
+    language: 'fr-fr',
+    voiceURI: 'com.example.voice',
+    voicePreference: 'natural',
+  });
+  const parsed = parseNarrationVisitorPreference(stored);
+  const resolved = resolveNarrationPreference({
+    siteId: 'site_123',
+    enabled: true,
+    defaultOn: true,
+    readStored: () => stored,
+  });
+
+  assert.deepEqual(parsed, {
+    source: 'visitor',
+    value: {
+      enabled: false,
+      language: 'fr-FR',
+      voiceURI: 'com.example.voice',
+      voicePreference: 'natural',
+    },
+  });
+  assert.equal(resolved.enabled, false);
+  assert.equal(resolved.source, 'visitor');
+  assert.equal(resolved.language, 'fr-FR');
+  assert.equal(resolved.voiceURI, 'com.example.voice');
+  assert.equal(resolved.voicePreference, 'natural');
+});
+
+test('legacy boolean narration preferences still migrate cleanly', () => {
+  assert.deepEqual(parseNarrationVisitorPreference('true'), {
+    source: 'visitor',
+    value: { enabled: true },
+  });
+  assert.deepEqual(parseNarrationVisitorPreference('false'), {
+    source: 'visitor',
+    value: { enabled: false },
+  });
 });

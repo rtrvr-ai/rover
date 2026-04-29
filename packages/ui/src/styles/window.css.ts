@@ -1188,6 +1188,7 @@ export const windowStyles = `
       gap: 8px;
       overflow-x: auto;
       scrollbar-width: none;
+      padding: 0 2px;
     }
     .attachmentStrip.visible {
       display: flex;
@@ -1199,13 +1200,41 @@ export const windowStyles = `
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      padding: 7px 10px;
-      border-radius: 999px;
+      min-width: 0;
+      max-width: 260px;
+      padding: 7px 8px 7px 10px;
+      border-radius: 12px;
       border: 1px solid rgba(15, 23, 42, 0.08);
       background: rgba(255,255,255,0.82);
       color: var(--rv-text);
       font-size: 11.5px;
       white-space: nowrap;
+    }
+    .attachmentPillIcon {
+      width: 18px;
+      height: 18px;
+      border-radius: 6px;
+      display: grid;
+      place-items: center;
+      background: var(--rv-accent-soft);
+      color: var(--rv-accent);
+      flex: 0 0 auto;
+      font-size: 12px;
+    }
+    .attachmentPillBody {
+      display: grid;
+      gap: 1px;
+      min-width: 0;
+    }
+    .attachmentPillLabel {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+    .attachmentPillMeta {
+      font-size: 10px;
+      color: var(--rv-text-tertiary);
+      line-height: 1.1;
     }
     .attachmentPillRemove {
       width: 18px;
@@ -1218,6 +1247,30 @@ export const windowStyles = `
       display: grid;
       place-items: center;
       padding: 0;
+      flex: 0 0 auto;
+    }
+    .attachmentBtn {
+      position: relative;
+    }
+    .attachmentCountBadge {
+      position: absolute;
+      top: -3px;
+      right: -3px;
+      display: none;
+      min-width: 16px;
+      height: 16px;
+      padding: 0 4px;
+      border-radius: 999px;
+      background: var(--rv-accent);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 750;
+      line-height: 16px;
+      text-align: center;
+      box-shadow: 0 0 0 2px rgba(255,255,255,0.96);
+    }
+    .attachmentBtn.hasAttachments .attachmentCountBadge {
+      display: block;
     }
 
     .composerStatus {
@@ -1235,6 +1288,100 @@ export const windowStyles = `
 
     .composerStatus.error {
       color: #c2410c;
+    }
+
+    .voiceSettingsPanel {
+      position: fixed;
+      top: 96px;
+      right: 96px;
+      z-index: 2147483646;
+      width: min(340px, calc(100vw - 32px));
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+      padding: 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      background: rgba(255, 255, 255, 0.96);
+      box-shadow: 0 18px 50px rgba(15, 23, 42, 0.16);
+      color: var(--rv-text);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      pointer-events: auto;
+    }
+    .voiceSettingsPanel.visible { display: flex; }
+    .voiceSettingsHeader {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .voiceSettingsTitle {
+      font-size: 15px;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+    .voiceSettingsClose {
+      width: 30px;
+      height: 30px;
+      border: none;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.06);
+      color: var(--rv-text-secondary);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+    }
+    .voiceSettingsBody {
+      display: grid;
+      gap: 12px;
+    }
+    .voiceSettingsToggle {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .voiceSettingsField {
+      display: grid;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--rv-text-secondary);
+    }
+    .voiceSettingsField select {
+      height: 38px;
+      border-radius: 10px;
+      border: 1px solid rgba(15, 23, 42, 0.12);
+      background: #fff;
+      color: var(--rv-text);
+      padding: 0 10px;
+      font: inherit;
+      font-size: 13px;
+      outline: none;
+    }
+    .voiceSettingsField select:focus {
+      border-color: var(--rv-accent);
+      box-shadow: 0 0 0 3px var(--rv-accent-soft);
+    }
+    .voiceSettingsHint {
+      margin: 0;
+      color: var(--rv-text-tertiary);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .voiceSettingsActions {
+      display: flex;
+      justify-content: flex-end;
+    }
+    .voiceSettingsReset {
+      border: 1px solid rgba(15, 23, 42, 0.1);
+      background: rgba(255, 255, 255, 0.86);
+      color: var(--rv-text-secondary);
+      border-radius: 999px;
+      padding: 7px 11px;
+      font-size: 12px;
+      cursor: pointer;
     }
 
     /* ── Panel Grabber ── */
@@ -1745,6 +1892,12 @@ export const windowStyles = `
       flex: 1;
       overflow-y: auto;
       padding: 8px;
+    }
+    .conversationEmpty {
+      padding: 18px 10px;
+      color: var(--rv-text-tertiary);
+      font-size: 12.5px;
+      text-align: center;
     }
     .conversationItem {
       display: flex;
