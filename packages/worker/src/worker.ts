@@ -221,10 +221,12 @@ function resolveActionNarrationHints(
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
+    narrationLanguage?: string;
   },
 ): {
   actionNarration?: boolean;
   runKind?: 'guide' | 'task';
+  narrationLanguage?: string;
 } {
   if (options?.narrationEnabledForRun === false) return {};
   const narration = config?.ui?.experience?.audio?.narration;
@@ -237,13 +239,25 @@ function resolveActionNarrationHints(
     return {
       runKind,
       actionNarration: true,
+      ...(normalizeNarrationLanguage(options.narrationLanguage) ? { narrationLanguage: normalizeNarrationLanguage(options.narrationLanguage) } : {}),
     };
   }
   if (defaultMode === 'off') return {};
   return {
     runKind,
     ...(defaultMode === 'always' || runKind === 'guide' ? { actionNarration: true } : {}),
+    ...(normalizeNarrationLanguage(options?.narrationLanguage) ? { narrationLanguage: normalizeNarrationLanguage(options?.narrationLanguage) } : {}),
   };
+}
+
+function normalizeNarrationLanguage(input: unknown): string | undefined {
+  const value = String(input || '').trim();
+  if (!value || value.length > 32) return undefined;
+  if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8}){0,3}$/.test(value)) return undefined;
+  return value
+    .split('-')
+    .map((part, index) => index === 0 ? part.toLowerCase() : part.toUpperCase())
+    .join('-');
 }
 
 function hostFromUrl(url?: string): string | undefined {
@@ -268,6 +282,7 @@ function buildRoverRuntimeContext(params: {
   taskBoundaryId?: string;
   actionNarration?: boolean;
   runKind?: 'guide' | 'task';
+  narrationLanguage?: string;
 }): RoverRuntimeContext {
   const externalTabs = params.tabs
     .map((tab, index): RoverRuntimeContextExternalTab | undefined => {
@@ -310,11 +325,12 @@ function buildRoverRuntimeContext(params: {
     ...(site ? { site } : {}),
     tabIdContract: 'tree_index_mapped_by_tab_order',
     taskBoundaryId: params.taskBoundaryId,
-    ...(params.actionNarration || params.runKind
+    ...(params.actionNarration || params.runKind || params.narrationLanguage
       ? {
           uiHints: {
             ...(params.actionNarration ? { actionNarration: true } : {}),
             ...(params.runKind ? { runKind: params.runKind } : {}),
+            ...(params.narrationLanguage ? { narrationLanguage: params.narrationLanguage } : {}),
           },
         }
       : {}),
@@ -2132,6 +2148,7 @@ async function handleUserMessage(
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
+    narrationLanguage?: string;
   },
 ): Promise<RunOutcome> {
   if (!config) throw new Error('Worker not initialized');
@@ -2286,6 +2303,7 @@ async function handleUserMessage(
     narrationEnabledForRun: options?.narrationEnabledForRun,
     narrationPreferenceSource: options?.narrationPreferenceSource,
     narrationRunKind: options?.narrationRunKind,
+    narrationLanguage: options?.narrationLanguage,
   });
   activeActionNarration = narrationHints.actionNarration === true;
   const runtimeContext = buildRoverRuntimeContext({
@@ -2768,6 +2786,7 @@ async function runUserMessage(
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
+    narrationLanguage?: string;
   },
 ): Promise<void> {
   const runId = meta?.runId || crypto.randomUUID();
@@ -2838,6 +2857,7 @@ async function runUserMessage(
       narrationEnabledForRun: meta?.narrationEnabledForRun,
       narrationPreferenceSource: meta?.narrationPreferenceSource,
       narrationRunKind: meta?.narrationRunKind,
+      narrationLanguage: meta?.narrationLanguage,
     }));
     const isTerminalOutcome =
       outcome.terminalState === 'completed'
@@ -3051,6 +3071,7 @@ async function runUserMessage(
         narrationEnabledForRun: typeof data.narrationEnabledForRun === 'boolean' ? data.narrationEnabledForRun : undefined,
         narrationPreferenceSource: data.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
         narrationRunKind: data.narrationRunKind === 'guide' || data.narrationRunKind === 'task' ? data.narrationRunKind : undefined,
+        narrationLanguage: normalizeNarrationLanguage(data.narrationLanguage),
       });
       return;
     }
@@ -3069,6 +3090,7 @@ async function runUserMessage(
         narrationEnabledForRun: typeof data.narrationEnabledForRun === 'boolean' ? data.narrationEnabledForRun : undefined,
         narrationPreferenceSource: data.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
         narrationRunKind: data.narrationRunKind === 'guide' || data.narrationRunKind === 'task' ? data.narrationRunKind : undefined,
+        narrationLanguage: normalizeNarrationLanguage(data.narrationLanguage),
       });
       return;
     }

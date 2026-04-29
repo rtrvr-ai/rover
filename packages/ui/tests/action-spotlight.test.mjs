@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   createActionSpotlightSystem,
+  deriveElementLabel,
   isActionCueForLocalTab,
 } from '../dist/components/action-spotlight.js';
 
@@ -177,6 +178,137 @@ test('action spotlight renders a ring for a visible local target', (t) => {
   assert.equal(ring.style.display, 'block');
   assert.equal(ring.style.width, '92px');
   assert.match(ring.style.transform, /translate3d\(94px, 114px, 0\)/);
+});
+
+test('action spotlight does not render when the cue has no target ids', (t) => {
+  const env = installFakeDom();
+  t.after(() => env.restore());
+  const system = createSystem(env, {
+    resolveElement: () => new FakeElement('BUTTON'),
+    getLocalLogicalTabId: () => 1,
+  });
+
+  system.addEvent({
+    kind: 'tool_start',
+    title: 'Running goto_url',
+    actionCue: { kind: 'navigate', logicalTabId: 1 },
+  });
+
+  assert.equal(system.overlay.children.length, 0);
+  assert.equal(env.rafCallbacks.size, 0);
+});
+
+test('action spotlight renders copy paste and upload chip verbs', (t) => {
+  const env = installFakeDom();
+  t.after(() => env.restore());
+
+  for (const [kind, expected] of [
+    ['copy', 'Copy Coupon'],
+    ['paste', 'Paste Email'],
+    ['upload', 'Upload Resume'],
+  ]) {
+    const target = new FakeElement('BUTTON', { left: 100, top: 120, right: 180, bottom: 160, width: 80, height: 40 });
+    target.ownerDocument = env.document;
+    target.textContent = expected.split(' ')[1];
+    const system = createSystem(env, {
+      resolveElement: () => target,
+      getLocalLogicalTabId: () => 1,
+    });
+
+    system.addEvent({
+      kind: 'tool_start',
+      title: `Running ${kind}`,
+      actionCue: { kind, primaryElementId: 3, elementIds: [3], logicalTabId: 1 },
+    });
+    assert.equal(env.runNextFrame(), true);
+    const chip = system.overlay.children.find(child => child.className === 'actionSpotlightChip');
+    assert.equal(chip.textContent, expected);
+    system.destroy();
+  }
+});
+
+test('action spotlight swallows label and local-tab resolver errors', (t) => {
+  const env = installFakeDom();
+  t.after(() => env.restore());
+  const throwingLabelTarget = new FakeElement('BUTTON', { left: 100, top: 120, right: 180, bottom: 160, width: 80, height: 40 });
+  throwingLabelTarget.ownerDocument = env.document;
+  throwingLabelTarget.getAttribute = () => {
+    throw new Error('label failed');
+  };
+  assert.equal(deriveElementLabel(throwingLabelTarget), '');
+
+  const system = createSystem(env, {
+    resolveElement: () => throwingLabelTarget,
+    getLocalLogicalTabId: () => {
+      throw new Error('tab lookup failed');
+    },
+  });
+
+  assert.doesNotThrow(() => system.addEvent({
+    kind: 'tool_start',
+    title: 'Running click_element',
+    actionCue: { kind: 'click', primaryElementId: 3, elementIds: [3], logicalTabId: 1 },
+  }));
+  assert.equal(system.overlay.children.length, 0);
+});
+
+test('action spotlight isolates bad target geometry and still renders valid targets', (t) => {
+  const env = installFakeDom();
+  t.after(() => env.restore());
+  const badTarget = new FakeElement('BUTTON');
+  badTarget.ownerDocument = env.document;
+  badTarget.getBoundingClientRect = () => {
+    throw new Error('rect failed');
+  };
+  const goodTarget = new FakeElement('BUTTON', { left: 220, top: 140, right: 300, bottom: 180, width: 80, height: 40 });
+  goodTarget.ownerDocument = env.document;
+  goodTarget.textContent = 'Continue';
+  const system = createSystem(env, {
+    resolveElement: (id) => (id === 1 ? badTarget : goodTarget),
+    getLocalLogicalTabId: () => 1,
+  });
+
+  system.addEvent({
+    kind: 'tool_start',
+    title: 'Running drag_and_drop',
+    actionCue: { kind: 'drag', primaryElementId: 1, elementIds: [1, 2], logicalTabId: 1 },
+  });
+
+  assert.doesNotThrow(() => env.runNextFrame());
+  const visibleRing = system.overlay.children.find(child => child.className === 'actionSpotlightRing' && child.style.display === 'block');
+  assert.equal(visibleRing?.style.width, '92px');
+  assert.match(visibleRing?.style.transform || '', /translate3d\(214px, 134px, 0\)/);
+});
+
+test('action spotlight clear and fade methods swallow DOM removal errors', (t) => {
+  const env = installFakeDom();
+  t.after(() => env.restore());
+  const target = new FakeElement('BUTTON', { left: 100, top: 120, right: 180, bottom: 160, width: 80, height: 40 });
+  target.ownerDocument = env.document;
+  const system = createSystem(env, {
+    resolveElement: () => target,
+    getLocalLogicalTabId: () => 1,
+  });
+
+  system.addEvent({
+    kind: 'tool_start',
+    title: 'Running click_element',
+    actionCue: { kind: 'click', primaryElementId: 3, elementIds: [3], logicalTabId: 1 },
+  });
+  env.runNextFrame();
+  for (const child of system.overlay.children) {
+    child.remove = () => {
+      throw new Error('remove failed');
+    };
+  }
+
+  assert.doesNotThrow(() => system.fadeEvent({
+    kind: 'tool_result',
+    title: 'Done',
+    actionCue: { kind: 'click', primaryElementId: 3, elementIds: [3], logicalTabId: 1 },
+  }));
+  assert.doesNotThrow(() => system.clearAll());
+  assert.doesNotThrow(() => system.destroy());
 });
 
 test('action spotlight suppresses other-tab targets', (t) => {

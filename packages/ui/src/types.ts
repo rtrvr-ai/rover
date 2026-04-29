@@ -57,6 +57,9 @@ export type RoverActionCueKind =
   | 'press'
   | 'scroll'
   | 'drag'
+  | 'copy'
+  | 'paste'
+  | 'upload'
   | 'navigate'
   | 'read'
   | 'wait'
@@ -267,9 +270,10 @@ export type MountOptions = {
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
+    narrationLanguage?: string;
   }) => void;
   onVoiceTelemetry?: (event: RoverVoiceTelemetryEvent, payload?: Record<string, unknown>) => void;
-  onNarrationPreferenceChange?: (enabled: boolean, available: boolean, source: 'default' | 'visitor') => void;
+  onNarrationPreferenceChange?: (enabled: boolean, available: boolean, source: 'default' | 'visitor', language?: string) => void;
   onOpen?: () => void;
   onClose?: () => void;
   onRequestControl?: () => void;
@@ -310,6 +314,7 @@ export type MountOptions = {
   // Multi-conversation callbacks
   onSwitchConversation?: (conversationId: string) => void;
   onDeleteConversation?: (conversationId: string) => void;
+  onOpenConversations?: () => void;
   onResumeTask?: (taskId: string) => void;
   onCancelPausedTask?: (taskId: string) => void;
   onTabClick?: (logicalTabId: number) => void;

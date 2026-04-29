@@ -86,6 +86,7 @@ export const inputBarStyles = `
 
     /* Composer overrides when inside bar */
     .inputBarComposerSlot .composer {
+      position: relative;
       flex: 1;
       width: 100%;
       min-width: 0;
@@ -129,10 +130,36 @@ export const inputBarStyles = `
       border-radius: 999px;
     }
     .inputBarComposerSlot .attachmentStrip {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: calc(100% + 10px);
       display: none;
+      max-height: 74px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding: 0 2px;
+      z-index: 3;
     }
-    .inputBarComposerSlot .composerStatus {
-      display: none;
+    .inputBarComposerSlot .attachmentStrip.visible {
+      display: flex;
+    }
+    .inputBarComposerSlot .attachmentPill {
+      background: rgba(255,255,255,0.94);
+      box-shadow: 0 8px 24px rgba(15,23,42,0.12);
+      max-width: min(220px, 72vw);
+    }
+    .inputBarComposerSlot .composerStatus.visible {
+      position: absolute;
+      left: 10px;
+      right: 10px;
+      bottom: calc(100% + 88px);
+      display: block;
+      padding: 6px 9px;
+      border-radius: 10px;
+      background: rgba(255,255,255,0.94);
+      box-shadow: 0 8px 24px rgba(15,23,42,0.1);
+      z-index: 4;
     }
     .inputBarComposerSlot .attachmentBtn {
       height: 36px;

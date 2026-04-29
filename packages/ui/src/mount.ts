@@ -75,8 +75,13 @@ import {
   SHORTCUTS_RENDER_LIMIT,
   GREETING_REVEAL_DELAY_MS,
 } from './config.js';
-import { resolveMascotMutePreference, resolveNarrationPreference } from './audio.js';
-import { composeVoiceDraft, deriveActionCueText, formatTime, renderMessageBlock, summarizeTaskText } from './dom-helpers.js';
+import {
+  resolveMascotMutePreference,
+  resolveNarrationPreference,
+  serializeNarrationVisitorPreference,
+  type NarrationVisitorPreference,
+} from './audio.js';
+import { composeVoiceDraft, formatTime, renderMessageBlock, summarizeTaskText } from './dom-helpers.js';
 import { createStateMachine } from './state-machine.js';
 import { morphSeedToWindow, morphWindowToSeed, morphBarToSeed, morphSeedToBar, prefersReducedMotion, scaleDuration } from './animation.js';
 import { createSeed } from './components/seed.js';
@@ -86,13 +91,15 @@ import { createComposer } from './components/composer.js';
 import { createShortcuts } from './components/shortcuts.js';
 import { createWindow } from './components/window.js';
 import { createBrowserVoiceTranscriber, createAudioAnalyser } from './voice.js';
-import { createWebSpeechNarrator } from './narrator.js';
+import { createWebSpeechNarrator, listWebSpeechVoiceOptions } from './narrator.js';
 import { createInputBar } from './components/input-bar.js';
 import { createCommandBar } from './components/command-bar.js';
+import { createVoiceSettingsPanel } from './components/voice-settings.js';
 import { createParticleSystem } from './components/particles.js';
 import { createFilamentSystem } from './components/filaments.js';
 import { createLiveStack } from './components/live-stack.js';
 import { createActionSpotlightSystem, deriveElementLabel, isActionCueForLocalTab } from './components/action-spotlight.js';
+import { createTimelineNarrationScheduler } from './timeline-narration.js';
 
 // Style imports
 import { baseStyles } from './styles/base.css.js';
@@ -176,17 +183,34 @@ export function mountWidget(opts: MountOptions): RoverUi {
   }
 
   // ── Step Narration ──
-  const createNarratorForExperience = (config: RoverExperienceConfig) => createWebSpeechNarrator({
-    lang: config.audio?.narration?.language,
+  const getBrowserLanguage = (): string => (
+    String(document.documentElement?.lang || navigator.language || 'en-US').trim() || 'en-US'
+  );
+  const getOwnerNarrationLanguage = (config: RoverExperienceConfig): string => (
+    String(config.audio?.narration?.language || getBrowserLanguage() || 'en-US').trim() || 'en-US'
+  );
+  const resolveEffectiveNarrationLanguage = (): string => (
+    String(narrationPreference.language || getOwnerNarrationLanguage(experience) || 'en-US').trim() || 'en-US'
+  );
+  const resolveEffectiveVoiceLanguage = (): string => (
+    String(narrationPreference.language || experience.audio?.narration?.language || voiceConfig?.language || getBrowserLanguage() || 'en-US').trim() || 'en-US'
+  );
+  const resolveEffectiveNarrationVoicePreference = (): 'auto' | 'system' | 'natural' => (
+    narrationPreference.voicePreference || experience.audio?.narration?.voicePreference || 'auto'
+  );
+  const createNarratorForExperience = (
+    config: RoverExperienceConfig,
+    preference?: Pick<NarrationVisitorPreference, 'language' | 'voiceURI' | 'voicePreference'>,
+  ) => createWebSpeechNarrator({
+    lang: preference?.language || config.audio?.narration?.language || getBrowserLanguage(),
     rate: config.audio?.narration?.rate,
-    voicePreference: config.audio?.narration?.voicePreference,
+    voiceURI: preference?.voiceURI,
+    voicePreference: preference?.voicePreference || config.audio?.narration?.voicePreference,
   });
   const getNarrationDefaultOn = (config: RoverExperienceConfig): boolean => (
     config.audio?.narration?.defaultMode !== 'off'
   );
 
-  let narrator = createNarratorForExperience(experience);
-  let narrationUnlocked = false;
   let narrationPreference = resolveNarrationPreference({
     siteId: opts.siteId,
     host: window.location.hostname,
@@ -200,21 +224,23 @@ export function mountWidget(opts: MountOptions): RoverUi {
       }
     },
   });
-  let narrationConfigSignature = JSON.stringify(experience.audio?.narration || {});
+  let narrator = createNarratorForExperience(experience, narrationPreference);
+  let narrationUnlocked = false;
+  let narrationConfigSignature = JSON.stringify({
+    owner: experience.audio?.narration || {},
+    visitor: {
+      language: narrationPreference.language,
+      voiceURI: narrationPreference.voiceURI,
+      voicePreference: narrationPreference.voicePreference,
+    },
+  });
   let allowNarrationToggle = narrationPreference.supportedByConfig && narrator.isSupported();
   let isNarrationEnabled = allowNarrationToggle && narrationPreference.enabled;
+  let voiceSettingsPanel: ReturnType<typeof createVoiceSettingsPanel> | null = null;
   narrator.setEnabled(isNarrationEnabled);
-  opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source);
+  opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source, resolveEffectiveNarrationLanguage());
 
   function syncNarrationConfig(): void {
-    const nextSignature = JSON.stringify(experience.audio?.narration || {});
-    if (nextSignature !== narrationConfigSignature) {
-      narrationConfigSignature = nextSignature;
-      narrator.dispose();
-      narrator = createNarratorForExperience(experience);
-      if (narrationUnlocked) narrator.unlock();
-    }
-
     narrationPreference = resolveNarrationPreference({
       siteId: opts.siteId,
       host: window.location.hostname,
@@ -228,12 +254,29 @@ export function mountWidget(opts: MountOptions): RoverUi {
         }
       },
     });
+    const nextSignature = JSON.stringify({
+      owner: experience.audio?.narration || {},
+      visitor: {
+        language: narrationPreference.language,
+        voiceURI: narrationPreference.voiceURI,
+        voicePreference: narrationPreference.voicePreference,
+      },
+    });
+    if (nextSignature !== narrationConfigSignature) {
+      narrationConfigSignature = nextSignature;
+      cancelNarration();
+      narrator.dispose();
+      narrator = createNarratorForExperience(experience, narrationPreference);
+      if (narrationUnlocked) narrator.unlock();
+    }
     allowNarrationToggle = narrationPreference.supportedByConfig && narrator.isSupported();
     isNarrationEnabled = allowNarrationToggle && narrationPreference.enabled;
+    if (!isNarrationEnabled) timelineNarrationScheduler.cancel();
     narrator.setEnabled(isNarrationEnabled);
     headerComp?.setNarrationAvailable(allowNarrationToggle);
     headerComp?.setNarrationEnabled(isNarrationEnabled);
-    opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source);
+    voiceSettingsPanel?.update(buildVoiceSettingsState());
+    opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source, resolveEffectiveNarrationLanguage());
   }
 
   function unlockNarration(): void {
@@ -246,7 +289,14 @@ export function mountWidget(opts: MountOptions): RoverUi {
     if (!allowNarrationToggle) return;
     isNarrationEnabled = !isNarrationEnabled;
     if (narrationPreference.storageKey) {
-      try { localStorage.setItem(narrationPreference.storageKey, String(isNarrationEnabled)); } catch { /* ignore */ }
+      try {
+        localStorage.setItem(narrationPreference.storageKey, serializeNarrationVisitorPreference({
+          enabled: isNarrationEnabled,
+          language: narrationPreference.language,
+          voiceURI: narrationPreference.voiceURI,
+          voicePreference: narrationPreference.voicePreference,
+        }));
+      } catch { /* ignore */ }
     }
     narrationPreference = {
       ...narrationPreference,
@@ -256,36 +306,42 @@ export function mountWidget(opts: MountOptions): RoverUi {
     narrator.setEnabled(isNarrationEnabled);
     if (isNarrationEnabled) unlockNarration();
     headerComp.setNarrationEnabled(isNarrationEnabled);
-    opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source);
+    voiceSettingsPanel?.update(buildVoiceSettingsState());
+    opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source, resolveEffectiveNarrationLanguage());
   }
 
   function buildNarrationSendMeta(runKind?: RoverShortcut['runKind']): {
     narrationEnabledForRun: boolean;
     narrationPreferenceSource: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
+    narrationLanguage?: string;
   } {
     return {
       narrationEnabledForRun: allowNarrationToggle && isNarrationEnabled,
       narrationPreferenceSource: narrationPreference.source,
       ...(runKind === 'guide' || runKind === 'task' ? { narrationRunKind: runKind } : {}),
+      narrationLanguage: resolveEffectiveNarrationLanguage(),
     };
   }
 
-  function normalizeNarrationText(input: unknown): string {
-    return sanitizeText(String(input || '').replace(/\s+/g, ' ')).slice(0, 220).trim();
+  const timelineNarrationScheduler = createTimelineNarrationScheduler({
+    isEnabled: () => allowNarrationToggle && isNarrationEnabled,
+    speak: (text) => narrator.speak(text),
+  });
+
+  function scheduleTimelineNarration(event: RoverTimelineEvent): void {
+    timelineNarrationScheduler.scheduleEvent(event);
   }
 
-  function maybeSpeakTimelineEvent(event: RoverTimelineEvent): void {
-    if (!allowNarrationToggle || !isNarrationEnabled) return;
-    if (event.kind === 'tool_result') return;
-    const explicit = normalizeNarrationText(event.narration);
-    const fallback = !explicit && event.kind === 'tool_start' && event.narrationActive === true
-      ? normalizeNarrationText(deriveActionCueText(event))
-      : '';
-    const text = explicit || fallback;
-    if (!text) return;
-    narrator.speak(text);
+  function cancelNarration(): void {
+    timelineNarrationScheduler.cancel();
+    narrator.cancel();
   }
+
+  function handleNarrationVisibilityChange(): void {
+    if (document.hidden) cancelNarration();
+  }
+  try { document.addEventListener('visibilitychange', handleNarrationVisibilityChange); } catch { /* narration is best-effort */ }
 
   // ── Seed Component ──
   const seed = createSeed({
@@ -312,7 +368,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let drawerOpen = false;
   function toggleConversations(): void {
     drawerOpen = !drawerOpen;
-    if (drawerOpen) win.conversationDrawer.classList.add('open');
+    if (drawerOpen) {
+      win.conversationDrawer.classList.add('open');
+      opts.onOpenConversations?.();
+    }
     else win.conversationDrawer.classList.remove('open');
   }
   win.conversationDrawerCloseBtn.addEventListener('click', () => {
@@ -324,6 +383,68 @@ export function mountWidget(opts: MountOptions): RoverUi {
     win.conversationDrawer.classList.remove('open');
     opts.onNewTask?.();
   });
+
+  function buildVoiceSettingsState() {
+    return {
+      available: allowNarrationToggle,
+      enabled: isNarrationEnabled,
+      siteLanguage: getOwnerNarrationLanguage(experience),
+      effectiveLanguage: resolveEffectiveNarrationLanguage(),
+      language: narrationPreference.language,
+      voiceURI: narrationPreference.voiceURI,
+      voicePreference: resolveEffectiveNarrationVoicePreference(),
+      voices: listWebSpeechVoiceOptions(),
+    };
+  }
+
+  function persistNarrationVisitorPreference(patch: NarrationVisitorPreference): void {
+    if (!narrationPreference.storageKey) return;
+    const next: NarrationVisitorPreference = {
+      enabled: isNarrationEnabled,
+      language: narrationPreference.language,
+      voiceURI: narrationPreference.voiceURI,
+      voicePreference: narrationPreference.voicePreference,
+      ...patch,
+    };
+    if (patch.language === undefined && Object.prototype.hasOwnProperty.call(patch, 'language')) delete next.language;
+    if (patch.voiceURI === undefined && Object.prototype.hasOwnProperty.call(patch, 'voiceURI')) delete next.voiceURI;
+    if (patch.voicePreference === undefined && Object.prototype.hasOwnProperty.call(patch, 'voicePreference')) delete next.voicePreference;
+    try {
+      localStorage.setItem(narrationPreference.storageKey, serializeNarrationVisitorPreference(next));
+    } catch {
+      // Visitor voice preferences are best-effort.
+    }
+  }
+
+  function applyNarrationVisitorPreference(patch: NarrationVisitorPreference): void {
+    if (!allowNarrationToggle && patch.enabled !== false) return;
+    persistNarrationVisitorPreference(patch);
+    syncNarrationConfig();
+    if (typeof patch.enabled === 'boolean') {
+      isNarrationEnabled = allowNarrationToggle && patch.enabled;
+      narrator.setEnabled(isNarrationEnabled);
+      headerComp?.setNarrationEnabled(isNarrationEnabled);
+    }
+    if (isNarrationEnabled) unlockNarration();
+    voiceSettingsPanel?.update(buildVoiceSettingsState());
+  }
+
+  function resetNarrationVisitorPreference(): void {
+    if (narrationPreference.storageKey) {
+      try { localStorage.removeItem(narrationPreference.storageKey); } catch { /* ignore */ }
+    }
+    syncNarrationConfig();
+  }
+
+  function openVoiceSettings(): void {
+    if (!voiceSettingsPanel) return;
+    voiceSettingsPanel.update(buildVoiceSettingsState());
+    voiceSettingsPanel.setOpen(true);
+  }
+
+  function closeVoiceSettings(): void {
+    voiceSettingsPanel?.setOpen(false);
+  }
 
   // ── Header Component ──
   let isRunning = false;
@@ -376,8 +497,18 @@ export function mountWidget(opts: MountOptions): RoverUi {
     onRequestControl: () => opts.onRequestControl?.(),
     onToggleMute: toggleMute,
     onToggleNarration: toggleNarration,
+    onOpenVoiceSettings: openVoiceSettings,
     onToggleConversations: toggleConversations,
   });
+
+  voiceSettingsPanel = createVoiceSettingsPanel({
+    agentName,
+    onChange: applyNarrationVisitorPreference,
+    onReset: resetNarrationVisitorPreference,
+    onClose: closeVoiceSettings,
+  });
+  voiceSettingsPanel.update(buildVoiceSettingsState());
+  voiceSettingsPanel.setOpen(false);
 
   // ── Feed Component ──
   const feedComp = createFeed({
@@ -510,20 +641,24 @@ export function mountWidget(opts: MountOptions): RoverUi {
   }
 
   function withResolvedActionCueLabel(event: RoverTimelineEvent): RoverTimelineEvent {
-    const cue = event.actionCue;
-    if (!cue || cue.targetLabel) return event;
-    if (!isActionCueForLocalTab(event, opts.getLocalLogicalTabId?.())) return event;
-    const primaryElementId = cue.primaryElementId ?? event.elementId;
-    const el = primaryElementId != null ? opts.resolveElement?.(primaryElementId) : null;
-    const targetLabel = deriveElementLabel(el);
-    if (!targetLabel) return event;
-    return {
-      ...event,
-      actionCue: {
-        ...cue,
-        targetLabel,
-      },
-    };
+    try {
+      const cue = event.actionCue;
+      if (!cue || cue.targetLabel) return event;
+      if (!isActionCueForLocalTab(event, opts.getLocalLogicalTabId?.())) return event;
+      const primaryElementId = cue.primaryElementId ?? event.elementId;
+      const el = primaryElementId != null ? opts.resolveElement?.(primaryElementId) : null;
+      const targetLabel = deriveElementLabel(el);
+      if (!targetLabel) return event;
+      return {
+        ...event,
+        actionCue: {
+          ...cue,
+          targetLabel,
+        },
+      };
+    } catch {
+      return event;
+    }
   }
 
   // ── Voice State ──
@@ -670,7 +805,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     voiceRestartTimer = setTimeout(() => {
       voiceRestartTimer = null;
       if (voiceState !== 'listening' || voiceHasSpeech || voiceStopReason) return;
-      voiceProvider.start({ language: voiceConfig?.language });
+      voiceProvider.start({ language: resolveEffectiveVoiceLanguage() });
     }, VOICE_RESTART_DELAY_MS);
   }
 
@@ -692,7 +827,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     voiceDraftBase = composerComp.textarea.value; voiceFinalTranscript = ''; voiceInterimTranscript = '';
     resetVoiceSessionState(); voiceSessionStartedAt = Date.now(); voiceStartTelemetryPending = true;
     scheduleVoiceGraceTimeout(); scheduleVoiceSessionTimeout(); syncVoiceUi();
-    voiceProvider.start({ language: voiceConfig.language });
+    voiceProvider.start({ language: resolveEffectiveVoiceLanguage() });
     // Voice-active visual
     seed.root.classList.add('voice-active');
     audioAnalyser.start();
@@ -1007,6 +1142,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   wrapper.appendChild(liveStack.root);
   wrapper.appendChild(inputBar.root);
   wrapper.appendChild(commandBar.root);
+  if (voiceSettingsPanel) wrapper.appendChild(voiceSettingsPanel.root);
   shadow.appendChild(wrapper);
 
   // ── Keyboard Shortcuts ──
@@ -1165,7 +1301,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   }
 
   function closeFromBar(): void {
-    narrator.cancel();
+    cancelNarration();
     userMinimized = false;
     const state = stateMachine.getState();
 
@@ -1246,7 +1382,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   }
 
   function close(): void {
-    narrator.cancel();
+    cancelNarration();
     if (stateMachine.getState() === 'bar') { closeFromBar(); return; }
     headerComp.closeOverflow();
     if (!win.panel.classList.contains('open')) { opts.onClose?.(); return; }
@@ -1392,11 +1528,11 @@ export function mountWidget(opts: MountOptions): RoverUi {
       liveStack.hide();
       inputBar.setRunning(false);
       composerComp.setSendAsStop(false, () => {});
-      narrator.cancel();
+      cancelNarration();
 
       waitingForFirstModelSignal = false;
       filamentSystem.clearAll();
-      actionSpotlightSystem.clearAll();
+      try { actionSpotlightSystem.clearAll(); } catch { /* spotlight is best-effort */ }
 
       // Open canvas with results if task completed and panel isn't already open
       if (wasRunning && stateMachine.getState() !== 'window') {
@@ -1502,14 +1638,16 @@ export function mountWidget(opts: MountOptions): RoverUi {
     // Re-evaluate motion config flags
     if (experience.motion?.particles === false) particleSystem.setMode('idle');
     if (experience.motion?.filaments === false) filamentSystem.clearAll();
-    if (experience.motion?.actionSpotlight === false) actionSpotlightSystem.clearAll();
+    if (experience.motion?.actionSpotlight === false) {
+      try { actionSpotlightSystem.clearAll(); } catch { /* spotlight is best-effort */ }
+    }
     if (experience.motion?.palimpsest === false) win.backdrop.classList.remove('palimpsest');
     syncNarrationConfig();
     syncTaskStage(); renderArtifactStage(); seed.applyPosition();
   }
 
   function show(): void { win.applyLayout(); wrapper.style.display = ''; seed.applyPosition(); syncShellState(); }
-  function hide(): void { narrator.cancel(); close(); wrapper.style.display = 'none'; syncShellState(); }
+  function hide(): void { cancelNarration(); close(); wrapper.style.display = 'none'; syncShellState(); }
 
   function destroy(): void {
     stateMachine.destroy();
@@ -1520,13 +1658,15 @@ export function mountWidget(opts: MountOptions): RoverUi {
     liveStack.destroy();
     particleSystem.destroy();
     filamentSystem.destroy();
-    actionSpotlightSystem.destroy();
+    try { actionSpotlightSystem.destroy(); } catch { /* spotlight is best-effort */ }
+    timelineNarrationScheduler.dispose();
     narrator.dispose();
     audioAnalyser.dispose();
     window.removeEventListener('resize', handleViewportMutation);
     window.removeEventListener('orientationchange', handleViewportMutation);
     window.visualViewport?.removeEventListener('resize', handleViewportMutation);
     window.visualViewport?.removeEventListener('scroll', handleViewportMutation);
+    try { document.removeEventListener('visibilitychange', handleNarrationVisibilityChange); } catch { /* narration is best-effort */ }
     document.removeEventListener('keydown', globalToggleHandler);
     fontStyle.remove(); host.remove();
   }
@@ -1543,8 +1683,15 @@ export function mountWidget(opts: MountOptions): RoverUi {
     win.conversationPillLabel.textContent = active
       ? summarizeTaskText(active.summary, { maxLength: 44, maxUrlLength: 32 }) || 'Current task'
       : 'Current task';
-    win.conversationPill.style.display = conversations.length > 1 ? 'flex' : 'none';
+    win.conversationPill.style.display = 'flex';
     win.conversationList.innerHTML = '';
+    if (!conversations.length) {
+      const empty = document.createElement('div');
+      empty.className = 'conversationEmpty';
+      empty.textContent = 'No previous chats yet.';
+      win.conversationList.appendChild(empty);
+      return;
+    }
     for (const conv of conversations) {
       const item = document.createElement('div');
       item.className = `conversationItem ${conv.status}${conv.isActive ? ' active' : ''}`;
@@ -1624,13 +1771,14 @@ export function mountWidget(opts: MountOptions): RoverUi {
       const displayEvent = withResolvedActionCueLabel(event);
       feedComp.addTimelineEvent(displayEvent);
       liveStack.addTimelineEvent(displayEvent);
-      maybeSpeakTimelineEvent(displayEvent);
       captureArtifactFromBlocks(displayEvent.detailBlocks);
+      let shouldScheduleTimelineNarration = true;
       if (displayEvent.kind === 'thought' && isRunning && waitingForFirstModelSignal) { waitingForFirstModelSignal = false; syncProcessingIndicator(); }
       if ((displayEvent.title || '').toLowerCase() === 'run completed') {
         feedComp.setTraceExpanded(false, experience.stream?.maxVisibleLiveCards);
-        actionSpotlightSystem.clearAll();
-        narrator.cancel();
+        try { actionSpotlightSystem.clearAll(); } catch { /* spotlight is best-effort */ }
+        cancelNarration();
+        shouldScheduleTimelineNarration = false;
       }
       const status = displayEvent.status || (displayEvent.kind === 'error' ? 'error' : displayEvent.kind === 'tool_result' ? 'success' : 'pending');
       if (status === 'error') stateMachine.setMood('error', 2200);
@@ -1646,34 +1794,47 @@ export function mountWidget(opts: MountOptions): RoverUi {
       if (displayEvent.kind === 'tool_start') {
         toolStartCount++;
         updateTideProgress();
-        const isLocalActionTarget = isActionCueForLocalTab(displayEvent, opts.getLocalLogicalTabId?.());
+        let isLocalActionTarget = true;
+        try { isLocalActionTarget = isActionCueForLocalTab(displayEvent, opts.getLocalLogicalTabId?.()); } catch { isLocalActionTarget = false; }
         if (isLocalActionTarget && experience.motion?.actionSpotlight !== false) {
-          actionSpotlightSystem.addEvent(displayEvent);
+          try { actionSpotlightSystem.addEvent(displayEvent); } catch { /* spotlight is best-effort */ }
         }
+        scheduleTimelineNarration(displayEvent);
+        shouldScheduleTimelineNarration = false;
         // Filaments + ripples
         if (isLocalActionTarget && displayEvent.elementId != null && experience.motion?.filaments !== false) {
-          filamentSystem.addTarget(displayEvent.elementId, displayEvent.toolName);
-          const el = opts.resolveElement?.(displayEvent.elementId);
-          if (el) {
-            const rect = el.getBoundingClientRect();
-            if (!prefersReducedMotion()) spawnToolRipple(rect.left + rect.width / 2, rect.top + rect.height / 2);
-            // Update palimpsest center
-            wrapper.style.setProperty('--rv-palimpsest-x', `${rect.left + rect.width / 2}px`);
-            wrapper.style.setProperty('--rv-palimpsest-y', `${rect.top + rect.height / 2}px`);
-          } else {
-            // Ripple from panel edge center
-            const panelRect = win.panel.getBoundingClientRect();
-            if (!prefersReducedMotion()) spawnToolRipple(panelRect.left, panelRect.top + panelRect.height / 2);
+          try {
+            filamentSystem.addTarget(displayEvent.elementId, displayEvent.toolName);
+            const el = opts.resolveElement?.(displayEvent.elementId);
+            if (el) {
+              const rect = el.getBoundingClientRect();
+              if (!prefersReducedMotion()) spawnToolRipple(rect.left + rect.width / 2, rect.top + rect.height / 2);
+              // Update palimpsest center
+              wrapper.style.setProperty('--rv-palimpsest-x', `${rect.left + rect.width / 2}px`);
+              wrapper.style.setProperty('--rv-palimpsest-y', `${rect.top + rect.height / 2}px`);
+            } else {
+              // Ripple from panel edge center
+              const panelRect = win.panel.getBoundingClientRect();
+              if (!prefersReducedMotion()) spawnToolRipple(panelRect.left, panelRect.top + panelRect.height / 2);
+            }
+          } catch {
+            // Visual connective tissue is best-effort.
           }
         }
       }
       if (displayEvent.kind === 'tool_result') {
         toolResultCount++;
         updateTideProgress();
-        const isLocalActionTarget = isActionCueForLocalTab(displayEvent, opts.getLocalLogicalTabId?.());
-        if (isLocalActionTarget) actionSpotlightSystem.fadeEvent(displayEvent);
-        if (isLocalActionTarget && displayEvent.elementId != null) filamentSystem.fadeTarget(displayEvent.elementId);
+        let isLocalActionTarget = true;
+        try { isLocalActionTarget = isActionCueForLocalTab(displayEvent, opts.getLocalLogicalTabId?.()); } catch { isLocalActionTarget = false; }
+        if (isLocalActionTarget) {
+          try { actionSpotlightSystem.fadeEvent(displayEvent); } catch { /* spotlight is best-effort */ }
+        }
+        if (isLocalActionTarget && displayEvent.elementId != null) {
+          try { filamentSystem.fadeTarget(displayEvent.elementId); } catch { /* best-effort */ }
+        }
       }
+      if (shouldScheduleTimelineNarration) scheduleTimelineNarration(displayEvent);
 
       // Pulse badge step count
       const stepCount = feedComp.traceOrder.length;
@@ -1681,11 +1842,11 @@ export function mountWidget(opts: MountOptions): RoverUi {
       syncPulseState();
     },
     clearTimeline: () => {
-      narrator.cancel();
+      cancelNarration();
       feedComp.clearTimeline(); liveStack.clear(); latestArtifactBlock = null; artifactExpanded = false; renderArtifactStage(); syncTaskStage();
       toolStartCount = 0; toolResultCount = 0; updateTideProgress();
       filamentSystem.clearAll();
-      actionSpotlightSystem.clearAll();
+      try { actionSpotlightSystem.clearAll(); } catch { /* spotlight is best-effort */ }
       pulseBadge.textContent = '0';
     },
     setTaskSuggestion,

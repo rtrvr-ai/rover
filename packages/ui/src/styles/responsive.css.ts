@@ -115,6 +115,15 @@ export const responsiveStyles = `
         width: 100%;
       }
 
+      .voiceSettingsPanel {
+        top: auto;
+        right: calc(12px + env(safe-area-inset-right));
+        left: calc(12px + env(safe-area-inset-left));
+        bottom: calc(18px + env(safe-area-inset-bottom));
+        width: auto;
+        border-radius: 20px;
+      }
+
       /* V3 mobile overrides */
       .launcher {
         max-width: calc(100vw - 20px);

@@ -23,6 +23,7 @@ export type HeaderOptions = {
   onRequestControl: () => void;
   onToggleMute: () => void;
   onToggleNarration: () => void;
+  onOpenVoiceSettings: () => void;
   onToggleConversations: () => void;
 };
 
@@ -188,6 +189,15 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
     opts.onToggleNarration();
   });
 
+  const menuVoiceSettings = document.createElement('button');
+  menuVoiceSettings.type = 'button';
+  menuVoiceSettings.className = 'menuItem';
+  menuVoiceSettings.textContent = 'Voice & language';
+  menuVoiceSettings.addEventListener('click', () => {
+    closeOverflow();
+    opts.onOpenVoiceSettings();
+  });
+
   const menuTakeControl = document.createElement('button');
   menuTakeControl.type = 'button';
   menuTakeControl.className = 'menuItem';
@@ -200,6 +210,7 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
   overflowMenu.appendChild(menuDivider);
   overflowMenu.appendChild(menuMuteToggle);
   overflowMenu.appendChild(menuNarrationToggle);
+  overflowMenu.appendChild(menuVoiceSettings);
   overflowMenu.appendChild(menuTakeControl);
 
   if (!opts.showTaskControls) {
@@ -221,6 +232,7 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
       : '<svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5Z"></path><path d="m19 9-4 4"></path><path d="m15 9 4 4"></path></svg>';
     menuNarrationToggle.textContent = narrationEnabled ? 'Turn off narration' : 'Turn on narration';
     menuNarrationToggle.style.display = narrationAvailable ? '' : 'none';
+    menuVoiceSettings.style.display = narrationAvailable ? '' : 'none';
   }
 
   function syncOverflowVisibility(): void {

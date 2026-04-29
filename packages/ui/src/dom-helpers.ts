@@ -167,6 +167,9 @@ export function deriveActionCueText(event: RoverTimelineEvent): string | undefin
     press: { active: 'Pressing', done: 'Pressed' },
     scroll: { active: 'Scrolling to', done: 'Scrolled to' },
     drag: { active: 'Dragging', done: 'Dragged' },
+    copy: { active: 'Copying', done: 'Copied' },
+    paste: { active: 'Pasting into', done: 'Pasted into' },
+    upload: { active: 'Uploading to', done: 'Uploaded to' },
     navigate: { active: 'Navigating', done: 'Navigated' },
     read: { active: 'Reading', done: 'Read' },
     wait: { active: 'Waiting for', done: 'Waited for' },
@@ -179,6 +182,9 @@ export function deriveActionCueText(event: RoverTimelineEvent): string | undefin
   if (cue.kind === 'clear') return inProgress ? 'Clearing field' : 'Cleared field';
   if (cue.kind === 'scroll') return inProgress ? 'Scrolling page' : 'Scrolled page';
   if (cue.kind === 'drag') return inProgress ? 'Dragging item' : 'Dragged item';
+  if (cue.kind === 'copy') return inProgress ? 'Copying text' : 'Copied text';
+  if (cue.kind === 'paste') return inProgress ? 'Pasting text' : 'Pasted text';
+  if (cue.kind === 'upload') return inProgress ? 'Uploading file' : 'Uploaded file';
   if (cue.kind === 'navigate') return inProgress ? 'Navigating' : 'Navigated';
   if (cue.kind === 'read') return inProgress ? 'Reading page' : 'Read page';
   if (cue.kind === 'wait') return inProgress ? 'Waiting' : 'Waited';
@@ -191,7 +197,17 @@ export function deriveTimelineStatusLabel(event: RoverTimelineEvent): string {
   const toolCandidate = extractToolCandidate(event);
   const title = sanitizeText(event.title || '');
   if (kind === 'tool_start') {
-    if (cueKind === 'click' || cueKind === 'press' || cueKind === 'hover' || cueKind === 'focus' || cueKind === 'clear' || cueKind === 'drag') return 'Acting';
+    if (
+      cueKind === 'click'
+      || cueKind === 'press'
+      || cueKind === 'hover'
+      || cueKind === 'focus'
+      || cueKind === 'clear'
+      || cueKind === 'drag'
+      || cueKind === 'copy'
+      || cueKind === 'paste'
+      || cueKind === 'upload'
+    ) return 'Acting';
     if (cueKind === 'navigate') return 'Navigating';
     if (cueKind === 'type' || cueKind === 'select') return 'Inputting';
     if (cueKind === 'read') return 'Reading';
