@@ -222,6 +222,7 @@ export function deriveTimelineStatusLabel(event: RoverTimelineEvent): string {
     return 'Executing';
   }
   if (kind === 'tool_result') return 'Completed';
+  if (kind === 'assistant_response') return event.responseKind === 'final' ? 'Answer' : 'Update';
   if (kind === 'thought') return 'Thinking';
   if (kind === 'plan') return 'Planning';
   if (kind === 'status') {

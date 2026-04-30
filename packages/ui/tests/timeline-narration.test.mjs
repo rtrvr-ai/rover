@@ -172,6 +172,13 @@ test('timeline narration text uses explicit narration and no-target action fallb
   }), '');
 
   assert.equal(resolveTimelineNarrationText({
+    kind: 'assistant_response',
+    title: 'Final response',
+    responseKind: 'final',
+    narration: 'I finished and posted the result.',
+  }), 'I finished and posted the result.');
+
+  assert.equal(resolveTimelineNarrationText({
     kind: 'tool_start',
     title: 'Broken narration',
     get narration() {
@@ -190,7 +197,7 @@ test('timeline narration scheduler defers speech and queues rapid action steps',
     cancelFrame: id => frameQueue.cancel(id),
   });
 
-  scheduler.scheduleEvent({ kind: 'tool_start', title: 'A', narration: 'Opening checkout.' });
+  scheduler.scheduleEvent({ kind: 'tool_start', title: 'A', narration: 'Opening checkout.', actionCue: { kind: 'click', targetLabel: 'Checkout' } });
   assert.equal(spoken.length, 0);
   assert.equal(frameQueue.size, 1);
 
@@ -253,6 +260,68 @@ test('timeline narration scheduler caps burst backlog with a catch-up cue', () =
     'Checking optional field 4.',
     'Checking optional field 5.',
   ]);
+});
+
+test('timeline narration scheduler queues assistant responses without speaking tool results', () => {
+  const frameQueue = createFrameQueue();
+  const spoken = [];
+  const scheduler = createTimelineNarrationScheduler({
+    isEnabled: () => true,
+    speak: (text, options) => spoken.push({ text, options }),
+    scheduleFrame: callback => frameQueue.schedule(callback),
+    cancelFrame: id => frameQueue.cancel(id),
+  });
+
+  scheduler.scheduleEvent({
+    kind: 'tool_start',
+    title: 'A',
+    narration: 'Opening checkout.',
+    actionCue: { kind: 'click', targetLabel: 'Checkout' },
+  });
+  scheduler.scheduleEvent({ kind: 'tool_result', title: 'A completed', narration: 'Raw tool result should stay silent.' });
+  scheduler.scheduleEvent({
+    kind: 'assistant_response',
+    title: 'Final response',
+    responseKind: 'final',
+    narration: 'I finished and posted the result.',
+  });
+
+  frameQueue.runAll();
+  assert.deepEqual(spoken.map(item => item.text), [
+    'Opening checkout.',
+    'I finished and posted the result.',
+  ]);
+  assert.deepEqual(spoken.map(item => item.options.mode), ['append', 'append']);
+  assert.equal(spoken[1].options.priority, 'high');
+});
+
+test('final response narration prunes stale low-priority backlog', () => {
+  const frameQueue = createFrameQueue();
+  const spoken = [];
+  const scheduler = createTimelineNarrationScheduler({
+    isEnabled: () => true,
+    speak: (text, options) => spoken.push({ text, options }),
+    scheduleFrame: callback => frameQueue.schedule(callback),
+    cancelFrame: id => frameQueue.cancel(id),
+  });
+
+  for (let i = 0; i < 4; i += 1) {
+    scheduler.scheduleEvent({
+      kind: 'tool_start',
+      title: `Hover ${i}`,
+      narration: `Checking optional field ${i}.`,
+      actionCue: { kind: 'hover', targetLabel: `Optional ${i}` },
+    });
+  }
+  scheduler.scheduleEvent({
+    kind: 'assistant_response',
+    title: 'Final response',
+    responseKind: 'final',
+    narration: 'The answer is ready.',
+  });
+
+  frameQueue.runAll();
+  assert.deepEqual(spoken.map(item => item.text), ['The answer is ready.']);
 });
 
 test('timeline narration cancel prevents pending speech', () => {

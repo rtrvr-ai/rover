@@ -24,6 +24,7 @@ type PendingNarration = {
   mode: 'append' | 'replace';
   key?: string;
   priority: 'low' | 'normal' | 'high';
+  source?: 'action' | 'response' | 'status';
   catchUp?: boolean;
   estimatedMs: number;
 };
@@ -65,10 +66,18 @@ function getNarrationPriority(event: RoverTimelineEvent): PendingNarration['prio
   return 'normal';
 }
 
+function getResponseNarrationPriority(event: RoverTimelineEvent): PendingNarration['priority'] {
+  if (event.responseKind === 'final' || event.responseKind === 'question' || event.responseKind === 'error') return 'high';
+  return 'normal';
+}
+
 export function resolveTimelineNarrationText(event: RoverTimelineEvent): string {
   try {
     if (event.kind === 'tool_result') return '';
     const explicit = normalizeNarrationText(event.narration);
+    if (event.kind === 'assistant_response') {
+      return explicit || (event.narrationActive === true ? normalizeNarrationText(event.detail) : '');
+    }
     const fallback = !explicit && event.kind === 'tool_start' && event.narrationActive === true
       ? normalizeNarrationText(deriveActionCueText(event))
       : '';
@@ -145,11 +154,14 @@ export function createTimelineNarrationScheduler(
     ) {
       const lowPriorityIndex = pendingNarrations.findIndex(item => item.priority === 'low' && !item.catchUp);
       const normalPriorityIndex = pendingNarrations.findIndex(item => item.priority === 'normal' && !item.catchUp);
+      const nonHighPriorityIndex = pendingNarrations.findIndex(item => item.priority !== 'high' && !item.catchUp);
       const dropIndex = lowPriorityIndex >= 0
         ? lowPriorityIndex
         : normalPriorityIndex >= 0
           ? normalPriorityIndex
-          : pendingNarrations.findIndex(item => !item.catchUp);
+          : nonHighPriorityIndex >= 0
+            ? nonHighPriorityIndex
+            : pendingNarrations.findIndex(item => !item.catchUp);
       if (dropIndex < 0) break;
       pendingNarrations.splice(dropIndex, 1);
       dropped = true;
@@ -161,6 +173,7 @@ export function createTimelineNarrationScheduler(
           mode: 'append',
           key: 'catch-up',
           priority: 'normal',
+          source: 'action',
           catchUp: true,
           estimatedMs: estimateSpeechMs(CATCH_UP_NARRATION),
         },
@@ -220,6 +233,38 @@ export function createTimelineNarrationScheduler(
       mode: 'append',
       key,
       priority,
+      source: 'action',
+      estimatedMs: estimateSpeechMs(text),
+    });
+    enforcePendingBudget();
+    scheduleFlush();
+  }
+
+  function appendResponseNarration(event: RoverTimelineEvent, text: string): void {
+    const responseKind = event.responseKind || 'checkpoint';
+    const priority = getResponseNarrationPriority(event);
+    if (priority === 'high') {
+      pendingNarrations = pendingNarrations.filter(item => item.priority !== 'low' && !item.catchUp);
+    }
+    const key = `response:${responseKind}:${text.toLowerCase().slice(0, 140)}`;
+    const duplicateIndex = pendingNarrations.findIndex(item => item.key === key);
+    if (duplicateIndex >= 0) {
+      pendingNarrations[duplicateIndex] = {
+        ...pendingNarrations[duplicateIndex],
+        text,
+        priority,
+        estimatedMs: estimateSpeechMs(text),
+      };
+      enforcePendingBudget();
+      scheduleFlush();
+      return;
+    }
+    pendingNarrations.push({
+      text,
+      mode: 'append',
+      key,
+      priority,
+      source: 'response',
       estimatedMs: estimateSpeechMs(text),
     });
     enforcePendingBudget();
@@ -236,6 +281,10 @@ export function createTimelineNarrationScheduler(
           appendActionNarration(event, text);
           return;
         }
+        if (event.kind === 'assistant_response') {
+          appendResponseNarration(event, text);
+          return;
+        }
         if (pendingNarrations.some(item => item.mode === 'append')) return;
         cancelPending();
         pendingNarrations = [{
@@ -243,6 +292,7 @@ export function createTimelineNarrationScheduler(
           mode: 'replace',
           key: `status:${event.kind}:${event.title}`,
           priority: 'normal',
+          source: 'status',
           estimatedMs: estimateSpeechMs(text),
         }];
         scheduleFlush();

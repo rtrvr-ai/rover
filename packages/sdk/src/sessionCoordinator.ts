@@ -1,4 +1,4 @@
-import type { RoverActionCue, RoverMessageBlock } from '@rover/ui';
+import type { RoverActionCue, RoverMessageBlock, RoverTimelineEvent } from '@rover/ui';
 import { ROVER_V2_PERSIST_CAPS } from '@rover/shared';
 
 export type SharedRole = 'controller' | 'observer';
@@ -38,6 +38,7 @@ export type SharedTimelineEvent = {
   toolName?: string;
   narration?: string;
   narrationActive?: boolean;
+  responseKind?: RoverTimelineEvent['responseKind'];
   actionCue?: RoverActionCue;
 };
 
@@ -380,6 +381,9 @@ function sanitizeSharedTimeline(input: unknown): SharedTimelineEvent[] {
       toolName: typeof event?.toolName === 'string' ? event.toolName.slice(0, 120) : undefined,
       narration: typeof event?.narration === 'string' ? event.narration.replace(/\s+/g, ' ').trim().slice(0, 220) || undefined : undefined,
       narrationActive: typeof event?.narrationActive === 'boolean' ? event.narrationActive : undefined,
+      responseKind: event?.responseKind === 'checkpoint' || event?.responseKind === 'final' || event?.responseKind === 'question' || event?.responseKind === 'error'
+        ? event.responseKind
+        : undefined,
       actionCue: sanitizeActionCue(event?.actionCue),
     }))
     .filter((event: SharedTimelineEvent) => !!event.title);
@@ -1447,6 +1451,9 @@ export class SessionCoordinator {
       toolName: typeof event.toolName === 'string' ? event.toolName.slice(0, 120) : undefined,
       narration: typeof event.narration === 'string' ? event.narration.replace(/\s+/g, ' ').trim().slice(0, 220) || undefined : undefined,
       narrationActive: typeof event.narrationActive === 'boolean' ? event.narrationActive : undefined,
+      responseKind: event.responseKind === 'checkpoint' || event.responseKind === 'final' || event.responseKind === 'question' || event.responseKind === 'error'
+        ? event.responseKind
+        : undefined,
       actionCue: sanitizeActionCue(event.actionCue),
     };
 

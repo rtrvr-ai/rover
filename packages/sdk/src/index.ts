@@ -4164,6 +4164,7 @@ function sanitizeTimelineEvents(input: any): PersistedTimelineEvent[] {
       toolName: typeof event?.toolName === 'string' ? truncateText(event.toolName, 120) : undefined,
       narration: typeof event?.narration === 'string' ? truncateText(event.narration.replace(/\s+/g, ' ').trim(), 220) : undefined,
       narrationActive: typeof event?.narrationActive === 'boolean' ? event.narrationActive : undefined,
+      responseKind: normalizeAssistantResponseKind(event?.responseKind),
       actionCue: sanitizeActionCue(event?.actionCue),
     });
   }
@@ -5718,6 +5719,7 @@ function appendTimelineEvent(
     toolName: event.toolName,
     narration: event.narration,
     narrationActive: event.narrationActive,
+    responseKind: event.responseKind,
     actionCue: event.actionCue,
   };
 
@@ -5745,6 +5747,7 @@ function appendTimelineEvent(
       toolName: timelineEvent.toolName,
       narration: timelineEvent.narration,
       narrationActive: timelineEvent.narrationActive,
+      responseKind: timelineEvent.responseKind,
       actionCue: timelineEvent.actionCue,
     });
   }
@@ -5866,6 +5869,7 @@ function replayTimeline(events: PersistedTimelineEvent[]): void {
         toolName: event.toolName,
         narration: event.narration,
         narrationActive: event.narrationActive,
+        responseKind: event.responseKind,
         actionCue: event.actionCue,
         publishShared: false,
       },
@@ -8109,6 +8113,19 @@ function finalizeSuccessfulRunTimeline(runId?: string): void {
 
 }
 
+function normalizeAssistantResponseKind(value: unknown): RoverTimelineEvent['responseKind'] | undefined {
+  return value === 'checkpoint' || value === 'final' || value === 'question' || value === 'error'
+    ? value
+    : undefined;
+}
+
+function assistantResponseTitle(kind: RoverTimelineEvent['responseKind'] | undefined): string {
+  if (kind === 'question') return 'Needs input';
+  if (kind === 'error') return 'Response error';
+  if (kind === 'final') return 'Final response';
+  return 'Step response';
+}
+
 function handleWorkerMessage(msg: any): void {
   if (!msg || typeof msg !== 'object') return;
   if (typeof msg.executionId === 'string' && msg.executionId.trim() && !msg.runId) {
@@ -8119,21 +8136,48 @@ function handleWorkerMessage(msg: any): void {
   if (msg.type === 'assistant') {
     const blocks = sanitizeMessageBlocks(msg.blocks);
     const text = String(msg.text || deriveTextFromMessageBlocks(blocks) || '');
+    const responseKind = normalizeAssistantResponseKind(msg.responseKind);
     if (typeof msg.runId === 'string' && msg.runId) {
       latestAssistantByRunId.set(msg.runId, text);
       evictOldestMapEntry(latestAssistantByRunId, MAX_ASSISTANT_BY_RUN_ENTRIES);
     }
     appendUiMessage('assistant', text, true, { blocks });
     appendTimelineEvent({
-      kind: 'tool_result',
-      title: 'Assistant update',
+      kind: responseKind ? 'assistant_response' : 'tool_result',
+      title: responseKind ? assistantResponseTitle(responseKind) : 'Assistant update',
       detail: text,
       detailBlocks: blocks,
-      status: 'success',
+      status: responseKind === 'error' ? 'error' : 'success',
+      narration: typeof msg.narration === 'string' ? msg.narration : undefined,
+      narrationActive: typeof msg.narrationActive === 'boolean' ? msg.narrationActive : undefined,
+      responseKind,
     });
     enqueueLaunchRuntimeEvent('assistant_output', {
       text,
       blocks,
+    }, {
+      immediate: true,
+      runId: typeof msg.runId === 'string' ? msg.runId : undefined,
+    });
+    return;
+  }
+
+  if (msg.type === 'assistant_response') {
+    const responseKind = normalizeAssistantResponseKind(msg.responseKind) || 'checkpoint';
+    const text = String(msg.text || msg.narration || '').trim();
+    appendTimelineEvent({
+      kind: 'assistant_response',
+      title: typeof msg.title === 'string' && msg.title.trim() ? msg.title.trim() : assistantResponseTitle(responseKind),
+      detail: text || undefined,
+      status: responseKind === 'error' ? 'error' : responseKind === 'final' ? 'success' : 'info',
+      narration: typeof msg.narration === 'string' ? msg.narration : undefined,
+      narrationActive: typeof msg.narrationActive === 'boolean' ? msg.narrationActive : undefined,
+      responseKind,
+    });
+    enqueueLaunchRuntimeEvent('assistant_output', {
+      text,
+      responseKind,
+      narration: typeof msg.narration === 'string' ? msg.narration : undefined,
     }, {
       immediate: true,
       runId: typeof msg.runId === 'string' ? msg.runId : undefined,
