@@ -1,4 +1,5 @@
 import type { ToolOutput } from '@rover/shared/lib/types/index.js';
+import type { AssistantResponseKind } from './responseNarration.js';
 
 export type RuntimeToolOutput =
   | ToolOutput
@@ -206,6 +207,15 @@ export type ToolExecutionResult = {
   warnings?: string[];
 };
 
+export type AssistantCheckpointPayload = {
+  responseKind?: AssistantResponseKind;
+  sourceToolName?: string;
+  text?: string;
+  narration?: string;
+  output?: RuntimeToolOutput;
+  error?: string;
+};
+
 export type PlannerResponse = {
   response: {
     plan?: { toolName: string; parameters: Record<string, any>; thought?: string; serverResult?: { success: boolean; data?: any; error?: string } };
@@ -246,6 +256,7 @@ export type MessageOrchestratorOptions = {
   taskRouting?: TaskRoutingConfig;
   onPrevStepsUpdate?: (steps: PreviousSteps[]) => void;
   onPlannerHistoryUpdate?: (steps: PlannerPreviousStep[]) => void;
+  onAssistantCheckpoint?: (payload: AssistantCheckpointPayload) => void;
 };
 
 export type PlannerOptions = {
@@ -270,6 +281,7 @@ export type PlannerOptions = {
   lastToolPreviousSteps?: PreviousSteps[];
   onPrevStepsUpdate?: (steps: PreviousSteps[]) => void;
   onPlannerHistoryUpdate?: (steps: PlannerPreviousStep[]) => void;
+  onAssistantCheckpoint?: (payload: AssistantCheckpointPayload) => void;
 };
 
 export type ToolExecutionContext = {

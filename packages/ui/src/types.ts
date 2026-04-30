@@ -41,10 +41,13 @@ export type RoverTimelineKind =
   | 'plan'
   | 'tool_start'
   | 'tool_result'
+  | 'assistant_response'
   | 'thought'
   | 'info'
   | 'debug'
   | 'error';
+
+export type RoverAssistantResponseKind = 'checkpoint' | 'final' | 'question' | 'error';
 
 export type RoverExecutionMode = 'controller' | 'observer';
 
@@ -88,6 +91,7 @@ export type RoverTimelineEvent = {
   toolName?: string;
   narration?: string;
   narrationActive?: boolean;
+  responseKind?: RoverAssistantResponseKind;
   actionCue?: RoverActionCue;
 };
 

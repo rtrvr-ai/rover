@@ -243,10 +243,20 @@ export async function executePlannerWithTools(
         onPrevStepsUpdate: options.onPrevStepsUpdate,
       });
 
-    accumulatedToolResults.push(toolResult);
-    if (toolResult.prevSteps?.length) {
-      lastToolPreviousSteps = toolResult.prevSteps;
-      options.onPrevStepsUpdate?.(toolResult.prevSteps);
+    const toolResultWithName: ToolExecutionResult = {
+      ...toolResult,
+      toolName: toolResult.toolName || plan.toolName,
+    };
+    accumulatedToolResults.push(toolResultWithName);
+    options.onAssistantCheckpoint?.({
+      responseKind: toolResultWithName.error ? 'error' : 'checkpoint',
+      sourceToolName: plan.toolName,
+      output: toolResultWithName.output ?? toolResultWithName.generatedContentRef ?? toolResultWithName.schemaHeaderSheetInfo,
+      error: toolResultWithName.error,
+    });
+    if (toolResultWithName.prevSteps?.length) {
+      lastToolPreviousSteps = toolResultWithName.prevSteps;
+      options.onPrevStepsUpdate?.(toolResultWithName.prevSteps);
     }
 
     const logicalPlannerArgs = extractLogicalFunctionCallArgs(plannerResponse.modelParts);
@@ -261,17 +271,17 @@ export async function executePlannerWithTools(
           ? applyLogicalTabIds({ ...plan.parameters }, logicalArgs)
           : plan.parameters,
       },
-      textOutput: toolResult.output,
-      error: toolResult.error,
-      schemaHeaderSheetInfo: toolResult.schemaHeaderSheetInfo,
-      generatedContentRef: toolResult.generatedContentRef,
-      lastToolPreviousSteps: toolResult.prevSteps,
+      textOutput: toolResultWithName.output,
+      error: toolResultWithName.error,
+      schemaHeaderSheetInfo: toolResultWithName.schemaHeaderSheetInfo,
+      generatedContentRef: toolResultWithName.generatedContentRef,
+      lastToolPreviousSteps: toolResultWithName.prevSteps,
     };
 
     currentPreviousSteps = [...currentPreviousSteps, completedStep];
     options.onPlannerHistoryUpdate?.(currentPreviousSteps);
 
-    if (toolResult.error && !plannerResponse.taskComplete) {
+    if (toolResultWithName.error && !plannerResponse.taskComplete) {
       return executePlannerWithTools(
         {
           ...options,
@@ -284,7 +294,7 @@ export async function executePlannerWithTools(
       );
     }
 
-    if (!plannerResponse.taskComplete && !toolResult.error) {
+    if (!plannerResponse.taskComplete && !toolResultWithName.error) {
       return executePlannerWithTools(
         {
           ...options,

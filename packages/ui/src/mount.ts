@@ -11,6 +11,7 @@ export type {
   RoverAskUserQuestion,
   RoverAskUserAnswerMeta,
   RoverTimelineKind,
+  RoverAssistantResponseKind,
   RoverExecutionMode,
   RoverActionCueKind,
   RoverActionCue,
