@@ -43,6 +43,7 @@ export type RoverTimelineKind =
   | 'tool_result'
   | 'thought'
   | 'info'
+  | 'debug'
   | 'error';
 
 export type RoverExecutionMode = 'controller' | 'observer';

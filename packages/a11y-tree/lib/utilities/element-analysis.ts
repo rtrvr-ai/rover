@@ -4,6 +4,7 @@
 
 import { annotateSemanticNode, getAnnotationLabelForElement } from './annotation-manager.js';
 import { analyzeElementContext, validateEventHandlerIndices } from './element-utilities.js';
+import { getOrAssignNodeId } from './id-generators.js';
 import { getOrCreateSemanticNode, getOrCreateTextualNode } from './node-repository.js';
 import { determineSemanticRole } from './semantic-role-analyzer.js';
 import { extractRelevantStyles } from './style-extractor.js';
@@ -31,8 +32,10 @@ import {
   SvgStructureAttribute,
   DOMNodeCategory,
   ElementNamespace,
+  FrameRealmCapabilityCode,
+  FrameRealmUnavailableCode,
 } from '../types/aria-types.js';
-import type { SemanticNode, SemanticRole, ElementProcessingContext } from '../types/aria-types.js';
+import type { SemanticNode, SemanticRole, ElementProcessingContext, FrameRealmTuple } from '../types/aria-types.js';
 import {
   cssEscapeSafe,
   CURRENT_TREE_OPTS,
@@ -418,6 +421,7 @@ export function buildSemanticNodeFromElement({
   excludeLabels,
   isFrameNode,
   frameContentNodes,
+  frameRealm,
   elementContext,
 }: {
   targetElement: HTMLElement;
@@ -426,6 +430,7 @@ export function buildSemanticNodeFromElement({
   excludeLabels?: boolean;
   isFrameNode?: boolean;
   frameContentNodes?: number[];
+  frameRealm?: FrameRealmTuple;
   elementContext?: ElementProcessingContext; // NEW
 }): SemanticNode {
   const semanticNode: SemanticNode = {
@@ -607,6 +612,9 @@ export function buildSemanticNodeFromElement({
   }
   if (frameContentNodes && frameContentNodes.length > 0) {
     semanticNode.frameContent = frameContentNodes;
+  }
+  if (frameRealm) {
+    semanticNode.frameRealm = frameRealm;
   }
 
   // Input-specific properties
@@ -929,6 +937,12 @@ function extractSVGAttributes(svg: SVGElement): Record<number, string | null> {
 }
 
 // NEW: build semantic subtree for iframe contents without calling extractSemanticTree
+type FrameContentBuildResult = {
+  nodes: number[];
+  capability?: FrameRealmCapabilityCode;
+  unavailable?: FrameRealmUnavailableCode;
+};
+
 function buildFrameContentNodes({
   frameElement,
   parentDisabled,
@@ -937,26 +951,34 @@ function buildFrameContentNodes({
   frameElement: HTMLIFrameElement;
   parentDisabled?: boolean;
   excludeLabels?: boolean;
-}): number[] {
-  if (!CURRENT_TREE_OPTS.includeFrameContents) return [];
+}): FrameContentBuildResult {
+  if (!CURRENT_TREE_OPTS.includeFrameContents) return { nodes: [] };
 
-  let frameBody: HTMLElement | null | undefined = null;
+  let frameRoot: HTMLElement | null = null;
 
   try {
     // Same-origin only; cross-origin will throw
-    frameBody = frameElement.contentWindow?.document?.body || null;
+    const frameDocument = frameElement.contentDocument || frameElement.contentWindow?.document || null;
+    frameRoot = (frameDocument?.body || frameDocument?.documentElement || null) as HTMLElement | null;
   } catch {
-    // Cross-origin iframe – we can't inspect its DOM
-    return [];
+    return {
+      nodes: [],
+      capability: FrameRealmCapabilityCode.Opaque,
+      unavailable: FrameRealmUnavailableCode.CrossOriginNoAgent,
+    };
   }
 
-  if (!frameBody) {
-    return [];
+  if (!frameRoot) {
+    return {
+      nodes: [],
+      capability: FrameRealmCapabilityCode.SameOrigin,
+      unavailable: FrameRealmUnavailableCode.NotReady,
+    };
   }
 
   const nodes: number[] = [];
 
-  for (const child of getComposedChildNodes(frameBody)) {
+  for (const child of getComposedChildNodes(frameRoot)) {
     if (isSpecialReportElement(child) || shouldExcludeElement(child)) {
       continue;
     }
@@ -1002,7 +1024,19 @@ function buildFrameContentNodes({
     }
   }
 
-  return nodes;
+  return {
+    nodes,
+    capability: FrameRealmCapabilityCode.SameOrigin,
+    unavailable: nodes.length > 0 ? undefined : FrameRealmUnavailableCode.EmptyDom,
+  };
+}
+
+function buildFrameRealmTuple(
+  realmId: number,
+  result: FrameContentBuildResult,
+): FrameRealmTuple | undefined {
+  if (result.capability === undefined) return undefined;
+  return result.unavailable === undefined ? [realmId, result.capability] : [realmId, result.capability, result.unavailable];
 }
 
 function getComposedChildNodes(element: Element): ChildNode[] {
@@ -1065,7 +1099,7 @@ export function buildChildNodes({
         annotateSemanticNode(childElement);
 
         // Build a subtree for the iframe's document body, if accessible
-        const frameContentNodes = buildFrameContentNodes({
+        const frameContent = buildFrameContentNodes({
           frameElement: childElement as HTMLIFrameElement,
           parentDisabled,
           excludeLabels,
@@ -1079,7 +1113,8 @@ export function buildChildNodes({
           semanticRole: childRole ?? undefined,
           excludeLabels,
           isFrameNode: true,
-          frameContentNodes,
+          frameContentNodes: frameContent.nodes,
+          frameRealm: buildFrameRealmTuple(getOrAssignNodeId(childElement), frameContent),
           elementContext: context,
         });
 

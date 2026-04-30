@@ -125,6 +125,39 @@ function buildElementLinkRecord(nodes: Record<number, SemanticNode>): Record<num
   return record;
 }
 
+function buildFrameRealmMetadata(
+  nodes: Record<number, SemanticNode>,
+  baseUrl: string,
+): NonNullable<NonNullable<PageData['metadata']>['frameRealms']> | undefined {
+  const realms: NonNullable<NonNullable<PageData['metadata']>['frameRealms']>['realms'] = {};
+
+  for (const key of Object.keys(nodes)) {
+    const node = nodes[Number(key)];
+    const realmId = Array.isArray(node?.frameRealm) ? Number(node.frameRealm[0]) : NaN;
+    if (!Number.isFinite(realmId) || realmId <= 0) continue;
+
+    const url = typeof node.resourceLocator === 'string' && node.resourceLocator.trim() ? node.resourceLocator.trim() : undefined;
+    let origin: string | undefined;
+    if (url) {
+      try {
+        origin = new URL(url, baseUrl).origin;
+      } catch {
+        origin = undefined;
+      }
+    }
+
+    const title = typeof node.computedName === 'string' && node.computedName.trim() ? node.computedName.trim() : undefined;
+    realms[Math.trunc(realmId)] = {
+      ...(origin ? { origin } : {}),
+      ...(url ? { url } : {}),
+      ...(title ? { title } : {}),
+      hostElementId: Number(key),
+    };
+  }
+
+  return Object.keys(realms).length > 0 ? { version: 1, realms } : undefined;
+}
+
 function readRoverAgentDiscoverySnapshot(doc: Document): PageData['agentDiscovery'] {
   try {
     const win = doc.defaultView || globalWindowSafe;
@@ -277,6 +310,7 @@ export async function buildPageData(
 
   // If STILL empty after retry, fall back to text content — agent can decide to wait and retry
   if (isTreeEmpty(snapshot.rootNodes, snapshot.semanticNodes)) {
+    const frameRealms = buildFrameRealmMetadata(snapshot.semanticNodes, doc.URL);
     return {
       ...pageMetadata,
       contentType: HTML_MIME_TYPE,
@@ -284,6 +318,7 @@ export async function buildPageData(
       metadata: {
         scrollingPerformed: didScroll,
         extractionMethod: 'empty_tree_fallback',
+        ...(frameRealms ? { frameRealms } : {}),
         treeCapture: {
           status: treeCaptureStatus,
           attempts: treeCaptureAttempts,
@@ -294,6 +329,8 @@ export async function buildPageData(
     };
   }
 
+  const frameRealms = buildFrameRealmMetadata(snapshot.semanticNodes, doc.URL);
+
   return {
     ...pageMetadata,
     contentType: HTML_MIME_TYPE,
@@ -303,6 +340,7 @@ export async function buildPageData(
     metadata: {
       scrollingPerformed: didScroll,
       extractionMethod: treeCaptureStatus !== 'normal' ? treeCaptureStatus : undefined,
+      ...(frameRealms ? { frameRealms } : {}),
       treeCapture: {
         status: treeCaptureStatus,
         attempts: treeCaptureAttempts,
