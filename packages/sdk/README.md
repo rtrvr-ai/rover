@@ -652,12 +652,13 @@ Rover deep links like `?rover=` and `?rover_shortcut=` remain the simple browser
 Rover normalizes visiting-agent attribution in this order:
 
 1. verified signed signal
-2. explicit `agent` object on A2W run creation or handoffs
-3. heuristic headers such as `User-Agent`, `Signature-Agent`, `Signature`, `Signature-Input`, and `X-RTRVR-Client-Id`
-4. advanced local fallbacks such as RoverBook `identityResolver`
-5. anonymous fallback
+2. Signature-Agent directory/signature-envelope evidence without full request verification
+3. explicit `agent` object on A2W run creation or handoffs
+4. heuristic headers such as `User-Agent`, `Signature-Agent`, `Signature`, `Signature-Input`, and `X-RTRVR-Client-Id`
+5. advanced local fallbacks such as RoverBook `identityResolver`
+6. anonymous fallback
 
-Trust tiers are `verified_signed`, `signed_directory_only`, `self_reported`, `heuristic`, and `anonymous`. Unsigned headers never escalate above `heuristic`.
+Trust tiers are `verified_signed`, `signed_directory_only`, `self_reported`, `heuristic`, and `anonymous`. The stored `agentKey` is chosen from explicit agent key fields first, then `clientId`, then `Signature-Agent`, then previous attribution. `signed_directory_only` means the chosen identity had Signature-Agent directory/signature-envelope evidence, but no completed HTTP Message Signature verification. Loose headers without that evidence remain `heuristic`.
 
 ### Cross-site workflows and handoffs
 
