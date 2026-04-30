@@ -5,7 +5,7 @@
 
 import { buildSemanticNodeFromElement, isFrameElement } from './element-analysis.js';
 import { getOrAssignNodeId, resetElementIdMap, semanticNodeIdGenerator } from './id-generators.js';
-import type { ElementProcessingContext, SemanticNode, SemanticRole } from '../types/aria-types.js';
+import type { ElementProcessingContext, FrameRealmTuple, SemanticNode, SemanticRole } from '../types/aria-types.js';
 import { mergeEventHandlerIndices, validateEventHandlerIndices } from './element-utilities.js';
 import { indexAnnotatedElement } from './annotation-manager.js';
 
@@ -34,6 +34,7 @@ export function getOrCreateSemanticNode({
   excludeLabels,
   isFrameNode,
   frameContentNodes,
+  frameRealm,
   originatedFromParent,
   elementContext,
 }: {
@@ -43,6 +44,7 @@ export function getOrCreateSemanticNode({
   excludeLabels?: boolean;
   isFrameNode?: boolean;
   frameContentNodes?: number[];
+  frameRealm?: FrameRealmTuple;
   originatedFromParent?: boolean;
   elementContext?: ElementProcessingContext;
 }): number {
@@ -64,6 +66,9 @@ export function getOrCreateSemanticNode({
 
         if (frameContentNodes && frameContentNodes.length > 0) {
           existingNode.frameContent = frameContentNodes;
+        }
+        if (frameRealm) {
+          existingNode.frameRealm = frameRealm;
         }
       }
 
@@ -106,6 +111,7 @@ export function getOrCreateSemanticNode({
         excludeLabels,
         isFrameNode,
         frameContentNodes,
+        frameRealm,
         elementContext,
       });
     } finally {

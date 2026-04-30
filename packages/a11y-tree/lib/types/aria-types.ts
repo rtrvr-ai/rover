@@ -32,6 +32,31 @@ export enum ElementNamespace {
   SVG = 1,
 }
 
+export enum FrameRealmCapabilityCode {
+  SameOrigin = 0,
+  Cooperative = 1,
+  Adapter = 2,
+  Opaque = 3,
+  Verification = 4,
+}
+
+export enum FrameRealmUnavailableCode {
+  None = 0,
+  CrossOriginNoAgent = 1,
+  EmptyDom = 2,
+  NotReady = 3,
+  Timeout = 4,
+  SandboxBlocked = 5,
+  AdapterUnavailable = 6,
+  TreeFailed = 7,
+}
+
+export type FrameRealmTuple = [
+  realmId: number,
+  capability: FrameRealmCapabilityCode,
+  unavailable?: FrameRealmUnavailableCode,
+];
+
 // Property attributes from ARIA specification
 export enum AriaPropertyAttribute {
   VALUENOW,
@@ -193,6 +218,7 @@ export interface SemanticNode {
   computedDescription?: string;
   isFrameElement?: boolean;
   frameContent?: number[];
+  frameRealm?: FrameRealmTuple;
   nodeCategory: DOMNodeCategory;
   elementName?: string;
   elementNamespace?: ElementNamespace;

@@ -39,3 +39,18 @@ test('semantic tree constructor source excludes Rover hosts at the root exclusio
 
   assert.match(source, /if \(isRoverWidgetHost\(element\)\)\s*\{\s*return true;\s*\}/);
 });
+
+test('iframe unavailable states use frameRealm metadata instead of synthetic child text', () => {
+  const constructorSource = fs.readFileSync(path.join(PKG_ROOT, 'lib/core/semantic-tree-constructor.ts'), 'utf8');
+  const elementSource = fs.readFileSync(path.join(PKG_ROOT, 'lib/utilities/element-analysis.ts'), 'utf8');
+  const typeSource = fs.readFileSync(path.join(PKG_ROOT, 'lib/types/aria-types.ts'), 'utf8');
+
+  assert.match(typeSource, /enum FrameRealmCapabilityCode/);
+  assert.match(typeSource, /enum FrameRealmUnavailableCode/);
+  assert.match(typeSource, /frameRealm\?: FrameRealmTuple/);
+  assert.match(constructorSource, /FrameRealmUnavailableCode\.CrossOriginNoAgent/);
+  assert.match(constructorSource, /FrameRealmUnavailableCode\.NotReady/);
+  assert.match(elementSource, /FrameRealmUnavailableCode\.EmptyDom/);
+  assert.doesNotMatch(constructorSource, /buildUnavailableFrameSubtree/);
+  assert.doesNotMatch(constructorSource, /Iframe content is not accessible from this origin/);
+});

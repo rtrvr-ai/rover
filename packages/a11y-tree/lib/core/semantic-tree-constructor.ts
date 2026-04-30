@@ -5,9 +5,13 @@
 
 import { EXCLUDED_ELEMENT_TAGS, CODE_ELEMENT_TAG, PREFORMATTED_TAG } from '../mappings/role-mappings.js';
 // NEW
-import { DOMNodeCategory, SemanticRoleReverseMap } from '../types/aria-types.js';
+import {
+  FrameRealmCapabilityCode,
+  FrameRealmUnavailableCode,
+  SemanticRoleReverseMap,
+} from '../types/aria-types.js';
 import { annotateSemanticNode, clearAnnotatedElementIndex } from '../utilities/annotation-manager.js';
-import { semanticNodeIdGenerator } from '../utilities/id-generators.js';
+import { getOrAssignNodeId, semanticNodeIdGenerator } from '../utilities/id-generators.js';
 import { clearAgentAnnotations } from '../utilities/dom-scanner.js';
 import {
   isInvisible,
@@ -30,11 +34,10 @@ import {
   clearSemanticNodeCollection,
 } from '../utilities/node-repository.js';
 import { determineSemanticRole } from '../utilities/semantic-role-analyzer.js';
-import type { ElementProcessingContext, SemanticNode, SemanticRole } from '../types/aria-types.js';
+import type { ElementProcessingContext, FrameRealmTuple, SemanticNode, SemanticRole } from '../types/aria-types.js';
 import {
   CURRENT_TREE_OPTS,
   docOf,
-  getResourceLocator,
   setTreeExtractionContext,
   TreeExtractionOptions,
   winOf,
@@ -220,27 +223,58 @@ function processFrameNode({
   elementContext?: ElementProcessingContext;
 }): number {
   annotateSemanticNode(frameElement);
-  const frameContentNodes: number[] = processFrameContent(frameElement);
+  const frameContent = processFrameContent(frameElement);
+  const frameRealm = buildFrameRealmTuple(getOrAssignNodeId(frameElement), frameContent);
 
   return getOrCreateSemanticNode({
     targetElement: frameElement as HTMLElement,
     parentDisabled: parentNode?.isDisabled,
     semanticRole: role,
     isFrameNode: true,
-    frameContentNodes,
+    frameContentNodes: frameContent.nodes,
+    frameRealm,
     elementContext,
   });
 }
 
+type FrameContentProcessResult = {
+  nodes: number[];
+  capability?: FrameRealmCapabilityCode;
+  unavailable?: FrameRealmUnavailableCode;
+};
+
 /** Process elements inside an iframe if accessible */
-function processFrameContent(frameElement: HTMLIFrameElement): number[] {
-  if (!CURRENT_TREE_OPTS.includeFrameContents) return [];
+function processFrameContent(frameElement: HTMLIFrameElement): FrameContentProcessResult {
+  if (!CURRENT_TREE_OPTS.includeFrameContents) return { nodes: [] };
   const frameContentRoot = resolveFrameContentRoot(frameElement);
   if (frameContentRoot.kind === 'content') {
-    return constructSemanticTree(frameContentRoot.rootElement);
+    const nodes = constructSemanticTree(frameContentRoot.rootElement);
+    return {
+      nodes,
+      capability: FrameRealmCapabilityCode.SameOrigin,
+      unavailable: nodes.length > 0 ? undefined : FrameRealmUnavailableCode.EmptyDom,
+    };
   }
 
-  return buildUnavailableFrameSubtree(frameElement, frameContentRoot.reason);
+  return frameContentRoot.reason === 'cross_origin_blocked'
+    ? {
+        nodes: [],
+        capability: FrameRealmCapabilityCode.Opaque,
+        unavailable: FrameRealmUnavailableCode.CrossOriginNoAgent,
+      }
+    : {
+        nodes: [],
+        capability: FrameRealmCapabilityCode.SameOrigin,
+        unavailable: FrameRealmUnavailableCode.NotReady,
+      };
+}
+
+function buildFrameRealmTuple(
+  realmId: number,
+  result: FrameContentProcessResult,
+): FrameRealmTuple | undefined {
+  if (result.capability === undefined) return undefined;
+  return result.unavailable === undefined ? [realmId, result.capability] : [realmId, result.capability, result.unavailable];
 }
 
 type FrameContentUnavailableReason = 'cross_origin_blocked' | 'iframe_not_ready_or_empty';
@@ -264,45 +298,6 @@ function resolveFrameContentRoot(
   }
 
   return { kind: 'content', rootElement };
-}
-
-function buildUnavailableFrameSubtree(
-  frameElement: HTMLIFrameElement,
-  reason: FrameContentUnavailableReason,
-): number[] {
-  const containerNodeId = semanticNodeIdGenerator.generateId();
-  const textNodeId = semanticNodeIdGenerator.generateId();
-
-  const computedName =
-    frameElement.getAttribute('title')?.trim() ||
-    frameElement.getAttribute('name')?.trim() ||
-    frameElement.id?.trim() ||
-    'Embedded frame';
-
-  const resourceLocator = getResourceLocator(frameElement) || undefined;
-  const reasonText =
-    reason === 'cross_origin_blocked'
-      ? 'Iframe content is not accessible from this origin (cross-origin).'
-      : 'Iframe content is not ready yet or has no readable DOM.';
-
-  SEMANTIC_NODE_COLLECTION[containerNodeId] = {
-    nodeCategory: DOMNodeCategory.ELEMENT,
-    semanticRole: 'embedded_document_unavailable',
-    computedName,
-    syntheticKind: 'embedded_container',
-    frameContent: [textNodeId],
-    ...(resourceLocator ? { resourceLocator } : {}),
-  };
-
-  SEMANTIC_NODE_COLLECTION[textNodeId] = {
-    nodeCategory: DOMNodeCategory.TEXT,
-    parent: containerNodeId,
-    textContent: reasonText,
-    preventTextMerge: true,
-    syntheticKind: 'embedded_unavailable_text',
-  };
-
-  return [containerNodeId];
 }
 
 function isValidTextualNode(textNode: Text, parentNode?: SemanticNode): boolean {

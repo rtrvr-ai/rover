@@ -7,8 +7,13 @@ export {
 } from './lib/mappings/role-mappings.js';
 export type { CustomSemanticRole } from './lib/mappings/role-mappings.js';
 export { LABEL_ID_PATTERN } from './lib/mappings/role-mappings.js';
-export type { SemanticNode, SemanticRole } from './lib/types/aria-types.js';
-export { PreservedAttribute, SemanticRoleMap } from './lib/types/aria-types.js';
+export type { FrameRealmTuple, SemanticNode, SemanticRole } from './lib/types/aria-types.js';
+export {
+    FrameRealmCapabilityCode,
+    FrameRealmUnavailableCode,
+    PreservedAttribute,
+    SemanticRoleMap,
+} from './lib/types/aria-types.js';
 export * from './lib/utilities/semantic-role-analyzer.js';
 export { canUserEdit, getMainWorldRole, extractPrimaryInteractiveIdFromLabel } from './lib/utilities/element-utilities.js';
 export * from './lib/utilities/id-generators.js';

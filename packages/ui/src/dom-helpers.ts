@@ -229,6 +229,7 @@ export function deriveTimelineStatusLabel(event: RoverTimelineEvent): string {
     if (parsed.stage) return titleCase(parsed.stage);
     return 'Status';
   }
+  if (kind === 'debug') return 'Debug';
   if (kind === 'error') return 'Error';
   if (kind === 'info') return 'Update';
   return 'Searching';
@@ -650,6 +651,11 @@ function createRawToggle(value: unknown): HTMLDivElement {
   button.className = 'rvRawToggle';
   button.textContent = 'View raw JSON';
 
+  const copyButton = document.createElement('button');
+  copyButton.type = 'button';
+  copyButton.className = 'rvRawToggle';
+  copyButton.textContent = 'Copy JSON';
+
   const pre = document.createElement('pre');
   pre.className = 'rvRawJson';
   pre.textContent = safeJsonStringify(value);
@@ -662,7 +668,30 @@ function createRawToggle(value: unknown): HTMLDivElement {
     button.textContent = hidden ? 'Hide raw JSON' : 'View raw JSON';
   });
 
+  copyButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const text = pre.textContent || safeJsonStringify(value);
+    const restore = copyButton.textContent || 'Copy JSON';
+    const markCopied = () => {
+      copyButton.textContent = 'Copied';
+      setTimeout(() => {
+        copyButton.textContent = restore;
+      }, 1200);
+    };
+    try {
+      const write = typeof navigator !== 'undefined'
+        ? navigator.clipboard?.writeText?.bind(navigator.clipboard)
+        : undefined;
+      if (write) {
+        void write(text).then(markCopied).catch(() => undefined);
+      }
+    } catch {
+      // Copy support is best-effort in debug surfaces.
+    }
+  });
+
   wrap.appendChild(button);
+  wrap.appendChild(copyButton);
   wrap.appendChild(pre);
   return wrap;
 }

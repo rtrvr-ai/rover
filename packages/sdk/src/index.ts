@@ -1,6 +1,6 @@
 import { Bridge, bindRpc, type NavigationIntentEvent } from '@rover/bridge';
 import { sanitizeRoverPageCaptureConfig } from '@rover/shared/lib/page/index.js';
-import type { PageConfig, RoverPageCaptureConfig, ToolOutput } from '@rover/shared/lib/types/index.js';
+import type { PageConfig, PageData, RoverPageCaptureConfig, ToolOutput } from '@rover/shared/lib/types/index.js';
 import type { LLMDataInput } from '@rover/shared/lib/types/workflow-types.js';
 import {
   mountWidget,
@@ -97,6 +97,12 @@ import {
   createConversationHistoryStore,
   type RoverConversationSummary,
 } from './conversationHistory.js';
+import {
+  RoverFrameDiagnosticsClient,
+  buildFrameDiagnosticsDedupeKey,
+  buildFrameDiagnosticsSummary,
+  type FrameDiagnosticsSummary,
+} from './frameDiagnostics.js';
 import { createRuntimeStateStore, type RuntimeStateStore } from './runtimeStorage.js';
 import {
   buildPublicRunLifecyclePayload as buildPublicRunLifecyclePayloadHelper,
@@ -583,6 +589,8 @@ const ROVER_AGENT_DISCOVERY_KEYBOARD_SHORTCUT = 'Alt+Shift+A';
 const ROVER_AGENT_DISCOVERY_CHANGE_EVENT = 'rover:agent-discovery-changed';
 const ROVER_AGENT_DISCOVERY_CUE_MIN_HEIGHT_PX = 28;
 const ROVER_AGENT_DISCOVERY_CUE_LAUNCHER_GAP_PX = 12;
+const FRAME_DIAGNOSTICS_MIN_INTERVAL_MS = 10_000;
+const FRAME_DIAGNOSTICS_UPLOAD_FAILURE_MIN_INTERVAL_MS = 60_000;
 
 type TelemetryEventName = RoverEventName | RoverVoiceTelemetryEventName;
 
@@ -608,6 +616,9 @@ let cloudCheckpointClient: RoverCloudCheckpointClient | null = null;
 let conversationHistoryStore: ReturnType<typeof createConversationHistoryStore> | null = null;
 let conversationHistoryClient: RoverConversationHistoryClient | null = null;
 let conversationHistorySyncTimer: ReturnType<typeof setTimeout> | null = null;
+let lastFrameDiagnosticsKey = '';
+let lastFrameDiagnosticsAt = 0;
+let lastFrameDiagnosticsUploadFailureAt = 0;
 let telemetryFlushTimer: ReturnType<typeof setInterval> | null = null;
 let telemetryBuffer: TelemetryEventRecord[] = [];
 let telemetryInFlight = false;
@@ -5741,6 +5752,103 @@ function appendTimelineEvent(
   return timelineEvent;
 }
 
+function isFrameDiagnosticsDebugEnabled(cfg: RoverInit | null = currentConfig): boolean {
+  try {
+    const aiAccess = resolveEffectiveAiAccessConfig(cfg);
+    if (aiAccess?.debugStreaming === true) return true;
+    const discovery = resolveEffectiveAgentDiscoveryRuntimeConfig(cfg);
+    return discovery?.discoverySurface?.mode === 'debug';
+  } catch {
+    return false;
+  }
+}
+
+function emitLocalFrameDiagnosticsEvent(summary: FrameDiagnosticsSummary): void {
+  appendTimelineEvent({
+    kind: 'debug',
+    title: 'Frame diagnostics',
+    detail: `${summary.frameCount} iframe${summary.frameCount === 1 ? '' : 's'} inspected for child element availability.`,
+    status: 'info',
+    detailBlocks: [
+      {
+        type: 'json',
+        label: 'Frame diagnostics',
+        data: summary as unknown as Record<string, unknown>,
+      },
+    ],
+    publishShared: false,
+  }, true);
+}
+
+function emitFrameDiagnosticsUploadFailure(error: unknown): void {
+  const now = Date.now();
+  if (now - lastFrameDiagnosticsUploadFailureAt < FRAME_DIAGNOSTICS_UPLOAD_FAILURE_MIN_INTERVAL_MS) return;
+  lastFrameDiagnosticsUploadFailureAt = now;
+  const reason = error instanceof Error ? error.message : String(error || 'Unknown upload failure');
+  appendTimelineEvent({
+    kind: 'debug',
+    title: 'Frame diagnostics upload failed',
+    detail: truncateText(reason, 180),
+    status: 'error',
+    publishShared: false,
+  }, true);
+}
+
+function maybeUploadFrameDiagnostics(summary: FrameDiagnosticsSummary): void {
+  try {
+    if (!currentConfig || !runtimeState?.sessionId) return;
+    const client = new RoverFrameDiagnosticsClient({
+      apiBase: currentConfig.apiBase,
+      getSessionToken: () => getRuntimeSessionToken(currentConfig),
+      siteId: currentConfig.siteId,
+      sessionId: runtimeState.sessionId,
+    });
+    void client.upload({
+      diagnostics: summary,
+      runId: runtimeState.pendingRun?.id || runtimeState.activeTaskId,
+    }).then(debugRef => {
+      if (!debugRef) return;
+      appendTimelineEvent({
+        kind: 'debug',
+        title: 'Frame diagnostics stored',
+        detail: 'Frame diagnostics artifact uploaded for support debugging.',
+        status: 'info',
+        detailBlocks: [
+          {
+            type: 'json',
+            label: 'Frame diagnostics reference',
+            data: debugRef as Record<string, unknown>,
+          },
+        ],
+        publishShared: false,
+      }, true);
+    }).catch(emitFrameDiagnosticsUploadFailure);
+  } catch (error) {
+    emitFrameDiagnosticsUploadFailure(error);
+  }
+}
+
+function maybeEmitFrameDiagnostics(pageData: PageData | undefined, source: string): void {
+  if (!isFrameDiagnosticsDebugEnabled()) return;
+  try {
+    const summary = buildFrameDiagnosticsSummary(pageData, {
+      captureId: `${source}-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`,
+    });
+    if (!summary?.frames.length) return;
+    const key = buildFrameDiagnosticsDedupeKey(summary);
+    const now = Date.now();
+    if (key === lastFrameDiagnosticsKey && now - lastFrameDiagnosticsAt < FRAME_DIAGNOSTICS_MIN_INTERVAL_MS) {
+      return;
+    }
+    lastFrameDiagnosticsKey = key;
+    lastFrameDiagnosticsAt = now;
+    emitLocalFrameDiagnosticsEvent(summary);
+    maybeUploadFrameDiagnostics(summary);
+  } catch (error) {
+    emitFrameDiagnosticsUploadFailure(error);
+  }
+}
+
 function replayTimeline(events: PersistedTimelineEvent[]): void {
   ui?.clearTimeline();
   for (const event of events) {
@@ -7965,7 +8073,11 @@ function setupSessionCoordinator(cfg: RoverInit): void {
   // Register local RPC handler for cross-tab requests
   sessionCoordinator.setRpcRequestHandler(async (request) => {
     if (!bridge) throw new Error('Bridge not available');
-    if (request.method === 'getPageData') return bridge.getPageData(request.params);
+    if (request.method === 'getPageData') {
+      const pageData = await bridge.getPageData(request.params);
+      maybeEmitFrameDiagnostics(pageData, 'rpc-local');
+      return pageData;
+    }
     if (request.method === 'executeTool') return bridge.executeTool(request.params.call, request.params.payload);
     throw new Error(`Unknown RPC method: ${request.method}`);
   });
@@ -11403,7 +11515,9 @@ function createRuntime(cfg: RoverInit): void {
 
       // Local tab, no tabId, or no coordinator → direct local bridge
       if (!Number.isFinite(tabId) || tabId <= 0 || tabId === localTabId || !sessionCoordinator) {
-        return bridge!.getPageData(params);
+        const pageData = await bridge!.getPageData(params);
+        maybeEmitFrameDiagnostics(pageData, 'local');
+        return pageData;
       }
 
       // Check if target tab belongs to this runtime
@@ -11418,7 +11532,9 @@ function createRuntime(cfg: RoverInit): void {
       }
 
       if (targetTab.runtimeId === runtimeId) {
-        return bridge!.getPageData(params);
+        const pageData = await bridge!.getPageData(params);
+        maybeEmitFrameDiagnostics(pageData, 'local-target');
+        return pageData;
       }
 
       if (targetTab.external) {
@@ -11431,7 +11547,9 @@ function createRuntime(cfg: RoverInit): void {
       }
 
       try {
-        return await sessionCoordinator.sendCrossTabRpc(targetTab.runtimeId, 'getPageData', params, 15000);
+        const pageData = await sessionCoordinator.sendCrossTabRpc(targetTab.runtimeId, 'getPageData', params, 15000);
+        maybeEmitFrameDiagnostics(pageData, 'cross-tab');
+        return pageData;
       } catch {
         return buildInaccessibleTabPageData(targetTab, 'cross_tab_rpc_failed');
       }

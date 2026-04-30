@@ -105,6 +105,20 @@ export interface PageDataMetadata {
     waitedMs?: number;
     reasons?: string[];
   };
+
+  /** Compact iframe realm metadata keyed by numeric realm id. */
+  frameRealms?: {
+    version: 1;
+    realms: Record<
+      number,
+      {
+        origin?: string;
+        url?: string;
+        title?: string;
+        hostElementId?: number;
+      }
+    >;
+  };
 }
 
 export type RoverDiscoveryExecutionPreference = 'auto' | 'browser' | 'cloud';
