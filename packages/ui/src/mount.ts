@@ -326,7 +326,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   const timelineNarrationScheduler = createTimelineNarrationScheduler({
     isEnabled: () => allowNarrationToggle && isNarrationEnabled,
-    speak: (text) => narrator.speak(text),
+    speak: (text, options) => narrator.speak(text, options),
   });
 
   function scheduleTimelineNarration(event: RoverTimelineEvent): void {

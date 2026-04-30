@@ -1,10 +1,16 @@
 export type RoverNarrator = {
   isSupported: () => boolean;
   unlock: () => void;
-  speak: (text: string) => void;
+  speak: (text: string, options?: RoverNarratorSpeakOptions) => void;
   cancel: () => void;
   setEnabled: (enabled: boolean) => void;
   dispose: () => void;
+};
+
+export type RoverNarratorSpeakOptions = {
+  mode?: 'append' | 'replace';
+  key?: string;
+  priority?: 'low' | 'normal' | 'high';
 };
 
 export type RoverSpeechVoiceOption = {
@@ -26,6 +32,9 @@ export type RoverNarratorOptions = {
 
 const MAX_NARRATION_CHARS = 220;
 const MAX_CHUNK_CHARS = 150;
+const MAX_PENDING_UTTERANCES = 4;
+const MAX_PENDING_SPEECH_MS = 7_000;
+const CATCH_UP_NARRATION = 'Continuing through the form.';
 const VOICE_POLL_INTERVAL_MS = 250;
 const VOICE_POLL_ATTEMPTS = 10;
 const NATURAL_VOICE_RE = /google|natural|neural|online|premium|enhanced/i;
@@ -63,6 +72,12 @@ function splitNarration(text: string): string[] {
   }
   if (current) chunks.push(current);
   return chunks.slice(0, 3);
+}
+
+function estimateSpeechMs(text: string): number {
+  const normalized = normalizeNarrationText(text);
+  if (!normalized) return 0;
+  return Math.max(900, Math.min(5_000, normalized.length * 55));
 }
 
 function scoreVoice(
@@ -123,7 +138,18 @@ export function createWebSpeechNarrator(opts: RoverNarratorOptions = {}): RoverN
   let unlocked = false;
   let disposed = false;
   let selectedVoice: SpeechSynthesisVoice | null = null;
-  let pendingText = '';
+  let queue: Array<{
+    text: string;
+    chunks: string[];
+    key?: string;
+    priority: 'low' | 'normal' | 'high';
+    catchUp?: boolean;
+    estimatedMs: number;
+  }> = [];
+  let activeItem: typeof queue[number] | null = null;
+  let activeChunkIndex = 0;
+  let activeGeneration = 0;
+  let activeWatchdog: ReturnType<typeof setTimeout> | null = null;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
 
   function selectVoice(): SpeechSynthesisVoice | null {
@@ -165,28 +191,141 @@ export function createWebSpeechNarrator(opts: RoverNarratorOptions = {}): RoverN
     }, VOICE_POLL_INTERVAL_MS);
   }
 
-  function speakNow(text: string): void {
-    if (!supported || !synth || !UtteranceCtor || disposed || !enabled) return;
-    if (typeof document !== 'undefined' && document.hidden) return;
-    const chunks = splitNarration(text);
-    if (!chunks.length) return;
-    try { synth.cancel(); } catch { /* ignore */ }
-    ensureVoices();
-    for (const chunk of chunks) {
-      const utterance = new UtteranceCtor(chunk);
-      utterance.lang = lang;
-      utterance.rate = rate;
-      utterance.pitch = pitch;
-      if (selectedVoice) utterance.voice = selectedVoice;
-      try { synth.speak(utterance); } catch { /* ignore */ }
+  function clearActiveWatchdog(): void {
+    if (!activeWatchdog) return;
+    try { clearTimeout(activeWatchdog); } catch { /* ignore */ }
+    activeWatchdog = null;
+  }
+
+  function estimateQueuedMs(): number {
+    return queue.reduce((sum, item) => sum + item.estimatedMs, 0);
+  }
+
+  function insertCatchUpIfNeeded(dropped: boolean): void {
+    if (!dropped) return;
+    if (queue.some(item => item.catchUp) || activeItem?.catchUp) return;
+    queue = [
+      {
+        text: CATCH_UP_NARRATION,
+        chunks: [CATCH_UP_NARRATION],
+        key: 'catch-up',
+        priority: 'normal',
+        catchUp: true,
+        estimatedMs: estimateSpeechMs(CATCH_UP_NARRATION),
+      },
+      ...queue.slice(-(MAX_PENDING_UTTERANCES - 1)),
+    ];
+  }
+
+  function enforceQueueBudget(): void {
+    let dropped = false;
+    while (queue.length > MAX_PENDING_UTTERANCES || estimateQueuedMs() > MAX_PENDING_SPEECH_MS) {
+      const lowPriorityIndex = queue.findIndex(item => item.priority === 'low' && !item.catchUp);
+      const normalPriorityIndex = queue.findIndex(item => item.priority === 'normal' && !item.catchUp);
+      const dropIndex = lowPriorityIndex >= 0
+        ? lowPriorityIndex
+        : normalPriorityIndex >= 0
+          ? normalPriorityIndex
+          : queue.findIndex(item => !item.catchUp);
+      if (dropIndex < 0) break;
+      queue.splice(dropIndex, 1);
+      dropped = true;
+    }
+    insertCatchUpIfNeeded(dropped);
+    while (queue.length > MAX_PENDING_UTTERANCES) {
+      queue.splice(queue.length - 1, 1);
     }
   }
 
-  function flushPending(): void {
-    if (!pendingText) return;
-    const next = pendingText;
-    pendingText = '';
-    speakNow(next);
+  function cancelSpeech(): void {
+    queue = [];
+    activeItem = null;
+    activeChunkIndex = 0;
+    activeGeneration += 1;
+    clearActiveWatchdog();
+    try { synth?.cancel(); } catch { /* ignore */ }
+  }
+
+  function finishActiveChunk(generation: number): void {
+    if (generation !== activeGeneration) return;
+    clearActiveWatchdog();
+    if (!activeItem) return;
+    activeChunkIndex += 1;
+    if (activeChunkIndex < activeItem.chunks.length) {
+      speakNextChunk();
+      return;
+    }
+    activeItem = null;
+    activeChunkIndex = 0;
+    speakNextChunk();
+  }
+
+  function speakNextChunk(): void {
+    if (!supported || !synth || !UtteranceCtor || disposed || !enabled || !unlocked) return;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    if (!activeItem) {
+      activeItem = queue.shift() || null;
+      activeChunkIndex = 0;
+    }
+    if (!activeItem) return;
+    const chunk = activeItem.chunks[activeChunkIndex];
+    if (!chunk) {
+      activeItem = null;
+      activeChunkIndex = 0;
+      speakNextChunk();
+      return;
+    }
+    ensureVoices();
+    const utterance = new UtteranceCtor(chunk);
+    utterance.lang = lang;
+    utterance.rate = rate;
+    utterance.pitch = pitch;
+    if (selectedVoice) utterance.voice = selectedVoice;
+    const generation = activeGeneration;
+    utterance.onend = () => finishActiveChunk(generation);
+    utterance.onerror = () => finishActiveChunk(generation);
+    clearActiveWatchdog();
+    activeWatchdog = setTimeout(() => finishActiveChunk(generation), estimateSpeechMs(chunk) + 3_000);
+    try {
+      synth.speak(utterance);
+    } catch {
+      finishActiveChunk(generation);
+    }
+  }
+
+  function enqueueSpeech(text: string, options: RoverNarratorSpeakOptions = {}): void {
+    if (!supported || !synth || !UtteranceCtor || disposed || !enabled) return;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    const normalized = normalizeNarrationText(text);
+    const chunks = splitNarration(normalized);
+    if (!chunks.length) return;
+    const mode = options.mode || 'replace';
+    if (mode === 'replace') cancelSpeech();
+    const key = String(options.key || '').trim().slice(0, 160) || undefined;
+    if (mode === 'append' && key) {
+      const duplicateIndex = queue.findIndex(item => item.key === key);
+      if (duplicateIndex >= 0) {
+        queue[duplicateIndex] = {
+          ...queue[duplicateIndex],
+          text: normalized,
+          chunks,
+          estimatedMs: estimateSpeechMs(normalized),
+        };
+        enforceQueueBudget();
+        if (unlocked) speakNextChunk();
+        return;
+      }
+      if (activeItem?.key === key && activeItem.priority !== 'high') return;
+    }
+    queue.push({
+      text: normalized,
+      chunks,
+      key,
+      priority: options.priority || 'normal',
+      estimatedMs: estimateSpeechMs(normalized),
+    });
+    enforceQueueBudget();
+    if (unlocked) speakNextChunk();
   }
 
   function handleVoicesChanged(): void {
@@ -199,6 +338,7 @@ export function createWebSpeechNarrator(opts: RoverNarratorOptions = {}): RoverN
       try { synth?.cancel(); } catch { /* ignore */ }
     } else if (unlocked) {
       try { synth?.resume?.(); } catch { /* ignore */ }
+      speakNextChunk();
     }
   }
 
@@ -222,31 +362,25 @@ export function createWebSpeechNarrator(opts: RoverNarratorOptions = {}): RoverN
         silent.lang = lang;
         synth.speak(silent);
       } catch { /* ignore */ }
-      flushPending();
+      speakNextChunk();
     },
-    speak(text: string) {
-      const normalized = normalizeNarrationText(text);
-      if (!normalized || !enabled || disposed) return;
-      if (!unlocked) {
-        pendingText = normalized;
-        return;
-      }
-      speakNow(normalized);
+    speak(text: string, options?: RoverNarratorSpeakOptions) {
+      enqueueSpeech(text, options);
     },
     cancel() {
-      pendingText = '';
-      try { synth?.cancel(); } catch { /* ignore */ }
+      cancelSpeech();
     },
     setEnabled(nextEnabled: boolean) {
       enabled = nextEnabled;
       if (!enabled) {
-        pendingText = '';
-        try { synth?.cancel(); } catch { /* ignore */ }
+        cancelSpeech();
       }
     },
     dispose() {
       disposed = true;
-      pendingText = '';
+      queue = [];
+      activeItem = null;
+      clearActiveWatchdog();
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = null;
       try { synth?.cancel(); } catch { /* ignore */ }

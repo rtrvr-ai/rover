@@ -180,12 +180,12 @@ test('timeline narration text uses explicit narration and no-target action fallb
   }), '');
 });
 
-test('timeline narration scheduler defers speech and keeps latest step only', () => {
+test('timeline narration scheduler defers speech and queues rapid action steps', () => {
   const frameQueue = createFrameQueue();
   const spoken = [];
   const scheduler = createTimelineNarrationScheduler({
     isEnabled: () => true,
-    speak: text => spoken.push(text),
+    speak: (text, options) => spoken.push({ text, options }),
     scheduleFrame: callback => frameQueue.schedule(callback),
     cancelFrame: id => frameQueue.cancel(id),
   });
@@ -197,7 +197,62 @@ test('timeline narration scheduler defers speech and keeps latest step only', ()
   scheduler.scheduleEvent({ kind: 'tool_start', title: 'B', narration: 'Clicking checkout.' });
   assert.equal(frameQueue.size, 1);
   frameQueue.runAll();
-  assert.deepEqual(spoken, ['Clicking checkout.']);
+  assert.deepEqual(spoken.map(item => item.text), ['Opening checkout.', 'Clicking checkout.']);
+  assert.deepEqual(spoken.map(item => item.options.mode), ['append', 'append']);
+});
+
+test('timeline narration scheduler collapses duplicate same-target action cues', () => {
+  const frameQueue = createFrameQueue();
+  const spoken = [];
+  const scheduler = createTimelineNarrationScheduler({
+    isEnabled: () => true,
+    speak: (text, options) => spoken.push({ text, options }),
+    scheduleFrame: callback => frameQueue.schedule(callback),
+    cancelFrame: id => frameQueue.cancel(id),
+  });
+
+  scheduler.scheduleEvent({
+    kind: 'tool_start',
+    title: 'Typing name',
+    narration: 'Typing the first name.',
+    actionCue: { kind: 'type', targetLabel: 'Name' },
+  });
+  scheduler.scheduleEvent({
+    kind: 'tool_start',
+    title: 'Typing name again',
+    narration: 'Typing the name.',
+    actionCue: { kind: 'type', targetLabel: 'Name' },
+  });
+  frameQueue.runAll();
+  assert.deepEqual(spoken.map(item => item.text), ['Typing the name.']);
+});
+
+test('timeline narration scheduler caps burst backlog with a catch-up cue', () => {
+  const frameQueue = createFrameQueue();
+  const spoken = [];
+  const scheduler = createTimelineNarrationScheduler({
+    isEnabled: () => true,
+    speak: (text, options) => spoken.push({ text, options }),
+    scheduleFrame: callback => frameQueue.schedule(callback),
+    cancelFrame: id => frameQueue.cancel(id),
+  });
+
+  for (let i = 0; i < 6; i += 1) {
+    scheduler.scheduleEvent({
+      kind: 'tool_start',
+      title: `Hover ${i}`,
+      narration: `Checking optional field ${i}.`,
+      actionCue: { kind: 'hover', targetLabel: `Optional ${i}` },
+    });
+  }
+  frameQueue.runAll();
+  assert.equal(spoken.length, 4);
+  assert.equal(spoken[0].text, 'Continuing through the form.');
+  assert.deepEqual(spoken.slice(1).map(item => item.text), [
+    'Checking optional field 3.',
+    'Checking optional field 4.',
+    'Checking optional field 5.',
+  ]);
 });
 
 test('timeline narration cancel prevents pending speech', () => {
