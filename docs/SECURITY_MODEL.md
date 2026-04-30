@@ -54,7 +54,9 @@ Rover and RoverBook normalize agent identity into:
 - `heuristic`
 - `anonymous`
 
-Important rule: plain headers alone never become `verified_signed` or `signed_directory_only`.
+Important rule: trust and ID are separate. `agentKey` is chosen from explicit agent key fields first, then `clientId`, then `Signature-Agent`, then previous attribution, then `anonymous`. The `signed_directory_only` tier means the chosen identity was accompanied by Signature-Agent directory/signature-envelope evidence, but the request was not fully verified as an HTTP Message Signature.
+
+Plain arbitrary identity headers never become `verified_signed`. Loose `User-Agent` or `Signature-Agent` signals without directory/signature-envelope evidence remain `heuristic`.
 
 Heuristic inputs may include:
 

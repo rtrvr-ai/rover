@@ -143,7 +143,7 @@ Resolution order:
 
 For Rover-managed traffic, the browser runtime reads agent attribution from task/session claims first. Script-tag installs therefore do not need a custom site-owner `identityResolver` just to make RoverBook memory or revisit analytics work.
 
-Trust tiers are `verified_signed`, `signed_directory_only`, `self_reported`, `heuristic`, and `anonymous`. Unsigned headers never escalate above `heuristic`.
+Trust tiers are `verified_signed`, `signed_directory_only`, `self_reported`, `heuristic`, and `anonymous`. `signed_directory_only` is not the ID itself; the stored `agentKey` comes from explicit agent key fields first, then `clientId`, then `Signature-Agent`, then previous attribution. The tier means Rover saw Signature-Agent directory/signature-envelope evidence for that identity, but did not fully verify the request as an HTTP Message Signature. Loose headers without that evidence remain `heuristic`.
 
 ---
 

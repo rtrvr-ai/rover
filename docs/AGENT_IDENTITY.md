@@ -31,8 +31,16 @@ type AgentAttribution = {
     | 'owner_resolver'
     | 'anonymous'
   memoryKey: string
+  verificationMethod:
+    | 'http_message_signatures'
+    | 'signature_agent_directory'
+    | 'self_reported'
+    | 'heuristic_headers'
+    | 'anonymous'
   clientId?: string
   signatureAgent?: string
+  signatureDirectory?: string
+  signatureKeyId?: string
   userAgent?: string
 }
 ```
@@ -45,7 +53,42 @@ Current launch behavior emits:
 - `heuristic`
 - `anonymous`
 
-`verified_signed` is reserved for a real signature-backed verifier. `signed_directory_only` is reserved for directory-backed discovery without a fully verified signed request. Unsigned headers never escalate above `heuristic`.
+`verified_signed` is reserved for a real HTTP Message Signature verification. `signed_directory_only` is reserved for Signature-Agent or signature-directory discovery evidence without a fully verified signed request. Plain arbitrary identity headers never escalate above `heuristic`.
+
+## How `signed_directory_only` gets an ID
+
+`signed_directory_only` is a trust label, not the ID itself. Rover first extracts identity signals, then assigns trust.
+
+The persisted agent ID is `key` / `agentKey`. It is chosen in this order:
+
+1. explicit `agentAttribution.key`, `agent.key`, `agentKey`, `agentId`, `X-RTRVR-Agent-Id`, or `X-RTRVR-Agent-Key`
+2. explicit `clientId`
+3. `Signature-Agent`
+4. previous session attribution key
+5. `anonymous`
+
+Then Rover decides whether the request qualifies as `signed_directory_only`. That happens when it sees a `Signature-Agent` plus either signature-directory metadata or a signature envelope such as `Signature` / `Signature-Input`, but the request has not been fully verified as an HTTP Message Signature.
+
+Example:
+
+```http
+Signature-Agent: ExampleBot
+Signature-Input: sig1=("@method" "@target-uri")
+```
+
+With no explicit `agentKey`, Rover stores:
+
+```ts
+{
+  key: 'ExampleBot',
+  source: 'signature_agent',
+  verificationMethod: 'signature_agent_directory',
+  trust: 'signed_directory_only',
+  signatureAgent: 'ExampleBot'
+}
+```
+
+If the same request also sends `agent.key = "openai-demo-agent"`, the persisted `key` is `openai-demo-agent`; `Signature-Agent` remains provenance metadata. If the request only sends loose headers such as `User-Agent` or `Signature-Agent` with no directory/signature envelope evidence, it stays `heuristic`.
 
 ## Resolution order
 
@@ -95,7 +138,7 @@ If no explicit `agent` object is provided, Rover can still classify the visitor 
 - `Signature-Input`
 - `X-RTRVR-Client-Id`
 
-Those inputs may improve grouping and display names, but they do **not** become `verified_signed` or `signed_directory_only` by themselves.
+Loose versions of those inputs may improve grouping and display names, but they do **not** become `verified_signed`. They become `signed_directory_only` only when Rover has Signature-Agent directory/signature-envelope evidence and no completed HTTP Message Signature verification.
 
 ## Runtime propagation
 
@@ -115,11 +158,11 @@ Memory is keyed by attributed agent identity, not by the site owner auth uid.
 
 Resolution:
 
-- `memoryKey = agent.key` when present
-- else `memoryKey = vendor:<normalized-vendor-or-signature-agent>`
-- else `memoryKey = anon:<anonymousCallerKey>`
+- explicit `agentAttribution.memoryKey`, `agent.memoryKey`, `agentMemoryKey`, `memoryKey`, or `visitorId`
+- else the previous session `memoryKey` when it still matches the attribution
+- else a stable hash derived from `uid`, `siteId`, `host`, `sessionId`, launch source, source, `key`, `clientId`, `signatureAgent`, and `userAgent`
 
-This is what makes private notes and revisit memory work for the same visiting agent across multiple runs.
+This separate `memoryKey` is what makes private notes and revisit memory stable without pretending that the visible `agentKey` and memory partition are always the same field.
 
 ## Owner auth vs agent identity
 
