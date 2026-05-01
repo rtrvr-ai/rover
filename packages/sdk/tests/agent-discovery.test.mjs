@@ -109,7 +109,8 @@ test('agent card maps shortcuts and explicit tools into published skills', () =>
   assert.equal(checkoutSkill.category, 'primary');
   assert.equal(checkoutSkill.preferredInterface, 'shortcut');
   assert.equal(checkoutSkill.rover.run.endpoint, 'https://agent.rtrvr.ai/v1/a2w/runs');
-  assert.equal(checkoutSkill.rover.run.payload.shortcut, 'start_checkout');
+  assert.equal(checkoutSkill.rover.run.payload.shortcutId, 'start_checkout');
+  assert.equal('shortcut' in checkoutSkill.rover.run.payload, false);
   assert.equal(checkoutSkill.rover.runKind, 'guide');
   assert.equal(card.extensions.rover.shortcuts[0].runKind, 'guide');
 
@@ -186,7 +187,8 @@ test('agent discovery snapshot normalizes callable Rover surfaces from the publi
   assert.equal(snapshot.capabilities[0].capabilityId, 'checkout_flow');
   assert.equal(snapshot.page?.pageId, 'checkout');
   const checkoutSkill = snapshot.skills.find(skill => skill.id === 'checkout_flow');
-  assert.equal(checkoutSkill?.runPayload.shortcut, 'checkout_flow');
+  assert.equal(checkoutSkill?.runPayload.shortcutId, 'checkout_flow');
+  assert.equal('shortcut' in (checkoutSkill?.runPayload || {}), false);
 });
 
 test('agent card disables public A2W capability when ai access is off', () => {

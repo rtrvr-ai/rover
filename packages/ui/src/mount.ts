@@ -1778,7 +1778,6 @@ export function mountWidget(opts: MountOptions): RoverUi {
       if ((displayEvent.title || '').toLowerCase() === 'run completed') {
         feedComp.setTraceExpanded(false, experience.stream?.maxVisibleLiveCards);
         try { actionSpotlightSystem.clearAll(); } catch { /* spotlight is best-effort */ }
-        cancelNarration();
         shouldScheduleTimelineNarration = false;
       }
       const status = displayEvent.status || (displayEvent.kind === 'error' ? 'error' : displayEvent.kind === 'tool_result' ? 'success' : 'pending');

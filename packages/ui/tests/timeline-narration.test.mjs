@@ -179,6 +179,14 @@ test('timeline narration text uses explicit narration and no-target action fallb
   }), 'I finished and posted the result.');
 
   assert.equal(resolveTimelineNarrationText({
+    kind: 'assistant_response',
+    title: 'Needs input',
+    responseKind: 'question',
+    detail: 'I need a bit more info:\n- What best describes your use case?',
+    narrationActive: true,
+  }), 'I need a bit more info: - What best describes your use case?');
+
+  assert.equal(resolveTimelineNarrationText({
     kind: 'tool_start',
     title: 'Broken narration',
     get narration() {

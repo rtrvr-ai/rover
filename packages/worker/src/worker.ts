@@ -811,6 +811,14 @@ function questionToDisplayText(question: PlannerQuestion): string {
   return String(question.query || question.question || '').trim();
 }
 
+function buildAskUserResponseText(prefix: string, questions: PlannerQuestion[]): string {
+  const lines = normalizePlannerQuestions(questions)
+    .map(questionToDisplayText)
+    .filter(Boolean)
+    .map(text => `- ${text}`);
+  return lines.length ? `${prefix}\n${lines.join('\n')}` : prefix;
+}
+
 function normalizeAskUserAnswerMeta(
   raw: AskUserAnswerMeta | undefined,
   questions: PlannerQuestion[],
@@ -1454,7 +1462,6 @@ function postAssistantResponse(payload: AssistantCheckpointPayload): string {
   if (!activeActionNarration) return '';
   const kind = payload.responseKind || 'checkpoint';
   const rawText = payload.text
-    || payload.narration
     || deriveResponseNarrationFromOutput(payload.output, {
       responseKind: kind,
       toolName: payload.sourceToolName,
@@ -1462,7 +1469,7 @@ function postAssistantResponse(payload: AssistantCheckpointPayload): string {
     })
     || '';
   const text = sanitizeResponseNarration(rawText, { responseKind: kind, toolName: payload.sourceToolName }) || '';
-  const narration = normalizeResponseNarration(payload.narration || text, kind);
+  const narration = normalizeResponseNarration(text, kind);
   if (!text && !narration) return '';
   const runId = activeRun?.runId;
   if (runId && cancelledRunIds.has(runId)) return text || narration || '';
@@ -1504,9 +1511,8 @@ function postAssistantMessage(payload: string | AssistantMessagePayload): string
   const kind = responseKind === 'checkpoint' || responseKind === 'final' || responseKind === 'question' || responseKind === 'error'
     ? responseKind
     : undefined;
-  const rawNarration = typeof payload === 'string' ? undefined : payload.narration;
   const narration = kind
-    ? normalizeResponseNarration(rawNarration || resolvedText, kind)
+    ? normalizeResponseNarration(resolvedText, kind)
     : undefined;
   const shouldNarrate = shouldEmitResponseNarration(narration);
   (self as any).postMessage({
@@ -2607,10 +2613,6 @@ async function handleUserMessage(
       text: lines.join('\n'),
       blocks,
       responseKind: inferredFailed ? 'error' : 'final',
-      narration: deriveResponseNarrationFromOutput(
-        lines.length === 1 ? lines[0] : lines,
-        { responseKind: inferredFailed ? 'error' : 'final', fallbackText: inferredFailed ? 'I hit an issue and posted details in the chat.' : 'I finished and posted the result in the chat.' },
-      ),
     });
     postStatus('Execution completed', 'Function calls finished', 'complete');
     postStateSnapshot();
@@ -2711,11 +2713,9 @@ async function handleUserMessage(
           questionsAsked: questions,
         },
       ]);
-      const qText = questions.map(question => `- ${question.key}: ${questionToDisplayText(question)}`).join('\n');
       postAssistantMessage({
-        text: `I need a bit more info before continuing:\n${qText}`,
+        text: buildAskUserResponseText('I need a bit more info before continuing:', questions),
         responseKind: 'question',
-        narration: 'I need a bit more information before continuing.',
       });
       postStatus('Need more input to continue', undefined, 'verify');
       postStateSnapshot();
@@ -2742,10 +2742,6 @@ async function handleUserMessage(
       ? postAssistantMessage({
           text: `${structuredError.error.code}: ${structuredError.error.message}`,
           responseKind: 'error',
-          narration: deriveResponseNarrationFromOutput(structuredError, {
-            responseKind: 'error',
-            fallbackText: structuredError.error.message,
-          }),
           blocks: [
             {
               type: 'json',
@@ -2760,10 +2756,6 @@ async function handleUserMessage(
           fallbackText: 'I finished the step.',
         }),
         responseKind: 'final',
-        narration: deriveResponseNarrationFromOutput(output, {
-          responseKind: 'final',
-          fallbackText: 'I finished the step.',
-        }),
       });
     postStatus('Execution completed', structuredError?.error.message, 'complete');
     postStateSnapshot();
@@ -2800,11 +2792,9 @@ async function handleUserMessage(
       pendingAskUser = questions.length
         ? buildPendingAskUserPrompt('planner', questions)
         : undefined;
-      const qText = questions.map(question => `- ${question.key}: ${questionToDisplayText(question)}`).join('\n');
       postAssistantMessage({
-        text: `I need a bit more info:\n${qText}`,
+        text: buildAskUserResponseText('I need a bit more info:', questions),
         responseKind: 'question',
-        narration: 'I need a bit more information before continuing.',
       });
       postStatus('Planner needs user input', undefined, 'verify');
       postStateSnapshot();
@@ -2836,10 +2826,6 @@ async function handleUserMessage(
       ? postAssistantMessage({
           text: `${responseError.error.code}: ${responseError.error.message}`,
           responseKind: 'error',
-          narration: deriveResponseNarrationFromOutput(responseError, {
-            responseKind: 'error',
-            fallbackText: responseError.error.message,
-          }),
           blocks: [
             {
               type: 'json',
@@ -2853,10 +2839,6 @@ async function handleUserMessage(
         text: String(response.overallThought || summarizePlannerToolResults(toolResults) || ''),
         blocks: toolBlocks,
         responseKind: 'final',
-        narration: deriveResponseNarrationFromOutput(
-          response.overallThought || summarizePlannerToolResults(toolResults) || undefined,
-          { responseKind: 'final', fallbackText: 'I finished and posted the result in the chat.' },
-        ),
       });
     postStatus('Planner execution completed', response.overallThought, 'complete');
     postStateSnapshot();

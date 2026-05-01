@@ -56,7 +56,7 @@ The canonical AI / CLI / agent protocol is:
 POST https://agent.rtrvr.ai/v1/a2w/runs
 Content-Type: application/json
 
-{ "url": "https://example.com", "goal": "book a flight" }
+{ "url": "https://example.com", "prompt": "book a flight" }
 ```
 
 Or:
@@ -65,7 +65,7 @@ Or:
 POST https://agent.rtrvr.ai/v1/a2w/runs
 Content-Type: application/json
 
-{ "url": "https://example.com", "shortcut": "checkout_flow" }
+{ "url": "https://example.com", "shortcutId": "checkout_flow" }
 ```
 
 Anonymous AI callers do **not** need `siteId`, `publicKey`, or `siteKeyId`.
@@ -84,7 +84,8 @@ Run responses may also include:
 - `open`: clean receipt URL, for example `https://example.com/#rover_receipt=a2w_receipt_...`
 - `browserLink`: optional readable alias, for example `https://example.com/?rover=book+a+flight#rover_receipt=a2w_receipt_...`
 
-Explicit `Prefer: execution=cloud` omits browser handoff URLs. Use `Prefer: execution=cloud` when the caller needs guaranteed browserless execution. `execution=auto` currently prefers browser attach first.
+Explicit cloud execution usually omits browser handoff URLs. Use `Prefer: execution=cloud, wait=10` when the caller needs guaranteed browserless execution with a short initial wait. `execution=auto` currently prefers browser attach first.
+Active run payloads include `links.poll`, `links.stream`, `links.ndjson`, terminal status hints, and retry guidance so agents can follow a `202 Accepted` create response until completion or `input_required`.
 
 Cross-site Rover delegation stays on the same public protocol:
 
@@ -106,10 +107,10 @@ Quick examples:
 curl -X POST 'https://agent.rtrvr.ai/v1/a2w/runs' \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json' \
-  -H 'Prefer: execution=cloud' \
+  -H 'Prefer: execution=cloud, wait=10' \
   -d '{
     "url": "https://www.rtrvr.ai",
-    "goal": "get me the latest blog post"
+    "prompt": "get me the latest blog post"
   }'
 ```
 

@@ -110,6 +110,33 @@ function artifactNarration(count: number, kind: string): string {
   return `I created ${count === 1 ? 'a' : count} ${plural} and posted the link in the chat.`;
 }
 
+function extractQuestionTexts(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of input) {
+    if (!isRecord(item)) continue;
+    const text = String(item.query || item.question || '').trim();
+    if (!text) continue;
+    const clean = sanitizeResponseNarration(text, { responseKind: 'question' });
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(clean);
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+
+function questionNarrationFromTexts(texts: string[]): string | undefined {
+  if (!texts.length) return undefined;
+  if (texts.length === 1) return texts[0];
+  return sanitizeResponseNarration(`I need ${texts.length} details: ${texts.slice(0, 2).join(' ')}`, {
+    responseKind: 'question',
+  });
+}
+
 export function deriveResponseNarrationFromOutput(
   output: RuntimeToolOutput | undefined,
   context: ResponseNarrationContext = {},
@@ -143,6 +170,9 @@ export function deriveResponseNarrationFromOutput(
       });
     }
 
+    const questionNarration = questionNarrationFromTexts(extractQuestionTexts(output.questions));
+    if (questionNarration) return questionNarration;
+
     for (const key of TEXT_KEYS) {
       const value = output[key];
       if (typeof value === 'string' && value.trim()) {
@@ -154,7 +184,7 @@ export function deriveResponseNarrationFromOutput(
       }
     }
 
-    return sanitizeResponseNarration(context.fallbackText || 'I posted the result in the chat.', context);
+    return sanitizeResponseNarration(context.fallbackText, context);
   }
 
   return sanitizeResponseNarration(context.fallbackText, context);

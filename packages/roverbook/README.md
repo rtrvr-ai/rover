@@ -142,7 +142,7 @@ These tools are the RoverBook analytics, memory, and feedback layer. They are no
 3. site-published Rover shortcut skills in `/.well-known/agent-card.json`
 4. optional WebMCP tools when the browser/runtime supports them
 
-That means site owners should treat RoverBook tools as secondary support tools, while goal-native site skills and shortcut IDs should be published through Rover/Workspace discovery artifacts.
+That means site owners should treat RoverBook tools as secondary support tools, while exact site skills and shortcut IDs should be published through Rover/Workspace discovery artifacts.
 
 ## Derived Records
 
