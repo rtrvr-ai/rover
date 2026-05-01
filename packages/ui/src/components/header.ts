@@ -14,6 +14,8 @@ export type HeaderOptions = {
   isMuted: boolean;
   allowNarrationToggle: boolean;
   narrationEnabled: boolean;
+  allowSpotlightToggle: boolean;
+  spotlightEnabled: boolean;
   onClose: () => void;
   onMinimize: () => void;
   onCycleSize: () => void;
@@ -23,6 +25,7 @@ export type HeaderOptions = {
   onRequestControl: () => void;
   onToggleMute: () => void;
   onToggleNarration: () => void;
+  onToggleSpotlight: () => void;
   onOpenVoiceSettings: () => void;
   onToggleConversations: () => void;
 };
@@ -43,6 +46,8 @@ export type HeaderComponent = {
   setMuted: (muted: boolean) => void;
   setNarrationEnabled: (enabled: boolean) => void;
   setNarrationAvailable: (available: boolean) => void;
+  setSpotlightEnabled: (enabled: boolean) => void;
+  setSpotlightAvailable: (available: boolean) => void;
   closeOverflow: () => void;
   update: (experience: RoverExperienceConfig) => void;
   destroy: () => void;
@@ -118,6 +123,16 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
     opts.onToggleNarration();
   });
 
+  let spotlightEnabled = opts.spotlightEnabled;
+  let spotlightAvailable = opts.allowSpotlightToggle;
+  const spotlightBtn = document.createElement('button');
+  spotlightBtn.type = 'button';
+  spotlightBtn.className = 'spotlightBtn';
+  spotlightBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    opts.onToggleSpotlight();
+  });
+
   const overflowBtn = document.createElement('button');
   overflowBtn.type = 'button';
   overflowBtn.className = 'overflowBtn';
@@ -144,6 +159,7 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
   headerActions.appendChild(sizeBtn);
   headerActions.appendChild(conversationListBtn);
   headerActions.appendChild(narrationBtn);
+  headerActions.appendChild(spotlightBtn);
   headerActions.appendChild(overflowBtn);
   headerActions.appendChild(cancelPill);
   headerActions.appendChild(closeBtn);
@@ -189,6 +205,14 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
     opts.onToggleNarration();
   });
 
+  const menuSpotlightToggle = document.createElement('button');
+  menuSpotlightToggle.type = 'button';
+  menuSpotlightToggle.className = 'menuItem';
+  menuSpotlightToggle.addEventListener('click', () => {
+    closeOverflow();
+    opts.onToggleSpotlight();
+  });
+
   const menuVoiceSettings = document.createElement('button');
   menuVoiceSettings.type = 'button';
   menuVoiceSettings.className = 'menuItem';
@@ -210,6 +234,7 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
   overflowMenu.appendChild(menuDivider);
   overflowMenu.appendChild(menuMuteToggle);
   overflowMenu.appendChild(menuNarrationToggle);
+  overflowMenu.appendChild(menuSpotlightToggle);
   overflowMenu.appendChild(menuVoiceSettings);
   overflowMenu.appendChild(menuTakeControl);
 
@@ -235,13 +260,27 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
     menuVoiceSettings.style.display = narrationAvailable ? '' : 'none';
   }
 
+  function syncSpotlightButton(): void {
+    const label = spotlightEnabled ? 'Turn off action highlights' : 'Turn on action highlights';
+    spotlightBtn.setAttribute('aria-label', label);
+    spotlightBtn.setAttribute('aria-pressed', spotlightEnabled ? 'true' : 'false');
+    spotlightBtn.classList.toggle('enabled', spotlightEnabled);
+    spotlightBtn.style.display = spotlightAvailable ? '' : 'none';
+    spotlightBtn.innerHTML = spotlightEnabled
+      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v3"></path><path d="M12 19v3"></path><path d="M2 12h3"></path><path d="M19 12h3"></path><path d="M4.93 4.93l2.12 2.12"></path><path d="M16.95 16.95l2.12 2.12"></path><path d="M4.93 19.07l2.12-2.12"></path><path d="M16.95 7.05l2.12-2.12"></path></svg>'
+      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><line x1="4" y1="4" x2="20" y2="20"></line></svg>';
+    menuSpotlightToggle.textContent = spotlightEnabled ? 'Turn off action highlights' : 'Turn on action highlights';
+    menuSpotlightToggle.style.display = spotlightAvailable ? '' : 'none';
+  }
+
   function syncOverflowVisibility(): void {
     const hasVisibleMenuItem =
       opts.showTaskControls ||
       opts.allowSoundToggle ||
       narrationAvailable ||
+      spotlightAvailable ||
       menuTakeControl.style.display !== 'none';
-    menuDivider.style.display = opts.allowSoundToggle || narrationAvailable ? '' : 'none';
+    menuDivider.style.display = opts.allowSoundToggle || narrationAvailable || spotlightAvailable ? '' : 'none';
     overflowBtn.style.display = runningState || !hasVisibleMenuItem ? 'none' : '';
   }
 
@@ -265,6 +304,7 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
   header.appendChild(overflowMenu);
   header.appendChild(executionBar);
   syncNarrationButton();
+  syncSpotlightButton();
   syncOverflowVisibility();
 
   return {
@@ -312,6 +352,16 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
     setNarrationAvailable(available: boolean) {
       narrationAvailable = available;
       syncNarrationButton();
+      syncOverflowVisibility();
+    },
+    setSpotlightEnabled(enabled: boolean) {
+      spotlightEnabled = enabled;
+      syncSpotlightButton();
+      syncOverflowVisibility();
+    },
+    setSpotlightAvailable(available: boolean) {
+      spotlightAvailable = available;
+      syncSpotlightButton();
       syncOverflowVisibility();
     },
     closeOverflow,

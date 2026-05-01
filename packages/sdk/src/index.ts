@@ -669,6 +669,8 @@ let currentMode: RoverExecutionMode = 'controller';
 let narrationEnabledForRun = false;
 let narrationPreferenceSource: 'default' | 'visitor' = 'default';
 let narrationLanguage: string | undefined = undefined;
+let actionSpotlightEnabledForRun = false;
+let actionSpotlightPreferenceSource: 'default' | 'visitor' = 'default';
 let workerReady = false;
 let sessionReady = false;
 let isTransportController = true; // default to true for single-tab mode
@@ -4164,6 +4166,7 @@ function sanitizeTimelineEvents(input: any): PersistedTimelineEvent[] {
       toolName: typeof event?.toolName === 'string' ? truncateText(event.toolName, 120) : undefined,
       narration: typeof event?.narration === 'string' ? truncateText(event.narration.replace(/\s+/g, ' ').trim(), 220) : undefined,
       narrationActive: typeof event?.narrationActive === 'boolean' ? event.narrationActive : undefined,
+      actionSpotlightActive: typeof event?.actionSpotlightActive === 'boolean' ? event.actionSpotlightActive : undefined,
       responseKind: normalizeAssistantResponseKind(event?.responseKind),
       actionCue: sanitizeActionCue(event?.actionCue),
     });
@@ -5719,6 +5722,7 @@ function appendTimelineEvent(
     toolName: event.toolName,
     narration: event.narration,
     narrationActive: event.narrationActive,
+    actionSpotlightActive: event.actionSpotlightActive,
     responseKind: event.responseKind,
     actionCue: event.actionCue,
   };
@@ -5747,6 +5751,7 @@ function appendTimelineEvent(
       toolName: timelineEvent.toolName,
       narration: timelineEvent.narration,
       narrationActive: timelineEvent.narrationActive,
+      actionSpotlightActive: timelineEvent.actionSpotlightActive,
       responseKind: timelineEvent.responseKind,
       actionCue: timelineEvent.actionCue,
     });
@@ -5869,6 +5874,7 @@ function replayTimeline(events: PersistedTimelineEvent[]): void {
         toolName: event.toolName,
         narration: event.narration,
         narrationActive: event.narrationActive,
+        actionSpotlightActive: event.actionSpotlightActive,
         responseKind: event.responseKind,
         actionCue: event.actionCue,
         publishShared: false,
@@ -6509,6 +6515,10 @@ function postRun(
     narrationPreferenceSource?: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
+    actionSpotlightEnabledForRun?: boolean;
+    actionSpotlightPreferenceSource?: 'default' | 'visitor';
+    actionSpotlightRunKind?: 'guide' | 'task';
+    actionSpotlightDefaultActiveForRun?: boolean;
   },
 ): void {
   const trimmed = String(text || '').trim();
@@ -6603,8 +6613,8 @@ function postRun(
   markTaskRunning(resume ? 'worker_task_resumed' : 'worker_task_active');
 
   lastUserInputText = persistedRunText;
-  if (runtimeState) {
-    runtimeState.workerState = sanitizeWorkerState({
+	  if (runtimeState) {
+	    runtimeState.workerState = sanitizeWorkerState({
       ...(runtimeState.workerState || {}),
       taskBoundaryId: boundaryForRun,
       rootUserInput: runtimeState.workerState?.rootUserInput || persistedRunText,
@@ -6615,30 +6625,38 @@ function postRun(
       updatedAt: Date.now(),
     });
     sessionCoordinator?.setWorkerContext(toSharedWorkerContext(runtimeState.workerState));
-  }
-  setActiveTaskSeedChatLog(seedChatLog);
-  sessionCoordinator?.acquireWorkflowLock(runId);
-  sessionCoordinator?.setActiveRun({ runId, text: persistedRunText });
-  worker.postMessage({
-    type: 'run',
-    text: trimmed,
-    runId,
+	  }
+	  setActiveTaskSeedChatLog(seedChatLog);
+	  sessionCoordinator?.acquireWorkflowLock(runId);
+	  sessionCoordinator?.setActiveRun({ runId, text: persistedRunText });
+	  const workerNarrationRunKind = normalizeRoverRunKind(options?.narrationRunKind);
+	  const workerActionSpotlightRunKind =
+	    normalizeRoverRunKind(options?.actionSpotlightRunKind) || workerNarrationRunKind;
+	  const runMessage: Record<string, unknown> = {
+	    type: 'run',
+	    text: trimmed,
+	    runId,
     trajectoryId: runtimeState?.workerState?.trajectoryId,
     resume,
     preserveHistory: !!options?.preserveHistory,
     seedChatLog,
     routing: options?.routing,
     askUserAnswers: options?.askUserAnswers,
-    files: sanitizeAttachedFileDescriptors(options?.files),
-    narrationEnabledForRun: options?.narrationEnabledForRun === true,
-    narrationPreferenceSource: options?.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
-    narrationRunKind: options?.narrationRunKind === 'guide' || options?.narrationRunKind === 'task'
-      ? options.narrationRunKind
-      : undefined,
-    narrationLanguage: options?.narrationLanguage,
-    scopedTabIds,
-    taskTabScope: toWorkerTaskTabScopePayload(),
-  });
+	    files: sanitizeAttachedFileDescriptors(options?.files),
+	    narrationEnabledForRun: options?.narrationEnabledForRun === true,
+	    narrationPreferenceSource: options?.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
+	    ...(workerNarrationRunKind ? { narrationRunKind: workerNarrationRunKind } : {}),
+	    narrationLanguage: options?.narrationLanguage,
+	    actionSpotlightEnabledForRun: options?.actionSpotlightEnabledForRun === true,
+	    actionSpotlightPreferenceSource: options?.actionSpotlightPreferenceSource === 'visitor' ? 'visitor' : 'default',
+	    ...(workerActionSpotlightRunKind ? { actionSpotlightRunKind: workerActionSpotlightRunKind } : {}),
+	    scopedTabIds,
+	    taskTabScope: toWorkerTaskTabScopePayload(),
+	  };
+	  if (typeof options?.actionSpotlightDefaultActiveForRun === 'boolean') {
+	    runMessage.actionSpotlightDefaultActiveForRun = options.actionSpotlightDefaultActiveForRun;
+	  }
+	  worker.postMessage(runMessage);
 
   if (runSafetyTimer) clearTimeout(runSafetyTimer);
   const safetyRunId = runId;
@@ -6677,6 +6695,10 @@ async function dispatchUserPromptAsync(
     narrationPreferenceSource?: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
+    actionSpotlightEnabledForRun?: boolean;
+    actionSpotlightPreferenceSource?: 'default' | 'visitor';
+    actionSpotlightRunKind?: 'guide' | 'task';
+    actionSpotlightDefaultActiveForRun?: boolean;
     continueExistingRun?: boolean;
     continueRunId?: string;
   },
@@ -6908,7 +6930,15 @@ async function dispatchUserPromptAsync(
 
   const effectiveNarrationEnabledForRun = options?.narrationEnabledForRun ?? narrationEnabledForRun;
   const effectiveNarrationPreferenceSource = options?.narrationPreferenceSource || narrationPreferenceSource;
+  const effectiveNarrationRunKind = normalizeRoverRunKind(options?.narrationRunKind);
   const effectiveNarrationLanguage = options?.narrationLanguage || narrationLanguage;
+  const effectiveActionSpotlightEnabledForRun = options?.actionSpotlightEnabledForRun ?? actionSpotlightEnabledForRun;
+  const effectiveActionSpotlightPreferenceSource = options?.actionSpotlightPreferenceSource || actionSpotlightPreferenceSource;
+  const effectiveActionSpotlightRunKind =
+    normalizeRoverRunKind(options?.actionSpotlightRunKind) || effectiveNarrationRunKind;
+  const effectiveActionSpotlightDefaultActiveForRun = typeof options?.actionSpotlightDefaultActiveForRun === 'boolean'
+    ? options.actionSpotlightDefaultActiveForRun
+    : resolveDefaultActionSpotlightActiveForRun(effectiveActionSpotlightRunKind, effectiveActionSpotlightEnabledForRun === true);
   postRun(trimmed, {
     runId,
     appendUserMessage: true,
@@ -6921,10 +6951,12 @@ async function dispatchUserPromptAsync(
     files: uploadedFiles,
     narrationEnabledForRun: effectiveNarrationEnabledForRun === true,
     narrationPreferenceSource: effectiveNarrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
-    narrationRunKind: options?.narrationRunKind === 'guide' || options?.narrationRunKind === 'task'
-      ? options.narrationRunKind
-      : undefined,
+    narrationRunKind: effectiveNarrationRunKind,
     narrationLanguage: effectiveNarrationLanguage,
+    actionSpotlightEnabledForRun: effectiveActionSpotlightEnabledForRun === true,
+    actionSpotlightPreferenceSource: effectiveActionSpotlightPreferenceSource === 'visitor' ? 'visitor' : 'default',
+    actionSpotlightRunKind: effectiveActionSpotlightRunKind,
+    actionSpotlightDefaultActiveForRun: effectiveActionSpotlightDefaultActiveForRun,
   });
 }
 
@@ -6941,6 +6973,10 @@ function dispatchUserPrompt(
     narrationPreferenceSource?: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
+    actionSpotlightEnabledForRun?: boolean;
+    actionSpotlightPreferenceSource?: 'default' | 'visitor';
+    actionSpotlightRunKind?: 'guide' | 'task';
+    actionSpotlightDefaultActiveForRun?: boolean;
     continueExistingRun?: boolean;
     continueRunId?: string;
   },
@@ -8275,6 +8311,7 @@ function handleWorkerMessage(msg: any): void {
       toolName: msg.call?.name,
       narration: typeof msg.narration === 'string' ? msg.narration : undefined,
       narrationActive: typeof msg.narrationActive === 'boolean' ? msg.narrationActive : undefined,
+      actionSpotlightActive: typeof msg.actionSpotlightActive === 'boolean' ? msg.actionSpotlightActive : undefined,
       actionCue,
     });
     emit('tool_start', msg);
@@ -8309,6 +8346,7 @@ function handleWorkerMessage(msg: any): void {
       toolName: msg.call?.name,
       narration: typeof msg.narration === 'string' ? msg.narration : undefined,
       narrationActive: typeof msg.narrationActive === 'boolean' ? msg.narrationActive : undefined,
+      actionSpotlightActive: typeof msg.actionSpotlightActive === 'boolean' ? msg.actionSpotlightActive : undefined,
       actionCue,
     });
     emit('tool_result', msg);
@@ -9009,6 +9047,10 @@ function sanitizeExperienceConfig(raw: unknown): RoverServerExperienceConfig | u
   const input = raw as Record<string, unknown>;
   const next: RoverServerExperienceConfig = {};
 
+  if (input.experienceMode === 'guided' || input.experienceMode === 'minimal') {
+    next.experienceMode = input.experienceMode;
+  }
+
   if (input.presence && typeof input.presence === 'object') {
     const presenceInput = input.presence as Record<string, unknown>;
     const presence: NonNullable<RoverServerExperienceConfig['presence']> = {};
@@ -9147,6 +9189,12 @@ function sanitizeExperienceConfig(raw: unknown): RoverServerExperienceConfig | u
     if (actionSpotlightColor) {
       motion.actionSpotlightColor = actionSpotlightColor;
     }
+    if (Array.isArray(motionInput.actionSpotlightRunKinds)) {
+      const kinds = Array.from(new Set(
+        motionInput.actionSpotlightRunKinds.filter((kind): kind is 'guide' | 'task' => kind === 'guide' || kind === 'task'),
+      ));
+      if (kinds.length) motion.actionSpotlightRunKinds = kinds;
+    }
     if (Object.keys(motion).length) next.motion = motion;
   }
 
@@ -9246,6 +9294,40 @@ function deriveExperienceConfig(cfg: RoverInit | null): RoverServerExperienceCon
     theme: merged.theme,
   });
   return resolved;
+}
+
+function normalizeRoverRunKind(input: unknown): 'guide' | 'task' | undefined {
+  return input === 'guide' || input === 'task' ? input : undefined;
+}
+
+function resolveDefaultActionSpotlightActiveForRunFromConfig(
+  cfg: RoverInit | null,
+  runKind: 'guide' | 'task' | undefined,
+  spotlightAvailable: boolean,
+): boolean {
+  if (!spotlightAvailable) return false;
+  const experience = deriveExperienceConfig(cfg);
+  const presetMode = experience?.experienceMode;
+  const motion = experience?.motion;
+  const actionSpotlight = typeof motion?.actionSpotlight === 'boolean'
+    ? motion.actionSpotlight
+    : presetMode === 'minimal'
+      ? false
+      : true;
+  if (!actionSpotlight) return false;
+  const allowedKinds = Array.isArray(motion?.actionSpotlightRunKinds)
+    ? motion.actionSpotlightRunKinds.filter((kind): kind is 'guide' | 'task' => kind === 'guide' || kind === 'task')
+    : presetMode === 'guided'
+      ? ['guide' as const]
+      : undefined;
+  return !runKind || !allowedKinds || allowedKinds.length === 0 || allowedKinds.includes(runKind);
+}
+
+function resolveDefaultActionSpotlightActiveForRun(
+  runKind: 'guide' | 'task' | undefined,
+  spotlightAvailable: boolean,
+): boolean {
+  return resolveDefaultActionSpotlightActiveForRunFromConfig(currentConfig, runKind, spotlightAvailable);
 }
 
 function resolveEffectiveAgentDiscoveryRuntimeConfig(cfg: RoverInit | null): RoverAgentDiscoveryRuntimeConfig | undefined {
@@ -9841,6 +9923,7 @@ function dispatchLaunchInput(response: RoverLaunchAttachResponse | RoverRunBrows
         reason: 'launch_shortcut',
         routing: input.routing,
         narrationRunKind: input.runKind,
+        actionSpotlightRunKind: input.runKind,
         narrationLanguage,
       });
     } else {
@@ -10618,6 +10701,7 @@ function dispatchClaimedBrowserRun(response: RoverRunBrowserClaimResponse): void
       reason: 'browser_receipt_shortcut',
       routing: input.routing,
       narrationRunKind: input.runKind,
+      actionSpotlightRunKind: input.runKind,
       narrationLanguage,
     });
     return;
@@ -10819,6 +10903,7 @@ function maybeHandleDeepLink(source: 'boot' | 'update' | 'navigation' | 'site_co
       reason: 'deep_link_shortcut',
       routing: shortcut.routing,
       narrationRunKind: shortcut.runKind,
+      actionSpotlightRunKind: shortcut.runKind,
       narrationLanguage,
     });
     recordTelemetryEvent('status', {
@@ -11826,15 +11911,30 @@ function createRuntime(cfg: RoverInit): void {
     onVoiceTelemetry: (event: RoverVoiceTelemetryEventName, payload?: Record<string, unknown>) => {
       recordVoiceTelemetryEvent(event, payload);
     },
-    onShortcutClick: (shortcut: RoverShortcut) => {
+    onShortcutClick: (shortcut: RoverShortcut, meta?: {
+      narrationEnabledForRun?: boolean;
+      narrationPreferenceSource?: 'default' | 'visitor';
+      narrationRunKind?: 'guide' | 'task';
+      narrationLanguage?: string;
+      actionSpotlightEnabledForRun?: boolean;
+      actionSpotlightPreferenceSource?: 'default' | 'visitor';
+      actionSpotlightRunKind?: 'guide' | 'task';
+      actionSpotlightDefaultActiveForRun?: boolean;
+    }) => {
       const text = String(shortcut.prompt || '').trim();
       if (!text) return;
+      const spotlightAvailable = meta?.actionSpotlightEnabledForRun ?? actionSpotlightEnabledForRun;
       dispatchUserPrompt(text, {
         routing: shortcut.routing,
-        narrationEnabledForRun,
-        narrationPreferenceSource,
-        narrationRunKind: shortcut.runKind,
-        narrationLanguage,
+        narrationEnabledForRun: meta?.narrationEnabledForRun ?? narrationEnabledForRun,
+        narrationPreferenceSource: meta?.narrationPreferenceSource || narrationPreferenceSource,
+        narrationRunKind: meta?.narrationRunKind || shortcut.runKind,
+        narrationLanguage: meta?.narrationLanguage || narrationLanguage,
+        actionSpotlightEnabledForRun: spotlightAvailable,
+        actionSpotlightPreferenceSource: meta?.actionSpotlightPreferenceSource || actionSpotlightPreferenceSource,
+        actionSpotlightRunKind: meta?.actionSpotlightRunKind || shortcut.runKind,
+        actionSpotlightDefaultActiveForRun: meta?.actionSpotlightDefaultActiveForRun
+          ?? resolveDefaultActionSpotlightActiveForRun(shortcut.runKind, spotlightAvailable === true),
       });
     },
     onSend: (text: string, meta?: {
@@ -11844,6 +11944,10 @@ function createRuntime(cfg: RoverInit): void {
       narrationPreferenceSource?: 'default' | 'visitor';
       narrationRunKind?: 'guide' | 'task';
       narrationLanguage?: string;
+      actionSpotlightEnabledForRun?: boolean;
+      actionSpotlightPreferenceSource?: 'default' | 'visitor';
+      actionSpotlightRunKind?: 'guide' | 'task';
+      actionSpotlightDefaultActiveForRun?: boolean;
     }) => {
       dispatchUserPrompt(text, {
         askUserAnswers: meta?.askUserAnswers,
@@ -11852,6 +11956,12 @@ function createRuntime(cfg: RoverInit): void {
         narrationPreferenceSource: meta?.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
         narrationRunKind: meta?.narrationRunKind,
         narrationLanguage: meta?.narrationLanguage,
+        actionSpotlightEnabledForRun: meta?.actionSpotlightEnabledForRun === true,
+        actionSpotlightPreferenceSource: meta?.actionSpotlightPreferenceSource === 'visitor' ? 'visitor' : 'default',
+        actionSpotlightRunKind: meta?.actionSpotlightRunKind || meta?.narrationRunKind,
+        actionSpotlightDefaultActiveForRun: typeof meta?.actionSpotlightDefaultActiveForRun === 'boolean'
+          ? meta.actionSpotlightDefaultActiveForRun
+          : undefined,
       });
     },
     onOpenConversations: () => {
@@ -11866,6 +11976,14 @@ function createRuntime(cfg: RoverInit): void {
       narrationEnabledForRun = available && enabled;
       narrationPreferenceSource = source === 'visitor' ? 'visitor' : 'default';
       narrationLanguage = language;
+    },
+    onSpotlightPreferenceChange: (
+      enabled: boolean,
+      available: boolean,
+      source: 'default' | 'visitor',
+    ) => {
+      actionSpotlightEnabledForRun = available && enabled;
+      actionSpotlightPreferenceSource = source === 'visitor' ? 'visitor' : 'default';
     },
     onRequestControl: () => {
       const claimed = takeControlOfActiveRun();
@@ -13307,6 +13425,11 @@ export const __roverInternalsForTests = {
       backendSiteConfig = prev;
     }
   },
+  resolveDefaultActionSpotlightActiveForRunForTests: (
+    cfg: RoverInit | null,
+    runKind: 'guide' | 'task' | undefined,
+    spotlightAvailable: boolean,
+  ) => resolveDefaultActionSpotlightActiveForRunFromConfig(cfg, runKind, spotlightAvailable),
 };
 
 export {

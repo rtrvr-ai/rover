@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   extractActionNarrationFromArgs,
+  extractActionHighlightFromArgs,
   sanitizeActionNarration,
   stripToolUiHintsFromArgs,
 } from '../dist/agent/uiHints.js';
@@ -66,6 +67,19 @@ test('tool ui narration is sanitized and stripped from executable args', () => {
   assert.equal(Object.prototype.hasOwnProperty.call(args, 'ui'), true);
 });
 
+test('action highlight extraction returns boolean only when explicitly set', () => {
+  assert.equal(extractActionHighlightFromArgs({ ui: { highlight: true } }), true);
+  assert.equal(extractActionHighlightFromArgs({ ui: { highlight: false } }), false);
+  // Omitted highlight → undefined (defer to defaults)
+  assert.equal(extractActionHighlightFromArgs({ ui: { narration: 'Click submit' } }), undefined);
+  assert.equal(extractActionHighlightFromArgs({ ui: {} }), undefined);
+  assert.equal(extractActionHighlightFromArgs({}), undefined);
+  assert.equal(extractActionHighlightFromArgs(null), undefined);
+  // Non-boolean must be rejected (no truthy coercion)
+  assert.equal(extractActionHighlightFromArgs({ ui: { highlight: 'true' } }), undefined);
+  assert.equal(extractActionHighlightFromArgs({ ui: { highlight: 1 } }), undefined);
+});
+
 test('rover runtime context preserves explicit narration ui hints', async () => {
   const originalFetch = globalThis.fetch;
   const requests = [];
@@ -95,6 +109,8 @@ test('rover runtime context preserves explicit narration ui hints', async () => 
         },
         uiHints: {
           actionNarration: true,
+          actionSpotlight: true,
+          actionSpotlightDefaultActive: true,
           runKind: 'guide',
         },
       },
@@ -111,6 +127,8 @@ test('rover runtime context preserves explicit narration ui hints', async () => 
     });
     assert.deepEqual(requests[0].data.runtimeContext.uiHints, {
       actionNarration: true,
+      actionSpotlight: true,
+      actionSpotlightDefaultActive: true,
       runKind: 'guide',
     });
   } finally {

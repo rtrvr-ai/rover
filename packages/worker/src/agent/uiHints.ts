@@ -61,6 +61,7 @@ const SHORT_RAW_VALUE_ARG_KEYS = new Set([
 
 export type ToolUiHints = {
   narration?: string;
+  highlight?: boolean;
 };
 
 export function sanitizeActionNarration(input: unknown): string | undefined {
@@ -97,6 +98,15 @@ export function extractActionNarrationFromArgs(args: unknown): string | undefine
   if (!narration) return undefined;
   if (narrationContainsRawArgValue(narration, args as Record<string, unknown>)) return undefined;
   return narration;
+}
+
+export function extractActionHighlightFromArgs(args: unknown): boolean | undefined {
+  if (!args || typeof args !== 'object') return undefined;
+  const ui = (args as Record<string, unknown>).ui;
+  if (!ui || typeof ui !== 'object') return undefined;
+  const highlight = (ui as ToolUiHints).highlight;
+  if (typeof highlight !== 'boolean') return undefined;
+  return highlight;
 }
 
 export function stripToolUiHintsFromArgs<T extends Record<string, any> | undefined>(args: T): T {

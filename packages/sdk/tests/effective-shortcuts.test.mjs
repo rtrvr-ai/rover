@@ -66,3 +66,27 @@ test('generated business shortcuts only appear when no explicit shortcuts exist'
   assert.equal(resolved.length, 3);
   assert.equal(resolved.every(shortcut => shortcut.id.startsWith('suggested_support_')), true);
 });
+
+test('guided preset derives spotlight default from shortcut runKind', () => {
+  const cfg = {
+    siteId: 'site_test',
+    ui: {
+      experience: {
+        experienceMode: 'guided',
+      },
+    },
+  };
+
+  assert.equal(
+    __roverInternalsForTests.resolveDefaultActionSpotlightActiveForRunForTests(cfg, 'guide', true),
+    true,
+  );
+  assert.equal(
+    __roverInternalsForTests.resolveDefaultActionSpotlightActiveForRunForTests(cfg, 'task', true),
+    false,
+  );
+  assert.equal(
+    __roverInternalsForTests.resolveDefaultActionSpotlightActiveForRunForTests(cfg, 'guide', false),
+    false,
+  );
+});

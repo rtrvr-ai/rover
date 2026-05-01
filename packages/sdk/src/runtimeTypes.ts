@@ -25,6 +25,7 @@ export type PersistedTimelineEvent = {
   toolName?: string;
   narration?: string;
   narrationActive?: boolean;
+  actionSpotlightActive?: boolean;
   responseKind?: RoverTimelineEvent['responseKind'];
   actionCue?: RoverActionCue;
 };

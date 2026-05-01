@@ -91,6 +91,9 @@ export type RoverTimelineEvent = {
   toolName?: string;
   narration?: string;
   narrationActive?: boolean;
+  // Per-step override for the action spotlight gate. When set, takes precedence over
+  // site preset / runKind / visitor toggle. Undefined means defer to default behavior.
+  actionSpotlightActive?: boolean;
   responseKind?: RoverAssistantResponseKind;
   actionCue?: RoverActionCue;
 };
@@ -199,7 +202,10 @@ export type RoverUi = {
   hidePausedTaskBanner: () => void;
 };
 
+export type RoverExperienceMode = 'guided' | 'minimal';
+
 export type RoverExperienceConfig = {
+  experienceMode?: RoverExperienceMode;
   presence?: {
     assistantName?: string;
     ctaText?: string;
@@ -253,6 +259,7 @@ export type RoverExperienceConfig = {
     performanceBudget?: 'standard' | 'high';
     actionSpotlight?: boolean;
     actionSpotlightColor?: string;
+    actionSpotlightRunKinds?: ReadonlyArray<'guide' | 'task'>;
     filaments?: boolean;
     particles?: boolean;
     palimpsest?: boolean;
@@ -276,9 +283,14 @@ export type MountOptions = {
     narrationPreferenceSource?: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
+    actionSpotlightEnabledForRun?: boolean;
+    actionSpotlightPreferenceSource?: 'default' | 'visitor';
+    actionSpotlightRunKind?: 'guide' | 'task';
+    actionSpotlightDefaultActiveForRun?: boolean;
   }) => void;
   onVoiceTelemetry?: (event: RoverVoiceTelemetryEvent, payload?: Record<string, unknown>) => void;
   onNarrationPreferenceChange?: (enabled: boolean, available: boolean, source: 'default' | 'visitor', language?: string) => void;
+  onSpotlightPreferenceChange?: (enabled: boolean, available: boolean, source: 'default' | 'visitor') => void;
   onOpen?: () => void;
   onClose?: () => void;
   onRequestControl?: () => void;
@@ -289,7 +301,16 @@ export type MountOptions = {
   onTaskSuggestionPrimary?: () => void;
   onTaskSuggestionSecondary?: () => void;
   shortcuts?: RoverShortcut[];
-  onShortcutClick?: (shortcut: RoverShortcut) => void;
+  onShortcutClick?: (shortcut: RoverShortcut, meta?: {
+    narrationEnabledForRun?: boolean;
+    narrationPreferenceSource?: 'default' | 'visitor';
+    narrationRunKind?: 'guide' | 'task';
+    narrationLanguage?: string;
+    actionSpotlightEnabledForRun?: boolean;
+    actionSpotlightPreferenceSource?: 'default' | 'visitor';
+    actionSpotlightRunKind?: 'guide' | 'task';
+    actionSpotlightDefaultActiveForRun?: boolean;
+  }) => void;
   showTaskControls?: boolean;
   muted?: boolean;
   thoughtStyle?: RoverThoughtStyle;

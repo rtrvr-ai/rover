@@ -24,7 +24,7 @@ import { isApiKeyRequiredError, toRoverErrorEnvelope } from './agent/errors.js';
 import { resolveRuntimeTabs } from './agent/runtimeTabs.js';
 import { shouldClearHistoryForRun } from './runHistoryGuards.js';
 import { classifyNavigationContinuation } from './navigationContinuation.js';
-import { extractActionNarrationFromArgs, stripToolUiHintsFromArgs } from './agent/uiHints.js';
+import { extractActionNarrationFromArgs, extractActionHighlightFromArgs, stripToolUiHintsFromArgs } from './agent/uiHints.js';
 import {
   deriveResponseNarrationFromOutput,
   responseNarrationDedupeKey,
@@ -89,6 +89,10 @@ type RoverWorkerConfig = RoverAgentConfig & {
           enabled?: boolean;
           defaultMode?: 'guided' | 'always' | 'off';
         };
+      };
+      motion?: {
+        actionSpotlight?: boolean;
+        actionSpotlightRunKinds?: ReadonlyArray<'guide' | 'task'>;
       };
     };
   };
@@ -224,6 +228,19 @@ function classifyNarrationRunKind(input?: string): 'guide' | 'task' {
   return 'task';
 }
 
+function normalizeActionSpotlightRunKinds(input: unknown): Array<'guide' | 'task'> | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const kinds = input.filter((kind): kind is 'guide' | 'task' => kind === 'guide' || kind === 'task');
+  return kinds.length ? Array.from(new Set(kinds)) : undefined;
+}
+
+function isDefaultActionSpotlightActive(config: RoverWorkerConfig | null, runKind?: 'guide' | 'task'): boolean {
+  const motion = config?.ui?.experience?.motion;
+  if (motion?.actionSpotlight === false) return false;
+  const allowedKinds = normalizeActionSpotlightRunKinds(motion?.actionSpotlightRunKinds);
+  return !runKind || !allowedKinds || allowedKinds.length === 0 || allowedKinds.includes(runKind);
+}
+
 function resolveActionNarrationHints(
   config: RoverWorkerConfig | null,
   userInput?: string,
@@ -232,32 +249,53 @@ function resolveActionNarrationHints(
     narrationPreferenceSource?: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
+    actionSpotlightEnabledForRun?: boolean;
+    actionSpotlightRunKind?: 'guide' | 'task';
+    actionSpotlightDefaultActiveForRun?: boolean;
   },
 ): {
   actionNarration?: boolean;
+  actionSpotlight?: boolean;
+  actionSpotlightDefaultActive?: boolean;
   runKind?: 'guide' | 'task';
   narrationLanguage?: string;
 } {
-  if (options?.narrationEnabledForRun === false) return {};
   const narration = config?.ui?.experience?.audio?.narration;
-  if (narration?.enabled === false) return {};
+  const narrationOwnerEnabled = narration?.enabled !== false;
   const defaultMode = narration?.defaultMode === 'always' || narration?.defaultMode === 'off'
     ? narration.defaultMode
     : 'guided';
-  const runKind = normalizeNarrationRunKind(options?.narrationRunKind) || classifyNarrationRunKind(userInput || rootUserInput);
-  if (options?.narrationPreferenceSource === 'visitor' && options.narrationEnabledForRun === true) {
-    return {
-      runKind,
-      actionNarration: true,
-      ...(normalizeNarrationLanguage(options.narrationLanguage) ? { narrationLanguage: normalizeNarrationLanguage(options.narrationLanguage) } : {}),
-    };
+  const runKind = normalizeNarrationRunKind(options?.narrationRunKind)
+    || normalizeNarrationRunKind(options?.actionSpotlightRunKind)
+    || classifyNarrationRunKind(userInput || rootUserInput);
+  const next: {
+    actionNarration?: boolean;
+    actionSpotlight?: boolean;
+    actionSpotlightDefaultActive?: boolean;
+    runKind?: 'guide' | 'task';
+    narrationLanguage?: string;
+  } = {};
+
+  if (options?.actionSpotlightEnabledForRun === true) {
+    next.actionSpotlight = true;
+    next.actionSpotlightDefaultActive = typeof options.actionSpotlightDefaultActiveForRun === 'boolean'
+      ? options.actionSpotlightDefaultActiveForRun
+      : isDefaultActionSpotlightActive(config, runKind);
   }
-  if (defaultMode === 'off') return {};
-  return {
-    runKind,
-    ...(defaultMode === 'always' || runKind === 'guide' ? { actionNarration: true } : {}),
-    ...(normalizeNarrationLanguage(options?.narrationLanguage) ? { narrationLanguage: normalizeNarrationLanguage(options?.narrationLanguage) } : {}),
-  };
+
+  if (narrationOwnerEnabled && options?.narrationEnabledForRun !== false) {
+    if (options?.narrationPreferenceSource === 'visitor' && options.narrationEnabledForRun === true) {
+      next.actionNarration = true;
+    } else if (defaultMode !== 'off' && (defaultMode === 'always' || runKind === 'guide')) {
+      next.actionNarration = true;
+    }
+    if (normalizeNarrationLanguage(options?.narrationLanguage)) {
+      next.narrationLanguage = normalizeNarrationLanguage(options?.narrationLanguage);
+    }
+  }
+
+  if (next.actionNarration || next.actionSpotlight) next.runKind = runKind;
+  return next;
 }
 
 function normalizeNarrationLanguage(input: unknown): string | undefined {
@@ -291,6 +329,8 @@ function buildRoverRuntimeContext(params: {
   agentName: string;
   taskBoundaryId?: string;
   actionNarration?: boolean;
+  actionSpotlight?: boolean;
+  actionSpotlightDefaultActive?: boolean;
   runKind?: 'guide' | 'task';
   narrationLanguage?: string;
 }): RoverRuntimeContext {
@@ -335,10 +375,12 @@ function buildRoverRuntimeContext(params: {
     ...(site ? { site } : {}),
     tabIdContract: 'tree_index_mapped_by_tab_order',
     taskBoundaryId: params.taskBoundaryId,
-    ...(params.actionNarration || params.runKind || params.narrationLanguage
+    ...(params.actionNarration || params.actionSpotlight || typeof params.actionSpotlightDefaultActive === 'boolean' || params.runKind || params.narrationLanguage
       ? {
           uiHints: {
             ...(params.actionNarration ? { actionNarration: true } : {}),
+            ...(params.actionSpotlight ? { actionSpotlight: true } : {}),
+            ...(typeof params.actionSpotlightDefaultActive === 'boolean' ? { actionSpotlightDefaultActive: params.actionSpotlightDefaultActive } : {}),
             ...(params.runKind ? { runKind: params.runKind } : {}),
             ...(params.narrationLanguage ? { narrationLanguage: params.narrationLanguage } : {}),
           },
@@ -432,6 +474,10 @@ function mergeWorkerUi(
           ...(current?.experience?.audio?.narration || {}),
           ...(incoming.experience?.audio?.narration || {}),
         },
+      },
+      motion: {
+        ...(current?.experience?.motion || {}),
+        ...(incoming.experience?.motion || {}),
       },
     },
   };
@@ -611,6 +657,7 @@ function postToolLifecycleEvent(type: 'tool_start' | 'tool_result', payload: {
   call: FunctionCall & { id?: string };
   toolCallId: string;
   narration?: string;
+  actionSpotlightActive?: boolean;
   result?: unknown;
 }): void {
   const runId = activeRun?.runId || 'no-run';
@@ -621,6 +668,7 @@ function postToolLifecycleEvent(type: 'tool_start' | 'tool_result', payload: {
     toolCallId: payload.toolCallId,
     narration: type === 'tool_start' ? payload.narration : undefined,
     narrationActive: activeActionNarration || undefined,
+    actionSpotlightActive: typeof payload.actionSpotlightActive === 'boolean' ? payload.actionSpotlightActive : undefined,
     logicalTabId: extractToolLifecycleLogicalTabId(payload.call.args),
     result: payload.result,
     executionId: activeRun?.runId,
@@ -640,18 +688,19 @@ function wrapBridgeRpcWithToolLifecycle(
 
     const toolCallId = typeof rawCall.id === 'string' && rawCall.id.trim() ? rawCall.id.trim() : crypto.randomUUID();
     const narration = extractActionNarrationFromArgs(rawCall.args);
+    const actionSpotlightActive = extractActionHighlightFromArgs(rawCall.args);
     const call = cloneToolCall(rawCall, toolCallId);
-    postToolLifecycleEvent('tool_start', { call, toolCallId, narration });
+    postToolLifecycleEvent('tool_start', { call, toolCallId, narration, actionSpotlightActive });
     try {
       const result = await rawBridgeRpc(method, { ...(params || {}), call });
-      postToolLifecycleEvent('tool_result', { call, toolCallId, narration, result: cloneUnknown(result) });
+      postToolLifecycleEvent('tool_result', { call, toolCallId, narration, actionSpotlightActive, result: cloneUnknown(result) });
       return result;
     } catch (err: any) {
       const result = {
         success: false,
         error: err?.message || String(err),
       };
-      postToolLifecycleEvent('tool_result', { call, toolCallId, narration, result });
+      postToolLifecycleEvent('tool_result', { call, toolCallId, narration, actionSpotlightActive, result });
       throw err;
     }
   };
@@ -2236,6 +2285,9 @@ async function handleUserMessage(
     narrationPreferenceSource?: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
+    actionSpotlightEnabledForRun?: boolean;
+    actionSpotlightRunKind?: 'guide' | 'task';
+    actionSpotlightDefaultActiveForRun?: boolean;
   },
 ): Promise<RunOutcome> {
   if (!config) throw new Error('Worker not initialized');
@@ -2391,6 +2443,9 @@ async function handleUserMessage(
     narrationPreferenceSource: options?.narrationPreferenceSource,
     narrationRunKind: options?.narrationRunKind,
     narrationLanguage: options?.narrationLanguage,
+    actionSpotlightEnabledForRun: options?.actionSpotlightEnabledForRun,
+    actionSpotlightRunKind: options?.actionSpotlightRunKind,
+    actionSpotlightDefaultActiveForRun: options?.actionSpotlightDefaultActiveForRun,
   });
   activeActionNarration = narrationHints.actionNarration === true;
   const runtimeContext = buildRoverRuntimeContext({
@@ -2891,6 +2946,9 @@ async function runUserMessage(
     narrationPreferenceSource?: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
+    actionSpotlightEnabledForRun?: boolean;
+    actionSpotlightRunKind?: 'guide' | 'task';
+    actionSpotlightDefaultActiveForRun?: boolean;
   },
 ): Promise<void> {
   const runId = meta?.runId || crypto.randomUUID();
@@ -2963,6 +3021,9 @@ async function runUserMessage(
       narrationPreferenceSource: meta?.narrationPreferenceSource,
       narrationRunKind: meta?.narrationRunKind,
       narrationLanguage: meta?.narrationLanguage,
+      actionSpotlightEnabledForRun: meta?.actionSpotlightEnabledForRun,
+      actionSpotlightRunKind: meta?.actionSpotlightRunKind,
+      actionSpotlightDefaultActiveForRun: meta?.actionSpotlightDefaultActiveForRun,
     }));
     const isTerminalOutcome =
       outcome.terminalState === 'completed'
@@ -3178,6 +3239,9 @@ async function runUserMessage(
         narrationPreferenceSource: data.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
         narrationRunKind: data.narrationRunKind === 'guide' || data.narrationRunKind === 'task' ? data.narrationRunKind : undefined,
         narrationLanguage: normalizeNarrationLanguage(data.narrationLanguage),
+        actionSpotlightEnabledForRun: typeof data.actionSpotlightEnabledForRun === 'boolean' ? data.actionSpotlightEnabledForRun : undefined,
+        actionSpotlightRunKind: data.actionSpotlightRunKind === 'guide' || data.actionSpotlightRunKind === 'task' ? data.actionSpotlightRunKind : undefined,
+        actionSpotlightDefaultActiveForRun: typeof data.actionSpotlightDefaultActiveForRun === 'boolean' ? data.actionSpotlightDefaultActiveForRun : undefined,
       });
       return;
     }
@@ -3197,6 +3261,9 @@ async function runUserMessage(
         narrationPreferenceSource: data.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
         narrationRunKind: data.narrationRunKind === 'guide' || data.narrationRunKind === 'task' ? data.narrationRunKind : undefined,
         narrationLanguage: normalizeNarrationLanguage(data.narrationLanguage),
+        actionSpotlightEnabledForRun: typeof data.actionSpotlightEnabledForRun === 'boolean' ? data.actionSpotlightEnabledForRun : undefined,
+        actionSpotlightRunKind: data.actionSpotlightRunKind === 'guide' || data.actionSpotlightRunKind === 'task' ? data.actionSpotlightRunKind : undefined,
+        actionSpotlightDefaultActiveForRun: typeof data.actionSpotlightDefaultActiveForRun === 'boolean' ? data.actionSpotlightDefaultActiveForRun : undefined,
       });
       return;
     }
