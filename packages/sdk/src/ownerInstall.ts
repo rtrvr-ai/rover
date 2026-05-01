@@ -362,6 +362,8 @@ function buildDefaultLlmsTxt(card: RoverAgentCard, options: { agentCardUrl: stri
     'Prefer Rover shortcuts, explicit site tools, and A2W runs over raw DOM automation when they match the requested outcome.',
     `Primary A2W run endpoint: ${text(card.extensions?.rover.runEndpoint || card.url)}`,
     `A2W workflow endpoint: ${text(card.extensions?.rover.workflowEndpoint)}`,
+    'Create runs with { "url": "<site>", "prompt": "<instruction>" } or { "url": "<site>", "shortcutId": "<id>" }; "goal" is accepted as a compatibility alias.',
+    'For browserless execution, send Prefer: execution=cloud, wait=10 and follow returned links.stream, links.ndjson, or links.poll until completed, failed, cancelled, expired, or input_required.',
     `Capability card: ${options.agentCardUrl}`,
   ];
 

@@ -330,7 +330,7 @@ Content-Type: application/json
 
 {
   "url": "https://example.com",
-  "goal": "Find the pricing page",
+  "prompt": "Find the pricing page",
   "agent": {
     "key": "gpt-5.4-demo-agent",
     "name": "GPT-5.4 Demo Agent",
@@ -340,6 +340,8 @@ Content-Type: application/json
 }
 ```
 
+`prompt` is the canonical natural-language field for A2W callers. `goal` is still accepted as a compatibility alias.
+
 Or:
 
 ```http
@@ -348,7 +350,7 @@ Content-Type: application/json
 
 {
   "url": "https://example.com",
-  "shortcut": "checkout_flow"
+  "shortcutId": "checkout_flow"
 }
 ```
 
@@ -362,6 +364,8 @@ The response returns a canonical run URL that supports:
 - workflow lineage URLs
 - browser receipt URLs such as `open`
 - optional readable `browserLink` aliases when safe
+
+Run creation can return `202 Accepted` before work is done. Follow the returned `links.stream`, `links.ndjson`, or `links.poll` until `status` is `completed`, `failed`, `cancelled`, `expired`, or `input_required`. For browserless execution, use `Prefer: execution=cloud, wait=10` on create.
 
 Anonymous AI callers do **not** need `siteId`, `publicKey`, or `siteKeyId`. Those values are only for website owners installing Rover.
 

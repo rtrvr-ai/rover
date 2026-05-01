@@ -48,6 +48,43 @@ test('response narration describes artifacts without raw storage paths', () => {
   );
 });
 
+test('response narration speaks questions from tool response output', () => {
+  assert.equal(
+    deriveResponseNarrationFromOutput({
+      status: 'waiting_input',
+      questions: [
+        {
+          key: 'use_case',
+          query: 'What best describes your use case?',
+          choices: ['Personal', 'Team', 'Enterprise'],
+          required: true,
+        },
+      ],
+    }, { responseKind: 'question' }),
+    'What best describes your use case?',
+  );
+});
+
+test('response narration stays compact for multiple tool response questions', () => {
+  assert.equal(
+    deriveResponseNarrationFromOutput({
+      questions: [
+        { key: 'role', query: 'What is your role?', required: true },
+        { key: 'team_size', query: 'How large is your team?', required: true },
+        { key: 'timeline', query: 'When do you want to launch?', required: false },
+      ],
+    }, { responseKind: 'question' }),
+    'I need 3 details: What is your role?',
+  );
+});
+
+test('response narration skips non-user-facing object output without fallback', () => {
+  assert.equal(
+    deriveResponseNarrationFromOutput({ status: 'ok', internalId: 'abc123' }, { responseKind: 'checkpoint' }),
+    undefined,
+  );
+});
+
 test('planner emits one assistant checkpoint after a completed tool', async () => {
   const checkpoints = [];
   const ctx = {

@@ -838,7 +838,7 @@ function buildShortcutSkill(
         endpoint: runEndpoint,
         payload: {
           url: normalizeSiteUrl(config.siteUrl),
-          shortcut: id,
+          shortcutId: id,
         },
         preferExecution: config.preferExecution || 'auto',
       },
@@ -1246,6 +1246,7 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
         instructions: [
           'Prefer exact Rover shortcuts and explicit site tools over raw DOM automation when the user goal matches a published skill.',
           'Use POST /v1/a2w/runs when you need structured A2W progress, continuation input, or a stable final result channel.',
+          'For browserless calls, send Prefer: execution=cloud, wait=10 and follow links.stream, links.ndjson, or links.poll until terminal or input_required.',
           'Fall back to generic DOM automation only when no matching Rover shortcut or explicit tool exists for the requested outcome.',
         ],
         capabilitiesGraph: capabilityGraph.capabilities,

@@ -9506,34 +9506,25 @@ function sortShortcuts(shortcuts: RoverShortcut[]): RoverShortcut[] {
     .map(entry => entry.item);
 }
 
-function mergeShortcuts(configShortcuts: RoverShortcut[], backendShortcuts: RoverShortcut[]): RoverShortcut[] {
-  const merged = new Map<string, RoverShortcut>();
-
-  // Boot config wins conflicts.
-  for (const shortcut of backendShortcuts) {
-    merged.set(shortcut.id, shortcut);
-  }
-  for (const shortcut of configShortcuts) {
-    const prev = merged.get(shortcut.id);
-    merged.set(shortcut.id, prev ? { ...prev, ...shortcut } : shortcut);
-  }
-
-  return sortShortcuts(Array.from(merged.values())).slice(0, SHORTCUTS_MAX_STORED);
+function hasExplicitBootShortcuts(cfg: RoverInit | null): boolean {
+  return !!cfg?.ui && Object.prototype.hasOwnProperty.call(cfg.ui, 'shortcuts');
 }
 
 function resolveEffectiveShortcuts(cfg: RoverInit | null): RoverShortcut[] {
   if (!cfg) return [];
-  const configShortcuts = sanitizeShortcutList(cfg.ui?.shortcuts || []);
-  const backendShortcuts = sanitizeShortcutList(backendSiteConfig?.shortcuts || []);
-  const merged = mergeShortcuts(configShortcuts, backendShortcuts);
-  if (merged.length >= 3) return merged;
+  const bootOwnsShortcuts = hasExplicitBootShortcuts(cfg);
+  const explicitShortcuts = bootOwnsShortcuts
+    ? sanitizeShortcutList(cfg.ui?.shortcuts || [])
+    : sanitizeShortcutList(backendSiteConfig?.shortcuts || []);
+  if (bootOwnsShortcuts) return sortShortcuts(explicitShortcuts).slice(0, SHORTCUTS_MAX_STORED);
+  if (explicitShortcuts.length > 0) return sortShortcuts(explicitShortcuts).slice(0, SHORTCUTS_MAX_STORED);
   const suggestions = buildBusinessTypeShortcuts(backendSiteConfig?.businessType);
-  if (!suggestions.length) return merged;
+  if (!suggestions.length) return sortShortcuts(explicitShortcuts).slice(0, SHORTCUTS_MAX_STORED);
 
-  const seenIds = new Set(merged.map(shortcut => shortcut.id));
-  const seenLabels = new Set(merged.map(shortcut => shortcut.label.trim().toLowerCase()));
-  const seenPrompts = new Set(merged.map(shortcut => shortcut.prompt.trim().toLowerCase()));
-  const remaining = Math.max(0, 3 - merged.length);
+  const seenIds = new Set<string>();
+  const seenLabels = new Set<string>();
+  const seenPrompts = new Set<string>();
+  const remaining = 3;
   const generated = suggestions.filter(shortcut => {
     const label = shortcut.label.trim().toLowerCase();
     const prompt = shortcut.prompt.trim().toLowerCase();
@@ -9544,7 +9535,7 @@ function resolveEffectiveShortcuts(cfg: RoverInit | null): RoverShortcut[] {
     return true;
   }).slice(0, remaining);
 
-  return [...merged, ...generated];
+  return sortShortcuts(generated).slice(0, SHORTCUTS_MAX_STORED);
 }
 
 function getRenderableShortcuts(shortcuts: RoverShortcut[]): RoverShortcut[] {
@@ -13291,6 +13282,31 @@ export const __roverInternalsForTests = {
   normalizePromptContextEntry,
   buildPublicRunStartedPayload,
   buildPublicRunLifecyclePayload,
+  resolveEffectiveShortcutsForTests: (
+    cfg: RoverInit | null,
+    siteConfig?: Partial<RoverResolvedSiteConfig> | null,
+  ) => {
+    const prev = backendSiteConfig;
+    backendSiteConfig = siteConfig
+      ? {
+          shortcuts: sanitizeShortcutList(siteConfig.shortcuts || []),
+          businessType: sanitizeBusinessType(siteConfig.businessType),
+          experience: sanitizeExperienceConfig(siteConfig.experience),
+          greeting: sanitizeGreetingConfig(siteConfig.greeting),
+          voice: sanitizeVoiceConfig(siteConfig.voice),
+          aiAccess: sanitizeAiAccessConfig(siteConfig.aiAccess),
+          limits: sanitizeSiteConfigLimits(siteConfig.limits),
+          pageConfig: sanitizeResolvedPageCaptureConfig(siteConfig.pageConfig),
+          agentDiscovery: sanitizeRoverAgentDiscoveryRuntimeConfig(siteConfig.agentDiscovery),
+          version: typeof siteConfig.version === 'string' ? siteConfig.version : undefined,
+        }
+      : null;
+    try {
+      return resolveEffectiveShortcuts(cfg);
+    } finally {
+      backendSiteConfig = prev;
+    }
+  },
 };
 
 export {

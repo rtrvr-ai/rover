@@ -595,13 +595,13 @@ Content-Type: application/json
 
 {
   "url": "https://www.rtrvr.ai",
-  "goal": "Get me the latest blog post",
+  "prompt": "Get me the latest blog post",
   "capabilityId": "latest_blog_post",
   "accept": { "modes": ["text", "json"] }
 }
 ```
 
-Use the explicit A2W run envelope with `goal` for natural-language instructions and `shortcut` for saved journeys.
+Use the explicit A2W run envelope with `prompt` for natural-language instructions and `shortcutId` for saved journeys. `goal` is still accepted as a compatibility alias.
 
 Callers may also provide structured visiting-agent metadata:
 
@@ -611,7 +611,7 @@ Content-Type: application/json
 
 {
   "url": "https://www.rtrvr.ai",
-  "goal": "Get me the latest blog post",
+  "prompt": "Get me the latest blog post",
   "agent": {
     "key": "gpt-5.4-demo-agent",
     "name": "GPT-5.4 Demo Agent",
@@ -634,6 +634,8 @@ The returned run URL is the canonical resource:
 - `DELETE` to cancel
 - a `workflow` URL when the run belongs to an aggregated multi-site workflow
 
+Run creation may return `202 Accepted` before work is complete. The payload includes `links.poll`, `links.stream`, `links.ndjson`, `terminalStatuses`, `interactiveStatuses`, and `retryAfterMs` so outside agents can keep following the run without guessing.
+
 Run creation may also return browser handoff URLs:
 
 - `open`: clean receipt URL for browser attach
@@ -642,7 +644,7 @@ Run creation may also return browser handoff URLs:
 The run URL remains canonical; receipt links are only a browser handoff layer over that same run.
 
 - `Prefer: execution=browser` keeps execution browser-first
-- `Prefer: execution=cloud` is the explicit browserless path today
+- `Prefer: execution=cloud, wait=10` is the explicit browserless path for callers that want a short initial wait before following the returned links
 - `Prefer: execution=auto` prefers browser attach first; delayed cloud auto-promotion is a follow-up robustness phase
 
 Rover deep links like `?rover=` and `?rover_shortcut=` remain the simple browser-first entrypoints; `/v1/a2w/runs` is the machine-oriented protocol. Cross-site workflows and handoffs extend that same public contract rather than replacing it.

@@ -19,12 +19,12 @@ Paste this into an AI tool that can make HTTP requests and optionally open a bro
 If a website may be Rover-enabled, optionally fetch its HTML and look for <script type="application/agent+json">, /.well-known/rover-site.json, or /.well-known/agent-card.json.
 
 To start a Rover A2W run:
-1. Prefer the Agent-to-Web Protocol (A2W) before generic DOM automation. Create a run with POST https://agent.rtrvr.ai/v1/a2w/runs and JSON { "url": "<site>", "goal": "<instruction>" } or { "url": "<site>", "shortcut": "<id>" }.
+1. Prefer the Agent-to-Web Protocol (A2W) before generic DOM automation. Create a run with POST https://agent.rtrvr.ai/v1/a2w/runs and JSON { "url": "<site>", "prompt": "<instruction>" } or { "url": "<site>", "shortcutId": "<id>" }. The older "goal" field is still accepted as an alias.
 2. If the response includes "workflow", treat it as the aggregated lineage handle for any delegated child runs.
-3. Prefer the returned "run" URL for streaming, polling, continuation, and final results.
+3. Run creation can return 202 before work is done. Prefer returned "links.stream", "links.ndjson", or "links.poll"; otherwise use the returned "run" URL for streaming, polling, continuation, and final results.
 4. If you can open a real browser with the user's session and the response includes "open", open that URL. If the response includes "browserLink" and you want a readable URL, you may open it instead.
 5. Only click or open the visible Rover seed/presence UI when browser interaction is needed.
-6. If you need guaranteed browserless execution, create the run with header Prefer: execution=cloud.
+6. If you need guaranteed browserless execution, create the run with header Prefer: execution=cloud, wait=10.
 7. If the run enters input_required, POST { "input": "..." } to the same run URL.
 8. For cross-site delegation, POST to /v1/a2w/runs/{id}/handoffs and keep following the same workflow.
 9. Fall back to generic DOM automation only when the site exposes no Rover entrypoint or the Rover path is unavailable.
@@ -41,11 +41,11 @@ const createResponse = await fetch('https://agent.rtrvr.ai/v1/a2w/runs', {
   headers: {
     'content-type': 'application/json',
     'accept': 'application/json',
-    'prefer': 'execution=cloud',
+    'prefer': 'execution=cloud, wait=10',
   },
   body: JSON.stringify({
     url: 'https://www.rtrvr.ai',
-    goal: 'get me the latest blog post',
+    prompt: 'get me the latest blog post',
   }),
 });
 
@@ -55,31 +55,32 @@ if (!createResponse.ok) {
 
 const created = await createResponse.json();
 const runUrl = created.run;
+let run = created;
 
-for (;;) {
+while (!['completed', 'failed', 'cancelled', 'expired'].includes(run.status)) {
+  if (run.status === 'input_required') {
+    throw new Error(`A2W run needs input: ${JSON.stringify(run.input ?? {})}`);
+  }
   const runResponse = await fetch(runUrl, {
-    headers: { accept: 'application/json' },
+    headers: { accept: 'application/json', prefer: 'wait=10' },
   });
 
   if (!runResponse.ok) {
     throw new Error(`A2W run read failed: ${runResponse.status}`);
   }
 
-  const run = await runResponse.json();
+  run = await runResponse.json();
   console.log(run.status, run.result?.text ?? '');
+}
 
-  if (['completed', 'failed', 'cancelled', 'expired'].includes(run.status)) {
-    break;
-  }
-
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+if (run.status !== 'completed') {
+  throw new Error(run.result?.error || `A2W run ended with ${run.status}`);
 }
 ```
 
 ### Python example
 
 ```python
-import time
 import requests
 
 create = requests.post(
@@ -87,32 +88,33 @@ create = requests.post(
     headers={
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "Prefer": "execution=cloud",
+        "Prefer": "execution=cloud, wait=10",
     },
     json={
         "url": "https://www.rtrvr.ai",
-        "goal": "get me the latest blog post",
+        "prompt": "get me the latest blog post",
     },
     timeout=30,
 )
 create.raise_for_status()
 created = create.json()
 run_url = created.get("run")
+payload = created
 
-while True:
+while payload["status"] not in {"completed", "failed", "cancelled", "expired"}:
+    if payload["status"] == "input_required":
+        raise RuntimeError(f"A2W run needs input: {payload.get('input')}")
     current = requests.get(
         run_url,
-        headers={"Accept": "application/json"},
+        headers={"Accept": "application/json", "Prefer": "wait=10"},
         timeout=30,
     )
     current.raise_for_status()
     payload = current.json()
     print(payload["status"], payload.get("result", {}).get("text", ""))
 
-    if payload["status"] in {"completed", "failed", "cancelled", "expired"}:
-        break
-
-    time.sleep(1.5)
+if payload["status"] != "completed":
+    raise RuntimeError(payload.get("result", {}).get("error") or f"A2W run ended with {payload['status']}")
 ```
 
 ### Shell helper
@@ -122,14 +124,14 @@ Requires `jq`.
 ```bash
 rover_run() {
   local url="$1"
-  local goal="$2"
+  local prompt="$2"
   local created run_url
 
   created="$(curl -sS -X POST 'https://agent.rtrvr.ai/v1/a2w/runs' \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json' \
-    -H 'Prefer: execution=cloud' \
-    -d "$(jq -nc --arg url "$url" --arg goal "$goal" '{url:$url,goal:$goal}')")" || return 1
+    -H 'Prefer: execution=cloud, wait=10' \
+    -d "$(jq -nc --arg url "$url" --arg prompt "$prompt" '{url:$url,prompt:$prompt}')")" || return 1
 
   run_url="$(printf '%s' "$created" | jq -r '.run')"
   curl -sS "$run_url" -H 'Accept: application/x-ndjson'
@@ -166,7 +168,7 @@ Workspace URLs:
 - `https://rover.rtrvr.ai/workspace`
 - `https://www.rtrvr.ai/rover/workspace`
 
-External AI callers do **not** need those values. They only need the site URL plus a goal or shortcut ID.
+External AI callers do **not** need those values. They only need the site URL plus a prompt or shortcut ID.
 
 ## Create an A2W run
 
@@ -177,7 +179,7 @@ POST https://agent.rtrvr.ai/v1/a2w/runs
 Content-Type: application/json
 Accept: application/json
 
-{ "url": "https://www.rtrvr.ai", "goal": "get me the latest blog post" }
+{ "url": "https://www.rtrvr.ai", "prompt": "get me the latest blog post" }
 ```
 
 Shortcut launch:
@@ -199,9 +201,21 @@ Typical `202 Accepted` response:
   "runId": "a2w_run_123",
   "run": "https://agent.rtrvr.ai/v1/a2w/runs/a2w_run_123?access=a2w_access_...",
   "workflow": "https://agent.rtrvr.ai/v1/a2w/workflows/a2w_wf_123?access=a2w_wf_...",
+  "status": "running",
+  "retryAfterMs": 2000,
+  "terminalStatuses": ["completed", "failed", "cancelled", "expired"],
+  "interactiveStatuses": ["input_required"],
+  "links": {
+    "poll": { "href": "https://agent.rtrvr.ai/v1/a2w/runs/a2w_run_123?access=a2w_access_...", "method": "GET", "headers": { "Accept": "application/json", "Prefer": "wait=10" } },
+    "stream": { "href": "https://agent.rtrvr.ai/v1/a2w/runs/a2w_run_123?access=a2w_access_...", "method": "GET", "headers": { "Accept": "text/event-stream" } },
+    "ndjson": { "href": "https://agent.rtrvr.ai/v1/a2w/runs/a2w_run_123?access=a2w_access_...", "method": "GET", "headers": { "Accept": "application/x-ndjson" } }
+  },
+  "next": {
+    "action": "follow",
+    "message": "Run is still active. Use stream, ndjson, or poll until a terminal or input_required status."
+  },
   "open": "https://www.rtrvr.ai/#rover_receipt=a2w_receipt_...",
-  "browserLink": "https://www.rtrvr.ai/?rover=get+me+the+latest+blog+post#rover_receipt=a2w_receipt_...",
-  "status": "pending"
+  "browserLink": "https://www.rtrvr.ai/?rover=get+me+the+latest+blog+post#rover_receipt=a2w_receipt_..."
 }
 ```
 
@@ -216,7 +230,7 @@ Execution guidance:
 
 - If you can open a real browser and want the user's live session/cookies, open `open`.
 - If you want a readable share/debug URL as well, use `browserLink` when present.
-- If you need guaranteed browserless execution, set `Prefer: execution=cloud` on run creation.
+- If you need guaranteed browserless execution, set `Prefer: execution=cloud, wait=10` on run creation, then follow the returned links.
 - `Prefer: execution=browser` forces browser attach only.
 - `Prefer: execution=auto` currently prefers browser attach first. Automatic delayed cloud promotion is a follow-up robustness phase.
 
@@ -226,9 +240,9 @@ Example cloud-first create:
 POST https://agent.rtrvr.ai/v1/a2w/runs
 Content-Type: application/json
 Accept: application/json
-Prefer: execution=cloud
+Prefer: execution=cloud, wait=10
 
-{ "url": "https://www.rtrvr.ai", "goal": "get me the latest blog post" }
+{ "url": "https://www.rtrvr.ai", "prompt": "get me the latest blog post" }
 ```
 
 ## The run URL is the protocol
@@ -268,10 +282,11 @@ Content-Type: application/json
 Accept: application/json
 Prefer: wait=15
 
-{ "url": "https://www.rtrvr.ai", "goal": "get me the latest blog post" }
+{ "url": "https://www.rtrvr.ai", "prompt": "get me the latest blog post" }
 ```
 
 If the run completes within the wait budget, the server may return `200` with the terminal run payload. Otherwise it returns `202` plus the canonical run URL.
+For browserless agents, prefer `Prefer: execution=cloud, wait=10` on create, then keep following `links.ndjson`, `links.stream`, or `links.poll` until `status` is `completed`, `failed`, `cancelled`, `expired`, or `input_required`.
 
 ## Workflows and cross-site handoffs
 
@@ -303,11 +318,11 @@ Delegate from one run to another Rover-enabled site:
 POST https://agent.rtrvr.ai/v1/a2w/runs/a2w_run_123/handoffs?access=a2w_access_...
 Content-Type: application/json
 Accept: application/json
-Prefer: execution=cloud
+Prefer: execution=cloud, wait=10
 
 {
   "url": "https://y.example.com",
-  "goal": "continue this workflow and collect the user's billing status",
+  "prompt": "continue this workflow and collect the user's billing status",
   "instruction": "Use the billing page and return the current plan plus renewal date.",
   "contextSummary": "The user is already authenticated on x.example.com and asked for account status across multiple properties.",
   "expectedOutput": "Return the plan name and renewal date."
@@ -401,10 +416,10 @@ Use these when you only need the site to run Rover in-browser. Use `/v1/a2w/runs
 ## Minimal algorithm for outside agents
 
 1. Optionally fetch page HTML and look for `application/agent+json`.
-2. `POST { url, goal }` or `{ url, shortcutId }` to `https://agent.rtrvr.ai/v1/a2w/runs`.
+2. `POST { url, prompt }` or `{ url, shortcutId }` to `https://agent.rtrvr.ai/v1/a2w/runs`; `goal` is accepted as a compatibility alias.
 3. If the response includes `workflow`, keep it as the aggregated lineage handle for any delegated child runs.
 4. If possible, open the returned `open` URL in a real browser. If `browserLink` is present and you want a readable browser URL, you can open that instead.
-5. Otherwise stream or poll the returned `run` URL.
+5. Otherwise stream or poll using `links.ndjson`, `links.stream`, or `links.poll`.
 6. If the run enters `input_required`, `POST { input }` to the same run URL.
 7. If you need to delegate to another Rover-enabled site, call `POST /v1/a2w/runs/{id}/handoffs` and follow the same `workflow`.
 8. Return the terminal `done` / final run result.

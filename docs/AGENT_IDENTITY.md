@@ -110,7 +110,7 @@ A2W callers can send:
 ```json
 {
   "url": "https://example.com",
-  "goal": "Find the pricing page",
+  "prompt": "Find the pricing page",
   "agent": {
     "key": "gpt-5.4-demo-agent",
     "name": "GPT-5.4 Demo Agent",

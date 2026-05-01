@@ -540,14 +540,14 @@ Content-Type: application/json
 
 {
   "url": "https://example.com",
-  "goal": "Book a flight",
+  "prompt": "Book a flight",
   "accept": { "modes": ["text"] }
 }
 ```
 
-Use the explicit A2W run envelope with `goal` for natural-language instructions and `shortcut` for saved journeys.
+Use the explicit A2W run envelope with `prompt` for natural-language instructions and `shortcutId` for saved journeys. `goal` is still accepted as a compatibility alias.
 
-The returned run URL supports JSON polling, SSE, NDJSON, continuation input, and cancel. Run creation may also return:
+The returned run URL supports JSON polling, SSE, NDJSON, continuation input, and cancel. Run creation may return `202 Accepted` while the run is still active; the response includes `links.poll`, `links.stream`, `links.ndjson`, `terminalStatuses`, `interactiveStatuses`, and `retryAfterMs` so agents can keep following the run until `completed`, `failed`, `cancelled`, `expired`, or `input_required`. Run creation may also return:
 
 - `open`: clean receipt URL for browser attach
 - `browserLink`: optional readable alias with visible `?rover=` or `?rover_shortcut=` when it fits the URL budget
@@ -596,7 +596,7 @@ For broader agent interoperability, prefer the full discovery bundle:
 
 Execution guidance:
 
-- `Prefer: execution=cloud` is the explicit browserless path today
+- `Prefer: execution=cloud, wait=10` is recommended for browserless agents that want a short initial wait before following links
 - `Prefer: execution=browser` keeps execution browser-first
 - `Prefer: execution=auto` currently prefers browser attach first; delayed cloud auto-promotion is a follow-up robustness phase
 
