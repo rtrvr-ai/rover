@@ -1,6 +1,6 @@
 {
   "name": "@rover/shared",
-  "version": "3.0.0",
+  "version": "4.2.1",
   "description": "rover embed - shared code",
   "license": "FSL-1.1-Apache-2.0",
   "type": "module",
