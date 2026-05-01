@@ -102,6 +102,9 @@ export function sanitizeVoiceConfig(input?: RoverVoiceConfig): RoverVoiceConfig 
 export function sanitizeExperienceConfig(input?: RoverExperienceConfig): RoverExperienceConfig {
   if (!input || typeof input !== 'object') return {};
   const next: RoverExperienceConfig = {};
+  if (input.experienceMode === 'guided' || input.experienceMode === 'minimal') {
+    next.experienceMode = input.experienceMode;
+  }
   if (input.presence && typeof input.presence === 'object') {
     next.presence = {
       assistantName: sanitizeText(String(input.presence.assistantName || '')).slice(0, 160) || undefined,
@@ -231,6 +234,9 @@ export function sanitizeExperienceConfig(input?: RoverExperienceConfig): RoverEx
           : undefined,
       actionSpotlight: typeof input.motion.actionSpotlight === 'boolean' ? input.motion.actionSpotlight : undefined,
       actionSpotlightColor: normalizeHexColor(input.motion.actionSpotlightColor),
+      actionSpotlightRunKinds: Array.isArray(input.motion.actionSpotlightRunKinds)
+        ? (input.motion.actionSpotlightRunKinds.filter(k => k === 'guide' || k === 'task') as Array<'guide' | 'task'>)
+        : undefined,
       filaments: typeof input.motion.filaments === 'boolean' ? input.motion.filaments : undefined,
       particles: typeof input.motion.particles === 'boolean' ? input.motion.particles : undefined,
       palimpsest: typeof input.motion.palimpsest === 'boolean' ? input.motion.palimpsest : undefined,
@@ -256,7 +262,15 @@ export function sanitizeExperienceConfig(input?: RoverExperienceConfig): RoverEx
 
 export function resolveMountExperienceConfig(opts: MountOptions, agentName: string, mascotDisabled: boolean): RoverExperienceConfig {
   const explicit = sanitizeExperienceConfig(opts.experience);
+  const presetMode = explicit.experienceMode;
+  const presetSpotlight = presetMode === 'guided' ? true : presetMode === 'minimal' ? false : undefined;
+  const presetSpotlightRunKinds: ReadonlyArray<'guide' | 'task'> | undefined =
+    presetMode === 'guided' ? ['guide'] : undefined;
+  const presetNarrationEnabled = presetMode === 'minimal' ? false : undefined;
+  const presetNarrationMode: 'guided' | 'always' | 'off' | undefined =
+    presetMode === 'guided' ? 'guided' : presetMode === 'minimal' ? 'off' : undefined;
   return {
+    experienceMode: presetMode,
     presence: {
       assistantName: explicit.presence?.assistantName || agentName,
       ctaText: explicit.presence?.ctaText || `Do it with ${agentName}`,
@@ -297,8 +311,8 @@ export function resolveMountExperienceConfig(opts: MountOptions, agentName: stri
     },
     audio: {
       narration: {
-        enabled: explicit.audio?.narration?.enabled ?? true,
-        defaultMode: explicit.audio?.narration?.defaultMode || 'guided',
+        enabled: explicit.audio?.narration?.enabled ?? presetNarrationEnabled ?? true,
+        defaultMode: explicit.audio?.narration?.defaultMode || presetNarrationMode || 'guided',
         rate: explicit.audio?.narration?.rate ?? 1,
         language: explicit.audio?.narration?.language || 'en-US',
         voicePreference: explicit.audio?.narration?.voicePreference || 'auto',
@@ -308,11 +322,12 @@ export function resolveMountExperienceConfig(opts: MountOptions, agentName: stri
       intensity: explicit.motion?.intensity || 'balanced',
       reducedMotionFallback: explicit.motion?.reducedMotionFallback || 'reduce',
       performanceBudget: explicit.motion?.performanceBudget || 'standard',
-      actionSpotlight: explicit.motion?.actionSpotlight ?? true,
+      actionSpotlight: explicit.motion?.actionSpotlight ?? presetSpotlight ?? true,
       actionSpotlightColor:
         explicit.motion?.actionSpotlightColor ||
         normalizeHexColor(explicit.theme?.accentColor) ||
         DEFAULT_ACTION_SPOTLIGHT_COLOR,
+      actionSpotlightRunKinds: explicit.motion?.actionSpotlightRunKinds || presetSpotlightRunKinds,
       filaments: explicit.motion?.filaments,
       particles: explicit.motion?.particles,
       palimpsest: explicit.motion?.palimpsest,

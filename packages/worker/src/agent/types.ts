@@ -56,6 +56,8 @@ export type RoverRuntimeContext = {
   externalTabs?: RoverRuntimeContextExternalTab[];
   uiHints?: {
     actionNarration?: boolean;
+    actionSpotlight?: boolean;
+    actionSpotlightDefaultActive?: boolean;
     runKind?: 'guide' | 'task';
     narrationLanguage?: string;
   };

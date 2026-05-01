@@ -10,6 +10,7 @@ export type RoverPreviewBootstrapVoiceConfig = {
 };
 
 export type RoverPreviewBootstrapExperienceConfig = {
+  experienceMode?: 'guided' | 'minimal';
   audio?: {
     narration?: {
       enabled?: boolean;
@@ -22,6 +23,7 @@ export type RoverPreviewBootstrapExperienceConfig = {
   motion?: {
     actionSpotlight?: boolean;
     actionSpotlightColor?: string;
+    actionSpotlightRunKinds?: ReadonlyArray<'guide' | 'task'>;
   };
 };
 
@@ -126,6 +128,9 @@ function normalizeVoiceConfig(value: RoverPreviewBootstrapVoiceConfig | undefine
 function normalizeExperienceConfig(value: RoverPreviewBootstrapExperienceConfig | undefined): RoverPreviewBootstrapExperienceConfig | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const experience: RoverPreviewBootstrapExperienceConfig = {};
+  if (value.experienceMode === 'guided' || value.experienceMode === 'minimal') {
+    experience.experienceMode = value.experienceMode;
+  }
   if (value.audio && typeof value.audio === 'object') {
     const narrationInput = value.audio.narration && typeof value.audio.narration === 'object'
       ? value.audio.narration
@@ -164,6 +169,10 @@ function normalizeExperienceConfig(value: RoverPreviewBootstrapExperienceConfig 
     const actionSpotlightColor = normalizeHexColor(value.motion.actionSpotlightColor);
     if (actionSpotlightColor) {
       motion.actionSpotlightColor = actionSpotlightColor;
+    }
+    if (Array.isArray(value.motion.actionSpotlightRunKinds)) {
+      const kinds = Array.from(new Set(value.motion.actionSpotlightRunKinds.filter((kind): kind is 'guide' | 'task' => kind === 'guide' || kind === 'task')));
+      if (kinds.length) motion.actionSpotlightRunKinds = kinds;
     }
     if (Object.keys(motion).length) experience.motion = motion;
   }
@@ -305,6 +314,7 @@ export function createRoverScriptTagSnippet(config: RoverPreviewBootstrapConfig)
   if (normalized.ui?.voice?.language) attrs.push(`data-voice-language="${escapeHtmlAttr(normalized.ui.voice.language)}"`);
   if (typeof normalized.ui?.voice?.autoStopMs === 'number') attrs.push(`data-voice-auto-stop-ms="${escapeHtmlAttr(String(normalized.ui.voice.autoStopMs))}"`);
   const narration = normalized.ui?.experience?.audio?.narration;
+  if (normalized.ui?.experience?.experienceMode) attrs.push(`data-experience-mode="${escapeHtmlAttr(normalized.ui.experience.experienceMode)}"`);
   if (typeof narration?.enabled === 'boolean') attrs.push(`data-narration-enabled="${escapeHtmlAttr(String(narration.enabled))}"`);
   if (narration?.defaultMode) attrs.push(`data-narration-default-mode="${escapeHtmlAttr(narration.defaultMode)}"`);
   if (typeof narration?.rate === 'number') attrs.push(`data-narration-rate="${escapeHtmlAttr(String(narration.rate))}"`);
@@ -315,6 +325,9 @@ export function createRoverScriptTagSnippet(config: RoverPreviewBootstrapConfig)
   }
   if (normalized.ui?.experience?.motion?.actionSpotlightColor) {
     attrs.push(`data-action-spotlight-color="${escapeHtmlAttr(normalized.ui.experience.motion.actionSpotlightColor)}"`);
+  }
+  if (normalized.ui?.experience?.motion?.actionSpotlightRunKinds?.length) {
+    attrs.push(`data-action-spotlight-run-kinds="${escapeHtmlAttr(normalized.ui.experience.motion.actionSpotlightRunKinds.join(','))}"`);
   }
   const runEndpoint = `${toStringValue(normalized.apiBase) || DEFAULT_AGENT_BASE}/v1/a2w/runs`;
   const markerJson = escapeScriptJson(JSON.stringify({ a2w: runEndpoint, run: runEndpoint }));
@@ -390,8 +403,11 @@ export function readRoverScriptDataAttributes(
   const narrationRate = Number(toStringValue(scriptEl.getAttribute('data-narration-rate')));
   const narrationLanguage = toStringValue(scriptEl.getAttribute('data-narration-language'));
   const narrationVoicePreference = toStringValue(scriptEl.getAttribute('data-narration-voice-preference'));
+  const experienceMode = toStringValue(scriptEl.getAttribute('data-experience-mode'));
   const actionSpotlight = parseBooleanAttr(scriptEl.getAttribute('data-action-spotlight'));
   const actionSpotlightColor = normalizeHexColor(scriptEl.getAttribute('data-action-spotlight-color'));
+  const actionSpotlightRunKinds = parseCsvList(scriptEl.getAttribute('data-action-spotlight-run-kinds'))
+    ?.filter((kind): kind is 'guide' | 'task' => kind === 'guide' || kind === 'task');
   const voice = normalizeVoiceConfig({
     ...(typeof voiceEnabled === 'boolean' ? { enabled: voiceEnabled } : {}),
     ...(voiceLanguage ? { language: voiceLanguage } : {}),
@@ -415,9 +431,10 @@ export function readRoverScriptDataAttributes(
         },
       }
       : {}),
-    ...(typeof actionSpotlight === 'boolean' || actionSpotlightColor
-      ? { motion: { ...(typeof actionSpotlight === 'boolean' ? { actionSpotlight } : {}), ...(actionSpotlightColor ? { actionSpotlightColor } : {}) } }
+    ...(typeof actionSpotlight === 'boolean' || actionSpotlightColor || actionSpotlightRunKinds?.length
+      ? { motion: { ...(typeof actionSpotlight === 'boolean' ? { actionSpotlight } : {}), ...(actionSpotlightColor ? { actionSpotlightColor } : {}), ...(actionSpotlightRunKinds?.length ? { actionSpotlightRunKinds } : {}) } }
       : {}),
+    ...(experienceMode === 'guided' || experienceMode === 'minimal' ? { experienceMode } : {}),
   });
   if (voice || experience) {
     config.ui = {

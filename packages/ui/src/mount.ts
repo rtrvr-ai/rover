@@ -316,12 +316,22 @@ export function mountWidget(opts: MountOptions): RoverUi {
     narrationPreferenceSource: 'default' | 'visitor';
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
+    actionSpotlightEnabledForRun: boolean;
+    actionSpotlightPreferenceSource: 'default' | 'visitor';
+    actionSpotlightRunKind?: 'guide' | 'task';
+    actionSpotlightDefaultActiveForRun: boolean;
   } {
+    const allowedKinds = experience.motion?.actionSpotlightRunKinds;
+    const runKindAllowed = !runKind || !allowedKinds || allowedKinds.length === 0 || allowedKinds.includes(runKind);
     return {
       narrationEnabledForRun: allowNarrationToggle && isNarrationEnabled,
       narrationPreferenceSource: narrationPreference.source,
       ...(runKind === 'guide' || runKind === 'task' ? { narrationRunKind: runKind } : {}),
       narrationLanguage: resolveEffectiveNarrationLanguage(),
+      actionSpotlightEnabledForRun: allowSpotlightToggle && isActionSpotlightEnabled,
+      actionSpotlightPreferenceSource: spotlightVisitorSource,
+      ...(runKind === 'guide' || runKind === 'task' ? { actionSpotlightRunKind: runKind } : {}),
+      actionSpotlightDefaultActiveForRun: allowSpotlightToggle && isActionSpotlightEnabled && runKindAllowed,
     };
   }
 
@@ -452,6 +462,40 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let pendingConfirmAction: 'new_task' | 'end_task' | null = null;
   let userMinimized = false;
 
+  // Track runKind of the current run for spotlight gating. Undefined for free-text runs.
+  let currentRunKind: 'guide' | 'task' | undefined = undefined;
+
+  // Visitor-side action-spotlight preference (mirrors narration toggle pattern).
+  const spotlightStorageKey = `rv-spotlight-pref-${opts.siteId || window.location.hostname || 'default'}`;
+  function readSpotlightVisitorPref(): 'on' | 'off' | undefined {
+    try {
+      const stored = localStorage.getItem(spotlightStorageKey);
+      if (stored === 'on' || stored === 'off') return stored;
+    } catch { /* ignore */ }
+    return undefined;
+  }
+  const spotlightSiteDefaultOn = experience.motion?.actionSpotlight !== false;
+  const initialSpotlightStored = readSpotlightVisitorPref();
+  let spotlightVisitorSource: 'default' | 'visitor' = initialSpotlightStored ? 'visitor' : 'default';
+  let isActionSpotlightEnabled: boolean = initialSpotlightStored
+    ? initialSpotlightStored === 'on'
+    : spotlightSiteDefaultOn;
+  const allowSpotlightToggle = true;
+  opts.onSpotlightPreferenceChange?.(isActionSpotlightEnabled, allowSpotlightToggle, spotlightVisitorSource);
+
+  function toggleSpotlight(): void {
+    isActionSpotlightEnabled = !isActionSpotlightEnabled;
+    spotlightVisitorSource = 'visitor';
+    try {
+      localStorage.setItem(spotlightStorageKey, isActionSpotlightEnabled ? 'on' : 'off');
+    } catch { /* ignore */ }
+    if (!isActionSpotlightEnabled) {
+      try { actionSpotlightSystem.clearAll(); } catch { /* spotlight is best-effort */ }
+    }
+    headerComp.setSpotlightEnabled(isActionSpotlightEnabled);
+    opts.onSpotlightPreferenceChange?.(isActionSpotlightEnabled, allowSpotlightToggle, spotlightVisitorSource);
+  }
+
   let headerComp = createHeader({
     agentName,
     agentInitial,
@@ -465,6 +509,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
     isMuted,
     allowNarrationToggle,
     narrationEnabled: isNarrationEnabled,
+    allowSpotlightToggle,
+    spotlightEnabled: isActionSpotlightEnabled,
     onClose: close,
     onMinimize: () => minimize(),
     onCycleSize: () => win.cyclePanelSize(),
@@ -498,6 +544,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     onRequestControl: () => opts.onRequestControl?.(),
     onToggleMute: toggleMute,
     onToggleNarration: toggleNarration,
+    onToggleSpotlight: toggleSpotlight,
     onOpenVoiceSettings: openVoiceSettings,
     onToggleConversations: toggleConversations,
   });
@@ -521,7 +568,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
   const shortcutsComp = createShortcuts(agentName, visitorName);
   function handleShortcutClick(shortcut: RoverShortcut): void {
     unlockNarration();
-    opts.onShortcutClick?.(shortcut);
+    currentRunKind = shortcut.runKind === 'guide' || shortcut.runKind === 'task' ? shortcut.runKind : undefined;
+    opts.onShortcutClick?.(shortcut, buildNarrationSendMeta(currentRunKind));
   }
   let currentShortcuts: RoverShortcut[] = opts.shortcuts?.slice(0, SHORTCUTS_RENDER_LIMIT) || [];
   if (currentShortcuts.length > 0) {
@@ -533,7 +581,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
   const commandBar = createCommandBar({
     onSelect: (shortcut) => {
       unlockNarration();
-      opts.onShortcutClick?.(shortcut);
+      currentRunKind = shortcut.runKind === 'guide' || shortcut.runKind === 'task' ? shortcut.runKind : undefined;
+      opts.onShortcutClick?.(shortcut, buildNarrationSendMeta(currentRunKind));
     },
     onClose: () => { /* no-op, just closes */ },
   });
@@ -936,6 +985,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     const message = text || (attachments.length > 0 ? 'Use the attached files as context for this task.' : '');
     if (!message) return;
     unlockNarration();
+    currentRunKind = undefined;
     setTaskSuggestion({ visible: false });
     latestTaskTitle = text || (attachments.length > 0 ? `Review ${attachments.length === 1 ? attachments[0].name : `${attachments.length} attachments`}` : latestTaskTitle);
     taskStartedAt = Date.now();
@@ -1530,6 +1580,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       inputBar.setRunning(false);
       composerComp.setSendAsStop(false, () => {});
       cancelNarration();
+      currentRunKind = undefined;
 
       waitingForFirstModelSignal = false;
       filamentSystem.clearAll();
@@ -1796,7 +1847,13 @@ export function mountWidget(opts: MountOptions): RoverUi {
         updateTideProgress();
         let isLocalActionTarget = true;
         try { isLocalActionTarget = isActionCueForLocalTab(displayEvent, opts.getLocalLogicalTabId?.()); } catch { isLocalActionTarget = false; }
-        if (isLocalActionTarget && experience.motion?.actionSpotlight !== false) {
+        // Visitor preference is the hard local gate. Per-step ui.highlight can override
+        // site/runKind policy, but it cannot re-enable spotlight after the visitor turns it off.
+        const stepHighlightOverride = displayEvent.actionSpotlightActive;
+        const allowedKinds = experience.motion?.actionSpotlightRunKinds;
+        const runKindAllowed = !currentRunKind || !allowedKinds || allowedKinds.length === 0 || allowedKinds.includes(currentRunKind);
+        const shouldSpotlight = isActionSpotlightEnabled && (stepHighlightOverride ?? runKindAllowed);
+        if (isLocalActionTarget && shouldSpotlight) {
           try { actionSpotlightSystem.addEvent(displayEvent); } catch { /* spotlight is best-effort */ }
         }
         scheduleTimelineNarration(displayEvent);

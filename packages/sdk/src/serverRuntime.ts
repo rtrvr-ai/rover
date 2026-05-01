@@ -1,6 +1,7 @@
 import type { RoverPageCaptureConfig } from '@rover/shared/lib/types/index.js';
 
 export type RoverServerExperienceConfig = {
+  experienceMode?: 'guided' | 'minimal';
   presence?: {
     assistantName?: string;
     ctaText?: string;
@@ -52,6 +53,7 @@ export type RoverServerExperienceConfig = {
     performanceBudget?: 'standard' | 'high';
     actionSpotlight?: boolean;
     actionSpotlightColor?: string;
+    actionSpotlightRunKinds?: ReadonlyArray<'guide' | 'task'>;
   };
   theme?: {
     mode?: 'auto' | 'light' | 'dark';

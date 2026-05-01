@@ -81,3 +81,62 @@ test('resolved mount experience defaults action spotlight on with default color'
   }, 'Rover', false);
   assert.equal(themeFallback.motion?.actionSpotlightColor, '#2563EB');
 });
+
+test('experienceMode "guided" preset gates spotlight to guide runs only', () => {
+  const guided = resolveMountExperienceConfig({
+    experience: { experienceMode: 'guided' },
+    onSend: () => {},
+  }, 'Rover', false);
+  assert.equal(guided.experienceMode, 'guided');
+  assert.equal(guided.motion?.actionSpotlight, true);
+  assert.deepEqual(guided.motion?.actionSpotlightRunKinds, ['guide']);
+  assert.equal(guided.audio?.narration?.defaultMode, 'guided');
+});
+
+test('experienceMode "minimal" preset turns spotlight + narration off', () => {
+  const minimal = resolveMountExperienceConfig({
+    experience: { experienceMode: 'minimal' },
+    onSend: () => {},
+  }, 'Rover', false);
+  assert.equal(minimal.experienceMode, 'minimal');
+  assert.equal(minimal.motion?.actionSpotlight, false);
+  assert.equal(minimal.audio?.narration?.enabled, false);
+  assert.equal(minimal.audio?.narration?.defaultMode, 'off');
+});
+
+test('explicit motion.actionSpotlight value wins over preset', () => {
+  // Owner picked "guided" preset but then manually flipped spotlight off →
+  // explicit value wins, no third "Custom" preset is needed at the schema layer.
+  const override = resolveMountExperienceConfig({
+    experience: {
+      experienceMode: 'guided',
+      motion: { actionSpotlight: false },
+    },
+    onSend: () => {},
+  }, 'Rover', false);
+  assert.equal(override.motion?.actionSpotlight, false);
+  // Preset-derived runKinds and narration mode still apply for fields the owner
+  // didn't explicitly override.
+  assert.deepEqual(override.motion?.actionSpotlightRunKinds, ['guide']);
+});
+
+test('explicit actionSpotlightRunKinds wins over guided preset and missing kinds stay back-compatible', () => {
+  const explicitKinds = resolveMountExperienceConfig({
+    experience: {
+      experienceMode: 'guided',
+      motion: { actionSpotlightRunKinds: ['task'] },
+    },
+    onSend: () => {},
+  }, 'Rover', false);
+  assert.deepEqual(explicitKinds.motion?.actionSpotlightRunKinds, ['task']);
+
+  const legacy = resolveMountExperienceConfig({
+    experience: {
+      motion: { actionSpotlight: true },
+    },
+    onSend: () => {},
+  }, 'Rover', false);
+  assert.equal(legacy.experienceMode, undefined);
+  assert.equal(legacy.motion?.actionSpotlight, true);
+  assert.equal(legacy.motion?.actionSpotlightRunKinds, undefined);
+});
