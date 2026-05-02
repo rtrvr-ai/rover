@@ -51,6 +51,7 @@ export type WindowComponent = {
   backdrop: HTMLButtonElement;
   panelGrabber: HTMLDivElement;
   resizeHandle: HTMLDivElement;
+  resizeIndicator: HTMLDivElement;
   // Task stage elements
   taskStage: HTMLElement;
   taskStageTitle: HTMLDivElement;
@@ -115,10 +116,15 @@ export function createWindow(opts: WindowOptions): WindowComponent {
   panelGrabberHandle.className = 'panelGrabberHandle';
   panelGrabber.appendChild(panelGrabberHandle);
 
-  // Resize handle (desktop)
+  // Resize handle (desktop) — diagonal hashmarks revealed on panel hover.
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'resizeHandle';
   resizeHandle.setAttribute('aria-hidden', 'true');
+
+  // Size indicator pill that briefly shows current panel dimensions during drag.
+  const resizeIndicator = document.createElement('div');
+  resizeIndicator.className = 'resizeIndicator';
+  resizeIndicator.setAttribute('aria-hidden', 'true');
 
   // Task stage
   const taskStage = document.createElement('section');
@@ -274,6 +280,25 @@ export function createWindow(opts: WindowOptions): WindowComponent {
     let startH = 0;
     let startLeft = 0;
 
+    let resizeIndicatorHideTimer: number | null = null;
+    const showResizeIndicator = (width: number, height: number): void => {
+      resizeIndicator.textContent = `${Math.round(width)} × ${Math.round(height)}`;
+      resizeIndicator.classList.add('visible');
+      if (resizeIndicatorHideTimer != null) {
+        try { clearTimeout(resizeIndicatorHideTimer); } catch { /* timer cleared */ }
+        resizeIndicatorHideTimer = null;
+      }
+    };
+    const hideResizeIndicatorSoon = (): void => {
+      if (resizeIndicatorHideTimer != null) {
+        try { clearTimeout(resizeIndicatorHideTimer); } catch { /* timer cleared */ }
+      }
+      resizeIndicatorHideTimer = setTimeout(() => {
+        resizeIndicator.classList.remove('visible');
+        resizeIndicatorHideTimer = null;
+      }, 600) as unknown as number;
+    };
+
     resizeHandle.addEventListener('pointerdown', (e: PointerEvent) => {
       if (viewportMetrics.layout !== 'desktop') return;
       e.preventDefault();
@@ -286,9 +311,11 @@ export function createWindow(opts: WindowOptions): WindowComponent {
       startH = rect.height;
       startLeft = rect.left;
       resizeHandle.setPointerCapture(e.pointerId);
+      resizeHandle.classList.add('dragging');
       panel.style.transition = 'none';
       document.body.style.userSelect = 'none';
       document.body.style.cursor = 'nwse-resize';
+      showResizeIndicator(rect.width, rect.height);
     });
 
     resizeHandle.addEventListener('pointermove', (e: PointerEvent) => {
@@ -306,12 +333,14 @@ export function createWindow(opts: WindowOptions): WindowComponent {
       panel.style.height = `${clamped.height}px`;
       panel.style.left = `${Math.max(safeInset, Math.round((viewportMetrics.width - clamped.width) / 2))}px`;
       panel.style.top = `${Math.max(safeInset, Math.round((viewportMetrics.height - clamped.height) / 2))}px`;
+      showResizeIndicator(clamped.width, clamped.height);
     });
 
     const endResize = (e: PointerEvent): void => {
       if (!isResizing) return;
       isResizing = false;
       resizeHandle.releasePointerCapture(e.pointerId);
+      resizeHandle.classList.remove('dragging');
       panel.style.transition = '';
       document.body.style.userSelect = '';
       document.body.style.cursor = '';
@@ -327,6 +356,7 @@ export function createWindow(opts: WindowOptions): WindowComponent {
       const safeInset = experience.shell?.safeAreaInsetPx ?? PANEL_DESKTOP_MARGIN;
       panel.style.left = `${Math.max(safeInset, Math.round((viewportMetrics.width - currentDesktopPanelState.width) / 2))}px`;
       panel.style.top = `${Math.max(safeInset, Math.round((viewportMetrics.height - currentDesktopPanelState.height) / 2))}px`;
+      hideResizeIndicatorSoon();
     };
     resizeHandle.addEventListener('pointerup', endResize);
     resizeHandle.addEventListener('pointercancel', endResize);
@@ -443,6 +473,7 @@ export function createWindow(opts: WindowOptions): WindowComponent {
     backdrop: panelBackdrop,
     panelGrabber,
     resizeHandle,
+    resizeIndicator,
     taskStage,
     taskStageTitle,
     taskStageStatusPill,

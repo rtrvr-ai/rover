@@ -1217,6 +1217,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   win.panel.appendChild(shortcutsComp.bar);
   win.panel.appendChild(win.questionPrompt);
   win.panel.appendChild(win.resizeHandle);
+  win.panel.appendChild(win.resizeIndicator);
   win.panel.appendChild(win.conversationDrawer);
 
   // Composer lives permanently in the bar slot (bar is always the input mechanism)
