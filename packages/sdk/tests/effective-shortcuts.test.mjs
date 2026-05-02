@@ -90,3 +90,64 @@ test('guided preset derives spotlight default from shortcut runKind', () => {
     false,
   );
 });
+
+test('guided and minimal presets expose narration hints separately from default active state', () => {
+  const guided = {
+    siteId: 'site_test',
+    ui: {
+      experience: {
+        experienceMode: 'guided',
+      },
+    },
+  };
+  assert.equal(
+    __roverInternalsForTests.resolveDefaultNarrationActiveForRunForTests(guided, 'guide', true),
+    true,
+  );
+  assert.equal(
+    __roverInternalsForTests.resolveDefaultNarrationActiveForRunForTests(guided, 'task', true),
+    false,
+  );
+  assert.equal(
+    __roverInternalsForTests.resolveNarrationAvailableForTests(guided),
+    true,
+  );
+
+  const minimal = {
+    siteId: 'site_test',
+    ui: {
+      experience: {
+        experienceMode: 'minimal',
+      },
+    },
+  };
+  assert.equal(
+    __roverInternalsForTests.resolveDefaultNarrationActiveForRunForTests(minimal, 'guide', true),
+    false,
+  );
+  assert.equal(
+    __roverInternalsForTests.resolveNarrationAvailableForTests(minimal),
+    true,
+  );
+  assert.equal(
+    __roverInternalsForTests.resolveDefaultNarrationActiveForRunForTests(minimal, undefined, true),
+    false,
+  );
+  assert.equal(
+    __roverInternalsForTests.resolveDefaultNarrationActiveForRunForTests(minimal, 'guide', false),
+    false,
+  );
+
+  const ownerDisabled = {
+    siteId: 'site_test',
+    ui: {
+      experience: {
+        audio: { narration: { enabled: false, defaultMode: 'always' } },
+      },
+    },
+  };
+  assert.equal(
+    __roverInternalsForTests.resolveNarrationAvailableForTests(ownerDisabled),
+    false,
+  );
+});

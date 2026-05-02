@@ -35,6 +35,9 @@ export const responsiveStyles = `
       }
 
       .sizeBtn,
+      .conversationListBtn,
+      .narrationBtn,
+      .spotlightBtn,
       .overflowBtn,
       .closeBtn {
         width: 36px;

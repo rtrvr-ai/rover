@@ -206,6 +206,7 @@ export const windowStyles = `
 
     .sizeBtn,
     .narrationBtn,
+    .spotlightBtn,
     .overflowBtn,
     .closeBtn {
       width: 32px;
@@ -289,7 +290,8 @@ export const windowStyles = `
       stroke-width: 2;
     }
 
-    .narrationBtn svg {
+    .narrationBtn svg,
+    .spotlightBtn svg {
       width: 16px;
       height: 16px;
       stroke: currentColor;
@@ -301,6 +303,7 @@ export const windowStyles = `
 
     .sizeBtn:hover,
     .narrationBtn:hover,
+    .spotlightBtn:hover,
     .overflowBtn:hover,
     .closeBtn:hover {
       background: var(--rv-bg-alt);
@@ -312,7 +315,8 @@ export const windowStyles = `
       display: none;
     }
 
-    .narrationBtn.enabled {
+    .narrationBtn.enabled,
+    .spotlightBtn.enabled {
       color: var(--rv-accent);
       border-color: var(--rv-accent-border);
       background: rgba(var(--rv-accent-rgb), 0.08);
@@ -450,6 +454,17 @@ export const windowStyles = `
       height: 1px;
       background: var(--rv-border);
       margin: 4px 8px;
+    }
+
+    .menuCaption {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: rgba(26, 26, 25, 0.45);
+      padding: 8px 12px 4px;
+      pointer-events: none;
+      user-select: none;
     }
 
     /* ── Feed & Scrollbar ── */

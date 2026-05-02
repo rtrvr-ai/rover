@@ -95,6 +95,8 @@ import {
   RoverConversationHistoryClient,
   buildConversationTitle,
   createConversationHistoryStore,
+  type LocalConversationRecord,
+  type RoverConversationPayload,
   type RoverConversationSummary,
 } from './conversationHistory.js';
 import {
@@ -538,6 +540,7 @@ const MAX_AUTO_RESUME_SESSION_WAIT_ATTEMPTS = 30;
 const VISITOR_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365;
 const CHECKPOINT_PAYLOAD_VERSION = 1;
 const ACTIVE_PENDING_RUN_GRACE_MS = 3_000;
+const CONVERSATION_SWITCH_SHARED_RUN_STALE_MS = 30_000;
 const STALE_PENDING_RUN_GRACE_MS = 4_500;
 const TELEMETRY_DEFAULT_FLUSH_INTERVAL_MS = 12_000;
 const TELEMETRY_DEFAULT_MAX_BATCH_SIZE = 30;
@@ -669,6 +672,7 @@ let currentMode: RoverExecutionMode = 'controller';
 let narrationEnabledForRun = false;
 let narrationPreferenceSource: 'default' | 'visitor' = 'default';
 let narrationLanguage: string | undefined = undefined;
+let narrationDefaultActiveForRun = false;
 let actionSpotlightEnabledForRun = false;
 let actionSpotlightPreferenceSource: 'default' | 'visitor' = 'default';
 let workerReady = false;
@@ -4985,6 +4989,147 @@ function buildActiveConversationRecord(): { summary: RoverConversationSummary; p
   };
 }
 
+const VALID_TASK_STATES = new Set<TaskState>([
+  'idle',
+  'running',
+  'awaiting_user',
+  'paused',
+  'blocked',
+  'completed',
+  'failed',
+  'cancelled',
+]);
+
+function normalizeConversationTaskState(input: unknown, fallbackStatus?: unknown): TaskState {
+  const state = String(input || '').trim();
+  if (VALID_TASK_STATES.has(state as TaskState)) return state as TaskState;
+  const fallback = String(fallbackStatus || '').trim();
+  if (VALID_TASK_STATES.has(fallback as TaskState)) return fallback as TaskState;
+  return stateFromLegacyStatus(fallback || 'completed');
+}
+
+function getConversationPayload(record?: LocalConversationRecord | null): RoverConversationPayload | undefined {
+  if (!record?.payload || typeof record.payload !== 'object') return undefined;
+  return record.payload;
+}
+
+function hasRestorableConversationPayload(record?: LocalConversationRecord | null): boolean {
+  const payload = getConversationPayload(record);
+  if (!payload) return false;
+  const taskRecord = (payload as any).taskRecord;
+  if (taskRecord && typeof taskRecord === 'object' && String(taskRecord.taskId || '').trim()) {
+    return true;
+  }
+  return sanitizeUiMessages((payload as any).uiMessages).length > 0
+    || sanitizeTimelineEvents((payload as any).timeline).length > 0;
+}
+
+function shouldFetchRemoteConversationRecord(record?: LocalConversationRecord | null): boolean {
+  return !hasRestorableConversationPayload(record);
+}
+
+function buildTaskRecordFromConversationRecord(
+  record: LocalConversationRecord | null | undefined,
+  requestedConversationId?: string,
+): TaskRecord | undefined {
+  const payload = getConversationPayload(record);
+  if (!record || !payload) return undefined;
+
+  const summary = record.summary;
+  const fallbackTaskId = String(requestedConversationId || summary.conversationId || '').trim();
+  const payloadAny = payload as Record<string, any>;
+  const rawTask = payloadAny.taskRecord && typeof payloadAny.taskRecord === 'object'
+    ? payloadAny.taskRecord as Partial<TaskRecord>
+    : undefined;
+  const taskId = String(rawTask?.taskId || fallbackTaskId).trim();
+  if (!taskId) return undefined;
+
+  const payloadMessages = sanitizeUiMessages(payloadAny.uiMessages);
+  const payloadTimeline = sanitizeTimelineEvents(payloadAny.timeline);
+  const taskMessages = sanitizeUiMessages(rawTask?.uiMessages);
+  const taskTimeline = sanitizeTimelineEvents(rawTask?.timeline);
+  const uiMessages = taskMessages.length ? taskMessages : payloadMessages;
+  const timeline = taskTimeline.length ? taskTimeline : payloadTimeline;
+
+  if (!rawTask && uiMessages.length === 0 && timeline.length === 0) return undefined;
+
+  const updatedAt = Number(summary.updatedAt || Date.now());
+  const createdAt = Number(summary.createdAt || rawTask?.startedAt || updatedAt);
+  const state = normalizeConversationTaskState(rawTask?.state, summary.status);
+  const firstUserMessage = uiMessages.find(message => message.role === 'user');
+  const latestAssistantMessage = [...uiMessages].reverse().find(message => message.role === 'assistant');
+  const lastUserAt = Number(rawTask?.lastUserAt)
+    || [...uiMessages].reverse().find(message => message.role === 'user')?.ts
+    || undefined;
+  const lastAssistantAt = Number(rawTask?.lastAssistantAt) || latestAssistantMessage?.ts || undefined;
+  const endedAt = Number(rawTask?.endedAt)
+    || (isTerminalState(state) ? updatedAt : undefined);
+
+  return createTaskRecord({
+    ...(rawTask || {}),
+    taskId,
+    state,
+    startedAt: Number(rawTask?.startedAt) || createdAt || updatedAt,
+    endedAt,
+    lastUserAt,
+    lastAssistantAt,
+    rootUserInput:
+      String(rawTask?.rootUserInput || '').trim()
+      || String(firstUserMessage?.text || '').trim()
+      || summary.title,
+    summary:
+      String(rawTask?.summary || '').trim()
+      || String(latestAssistantMessage?.text || '').trim()
+      || summary.preview,
+    uiMessages,
+    timeline,
+    tabIds: Array.isArray(rawTask?.tabIds) ? rawTask!.tabIds!.filter(tabId => Number.isFinite(Number(tabId))).map(Number) : [],
+  });
+}
+
+function shouldBlockConversationSwitchForLiveRun(params: {
+  currentTask?: Pick<TaskRecord, 'taskId' | 'state'>;
+  targetConversationId: string;
+  pendingRun?: PersistedPendingRun;
+  pendingRunLikelyActive?: boolean;
+  sharedActiveRun?: { runId?: string; runtimeId?: string; startedAt?: number; updatedAt?: number };
+  runtimeId?: string;
+  now?: number;
+}): boolean {
+  const currentTask = params.currentTask;
+  if (!currentTask) return false;
+  if (currentTask.taskId === params.targetConversationId) return false;
+  if (isTerminalState(currentTask.state)) return false;
+
+  const pendingRunId = String(params.pendingRun?.id || '').trim();
+  if (pendingRunId && params.pendingRunLikelyActive === true) return true;
+
+  const sharedActiveRun = params.sharedActiveRun;
+  const sharedRunId = String(sharedActiveRun?.runId || '').trim();
+  if (!sharedRunId) return false;
+
+  const sharedRuntimeId = String(sharedActiveRun?.runtimeId || '').trim();
+  const localRuntimeId = String(params.runtimeId || '').trim();
+  if (pendingRunId && sharedRunId === pendingRunId) return true;
+  if (!sharedRuntimeId || !localRuntimeId || sharedRuntimeId !== localRuntimeId) return false;
+
+  const now = Number(params.now || Date.now());
+  const updatedAt = Number(sharedActiveRun?.updatedAt || sharedActiveRun?.startedAt || 0);
+  return updatedAt > 0 && now - updatedAt >= 0 && now - updatedAt <= CONVERSATION_SWITCH_SHARED_RUN_STALE_MS;
+}
+
+function reportConversationRestoreFailure(conversationId: string, reason: string): void {
+  recordTelemetryEvent('status', {
+    event: 'conversation_history_restore_failed',
+    conversationId,
+    reason,
+  });
+  setUiStatus('Could not load that conversation. Try again.', {
+    stage: 'conversation_restore',
+    publishShared: false,
+  });
+}
+
 function scheduleConversationHistorySync(reason = 'state_persist'): void {
   if (!conversationHistoryStore || !taskOrchestrator || !runtimeState) return;
   if (conversationHistorySyncTimer) return;
@@ -6513,6 +6658,7 @@ function postRun(
     files?: LLMDataInput[];
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
+    narrationDefaultActiveForRun?: boolean;
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
     actionSpotlightEnabledForRun?: boolean;
@@ -6632,6 +6778,22 @@ function postRun(
 	  const workerNarrationRunKind = normalizeRoverRunKind(options?.narrationRunKind);
 	  const workerActionSpotlightRunKind =
 	    normalizeRoverRunKind(options?.actionSpotlightRunKind) || workerNarrationRunKind;
+	  const workerNarrationPreferenceSource = options?.narrationPreferenceSource || narrationPreferenceSource;
+	  const workerActionSpotlightPreferenceSource = options?.actionSpotlightPreferenceSource || actionSpotlightPreferenceSource;
+	  const workerNarrationAvailable = options?.narrationEnabledForRun
+	    ?? (narrationPreferenceSource === 'visitor' ? narrationEnabledForRun : resolveNarrationAvailableFromConfig(currentConfig));
+	  const workerNarrationDefaultActive = typeof options?.narrationDefaultActiveForRun === 'boolean'
+	    ? options.narrationDefaultActiveForRun
+	    : workerNarrationPreferenceSource === 'visitor'
+	      ? workerNarrationAvailable === true
+	      : resolveDefaultNarrationActiveForRun(workerNarrationRunKind, workerNarrationAvailable === true);
+	  const workerSpotlightAvailable = options?.actionSpotlightEnabledForRun
+	    ?? (actionSpotlightPreferenceSource === 'visitor' ? actionSpotlightEnabledForRun : true);
+	  const workerSpotlightDefaultActive = typeof options?.actionSpotlightDefaultActiveForRun === 'boolean'
+	    ? options.actionSpotlightDefaultActiveForRun
+	    : workerActionSpotlightPreferenceSource === 'visitor'
+	      ? workerSpotlightAvailable === true
+	      : resolveDefaultActionSpotlightActiveForRun(workerActionSpotlightRunKind, workerSpotlightAvailable === true);
 	  const runMessage: Record<string, unknown> = {
 	    type: 'run',
 	    text: trimmed,
@@ -6643,19 +6805,18 @@ function postRun(
     routing: options?.routing,
     askUserAnswers: options?.askUserAnswers,
 	    files: sanitizeAttachedFileDescriptors(options?.files),
-	    narrationEnabledForRun: options?.narrationEnabledForRun === true,
-	    narrationPreferenceSource: options?.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
+	    narrationEnabledForRun: workerNarrationAvailable === true,
+	    narrationPreferenceSource: workerNarrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
 	    ...(workerNarrationRunKind ? { narrationRunKind: workerNarrationRunKind } : {}),
 	    narrationLanguage: options?.narrationLanguage,
-	    actionSpotlightEnabledForRun: options?.actionSpotlightEnabledForRun === true,
-	    actionSpotlightPreferenceSource: options?.actionSpotlightPreferenceSource === 'visitor' ? 'visitor' : 'default',
+	    actionSpotlightEnabledForRun: workerSpotlightAvailable === true,
+	    actionSpotlightPreferenceSource: workerActionSpotlightPreferenceSource === 'visitor' ? 'visitor' : 'default',
 	    ...(workerActionSpotlightRunKind ? { actionSpotlightRunKind: workerActionSpotlightRunKind } : {}),
 	    scopedTabIds,
 	    taskTabScope: toWorkerTaskTabScopePayload(),
 	  };
-	  if (typeof options?.actionSpotlightDefaultActiveForRun === 'boolean') {
-	    runMessage.actionSpotlightDefaultActiveForRun = options.actionSpotlightDefaultActiveForRun;
-	  }
+	  runMessage.narrationDefaultActiveForRun = workerNarrationDefaultActive;
+	  runMessage.actionSpotlightDefaultActiveForRun = workerSpotlightDefaultActive;
 	  worker.postMessage(runMessage);
 
   if (runSafetyTimer) clearTimeout(runSafetyTimer);
@@ -6693,6 +6854,7 @@ async function dispatchUserPromptAsync(
     attachments?: File[];
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
+    narrationDefaultActiveForRun?: boolean;
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
     actionSpotlightEnabledForRun?: boolean;
@@ -6928,17 +7090,32 @@ async function dispatchUserPromptAsync(
     }
   }
 
-  const effectiveNarrationEnabledForRun = options?.narrationEnabledForRun ?? narrationEnabledForRun;
+  const fallbackNarrationAvailable = narrationPreferenceSource === 'visitor'
+    ? narrationEnabledForRun
+    : resolveNarrationAvailableFromConfig(currentConfig);
+  const effectiveNarrationEnabledForRun = options?.narrationEnabledForRun ?? fallbackNarrationAvailable;
   const effectiveNarrationPreferenceSource = options?.narrationPreferenceSource || narrationPreferenceSource;
   const effectiveNarrationRunKind = normalizeRoverRunKind(options?.narrationRunKind);
   const effectiveNarrationLanguage = options?.narrationLanguage || narrationLanguage;
-  const effectiveActionSpotlightEnabledForRun = options?.actionSpotlightEnabledForRun ?? actionSpotlightEnabledForRun;
+  const effectiveNarrationDefaultActiveForRun = typeof options?.narrationDefaultActiveForRun === 'boolean'
+    ? options.narrationDefaultActiveForRun
+    : effectiveNarrationPreferenceSource === 'visitor'
+      ? effectiveNarrationEnabledForRun === true
+      : effectiveNarrationRunKind
+        ? resolveDefaultNarrationActiveForRun(effectiveNarrationRunKind, effectiveNarrationEnabledForRun === true)
+      : narrationDefaultActiveForRun;
+  const fallbackActionSpotlightAvailable = actionSpotlightPreferenceSource === 'visitor'
+    ? actionSpotlightEnabledForRun
+    : true;
+  const effectiveActionSpotlightEnabledForRun = options?.actionSpotlightEnabledForRun ?? fallbackActionSpotlightAvailable;
   const effectiveActionSpotlightPreferenceSource = options?.actionSpotlightPreferenceSource || actionSpotlightPreferenceSource;
   const effectiveActionSpotlightRunKind =
     normalizeRoverRunKind(options?.actionSpotlightRunKind) || effectiveNarrationRunKind;
   const effectiveActionSpotlightDefaultActiveForRun = typeof options?.actionSpotlightDefaultActiveForRun === 'boolean'
     ? options.actionSpotlightDefaultActiveForRun
-    : resolveDefaultActionSpotlightActiveForRun(effectiveActionSpotlightRunKind, effectiveActionSpotlightEnabledForRun === true);
+    : effectiveActionSpotlightPreferenceSource === 'visitor'
+      ? effectiveActionSpotlightEnabledForRun === true
+      : resolveDefaultActionSpotlightActiveForRun(effectiveActionSpotlightRunKind, effectiveActionSpotlightEnabledForRun === true);
   postRun(trimmed, {
     runId,
     appendUserMessage: true,
@@ -6951,6 +7128,7 @@ async function dispatchUserPromptAsync(
     files: uploadedFiles,
     narrationEnabledForRun: effectiveNarrationEnabledForRun === true,
     narrationPreferenceSource: effectiveNarrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
+    narrationDefaultActiveForRun: effectiveNarrationDefaultActiveForRun,
     narrationRunKind: effectiveNarrationRunKind,
     narrationLanguage: effectiveNarrationLanguage,
     actionSpotlightEnabledForRun: effectiveActionSpotlightEnabledForRun === true,
@@ -6971,6 +7149,7 @@ function dispatchUserPrompt(
     attachments?: File[];
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
+    narrationDefaultActiveForRun?: boolean;
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
     actionSpotlightEnabledForRun?: boolean;
@@ -9328,6 +9507,38 @@ function resolveDefaultActionSpotlightActiveForRun(
   spotlightAvailable: boolean,
 ): boolean {
   return resolveDefaultActionSpotlightActiveForRunFromConfig(currentConfig, runKind, spotlightAvailable);
+}
+
+function resolveNarrationAvailableFromConfig(cfg: RoverInit | null): boolean {
+  const experience = deriveExperienceConfig(cfg);
+  return experience?.audio?.narration?.enabled !== false;
+}
+
+function resolveDefaultNarrationActiveForRunFromConfig(
+  cfg: RoverInit | null,
+  runKind: 'guide' | 'task' | undefined,
+  narrationAvailable: boolean,
+): boolean {
+  if (!narrationAvailable) return false;
+  const experience = deriveExperienceConfig(cfg);
+  const presetMode = experience?.experienceMode;
+  const narration = experience?.audio?.narration;
+  if (narration?.enabled === false) return false;
+  const defaultMode = narration?.defaultMode === 'always' || narration?.defaultMode === 'off'
+    ? narration.defaultMode
+    : presetMode === 'minimal'
+      ? 'off'
+    : 'guided';
+  if (defaultMode === 'off') return false;
+  if (defaultMode === 'always') return true;
+  return !runKind || runKind === 'guide';
+}
+
+function resolveDefaultNarrationActiveForRun(
+  runKind: 'guide' | 'task' | undefined,
+  narrationAvailable: boolean,
+): boolean {
+  return resolveDefaultNarrationActiveForRunFromConfig(currentConfig, runKind, narrationAvailable);
 }
 
 function resolveEffectiveAgentDiscoveryRuntimeConfig(cfg: RoverInit | null): RoverAgentDiscoveryRuntimeConfig | undefined {
@@ -11914,6 +12125,7 @@ function createRuntime(cfg: RoverInit): void {
     onShortcutClick: (shortcut: RoverShortcut, meta?: {
       narrationEnabledForRun?: boolean;
       narrationPreferenceSource?: 'default' | 'visitor';
+      narrationDefaultActiveForRun?: boolean;
       narrationRunKind?: 'guide' | 'task';
       narrationLanguage?: string;
       actionSpotlightEnabledForRun?: boolean;
@@ -11923,12 +12135,15 @@ function createRuntime(cfg: RoverInit): void {
     }) => {
       const text = String(shortcut.prompt || '').trim();
       if (!text) return;
+      const narrationAvailable = meta?.narrationEnabledForRun ?? narrationEnabledForRun;
       const spotlightAvailable = meta?.actionSpotlightEnabledForRun ?? actionSpotlightEnabledForRun;
       dispatchUserPrompt(text, {
         routing: shortcut.routing,
-        narrationEnabledForRun: meta?.narrationEnabledForRun ?? narrationEnabledForRun,
+        narrationEnabledForRun: narrationAvailable,
         narrationPreferenceSource: meta?.narrationPreferenceSource || narrationPreferenceSource,
         narrationRunKind: meta?.narrationRunKind || shortcut.runKind,
+        narrationDefaultActiveForRun: meta?.narrationDefaultActiveForRun
+          ?? resolveDefaultNarrationActiveForRun(shortcut.runKind, narrationAvailable === true),
         narrationLanguage: meta?.narrationLanguage || narrationLanguage,
         actionSpotlightEnabledForRun: spotlightAvailable,
         actionSpotlightPreferenceSource: meta?.actionSpotlightPreferenceSource || actionSpotlightPreferenceSource,
@@ -11942,6 +12157,7 @@ function createRuntime(cfg: RoverInit): void {
       attachments?: File[];
       narrationEnabledForRun?: boolean;
       narrationPreferenceSource?: 'default' | 'visitor';
+      narrationDefaultActiveForRun?: boolean;
       narrationRunKind?: 'guide' | 'task';
       narrationLanguage?: string;
       actionSpotlightEnabledForRun?: boolean;
@@ -11952,11 +12168,14 @@ function createRuntime(cfg: RoverInit): void {
       dispatchUserPrompt(text, {
         askUserAnswers: meta?.askUserAnswers,
         attachments: meta?.attachments,
-        narrationEnabledForRun: meta?.narrationEnabledForRun === true,
+        narrationEnabledForRun: meta?.narrationEnabledForRun,
         narrationPreferenceSource: meta?.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
+        narrationDefaultActiveForRun: typeof meta?.narrationDefaultActiveForRun === 'boolean'
+          ? meta.narrationDefaultActiveForRun
+          : undefined,
         narrationRunKind: meta?.narrationRunKind,
         narrationLanguage: meta?.narrationLanguage,
-        actionSpotlightEnabledForRun: meta?.actionSpotlightEnabledForRun === true,
+        actionSpotlightEnabledForRun: meta?.actionSpotlightEnabledForRun,
         actionSpotlightPreferenceSource: meta?.actionSpotlightPreferenceSource === 'visitor' ? 'visitor' : 'default',
         actionSpotlightRunKind: meta?.actionSpotlightRunKind || meta?.narrationRunKind,
         actionSpotlightDefaultActiveForRun: typeof meta?.actionSpotlightDefaultActiveForRun === 'boolean'
@@ -11973,16 +12192,17 @@ function createRuntime(cfg: RoverInit): void {
       source: 'default' | 'visitor',
       language?: string,
     ) => {
-      narrationEnabledForRun = available && enabled;
+      narrationEnabledForRun = available && (source !== 'visitor' || enabled);
       narrationPreferenceSource = source === 'visitor' ? 'visitor' : 'default';
       narrationLanguage = language;
+      narrationDefaultActiveForRun = enabled;
     },
     onSpotlightPreferenceChange: (
       enabled: boolean,
       available: boolean,
       source: 'default' | 'visitor',
     ) => {
-      actionSpotlightEnabledForRun = available && enabled;
+      actionSpotlightEnabledForRun = available && (source !== 'visitor' || enabled);
       actionSpotlightPreferenceSource = source === 'visitor' ? 'visitor' : 'default';
     },
     onRequestControl: () => {
@@ -12060,10 +12280,14 @@ function createRuntime(cfg: RoverInit): void {
       if (currentTask && ui) {
         currentTask.scrollPosition = ui.getScrollPosition();
       }
-      const sharedActiveRunId = String(sessionCoordinator?.getState()?.activeRun?.runId || '').trim();
-      const localActiveRunId = String(runtimeState.pendingRun?.id || '').trim();
-      const hasLiveRun = !!(localActiveRunId || sharedActiveRunId);
-      if (currentTask && currentTask.taskId !== conversationId && hasLiveRun) {
+      if (shouldBlockConversationSwitchForLiveRun({
+        currentTask,
+        targetConversationId: conversationId,
+        pendingRun: sanitizePendingRun(runtimeState.pendingRun),
+        pendingRunLikelyActive: isPendingRunLikelyActive(),
+        sharedActiveRun: sessionCoordinator?.getState()?.activeRun,
+        runtimeId,
+      })) {
         appendUiMessage('system', 'Finish the active run before switching conversations.', true);
         return;
       }
@@ -12072,21 +12296,45 @@ function createRuntime(cfg: RoverInit): void {
       if (!target) {
         void (async () => {
           let record = await conversationHistoryStore?.get(conversationId);
-          if (!record && conversationHistoryClient) {
-            record = await conversationHistoryClient.get(conversationId).catch(() => null);
-            if (record) conversationHistoryStore?.upsert(record);
+          if (shouldFetchRemoteConversationRecord(record) && conversationHistoryClient) {
+            const remoteRecord = await conversationHistoryClient.get(conversationId).catch(error => {
+              recordTelemetryEvent('status', {
+                event: 'conversation_history_restore_fetch_failed',
+                conversationId,
+                message: error instanceof Error ? error.message : String(error || ''),
+              });
+              return null;
+            });
+            if (remoteRecord) {
+              record = remoteRecord;
+              conversationHistoryStore?.upsert(remoteRecord);
+            }
           }
-          const taskRecord = record?.payload?.taskRecord as TaskRecord | undefined;
-          if (!taskRecord) return;
+          const taskRecord = buildTaskRecordFromConversationRecord(record, conversationId);
+          if (!taskRecord) {
+            reportConversationRestoreFailure(conversationId, record ? 'missing_payload' : 'not_found');
+            return;
+          }
           taskOrchestrator?.createTask('conversation_history_restore', taskRecord);
           const restored = taskOrchestrator?.switchActiveTask(taskRecord.taskId);
-          if (!restored) return;
+          if (!restored) {
+            reportConversationRestoreFailure(conversationId, 'restore_failed');
+            return;
+          }
           restoreRuntimeStateFromTaskRecord(restored, { replayUi: true });
           runtimeState!.activeTaskId = restored.taskId;
           ui?.setActiveConversationId(restored.taskId);
           syncOrchestratorConversationList();
+          await refreshConversationHistoryList('conversation_restore');
           persistRuntimeState();
-        })().catch(() => undefined);
+        })().catch(error => {
+          recordTelemetryEvent('status', {
+            event: 'conversation_history_restore_exception',
+            conversationId,
+            message: error instanceof Error ? error.message : String(error || ''),
+          });
+          reportConversationRestoreFailure(conversationId, 'exception');
+        });
         return;
       }
       restoreRuntimeStateFromTaskRecord(target, { replayUi: true });
@@ -12100,6 +12348,9 @@ function createRuntime(cfg: RoverInit): void {
         ui.setActiveConversationId(conversationId);
       }
       syncOrchestratorConversationList();
+      void refreshConversationHistoryList('conversation_switch').catch(() => {
+        syncOrchestratorConversationList();
+      });
       persistRuntimeState();
     },
     onDeleteConversation: (conversationId: string) => {
@@ -12107,7 +12358,9 @@ function createRuntime(cfg: RoverInit): void {
       taskOrchestrator.deleteTask(conversationId);
       conversationHistoryStore?.remove(conversationId, { deletedAt: Date.now() });
       void conversationHistoryClient?.delete(conversationId).catch(() => undefined);
-      syncOrchestratorConversationList();
+      void refreshConversationHistoryList('conversation_delete').catch(() => {
+        syncOrchestratorConversationList();
+      });
       persistRuntimeState();
     },
     onResumeTask: (taskId: string) => {
@@ -13430,6 +13683,18 @@ export const __roverInternalsForTests = {
     runKind: 'guide' | 'task' | undefined,
     spotlightAvailable: boolean,
   ) => resolveDefaultActionSpotlightActiveForRunFromConfig(cfg, runKind, spotlightAvailable),
+  resolveDefaultNarrationActiveForRunForTests: (
+    cfg: RoverInit | null,
+    runKind: 'guide' | 'task' | undefined,
+    narrationAvailable: boolean,
+  ) => resolveDefaultNarrationActiveForRunFromConfig(cfg, runKind, narrationAvailable),
+  resolveNarrationAvailableForTests: (
+    cfg: RoverInit | null,
+  ) => resolveNarrationAvailableFromConfig(cfg),
+  hasRestorableConversationPayloadForTests: hasRestorableConversationPayload,
+  shouldFetchRemoteConversationRecordForTests: shouldFetchRemoteConversationRecord,
+  buildTaskRecordFromConversationRecordForTests: buildTaskRecordFromConversationRecord,
+  shouldBlockConversationSwitchForLiveRunForTests: shouldBlockConversationSwitchForLiveRun,
 };
 
 export {

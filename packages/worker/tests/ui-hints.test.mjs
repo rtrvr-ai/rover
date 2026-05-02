@@ -109,6 +109,7 @@ test('rover runtime context preserves explicit narration ui hints', async () => 
         },
         uiHints: {
           actionNarration: true,
+          actionNarrationDefaultActive: false,
           actionSpotlight: true,
           actionSpotlightDefaultActive: true,
           runKind: 'guide',
@@ -127,6 +128,7 @@ test('rover runtime context preserves explicit narration ui hints', async () => 
     });
     assert.deepEqual(requests[0].data.runtimeContext.uiHints, {
       actionNarration: true,
+      actionNarrationDefaultActive: false,
       actionSpotlight: true,
       actionSpotlightDefaultActive: true,
       runKind: 'guide',

@@ -266,7 +266,6 @@ export function resolveMountExperienceConfig(opts: MountOptions, agentName: stri
   const presetSpotlight = presetMode === 'guided' ? true : presetMode === 'minimal' ? false : undefined;
   const presetSpotlightRunKinds: ReadonlyArray<'guide' | 'task'> | undefined =
     presetMode === 'guided' ? ['guide'] : undefined;
-  const presetNarrationEnabled = presetMode === 'minimal' ? false : undefined;
   const presetNarrationMode: 'guided' | 'always' | 'off' | undefined =
     presetMode === 'guided' ? 'guided' : presetMode === 'minimal' ? 'off' : undefined;
   return {
@@ -311,7 +310,7 @@ export function resolveMountExperienceConfig(opts: MountOptions, agentName: stri
     },
     audio: {
       narration: {
-        enabled: explicit.audio?.narration?.enabled ?? presetNarrationEnabled ?? true,
+        enabled: explicit.audio?.narration?.enabled ?? true,
         defaultMode: explicit.audio?.narration?.defaultMode || presetNarrationMode || 'guided',
         rate: explicit.audio?.narration?.rate ?? 1,
         language: explicit.audio?.narration?.language || 'en-US',
@@ -420,4 +419,49 @@ export function deriveActionSpotlightTokens(hex?: string, fallbackHex = DEFAULT_
     '--rv-action-spotlight-dark-halo': `rgba(${r}, ${g}, ${b}, 0.16)`,
     '--rv-action-spotlight-dark-glow': `rgba(${r}, ${g}, ${b}, 0.22)`,
   };
+}
+
+export type ActionSpotlightDecisionInput = {
+  /** Whether the visitor's stored preference is explicit ('visitor') or inherited from site default ('default'). */
+  visitorSource: 'default' | 'visitor';
+  /** Resolved on/off boolean — visitor's stored value when explicit, site default otherwise. */
+  visitorEnabled: boolean;
+  /** Per-step planner override from `args.ui.highlight` (true=force on, false=suppress, undefined=defer). */
+  stepOverride?: boolean;
+  /** runKind of the current run; undefined for free-text prompts (no shortcut). */
+  currentRunKind?: 'guide' | 'task';
+  /** Site-configured allowed runKinds; undefined/empty means "any kind." */
+  allowedRunKinds?: ReadonlyArray<'guide' | 'task'>;
+};
+
+/**
+ * Pure precedence rule for the action spotlight gate. Top wins:
+ *   1. Visitor explicit OFF  → never fire (accessibility / preference is sacred).
+ *   2. Visitor explicit ON   → fire unless planner per-step explicitly suppresses.
+ *   3. Visitor default       → planner per-step (when set) overrides site config; otherwise
+ *                              site default + runKind allowedKinds decides.
+ */
+export function resolveActionSpotlightDecision(input: ActionSpotlightDecisionInput): boolean {
+  const { visitorSource, visitorEnabled, stepOverride, currentRunKind, allowedRunKinds } = input;
+  if (visitorSource === 'visitor') {
+    return visitorEnabled && stepOverride !== false;
+  }
+  if (stepOverride !== undefined) return stepOverride;
+  const runKindAllowed =
+    !currentRunKind || !allowedRunKinds || allowedRunKinds.length === 0 || allowedRunKinds.includes(currentRunKind);
+  return visitorEnabled && runKindAllowed;
+}
+
+export function resolveNarrationDefaultActiveForRun(
+  config: RoverExperienceConfig,
+  runKind?: 'guide' | 'task',
+): boolean {
+  const narration = config.audio?.narration;
+  if (narration?.enabled === false) return false;
+  const defaultMode = narration?.defaultMode === 'always' || narration?.defaultMode === 'off'
+    ? narration.defaultMode
+    : 'guided';
+  if (defaultMode === 'off') return false;
+  if (defaultMode === 'always') return true;
+  return !runKind || runKind === 'guide';
 }
