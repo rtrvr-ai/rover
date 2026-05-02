@@ -66,6 +66,8 @@ import {
   normalizeVoiceAutoStopMs,
   deriveAccentTokens,
   deriveActionSpotlightTokens,
+  resolveActionSpotlightDecision,
+  resolveNarrationDefaultActiveForRun,
   DEFAULT_AGENT_NAME,
   DEFAULT_ATTACHMENT_LIMIT,
   VOICE_AUTO_STOP_DEFAULT_MS,
@@ -209,7 +211,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     voicePreference: preference?.voicePreference || config.audio?.narration?.voicePreference,
   });
   const getNarrationDefaultOn = (config: RoverExperienceConfig): boolean => (
-    config.audio?.narration?.defaultMode !== 'off'
+    resolveNarrationDefaultActiveForRun(config)
   );
 
   let narrationPreference = resolveNarrationPreference({
@@ -238,7 +240,27 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let allowNarrationToggle = narrationPreference.supportedByConfig && narrator.isSupported();
   let isNarrationEnabled = allowNarrationToggle && narrationPreference.enabled;
   let voiceSettingsPanel: ReturnType<typeof createVoiceSettingsPanel> | null = null;
-  narrator.setEnabled(isNarrationEnabled);
+
+  // Narration precedence (mirrors spotlight gate at the tool_start handler):
+  //   1. Visitor explicit OFF → never narrate (hard-blocked).
+  //   2. Visitor explicit ON  → narrate per agent emissions (event.narration / narrationActive).
+  //   3. Visitor default      → planner per-step ui.narration text overrides site default 'off';
+  //                             otherwise site default (isNarrationEnabled) decides.
+  // Permissive gate: narrator engine + scheduler flush are allowed unless visitor explicit OFF,
+  // so explicit per-step narrations can still speak on minimal/default-off sites.
+  function isNarrationLocallyAllowed(): boolean {
+    if (!allowNarrationToggle) return false;
+    return narrationPreference.source !== 'visitor' || isNarrationEnabled;
+  }
+  function shouldSpeakNarrationEvent(event: RoverTimelineEvent): boolean {
+    if (!allowNarrationToggle) return false;
+    if (narrationPreference.source === 'visitor') return isNarrationEnabled;
+    const explicitText = typeof event.narration === 'string' && event.narration.trim().length > 0;
+    if (explicitText) return true;
+    return resolveNarrationDefaultActiveForRun(experience, currentRunKind);
+  }
+
+  narrator.setEnabled(isNarrationLocallyAllowed());
   opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source, resolveEffectiveNarrationLanguage());
 
   function syncNarrationConfig(): void {
@@ -272,8 +294,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
     }
     allowNarrationToggle = narrationPreference.supportedByConfig && narrator.isSupported();
     isNarrationEnabled = allowNarrationToggle && narrationPreference.enabled;
-    if (!isNarrationEnabled) timelineNarrationScheduler.cancel();
-    narrator.setEnabled(isNarrationEnabled);
+    if (!isNarrationLocallyAllowed()) timelineNarrationScheduler.cancel();
+    narrator.setEnabled(isNarrationLocallyAllowed());
     headerComp?.setNarrationAvailable(allowNarrationToggle);
     headerComp?.setNarrationEnabled(isNarrationEnabled);
     voiceSettingsPanel?.update(buildVoiceSettingsState());
@@ -304,7 +326,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       enabled: isNarrationEnabled,
       source: 'visitor',
     };
-    narrator.setEnabled(isNarrationEnabled);
+    narrator.setEnabled(isNarrationLocallyAllowed());
     if (isNarrationEnabled) unlockNarration();
     headerComp.setNarrationEnabled(isNarrationEnabled);
     voiceSettingsPanel?.update(buildVoiceSettingsState());
@@ -314,6 +336,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   function buildNarrationSendMeta(runKind?: RoverShortcut['runKind']): {
     narrationEnabledForRun: boolean;
     narrationPreferenceSource: 'default' | 'visitor';
+    narrationDefaultActiveForRun: boolean;
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
     actionSpotlightEnabledForRun: boolean;
@@ -323,20 +346,34 @@ export function mountWidget(opts: MountOptions): RoverUi {
   } {
     const allowedKinds = experience.motion?.actionSpotlightRunKinds;
     const runKindAllowed = !runKind || !allowedKinds || allowedKinds.length === 0 || allowedKinds.includes(runKind);
+    const narrationAvailableForRun = allowNarrationToggle && (narrationPreference.source !== 'visitor' || isNarrationEnabled);
+    const narrationDefaultActiveForRun = narrationAvailableForRun && (
+      narrationPreference.source === 'visitor'
+        ? isNarrationEnabled
+        : resolveNarrationDefaultActiveForRun(experience, runKind)
+    );
+    const spotlightAvailableForRun = allowSpotlightToggle && (spotlightVisitorSource !== 'visitor' || isActionSpotlightEnabled);
+    const spotlightDefaultActiveForRun = spotlightAvailableForRun && (
+      spotlightVisitorSource === 'visitor'
+        ? isActionSpotlightEnabled
+        : isActionSpotlightEnabled && runKindAllowed
+    );
     return {
-      narrationEnabledForRun: allowNarrationToggle && isNarrationEnabled,
+      narrationEnabledForRun: narrationAvailableForRun,
       narrationPreferenceSource: narrationPreference.source,
+      narrationDefaultActiveForRun,
       ...(runKind === 'guide' || runKind === 'task' ? { narrationRunKind: runKind } : {}),
       narrationLanguage: resolveEffectiveNarrationLanguage(),
-      actionSpotlightEnabledForRun: allowSpotlightToggle && isActionSpotlightEnabled,
+      actionSpotlightEnabledForRun: spotlightAvailableForRun,
       actionSpotlightPreferenceSource: spotlightVisitorSource,
       ...(runKind === 'guide' || runKind === 'task' ? { actionSpotlightRunKind: runKind } : {}),
-      actionSpotlightDefaultActiveForRun: allowSpotlightToggle && isActionSpotlightEnabled && runKindAllowed,
+      actionSpotlightDefaultActiveForRun: spotlightDefaultActiveForRun,
     };
   }
 
   const timelineNarrationScheduler = createTimelineNarrationScheduler({
-    isEnabled: () => allowNarrationToggle && isNarrationEnabled,
+    isEnabled: isNarrationLocallyAllowed,
+    shouldSpeakEvent: shouldSpeakNarrationEvent,
     speak: (text, options) => narrator.speak(text, options),
   });
 
@@ -433,7 +470,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     syncNarrationConfig();
     if (typeof patch.enabled === 'boolean') {
       isNarrationEnabled = allowNarrationToggle && patch.enabled;
-      narrator.setEnabled(isNarrationEnabled);
+      narrator.setEnabled(isNarrationLocallyAllowed());
       headerComp?.setNarrationEnabled(isNarrationEnabled);
     }
     if (isNarrationEnabled) unlockNarration();
@@ -474,7 +511,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     } catch { /* ignore */ }
     return undefined;
   }
-  const spotlightSiteDefaultOn = experience.motion?.actionSpotlight !== false;
+  let spotlightSiteDefaultOn = experience.motion?.actionSpotlight !== false;
   const initialSpotlightStored = readSpotlightVisitorPref();
   let spotlightVisitorSource: 'default' | 'visitor' = initialSpotlightStored ? 'visitor' : 'default';
   let isActionSpotlightEnabled: boolean = initialSpotlightStored
@@ -482,6 +519,19 @@ export function mountWidget(opts: MountOptions): RoverUi {
     : spotlightSiteDefaultOn;
   const allowSpotlightToggle = true;
   opts.onSpotlightPreferenceChange?.(isActionSpotlightEnabled, allowSpotlightToggle, spotlightVisitorSource);
+
+  function syncSpotlightConfig(): void {
+    spotlightSiteDefaultOn = experience.motion?.actionSpotlight !== false;
+    if (spotlightVisitorSource === 'default') {
+      isActionSpotlightEnabled = spotlightSiteDefaultOn;
+      if (!isActionSpotlightEnabled) {
+        try { actionSpotlightSystem.clearAll(); } catch { /* spotlight is best-effort */ }
+      }
+    }
+    headerComp?.setSpotlightAvailable(allowSpotlightToggle);
+    headerComp?.setSpotlightEnabled(isActionSpotlightEnabled);
+    opts.onSpotlightPreferenceChange?.(isActionSpotlightEnabled, allowSpotlightToggle, spotlightVisitorSource);
+  }
 
   function toggleSpotlight(): void {
     isActionSpotlightEnabled = !isActionSpotlightEnabled;
@@ -1694,6 +1744,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       try { actionSpotlightSystem.clearAll(); } catch { /* spotlight is best-effort */ }
     }
     if (experience.motion?.palimpsest === false) win.backdrop.classList.remove('palimpsest');
+    syncSpotlightConfig();
     syncNarrationConfig();
     syncTaskStage(); renderArtifactStage(); seed.applyPosition();
   }
@@ -1847,12 +1898,13 @@ export function mountWidget(opts: MountOptions): RoverUi {
         updateTideProgress();
         let isLocalActionTarget = true;
         try { isLocalActionTarget = isActionCueForLocalTab(displayEvent, opts.getLocalLogicalTabId?.()); } catch { isLocalActionTarget = false; }
-        // Visitor preference is the hard local gate. Per-step ui.highlight can override
-        // site/runKind policy, but it cannot re-enable spotlight after the visitor turns it off.
-        const stepHighlightOverride = displayEvent.actionSpotlightActive;
-        const allowedKinds = experience.motion?.actionSpotlightRunKinds;
-        const runKindAllowed = !currentRunKind || !allowedKinds || allowedKinds.length === 0 || allowedKinds.includes(currentRunKind);
-        const shouldSpotlight = isActionSpotlightEnabled && (stepHighlightOverride ?? runKindAllowed);
+        const shouldSpotlight = resolveActionSpotlightDecision({
+          visitorSource: spotlightVisitorSource,
+          visitorEnabled: isActionSpotlightEnabled,
+          stepOverride: displayEvent.actionSpotlightActive,
+          currentRunKind,
+          allowedRunKinds: experience.motion?.actionSpotlightRunKinds,
+        });
         if (isLocalActionTarget && shouldSpotlight) {
           try { actionSpotlightSystem.addEvent(displayEvent); } catch { /* spotlight is best-effort */ }
         }

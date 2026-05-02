@@ -281,6 +281,7 @@ export type MountOptions = {
     attachments?: File[];
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
+    narrationDefaultActiveForRun?: boolean;
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
     actionSpotlightEnabledForRun?: boolean;
@@ -304,6 +305,7 @@ export type MountOptions = {
   onShortcutClick?: (shortcut: RoverShortcut, meta?: {
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
+    narrationDefaultActiveForRun?: boolean;
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
     actionSpotlightEnabledForRun?: boolean;

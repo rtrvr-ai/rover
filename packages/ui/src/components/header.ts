@@ -185,6 +185,10 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
   const menuDivider = document.createElement('div');
   menuDivider.className = 'menuDivider';
 
+  const menuGuidanceCaption = document.createElement('div');
+  menuGuidanceCaption.className = 'menuCaption';
+  menuGuidanceCaption.textContent = 'Guidance';
+
   let isMuted = opts.isMuted;
   const menuMuteToggle = document.createElement('button');
   menuMuteToggle.type = 'button';
@@ -232,6 +236,7 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
   overflowMenu.appendChild(menuNewTask);
   overflowMenu.appendChild(menuEndTask);
   overflowMenu.appendChild(menuDivider);
+  overflowMenu.appendChild(menuGuidanceCaption);
   overflowMenu.appendChild(menuMuteToggle);
   overflowMenu.appendChild(menuNarrationToggle);
   overflowMenu.appendChild(menuSpotlightToggle);
@@ -247,40 +252,43 @@ export function createHeader(opts: HeaderOptions): HeaderComponent {
   }
 
   function syncNarrationButton(): void {
-    const label = narrationEnabled ? 'Turn off step narration' : 'Turn on step narration';
+    const label = narrationEnabled ? 'Hide step narration' : 'Show step narration';
     narrationBtn.setAttribute('aria-label', label);
+    narrationBtn.setAttribute('title', label);
     narrationBtn.setAttribute('aria-pressed', narrationEnabled ? 'true' : 'false');
     narrationBtn.classList.toggle('enabled', narrationEnabled);
     narrationBtn.style.display = narrationAvailable ? '' : 'none';
     narrationBtn.innerHTML = narrationEnabled
       ? '<svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5Z"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M18.5 5.5a9 9 0 0 1 0 13"></path></svg>'
       : '<svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4V5Z"></path><path d="m19 9-4 4"></path><path d="m15 9 4 4"></path></svg>';
-    menuNarrationToggle.textContent = narrationEnabled ? 'Turn off narration' : 'Turn on narration';
+    menuNarrationToggle.textContent = label;
     menuNarrationToggle.style.display = narrationAvailable ? '' : 'none';
     menuVoiceSettings.style.display = narrationAvailable ? '' : 'none';
   }
 
   function syncSpotlightButton(): void {
-    const label = spotlightEnabled ? 'Turn off action highlights' : 'Turn on action highlights';
+    const label = spotlightEnabled ? 'Hide action highlights' : 'Show action highlights';
     spotlightBtn.setAttribute('aria-label', label);
+    spotlightBtn.setAttribute('title', label);
     spotlightBtn.setAttribute('aria-pressed', spotlightEnabled ? 'true' : 'false');
     spotlightBtn.classList.toggle('enabled', spotlightEnabled);
     spotlightBtn.style.display = spotlightAvailable ? '' : 'none';
+    // Viewfinder icon (corner brackets + center dot) — distinct from any sun/light-mode toggle.
     spotlightBtn.innerHTML = spotlightEnabled
-      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v3"></path><path d="M12 19v3"></path><path d="M2 12h3"></path><path d="M19 12h3"></path><path d="M4.93 4.93l2.12 2.12"></path><path d="M16.95 16.95l2.12 2.12"></path><path d="M4.93 19.07l2.12-2.12"></path><path d="M16.95 7.05l2.12-2.12"></path></svg>'
-      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><line x1="4" y1="4" x2="20" y2="20"></line></svg>';
-    menuSpotlightToggle.textContent = spotlightEnabled ? 'Turn off action highlights' : 'Turn on action highlights';
+      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/></svg>'
+      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><circle cx="12" cy="12" r="3"/><line x1="3" y1="3" x2="21" y2="21"/></svg>';
+    menuSpotlightToggle.textContent = label;
     menuSpotlightToggle.style.display = spotlightAvailable ? '' : 'none';
   }
 
   function syncOverflowVisibility(): void {
+    const playbackVisible = opts.allowSoundToggle || narrationAvailable || spotlightAvailable;
     const hasVisibleMenuItem =
       opts.showTaskControls ||
-      opts.allowSoundToggle ||
-      narrationAvailable ||
-      spotlightAvailable ||
+      playbackVisible ||
       menuTakeControl.style.display !== 'none';
-    menuDivider.style.display = opts.allowSoundToggle || narrationAvailable || spotlightAvailable ? '' : 'none';
+    menuDivider.style.display = playbackVisible ? '' : 'none';
+    menuGuidanceCaption.style.display = playbackVisible ? '' : 'none';
     overflowBtn.style.display = runningState || !hasVisibleMenuItem ? 'none' : '';
   }
 

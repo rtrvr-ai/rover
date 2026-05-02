@@ -49,6 +49,7 @@ export type RoverAgentConfig = {
       name?: string;
     };
     experience?: {
+      experienceMode?: 'guided' | 'minimal';
       presence?: {
         assistantName?: string;
       };

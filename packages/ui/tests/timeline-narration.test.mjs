@@ -482,3 +482,127 @@ test('action spotlight target failures do not prevent scheduled narration', (t) 
   assert.deepEqual(spoken, ['Clicking checkout.']);
   system.destroy();
 });
+
+// ── Precedence: visitor explicit > planner per-step > site default ────────────
+//
+// The scheduler accepts an optional `shouldSpeakEvent(event)` predicate that takes
+// precedence over the global `isEnabled()` gate at scheduleEvent time. mount.ts
+// implements three-tier precedence (visitor explicit OFF blocks; visitor default
+// lets explicit per-step narration text override site default 'off'). These tests
+// exercise the scheduler-side mechanics that make that possible.
+
+test('shouldSpeakEvent overrides isEnabled at scheduleEvent (planner narration on site-off)', () => {
+  const frameQueue = createFrameQueue();
+  const spoken = [];
+  // Simulate: visitor=default, site narration mode='off' (isEnabled false), planner emits text.
+  const scheduler = createTimelineNarrationScheduler({
+    isEnabled: () => true, // permissive: visitor not explicit OFF, so flush is allowed
+    shouldSpeakEvent: (event) => {
+      // Mirror mount.ts logic: site default false, but explicit text → speak.
+      const explicitText = typeof event.narration === 'string' && event.narration.trim().length > 0;
+      return explicitText; // site default off; only explicit per-step wins
+    },
+    speak: (text) => spoken.push(text),
+    scheduleFrame: callback => frameQueue.schedule(callback),
+    cancelFrame: id => frameQueue.cancel(id),
+  });
+
+  // Event with explicit narration text (planner per-step override) — should speak.
+  scheduler.scheduleEvent({ kind: 'tool_start', title: 'Submit', narration: 'Submitting now.' });
+  // Event without explicit text and site default off — should be skipped.
+  scheduler.scheduleEvent({ kind: 'tool_start', title: 'Scroll', narrationActive: true, actionCue: { kind: 'scroll' } });
+  frameQueue.runAll();
+
+  assert.deepEqual(spoken, ['Submitting now.']);
+});
+
+test('explicit ACT action narration speaks when fallback narration is quiet', () => {
+  const frameQueue = createFrameQueue();
+  const spoken = [];
+  const scheduler = createTimelineNarrationScheduler({
+    // Permissive local gate: visitor has not explicitly turned narration off.
+    isEnabled: () => true,
+    shouldSpeakEvent: (event) => {
+      // Simulates ACT on a task/default-off run: explicit args.ui.narration wins,
+      // but deterministic fallback narration stays quiet.
+      const explicitText = typeof event.narration === 'string' && event.narration.trim().length > 0;
+      return explicitText;
+    },
+    speak: (text) => spoken.push(text),
+    scheduleFrame: callback => frameQueue.schedule(callback),
+    cancelFrame: id => frameQueue.cancel(id),
+  });
+
+  scheduler.scheduleEvent({
+    kind: 'tool_start',
+    title: 'Running click_element',
+    toolName: 'click_element',
+    narration: 'Opening pricing.',
+    narrationActive: false,
+    actionCue: { kind: 'click', targetLabel: 'Pricing' },
+  });
+  scheduler.scheduleEvent({
+    kind: 'tool_start',
+    title: 'Running type_into_element',
+    toolName: 'type_into_element',
+    narrationActive: false,
+    actionCue: { kind: 'type', targetLabel: 'Email' },
+  });
+
+  frameQueue.runAll();
+  assert.deepEqual(spoken, ['Opening pricing.']);
+});
+
+test('shouldSpeakEvent returning false bails even when isEnabled is true', () => {
+  const frameQueue = createFrameQueue();
+  const spoken = [];
+  // Simulate: visitor=explicit OFF — hard block regardless of event content.
+  const scheduler = createTimelineNarrationScheduler({
+    isEnabled: () => false, // visitor explicit OFF means flush would also bail
+    shouldSpeakEvent: () => false, // visitor explicit OFF — never speak
+    speak: (text) => spoken.push(text),
+    scheduleFrame: callback => frameQueue.schedule(callback),
+    cancelFrame: id => frameQueue.cancel(id),
+  });
+
+  scheduler.scheduleEvent({ kind: 'tool_start', title: 'Submit', narration: 'Submitting now.' });
+  frameQueue.runAll();
+  assert.deepEqual(spoken, []);
+});
+
+test('flush still respects isEnabled when visitor flips OFF mid-batch', () => {
+  const frameQueue = createFrameQueue();
+  const spoken = [];
+  // Permissive at scheduleEvent (event passes), but visitor flips to explicit OFF
+  // before flush runs; isEnabled goes false and the queue is dropped.
+  let visitorExplicitOff = false;
+  const scheduler = createTimelineNarrationScheduler({
+    isEnabled: () => !visitorExplicitOff,
+    shouldSpeakEvent: () => true, // accept events
+    speak: (text) => spoken.push(text),
+    scheduleFrame: callback => frameQueue.schedule(callback),
+    cancelFrame: id => frameQueue.cancel(id),
+  });
+
+  scheduler.scheduleEvent({ kind: 'tool_start', title: 'A', narration: 'A' });
+  scheduler.scheduleEvent({ kind: 'tool_start', title: 'B', narration: 'B' });
+  // Visitor explicit OFF after queueing
+  visitorExplicitOff = true;
+  frameQueue.runAll();
+  assert.deepEqual(spoken, []);
+});
+
+test('without shouldSpeakEvent, scheduler falls back to isEnabled (back-compat)', () => {
+  const frameQueue = createFrameQueue();
+  const spoken = [];
+  const scheduler = createTimelineNarrationScheduler({
+    isEnabled: () => true,
+    speak: (text) => spoken.push(text),
+    scheduleFrame: callback => frameQueue.schedule(callback),
+    cancelFrame: id => frameQueue.cancel(id),
+  });
+
+  scheduler.scheduleEvent({ kind: 'tool_start', title: 'A', narration: 'A' });
+  frameQueue.runAll();
+  assert.deepEqual(spoken, ['A']);
+});

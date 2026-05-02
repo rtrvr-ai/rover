@@ -13,7 +13,14 @@ type FrameScheduler = (callback: FrameRequestCallback) => unknown;
 type FrameCanceller = (handle: unknown) => void;
 
 type TimelineNarrationSchedulerOptions = {
+  // Permissive gate: returns false only when narration is hard-blocked locally
+  // (visitor explicitly turned narration off, or no narrator support). Used to drop
+  // pending narrations on flush if the visitor flips OFF mid-batch.
   isEnabled: () => boolean;
+  // Event-aware precedence gate (visitor explicit > planner per-step > site default).
+  // When provided, scheduleEvent uses this in place of isEnabled so an explicit
+  // per-step narration can override site default 'off'. Defaults to isEnabled.
+  shouldSpeakEvent?: (event: RoverTimelineEvent) => boolean;
   speak: (text: string, options?: RoverNarratorSpeakOptions) => void;
   scheduleFrame?: FrameScheduler;
   cancelFrame?: FrameCanceller;
@@ -271,10 +278,14 @@ export function createTimelineNarrationScheduler(
     scheduleFlush();
   }
 
+  const eventGate = (event: RoverTimelineEvent): boolean => (
+    opts.shouldSpeakEvent ? opts.shouldSpeakEvent(event) : opts.isEnabled()
+  );
+
   return {
     scheduleEvent(event: RoverTimelineEvent): void {
       try {
-        if (disposed || event.kind === 'tool_result' || !opts.isEnabled()) return;
+        if (disposed || event.kind === 'tool_result' || !eventGate(event)) return;
         const text = resolveTimelineNarrationText(event);
         if (!text) return;
         if (event.kind === 'tool_start') {

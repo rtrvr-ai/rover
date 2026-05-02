@@ -24,7 +24,7 @@ export type RoverConversationPayload = {
   runMeta?: Record<string, unknown>;
 };
 
-type LocalConversationRecord = {
+export type LocalConversationRecord = {
   summary: RoverConversationSummary;
   payload?: RoverConversationPayload;
 };
@@ -111,6 +111,7 @@ export function createConversationHistoryStore(params: {
     upsert(record: LocalConversationRecord) {
       const id = normalizeConversationId(record.summary.conversationId);
       if (!id) return;
+      const existing = store.readSync(recordKey(id)) as LocalConversationRecord | null;
       const summary = {
         ...record.summary,
         conversationId: id,
@@ -119,7 +120,10 @@ export function createConversationHistoryStore(params: {
         updatedAt: Number(record.summary.updatedAt || Date.now()),
         createdAt: Number(record.summary.createdAt || record.summary.updatedAt || Date.now()),
       };
-      store.write(recordKey(id), { summary, payload: record.payload });
+      const payload = record.payload ?? existing?.payload;
+      if (payload) {
+        store.write(recordKey(id), { summary, payload });
+      }
       void readIndex().then(index => {
         writeIndex([summary, ...index.filter(item => item.conversationId !== id)]);
       });

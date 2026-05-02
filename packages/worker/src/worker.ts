@@ -81,6 +81,7 @@ type RoverWorkerConfig = RoverAgentConfig & {
       name?: string;
     };
     experience?: {
+      experienceMode?: 'guided' | 'minimal';
       presence?: {
         assistantName?: string;
       };
@@ -205,6 +206,7 @@ let seenStatusKeys = new Set<string>();
 let lastRuntimeTabsDiagnosticsKey = '';
 const terminalRuns = new Map<string, TerminalRunResult>();
 let activeActionNarration = false;
+let activeActionNarrationDefaultActive = false;
 let lastAssistantResponseNarrationKey = '';
 
 let RPC_TIMEOUT_MS = 30_000;
@@ -241,12 +243,27 @@ function isDefaultActionSpotlightActive(config: RoverWorkerConfig | null, runKin
   return !runKind || !allowedKinds || allowedKinds.length === 0 || allowedKinds.includes(runKind);
 }
 
+function isDefaultNarrationActive(config: RoverWorkerConfig | null, runKind?: 'guide' | 'task'): boolean {
+  const experience = config?.ui?.experience;
+  const narration = experience?.audio?.narration;
+  if (narration?.enabled === false) return false;
+  const defaultMode = narration?.defaultMode === 'always' || narration?.defaultMode === 'off'
+    ? narration.defaultMode
+    : experience?.experienceMode === 'minimal'
+      ? 'off'
+    : 'guided';
+  if (defaultMode === 'off') return false;
+  if (defaultMode === 'always') return true;
+  return !runKind || runKind === 'guide';
+}
+
 function resolveActionNarrationHints(
   config: RoverWorkerConfig | null,
   userInput?: string,
   options?: {
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
+    narrationDefaultActiveForRun?: boolean;
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
     actionSpotlightEnabledForRun?: boolean;
@@ -255,21 +272,26 @@ function resolveActionNarrationHints(
   },
 ): {
   actionNarration?: boolean;
+  actionNarrationDefaultActive?: boolean;
   actionSpotlight?: boolean;
   actionSpotlightDefaultActive?: boolean;
   runKind?: 'guide' | 'task';
   narrationLanguage?: string;
 } {
-  const narration = config?.ui?.experience?.audio?.narration;
+  const experience = config?.ui?.experience;
+  const narration = experience?.audio?.narration;
   const narrationOwnerEnabled = narration?.enabled !== false;
   const defaultMode = narration?.defaultMode === 'always' || narration?.defaultMode === 'off'
     ? narration.defaultMode
+    : experience?.experienceMode === 'minimal'
+      ? 'off'
     : 'guided';
   const runKind = normalizeNarrationRunKind(options?.narrationRunKind)
     || normalizeNarrationRunKind(options?.actionSpotlightRunKind)
     || classifyNarrationRunKind(userInput || rootUserInput);
   const next: {
     actionNarration?: boolean;
+    actionNarrationDefaultActive?: boolean;
     actionSpotlight?: boolean;
     actionSpotlightDefaultActive?: boolean;
     runKind?: 'guide' | 'task';
@@ -283,12 +305,16 @@ function resolveActionNarrationHints(
       : isDefaultActionSpotlightActive(config, runKind);
   }
 
-  if (narrationOwnerEnabled && options?.narrationEnabledForRun !== false) {
-    if (options?.narrationPreferenceSource === 'visitor' && options.narrationEnabledForRun === true) {
-      next.actionNarration = true;
-    } else if (defaultMode !== 'off' && (defaultMode === 'always' || runKind === 'guide')) {
-      next.actionNarration = true;
-    }
+  const narrationDefaultActive = typeof options?.narrationDefaultActiveForRun === 'boolean'
+    ? options.narrationDefaultActiveForRun
+    : isDefaultNarrationActive(config, runKind);
+  const narrationAvailable = narrationOwnerEnabled && (
+    options?.narrationEnabledForRun === true
+      || (options?.narrationEnabledForRun === undefined && defaultMode !== 'off' && (defaultMode === 'always' || runKind === 'guide'))
+  );
+  if (narrationAvailable) {
+    next.actionNarration = true;
+    next.actionNarrationDefaultActive = narrationDefaultActive;
     if (normalizeNarrationLanguage(options?.narrationLanguage)) {
       next.narrationLanguage = normalizeNarrationLanguage(options?.narrationLanguage);
     }
@@ -329,6 +355,7 @@ function buildRoverRuntimeContext(params: {
   agentName: string;
   taskBoundaryId?: string;
   actionNarration?: boolean;
+  actionNarrationDefaultActive?: boolean;
   actionSpotlight?: boolean;
   actionSpotlightDefaultActive?: boolean;
   runKind?: 'guide' | 'task';
@@ -375,10 +402,11 @@ function buildRoverRuntimeContext(params: {
     ...(site ? { site } : {}),
     tabIdContract: 'tree_index_mapped_by_tab_order',
     taskBoundaryId: params.taskBoundaryId,
-    ...(params.actionNarration || params.actionSpotlight || typeof params.actionSpotlightDefaultActive === 'boolean' || params.runKind || params.narrationLanguage
+    ...(params.actionNarration || typeof params.actionNarrationDefaultActive === 'boolean' || params.actionSpotlight || typeof params.actionSpotlightDefaultActive === 'boolean' || params.runKind || params.narrationLanguage
       ? {
           uiHints: {
             ...(params.actionNarration ? { actionNarration: true } : {}),
+            ...(typeof params.actionNarrationDefaultActive === 'boolean' ? { actionNarrationDefaultActive: params.actionNarrationDefaultActive } : {}),
             ...(params.actionSpotlight ? { actionSpotlight: true } : {}),
             ...(typeof params.actionSpotlightDefaultActive === 'boolean' ? { actionSpotlightDefaultActive: params.actionSpotlightDefaultActive } : {}),
             ...(params.runKind ? { runKind: params.runKind } : {}),
@@ -625,7 +653,7 @@ function postStatus(message: string, thought?: string, stage?: StatusStage, meta
     compactThought: compact,
     executionId: activeRun?.runId,
     narration: meta?.narration,
-    narrationActive: meta?.narrationActive ?? (activeActionNarration || undefined),
+    narrationActive: meta?.narrationActive ?? (activeActionNarrationDefaultActive || undefined),
   });
   postStateSnapshot();
 }
@@ -667,7 +695,7 @@ function postToolLifecycleEvent(type: 'tool_start' | 'tool_result', payload: {
     call: payload.call,
     toolCallId: payload.toolCallId,
     narration: type === 'tool_start' ? payload.narration : undefined,
-    narrationActive: activeActionNarration || undefined,
+    narrationActive: activeActionNarrationDefaultActive || undefined,
     actionSpotlightActive: typeof payload.actionSpotlightActive === 'boolean' ? payload.actionSpotlightActive : undefined,
     logicalTabId: extractToolLifecycleLogicalTabId(payload.call.args),
     result: payload.result,
@@ -1494,7 +1522,7 @@ function normalizeResponseNarration(
   input: unknown,
   kind: AssistantResponseKind,
 ): string | undefined {
-  if (!activeActionNarration) return undefined;
+  if (!activeActionNarrationDefaultActive) return undefined;
   return sanitizeResponseNarration(input, { responseKind: kind });
 }
 
@@ -1530,7 +1558,7 @@ function postAssistantResponse(payload: AssistantCheckpointPayload): string {
     responseKind: kind,
     sourceToolName: payload.sourceToolName,
     narration: shouldNarrate ? narration : undefined,
-    narrationActive: activeActionNarration || undefined,
+    narrationActive: activeActionNarrationDefaultActive || undefined,
     executionId: runId,
   });
   return text || narration || '';
@@ -1570,7 +1598,7 @@ function postAssistantMessage(payload: string | AssistantMessagePayload): string
     blocks,
     responseKind: kind,
     narration: shouldNarrate ? narration : undefined,
-    narrationActive: kind ? (activeActionNarration || undefined) : undefined,
+    narrationActive: kind ? (activeActionNarrationDefaultActive || undefined) : undefined,
     executionId: runId,
   });
   return resolvedText;
@@ -2283,6 +2311,7 @@ async function handleUserMessage(
     askUserAnswers?: AskUserAnswerMeta;
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
+    narrationDefaultActiveForRun?: boolean;
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
     actionSpotlightEnabledForRun?: boolean;
@@ -2441,6 +2470,7 @@ async function handleUserMessage(
   const narrationHints = resolveActionNarrationHints(config, rootUserInput, {
     narrationEnabledForRun: options?.narrationEnabledForRun,
     narrationPreferenceSource: options?.narrationPreferenceSource,
+    narrationDefaultActiveForRun: options?.narrationDefaultActiveForRun,
     narrationRunKind: options?.narrationRunKind,
     narrationLanguage: options?.narrationLanguage,
     actionSpotlightEnabledForRun: options?.actionSpotlightEnabledForRun,
@@ -2448,6 +2478,7 @@ async function handleUserMessage(
     actionSpotlightDefaultActiveForRun: options?.actionSpotlightDefaultActiveForRun,
   });
   activeActionNarration = narrationHints.actionNarration === true;
+  activeActionNarrationDefaultActive = narrationHints.actionNarrationDefaultActive === true;
   const runtimeContext = buildRoverRuntimeContext({
     tabs: tabsForRun,
     config,
@@ -2944,6 +2975,7 @@ async function runUserMessage(
     askUserAnswers?: AskUserAnswerMeta;
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
+    narrationDefaultActiveForRun?: boolean;
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
     actionSpotlightEnabledForRun?: boolean;
@@ -3019,6 +3051,7 @@ async function runUserMessage(
       askUserAnswers: meta?.askUserAnswers,
       narrationEnabledForRun: meta?.narrationEnabledForRun,
       narrationPreferenceSource: meta?.narrationPreferenceSource,
+      narrationDefaultActiveForRun: meta?.narrationDefaultActiveForRun,
       narrationRunKind: meta?.narrationRunKind,
       narrationLanguage: meta?.narrationLanguage,
       actionSpotlightEnabledForRun: meta?.actionSpotlightEnabledForRun,
@@ -3108,6 +3141,7 @@ async function runUserMessage(
     activeAbortController = null;
     activeRun = null;
     activeActionNarration = false;
+    activeActionNarrationDefaultActive = false;
     lastAssistantResponseNarrationKey = '';
     postStateSnapshot();
   }
@@ -3237,6 +3271,7 @@ async function runUserMessage(
         askUserAnswers: data.askUserAnswers,
         narrationEnabledForRun: typeof data.narrationEnabledForRun === 'boolean' ? data.narrationEnabledForRun : undefined,
         narrationPreferenceSource: data.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
+        narrationDefaultActiveForRun: typeof data.narrationDefaultActiveForRun === 'boolean' ? data.narrationDefaultActiveForRun : undefined,
         narrationRunKind: data.narrationRunKind === 'guide' || data.narrationRunKind === 'task' ? data.narrationRunKind : undefined,
         narrationLanguage: normalizeNarrationLanguage(data.narrationLanguage),
         actionSpotlightEnabledForRun: typeof data.actionSpotlightEnabledForRun === 'boolean' ? data.actionSpotlightEnabledForRun : undefined,
@@ -3259,6 +3294,7 @@ async function runUserMessage(
         askUserAnswers: data.askUserAnswers,
         narrationEnabledForRun: typeof data.narrationEnabledForRun === 'boolean' ? data.narrationEnabledForRun : undefined,
         narrationPreferenceSource: data.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
+        narrationDefaultActiveForRun: typeof data.narrationDefaultActiveForRun === 'boolean' ? data.narrationDefaultActiveForRun : undefined,
         narrationRunKind: data.narrationRunKind === 'guide' || data.narrationRunKind === 'task' ? data.narrationRunKind : undefined,
         narrationLanguage: normalizeNarrationLanguage(data.narrationLanguage),
         actionSpotlightEnabledForRun: typeof data.actionSpotlightEnabledForRun === 'boolean' ? data.actionSpotlightEnabledForRun : undefined,
