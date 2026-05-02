@@ -561,28 +561,13 @@ export const windowStyles = `
       box-shadow: var(--rv-shadow-sm);
     }
 
+    /* Assistant surface: soft brand wash + 1px brand border. No left accent strip —
+       the wash + border integrate brand identity into the bubble itself, matching
+       the modern AI-chat aesthetic (Linear/Notion AI/Claude.ai). */
     .entry.message.assistant .bubble {
       background: var(--rv-accent-soft);
-      border-color: var(--rv-accent-border);
+      border: 1px solid var(--rv-accent-border);
       color: var(--rv-text);
-      position: relative;
-    }
-
-    /* Stream card: assistant accent bar on left */
-    .entry.message.assistant .bubble {
-      padding-left: 18px;
-    }
-    .entry.message.assistant .bubble::before {
-      content: '';
-      position: absolute;
-      top: 8px;
-      bottom: 8px;
-      left: 0;
-      width: 3px;
-      border-radius: 0 3px 3px 0;
-      background: linear-gradient(180deg, var(--rv-accent), rgba(255, 76, 0, 0.3));
-      opacity: 0.85;
-      transition: opacity 200ms ease;
     }
 
     .entry.message.system .bubble {
@@ -836,8 +821,8 @@ export const windowStyles = `
     }
     .taskStageTitle {
       font-size: 24px;
-      line-height: 1.05;
-      letter-spacing: -0.04em;
+      line-height: 1.25;
+      letter-spacing: -0.025em;
       font-weight: 800;
       color: var(--rv-text);
       display: -webkit-box;
@@ -846,6 +831,7 @@ export const windowStyles = `
       overflow: hidden;
       overflow-wrap: anywhere;
       word-break: break-word;
+      padding-bottom: 2px;
     }
     .taskStageMeta {
       font-size: 12.5px;
@@ -1437,31 +1423,77 @@ export const windowStyles = `
       outline: none;
     }
 
-    /* ── Resize Handle ── */
+    /* ── Resize Handle ── Diagonal hashmarks revealed on panel hover.
+       Universal macOS / Linear pattern; no chrome on first impression. */
     .resizeHandle {
       position: absolute;
-      left: 8px;
-      bottom: 8px;
-      width: 20px;
-      height: 20px;
-      border-left: 2.5px solid var(--rv-border-strong);
-      border-bottom: 2.5px solid var(--rv-border-strong);
-      border-radius: 2px;
+      left: 6px;
+      bottom: 6px;
+      width: 14px;
+      height: 14px;
+      border-radius: 4px;
       cursor: nwse-resize;
-      opacity: 0.72;
-      transition: opacity 200ms ease, border-color 200ms ease;
       display: none;
       touch-action: none;
+      opacity: 0;
+      transform: scale(1);
+      transition: opacity 220ms ease, transform 220ms ease;
+      background-image: linear-gradient(
+        135deg,
+        transparent 0,
+        transparent 60%,
+        var(--rv-border-strong) 60%,
+        var(--rv-border-strong) 66%,
+        transparent 66%,
+        transparent 78%,
+        var(--rv-border-strong) 78%,
+        var(--rv-border-strong) 84%,
+        transparent 84%
+      );
     }
 
     .panel[data-resizable="true"][data-layout="desktop"] .resizeHandle {
       display: block;
     }
 
+    .panel:hover .resizeHandle,
     .resizeHandle:hover,
-    .resizeHandle:active {
-      opacity: 1 !important;
-      border-color: var(--rv-accent);
+    .resizeHandle:focus-visible,
+    .resizeHandle.dragging {
+      opacity: 0.9;
+    }
+
+    .resizeHandle:hover {
+      transform: scale(1.12);
+    }
+
+    .resizeHandle:focus-visible {
+      outline: 2px solid var(--rv-accent);
+      outline-offset: 2px;
+    }
+
+    /* ── Resize size indicator ── Pill that shows the live panel size during drag. */
+    .resizeIndicator {
+      position: absolute;
+      left: 26px;
+      bottom: 8px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(26, 26, 25, 0.86);
+      color: #fff;
+      font: 600 11px/1.2 'Manrope', system-ui, -apple-system, sans-serif;
+      letter-spacing: 0.02em;
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 160ms ease, transform 160ms ease;
+      white-space: nowrap;
+      z-index: 1;
+    }
+
+    .resizeIndicator.visible {
+      opacity: 1;
+      transform: translateY(0);
     }
 
     /* ── Smart Scroll Button ── */

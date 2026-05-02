@@ -147,6 +147,7 @@ export const responsiveStyles = `
       }
       .taskStageTitle {
         font-size: 20px;
+        line-height: 1.3;
       }
       .artifactStage,
       .feed {
