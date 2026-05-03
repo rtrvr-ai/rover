@@ -981,7 +981,7 @@ async function executeQueryDocs({
   if (!response?.success) return { error: response?.error || 'query_rtrvr_docs failed' };
 
   return {
-    output: response.data?.text || response.data?.data,
+    output: response.data?.textOutput || response.data?.text || response.data?.data,
     error: response.data?.error,
     errorDetails: response.data?.errorDetails,
     creditsUsed: response.data?.creditsUsed,
@@ -1358,7 +1358,7 @@ async function executeCustomToolGenerator({
   if (!response?.success) return { error: response?.error || 'custom_tool_generator failed' };
 
   return {
-    output: response.data?.generatedTools || response.data?.output || response.data,
+    output: response.data?.llmOutput || response.data?.generatedTools || response.data?.output,
     generatedTools: response.data?.generatedTools,
     error: response.data?.error,
     errorDetails: response.data?.errorDetails,

@@ -503,22 +503,26 @@ For owner-facing installs, prefer `cloudSandboxEnabled: true` instead of hand-wi
 | `ui.thoughtStyle` | `'concise_cards' \| 'minimal'` | `'concise_cards'` | Thought rendering preference |
 | `ui.panel.resizable` | `boolean` | `true` | Enables desktop freeform resizing plus phone/tablet snap-height resizing with per-device memory |
 | `ui.showTaskControls` | `boolean` | `true` | Show new/end task controls |
-| `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced). Set `runKind: 'guide'` for onboarding/demo journeys that should narrate under the guided default. Shortcuts can also carry agent-facing metadata such as `tags`, `examples`, `inputSchema`, `outputSchema`, `sideEffect`, and `requiresConfirmation`. |
+| `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced). Set `runKind: 'guide'` for onboarding/demo journeys that should use guided narration and Action Spotlight defaults; use `runKind: 'task'` for quieter utility flows. Shortcuts can also carry agent-facing metadata such as `tags`, `examples`, `inputSchema`, `outputSchema`, `sideEffect`, and `requiresConfirmation`. |
 | `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | - | Greeting bubble config; supports `{name}` placeholder |
 | `ui.voice` | `{ enabled?: boolean; language?: string; autoStopMs?: number }` | - | Browser dictation on supported Chromium browsers. Transcript fills the draft live, Rover waits for post-speech silence before stopping, and the user manually sends. |
+| `ui.experience.experienceMode` | `'guided' \| 'minimal'` | - | Owner-facing preset. `guided` turns guide flows into a narrated and highlighted experience by default; `minimal` keeps narration and highlights quiet by default while preserving visitor opt-in controls. |
 | `ui.experience.audio.narration.enabled` | `boolean` | `true` | Owner gate for Web Speech step narration. Visitors still get a local speaker toggle when supported. |
-| `ui.experience.audio.narration.defaultMode` | `'guided' \| 'always' \| 'off'` | `'guided'` | Controls when Rover speaks action/phase cues: guided demos by default, every run, or off unless the visitor turns it on. |
+| `ui.experience.audio.narration.defaultMode` | `'guided' \| 'always' \| 'off'` | `'guided'` | Controls when Rover speaks action, question, checkpoint, and final-response cues: guide flows by default, every run, or off unless the visitor turns it on. |
 | `ui.experience.audio.narration.rate` | `number` | `1` | Web Speech playback rate, clamped to `0.85`-`1.15`. |
 | `ui.experience.audio.narration.language` | `string` | `'en-US'` | Preferred Web Speech language for narration voice selection. |
 | `ui.experience.audio.narration.voicePreference` | `'auto' \| 'system' \| 'natural'` | `'auto'` | Voice selection preference. `natural` prefers browser voices marked Google, Neural, Natural, Online, Premium, or Enhanced when available. |
 | `ui.experience.motion.actionSpotlight` | `boolean` | `true` | Show the visual Action Spotlight ring when Rover clicks, types, selects, or scrolls to page elements. Generated Workspace and Webflow installs make this explicit. |
 | `ui.experience.motion.actionSpotlightColor` | `"#RRGGBB"` | `"#FF4C00"` | Ring and glow color for Action Spotlight. Invalid values fall back to the configured accent color, then Rover orange. |
+| `ui.experience.motion.actionSpotlightRunKinds` | `('guide' \| 'task')[]` | all run kinds; `['guide']` when `experienceMode: 'guided'` is generated | Controls which shortcut run kinds show Action Spotlight by default. Per-action `ui.highlight` may override this default unless the visitor has explicitly hidden highlights. |
 | `pageConfig` | `RoverPageCaptureConfig` | `{ disableAutoScroll: true }` for generated installs | Optional per-site page-capture overrides such as `disableAutoScroll`, settle timing, and sparse-tree retry settings. Set `disableAutoScroll: false` only when automatic page-capture scrolling is desired. |
 
 With site keys (or a valid `rvrsess_*` token), Rover fetches cloud site config via `POST /v2/rover/session/open` (shortcuts + `businessType` + sparse `siteConfig.experience` overrides + voice compatibility + `aiAccess` + `pageConfig`).
 If boot config and cloud config define the same field, boot config takes precedence.
 `siteConfig.aiAccess.enabled` is the canonical owner-facing launch switch in Workspace/Webflow. `deepLink` remains boot/runtime only for advanced manual overrides such as custom param names, explicit enable/disable, or disabling URL param consumption.
 New Workspace and Webflow install generation emits `ui.experience.audio.narration`, `ui.experience.motion.actionSpotlightColor`, and `pageConfig.disableAutoScroll: true` by default so snippets stay self-documenting.
+
+Guidance precedence is local-first: a visitor who hides narration or action highlights wins over all site and agent defaults; a visitor who shows them enables the feature locally; otherwise per-step `ui.narration` and `ui.highlight` can override the site default for useful visible steps. Raw browser `tool_result` events are never spoken, but safe ACT/planner questions, checkpoints, and final responses may be narrated from the same user-facing response text shown in chat.
 
 For AI and CLI-triggered entrypoints, prefer exact shortcut IDs for repeatable flows:
 

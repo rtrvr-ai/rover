@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   deriveResponseNarrationFromOutput,
+  deriveResponseTextFromOutput,
   sanitizeResponseNarration,
 } from '../dist/agent/responseNarration.js';
 import { executePlannerWithTools } from '../dist/agent/plannerAgent.js';
@@ -15,6 +16,127 @@ test('response narration prefers user-facing response fields', () => {
   assert.equal(
     deriveResponseNarrationFromOutput([{ response: 'I selected the best plan.' }], { responseKind: 'final' }),
     'I selected the best plan.',
+  );
+});
+
+test('response narration reads ACT tab response envelopes', () => {
+  const output = {
+    tabResponses: {
+      3: {
+        accTreeId: 'tree-3',
+        thought: '',
+        data: [
+          {
+            response: 'To use the rtrvr.ai Chrome extension, open it, sign in, and sync your shortcuts.',
+          },
+        ],
+      },
+    },
+    creditsUsed: 4.7,
+  };
+
+  assert.equal(
+    deriveResponseTextFromOutput(output, { responseKind: 'final', activeTabId: 3 }),
+    'To use the rtrvr.ai Chrome extension, open it, sign in, and sync your shortcuts.',
+  );
+  assert.equal(
+    deriveResponseNarrationFromOutput(output, { responseKind: 'final', activeTabId: 3 }),
+    'To use the rtrvr.ai Chrome extension, open it, sign in, and sync your shortcuts.',
+  );
+});
+
+test('response narration reads wrapped planner and ACT outputs', () => {
+  assert.equal(
+    deriveResponseNarrationFromOutput({ output: { response: 'I checked the setup steps.' } }, { responseKind: 'checkpoint' }),
+    'I checked the setup steps.',
+  );
+  assert.equal(
+    deriveResponseNarrationFromOutput({ data: [{ response: 'The extension setup is complete.' }] }, { responseKind: 'final' }),
+    'The extension setup is complete.',
+  );
+});
+
+test('response narration reads audited extension function text fields', () => {
+  assert.equal(
+    deriveResponseNarrationFromOutput({ text: 'Processed the pasted text.' }, { responseKind: 'checkpoint', toolName: 'process_text' }),
+    'Processed the pasted text.',
+  );
+  assert.equal(
+    deriveResponseNarrationFromOutput({ textOutput: 'The docs say to open the extension and sign in.' }, { responseKind: 'checkpoint', toolName: 'query_rtrvr_docs' }),
+    'The docs say to open the extension and sign in.',
+  );
+  assert.equal(
+    deriveResponseNarrationFromOutput({ statusText: 'Sheet created with 3 data rows.' }, { responseKind: 'checkpoint', toolName: 'create_sheet_from_data' }),
+    'Sheet created with 3 data rows.',
+  );
+  assert.equal(
+    deriveResponseNarrationFromOutput({ llmOutput: 'I created a draft for the onboarding page.' }, { responseKind: 'checkpoint', toolName: 'webpage_generator' }),
+    'I created a draft for the onboarding page.',
+  );
+});
+
+test('response narration summarizes data and sheet outputs safely', () => {
+  assert.equal(
+    deriveResponseNarrationFromOutput({ jsonData: [{ name: 'A' }, { name: 'B' }] }, { responseKind: 'checkpoint', toolName: 'create_sheet_from_data' }),
+    'I finished 2 items and posted the result in the chat.',
+  );
+  assert.equal(
+    deriveResponseNarrationFromOutput({ data: [{ price: '$10' }, { price: '$20' }] }, { responseKind: 'checkpoint', toolName: 'extract' }),
+    'I found 2 results and posted them in the chat.',
+  );
+  assert.equal(
+    deriveResponseNarrationFromOutput({ schemaHeaderSheetInfo: [{ sheetInfo: { sheetId: 'private-sheet-id' } }] }, { responseKind: 'checkpoint' }),
+    'I created a sheet and posted the link in the chat.',
+  );
+});
+
+test('response narration summarizes generated content and tools without leaking refs', () => {
+  assert.equal(
+    deriveResponseNarrationFromOutput({
+      generatedContentRef: {
+        docs: [{ title: 'Guide', storagePath: 'user/private/doc.json', url: 'https://docs.google.com/document/d/123' }],
+      },
+    }, { responseKind: 'final' }),
+    'I created a document and posted the link in the chat.',
+  );
+  assert.equal(
+    deriveResponseNarrationFromOutput({
+      generatedContentRef: {
+        type: 'slides_draft',
+        content: '# Secret draft content with https://example.com/private',
+      },
+    }, { responseKind: 'checkpoint' }),
+    'I created a presentation and posted the link in the chat.',
+  );
+  assert.equal(
+    deriveResponseNarrationFromOutput({
+      generatedTools: [{ name: 'lookup_order' }, { name: 'refund_order' }],
+    }, { responseKind: 'checkpoint', toolName: 'custom_tool_generator' }),
+    'I created 2 custom tools and posted the result in the chat.',
+  );
+  assert.equal(
+    deriveResponseNarrationFromOutput([
+      { name: 'lookup_order' },
+      { name: 'refund_order' },
+    ], { responseKind: 'checkpoint', toolName: 'custom_tool_generator' }),
+    'I created 2 custom tools and posted the result in the chat.',
+  );
+});
+
+test('response narration handles execute_multiple_tools results compactly', () => {
+  assert.equal(
+    deriveResponseNarrationFromOutput([
+      { name: 'query_rtrvr_docs', success: true, result: { response: 'I found the install instructions.' } },
+    ], { responseKind: 'checkpoint', toolName: 'execute_multiple_tools' }),
+    'I found the install instructions.',
+  );
+  assert.equal(
+    deriveResponseNarrationFromOutput([
+      { name: 'click_element', success: true, result: { clicked: true } },
+      { name: 'type_into_element', success: true, result: { typed: true } },
+      { name: 'select_dropdown_value', success: true, result: { selected: true } },
+    ], { responseKind: 'checkpoint', toolName: 'execute_multiple_tools' }),
+    'I finished 3 steps and posted the result in the chat.',
   );
 });
 
@@ -81,6 +203,10 @@ test('response narration stays compact for multiple tool response questions', ()
 test('response narration skips non-user-facing object output without fallback', () => {
   assert.equal(
     deriveResponseNarrationFromOutput({ status: 'ok', internalId: 'abc123' }, { responseKind: 'checkpoint' }),
+    undefined,
+  );
+  assert.equal(
+    deriveResponseNarrationFromOutput({ description: 'Internal object description', result: 'Internal raw result' }, { responseKind: 'checkpoint' }),
     undefined,
   );
 });

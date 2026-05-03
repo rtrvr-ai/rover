@@ -27,6 +27,7 @@ import { classifyNavigationContinuation } from './navigationContinuation.js';
 import { extractActionNarrationFromArgs, extractActionHighlightFromArgs, stripToolUiHintsFromArgs } from './agent/uiHints.js';
 import {
   deriveResponseNarrationFromOutput,
+  deriveResponseTextFromOutput,
   responseNarrationDedupeKey,
   sanitizeResponseNarration,
   type AssistantResponseKind,
@@ -1426,35 +1427,8 @@ function normalizeRuntimeToolOutput(value: unknown): RuntimeToolOutput {
 }
 
 function summarizeOutputText(output: RuntimeToolOutput | undefined): string | undefined {
-  if (output == null) return undefined;
-  if (typeof output === 'string') {
-    const clean = output.trim();
-    return clean || undefined;
-  }
-  if (typeof output === 'number' || typeof output === 'boolean') {
-    return String(output);
-  }
-  if (Array.isArray(output)) {
-    const lines: string[] = [];
-    for (const item of output.slice(0, 4)) {
-      const candidate = summarizeOutputText(item as RuntimeToolOutput);
-      if (candidate) lines.push(candidate);
-      if (lines.length >= 3) break;
-    }
-    if (lines.length) return lines.join('\n');
-    return undefined;
-  }
-  if (typeof output === 'object') {
-    const preferredKeys = ['response', 'message', 'summary', 'text', 'content', 'result', 'description'];
-    for (const key of preferredKeys) {
-      const value = (output as Record<string, unknown>)[key];
-      if (typeof value === 'string' && value.trim()) {
-        return value.trim();
-      }
-    }
-    return undefined;
-  }
-  return undefined;
+  const text = deriveResponseTextFromOutput(output);
+  return typeof text === 'string' && text.trim() ? text.trim() : undefined;
 }
 
 function isSingleTextWrapperObject(value: unknown): boolean {
@@ -1522,7 +1496,7 @@ function normalizeResponseNarration(
   input: unknown,
   kind: AssistantResponseKind,
 ): string | undefined {
-  if (!activeActionNarrationDefaultActive) return undefined;
+  if (!activeActionNarration) return undefined;
   return sanitizeResponseNarration(input, { responseKind: kind });
 }
 

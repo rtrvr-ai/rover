@@ -29,6 +29,8 @@ test('Rover docs publish the vNext discovery and identity model consistently', (
   assert.match(combined, /beaconLabel/);
   assert.match(combined, /businessType/);
   assert.match(combined, /siteConfig\.experience/);
+  assert.match(combined, /experienceMode/);
+  assert.match(combined, /actionSpotlightRunKinds/);
   assert.match(combined, /aiAccess/);
   assert.match(combined, /ui\.mascot\.soundEnabled/);
   assert.match(combined, /verified_signed/);
@@ -59,4 +61,15 @@ test('Rover docs no longer present pre-vNext canonical guidance', () => {
   for (const phrase of forbidden) {
     assert.equal(combined.includes(phrase), false, `unexpected stale phrase present: ${phrase}`);
   }
+});
+
+test('Rover guidance docs describe runKind as narration plus spotlight', () => {
+  const combined = curatedFiles.map((file) => read(file)).join('\n');
+
+  assert.match(combined, /runKind: 'guide'[^.]+narration and Action Spotlight/);
+  assert.match(combined, /ui\.experience\.experienceMode/);
+  assert.match(combined, /ui\.experience\.motion\.actionSpotlightRunKinds/);
+  assert.match(combined, /visitor explicit off wins|visitor who hides narration or action highlights wins/i);
+  assert.equal(combined.includes('Narration kind:'), false, 'runKind docs should not be narration-only');
+  assert.equal(/runKind[^.]+narrat(?:e|ion)[^.]+guided default(?![^.]*Action Spotlight)/i.test(combined), false, 'runKind docs must mention spotlight with narration');
 });
