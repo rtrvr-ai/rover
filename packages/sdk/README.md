@@ -514,17 +514,21 @@ const RoverWidget = dynamic(() => import('./RoverWidget'), { ssr: false });
 | `ui.thoughtStyle` | `'concise_cards' \| 'minimal'` | `'concise_cards'` | Thought rendering style |
 | `ui.panel.resizable` | `boolean` | `true` | Enables desktop freeform resizing plus phone/tablet snap-height resizing with per-device memory |
 | `ui.showTaskControls` | `boolean` | `true` | Show new/end task controls |
-| `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced). Set `runKind: 'guide'` for onboarding/demo journeys that should narrate under the guided default. Shortcuts can also publish agent-facing metadata such as `tags`, `examples`, `inputSchema`, `outputSchema`, `sideEffect`, and `requiresConfirmation`. |
+| `ui.shortcuts` | `RoverShortcut[]` | `[]` | Suggested journeys (max 100 stored, max 12 rendered by default; lower site-key policy caps are enforced). Set `runKind: 'guide'` for onboarding/demo journeys that should use guided narration and Action Spotlight defaults; use `runKind: 'task'` for quieter utility flows. Shortcuts can also publish agent-facing metadata such as `tags`, `examples`, `inputSchema`, `outputSchema`, `sideEffect`, and `requiresConfirmation`. |
 | `cloudSandboxEnabled` | `boolean` | `false` | Owner-facing shorthand for cloud execution plus approved third-party browsing. When `true`, Rover materializes `tools.web.enableExternalWebContext=true` and `tools.web.scrapeMode='on_demand'`. |
 | `ui.greeting` | `{ text?, delay?, duration?, disabled? }` | — | Greeting bubble config (`{name}` token supported) |
 | `ui.voice` | `{ enabled?: boolean; language?: string; autoStopMs?: number }` | — | Browser dictation for supported Chromium browsers. Rover fills the draft live, waits for post-speech silence before stopping, and the user still sends manually. |
+| `ui.experience.experienceMode` | `'guided' \| 'minimal'` | — | Owner-facing preset. `guided` turns guide flows into a narrated and highlighted experience by default; `minimal` keeps narration and highlights quiet by default while preserving visitor opt-in controls. |
 | `ui.experience.audio.narration.enabled` | `boolean` | `true` | Owner gate for Web Speech step narration. Visitors get a site-scoped speaker toggle when supported. |
-| `ui.experience.audio.narration.defaultMode` | `'guided' \| 'always' \| 'off'` | `'guided'` | Speak guided/demo runs by default, every run, or stay off unless the visitor enables it. |
+| `ui.experience.audio.narration.defaultMode` | `'guided' \| 'always' \| 'off'` | `'guided'` | Speak guide flows by default, every run, or stay off unless the visitor enables it. Response narration can also read safe ACT/planner questions, checkpoints, and final answers. |
 | `ui.experience.audio.narration.rate` | `number` | `1` | Web Speech playback rate, clamped to `0.85`-`1.15`. |
 | `ui.experience.audio.narration.language` | `string` | `'en-US'` | Preferred narration language for voice matching. |
 | `ui.experience.audio.narration.voicePreference` | `'auto' \| 'system' \| 'natural'` | `'auto'` | Voice matching preference; `natural` prefers higher-quality browser voices when available. |
 | `ui.experience.motion.actionSpotlight` | `boolean` | `true` | Highlights the element Rover is clicking, typing into, selecting, or scrolling to. |
 | `ui.experience.motion.actionSpotlightColor` | `"#RRGGBB"` | `"#FF4C00"` | Ring and glow color for Action Spotlight. |
+| `ui.experience.motion.actionSpotlightRunKinds` | `('guide' \| 'task')[]` | all run kinds; `['guide']` when `experienceMode: 'guided'` is generated | Controls which shortcut run kinds show Action Spotlight by default. Per-action `ui.highlight` may override this default unless the visitor has explicitly hidden highlights. |
+
+Guidance precedence is local-first: visitor explicit off wins, visitor explicit on enables, then per-step `ui.narration` / `ui.highlight` can override the site default, and the site default comes from `experienceMode`, `runKind`, and owner controls. Raw browser `tool_result` events stay silent.
 
 ### Web Tools
 
