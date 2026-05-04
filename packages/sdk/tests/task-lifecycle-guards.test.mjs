@@ -150,6 +150,87 @@ test('pending completion is accepted even if boundary metadata is missing', () =
   assert.equal(acceptPendingCompletion, false);
 });
 
+test('worker execution completion is accepted for the current pending run', () => {
+  const acceptWorkerCompletion = shouldIgnoreRunScopedMessage({
+    type: 'execution_completed',
+    messageRunId: 'run-pending',
+    messageTaskBoundaryId: undefined,
+    currentTaskBoundaryId: 'boundary-current',
+    pendingRunId: 'run-pending',
+    taskStatus: 'running',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(acceptWorkerCompletion, false);
+
+  const ignoreOtherWorkerCompletion = shouldIgnoreRunScopedMessage({
+    type: 'execution_completed',
+    messageRunId: 'run-other',
+    messageTaskBoundaryId: undefined,
+    currentTaskBoundaryId: 'boundary-current',
+    pendingRunId: 'run-pending',
+    taskStatus: 'running',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(ignoreOtherWorkerCompletion, true);
+});
+
+test('worker execution completion is accepted even when local task state was already terminal', () => {
+  const acceptAlreadyTerminalPendingCompletion = shouldIgnoreRunScopedMessage({
+    type: 'execution_completed',
+    messageRunId: 'run-pending',
+    currentTaskBoundaryId: 'boundary-current',
+    pendingRunId: 'run-pending',
+    taskStatus: 'completed',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(acceptAlreadyTerminalPendingCompletion, false);
+
+  const acceptAlreadyTerminalAuthoritativeCompletion = shouldIgnoreRunScopedMessage({
+    type: 'execution_completed',
+    messageRunId: 'run-authoritative',
+    messageTaskBoundaryId: 'boundary-current',
+    currentTaskBoundaryId: 'boundary-current',
+    pendingRunId: undefined,
+    authoritativeActiveRunId: 'run-authoritative',
+    taskStatus: 'completed',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(acceptAlreadyTerminalAuthoritativeCompletion, false);
+
+  const ignoreAlreadyTerminalStaleCompletion = shouldIgnoreRunScopedMessage({
+    type: 'execution_completed',
+    messageRunId: 'run-stale',
+    currentTaskBoundaryId: 'boundary-current',
+    pendingRunId: 'run-pending',
+    taskStatus: 'completed',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(ignoreAlreadyTerminalStaleCompletion, true);
+});
+
+test('worker execution transitions use the same lifecycle boundary guard as public run transitions', () => {
+  const acceptPendingTransition = shouldIgnoreRunScopedMessage({
+    type: 'execution_state_transition',
+    messageRunId: 'run-pending',
+    currentTaskBoundaryId: 'boundary-current',
+    pendingRunId: 'run-pending',
+    taskStatus: 'running',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(acceptPendingTransition, false);
+
+  const ignoreBoundaryMismatch = shouldIgnoreRunScopedMessage({
+    type: 'execution_state_transition',
+    messageRunId: 'run-pending',
+    messageTaskBoundaryId: 'boundary-old',
+    currentTaskBoundaryId: 'boundary-current',
+    pendingRunId: 'run-pending',
+    taskStatus: 'running',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(ignoreBoundaryMismatch, true);
+});
+
 test('auto-resume policy branching honors auto, confirm, never, and remote owner defer', () => {
   assert.equal(
     resolveAutoResumePolicyAction({

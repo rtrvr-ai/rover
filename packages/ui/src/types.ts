@@ -162,9 +162,10 @@ export type RoverUi = {
   clearMessages: () => void;
   addTimelineEvent: (event: RoverTimelineEvent) => void;
   clearTimeline: () => void;
+  clearLiveExecution?: (options?: { preserveNarration?: boolean }) => void;
   setTaskSuggestion: (suggestion: RoverTaskSuggestion) => void;
   setStatus: (text: string) => void;
-  setRunning: (running: boolean) => void;
+  setRunning: (running: boolean, options?: { preserveNarration?: boolean; openOnStop?: boolean }) => void;
   setExecutionMode: (
     mode: RoverExecutionMode,
     meta?: {

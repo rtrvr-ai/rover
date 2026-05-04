@@ -1884,6 +1884,12 @@ function summarizePlannerToolResults(toolResults: ToolExecutionResult[] | undefi
   return lines.join('\n\n');
 }
 
+function resolvePlannerFinalText(response: { overallThought?: unknown } | undefined, toolResults: ToolExecutionResult[] | undefined): string {
+  const overall = String(response?.overallThought || '').trim();
+  const toolSummary = summarizePlannerToolResults(toolResults);
+  return overall || toolSummary || '';
+}
+
 function extractLatestPrevStepsFromPlanner(toolResults: ToolExecutionResult[] | undefined): PreviousSteps[] | undefined {
   if (!Array.isArray(toolResults) || !toolResults.length) return undefined;
   for (let i = toolResults.length - 1; i >= 0; i -= 1) {
@@ -2065,6 +2071,7 @@ function inferPlannerContinuation(toolResults: ToolExecutionResult[] | undefined
 }
 
 type DirectToolResult = ToolExecutionResult & {
+  data?: RuntimeToolOutput;
   status?: string;
   navigationPending?: boolean;
   navigationOutcome?: string;
@@ -2097,7 +2104,7 @@ function deriveDirectToolRunOutcome(result: DirectToolResult | undefined): RunOu
   const questions = extractQuestionsFromResult(result);
   if (result.error) return { taskComplete: false, terminalState: 'failed' };
 
-  const output = result.output;
+  const output = result.output ?? result.data;
   if (output && typeof output === 'object') {
     const outputRecord = output as Record<string, unknown>;
     const topLevelStatus = String(result.status || '').trim().toLowerCase();
@@ -2712,8 +2719,9 @@ async function handleUserMessage(
   }
 
   if (result.directToolResult) {
+    const directToolResult = result.directToolResult as DirectToolResult;
     throwIfCancelledRun(activeRunId);
-    const newTabWait = await maybeWaitForNewTab(result.directToolResult);
+    const newTabWait = await maybeWaitForNewTab(directToolResult);
     if (
       newTabWait.openedTab
       && newTabWait.readyState
@@ -2758,9 +2766,9 @@ async function handleUserMessage(
       }
     }
     postStatus('Verifying result', undefined, 'verify');
-    maybePostNavigationGuardrailFromToolResult(result.directToolResult);
-    applyAgentPrevSteps(result.directToolResult.prevSteps, { snapshot: false });
-    const outcome = deriveDirectToolRunOutcome(result.directToolResult);
+    maybePostNavigationGuardrailFromToolResult(directToolResult);
+    applyAgentPrevSteps(directToolResult.prevSteps, { snapshot: false });
+    const outcome = deriveDirectToolRunOutcome(directToolResult);
     const questions = normalizePlannerQuestions(outcome.questions);
     if (outcome.needsUserInput && questions.length > 0) {
       pendingAskUser = {
@@ -2791,10 +2799,11 @@ async function handleUserMessage(
 
     pendingAskUser = undefined;
     const output =
-      result.directToolResult.output ??
-      result.directToolResult.generatedContentRef ??
-      result.directToolResult.schemaHeaderSheetInfo;
-    const structuredError = extractStructuredErrorFromToolResult(result.directToolResult);
+      directToolResult.output ??
+      directToolResult.data ??
+      directToolResult.generatedContentRef ??
+      directToolResult.schemaHeaderSheetInfo;
+    const structuredError = extractStructuredErrorFromToolResult(directToolResult);
     if (structuredError?.error.requires_api_key) {
       postAuthRequired(structuredError.error);
     }
@@ -2896,7 +2905,7 @@ async function handleUserMessage(
           ],
         })
       : postAssistantMessage({
-        text: String(response.overallThought || summarizePlannerToolResults(toolResults) || ''),
+        text: resolvePlannerFinalText(response, toolResults),
         blocks: toolBlocks,
         responseKind: 'final',
       });

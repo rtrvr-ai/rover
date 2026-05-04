@@ -920,6 +920,7 @@ const RUN_SCOPED_WORKER_MESSAGE_TYPES = new Set([
   'execution_state_transition',
   'execution_completed',
   'assistant',
+  'assistant_response',
   'status',
   'tool_start',
   'tool_result',
@@ -2695,6 +2696,7 @@ function applyServerProjection(projection: RoverServerProjection): void {
 
   const serverRunId = typeof projection.activeRunId === 'string' ? projection.activeRunId : '';
   const projectionRunStatus = String(projection.runStatus || '').trim().toLowerCase();
+  const projectionRunIgnored = !!(serverRunId && ignoredRunIds.has(serverRunId));
   if (shouldQueueCancelForIgnoredProjectionRun({
     serverRunId,
     runStatus: projectionRunStatus,
@@ -2702,7 +2704,7 @@ function applyServerProjection(projection: RoverServerProjection): void {
   })) {
     enqueueServerRunCancelRepair(serverRunId, 'projection_ignored_active_run', { attemptImmediately: true });
   }
-  setServerAcceptedRunId(serverRunId || undefined);
+  setServerAcceptedRunId(projectionRunIgnored ? undefined : (serverRunId || undefined));
   const localPending = runtimeState.pendingRun;
   const localRunId = localPending?.id || '';
 
@@ -2719,6 +2721,7 @@ function applyServerProjection(projection: RoverServerProjection): void {
     }
   } else if (
     serverRunId
+    && !projectionRunIgnored
     && !hasRemoteExecutionOwner()
     && resolveEffectiveExecutionMode(currentMode) !== 'observer'
     && shouldAdoptProjectionRun({
@@ -2740,7 +2743,7 @@ function applyServerProjection(projection: RoverServerProjection): void {
       resumeRequired: localPending?.resumeRequired === true,
       resumeReason: localPending?.resumeReason,
     });
-  } else if (serverRunId && ignoredRunIds.has(serverRunId)) {
+  } else if (serverRunId && projectionRunIgnored) {
     if (localRunId === serverRunId) {
       sessionCoordinator?.releaseWorkflowLock(serverRunId);
       setPendingRun(undefined);
@@ -3484,7 +3487,7 @@ function shouldIgnoreRunScopedWorkerMessage(msg: any): boolean {
       : (typeof msg?.taskBoundaryId === 'string' && msg.taskBoundaryId ? msg.taskBoundaryId : undefined);
   const authoritativeActiveRunId =
     String(roverServerRuntime?.getActiveRunId() || serverAcceptedRunId || '').trim() || undefined;
-  return shouldIgnoreRunScopedMessage({
+  const ignored = shouldIgnoreRunScopedMessage({
     type,
     messageRunId,
     messageTaskBoundaryId,
@@ -3495,6 +3498,29 @@ function shouldIgnoreRunScopedWorkerMessage(msg: any): boolean {
     taskStatus: runtimeState?.activeTask?.status,
     ignoredRunIds,
   });
+  if (
+    ignored
+    && (
+      type === 'execution_completed'
+      || type === 'execution_state_transition'
+      || type === 'run_completed'
+      || type === 'run_state_transition'
+    )
+  ) {
+    recordTelemetryEvent('status', {
+      event: 'terminal_worker_message_ignored',
+      type,
+      messageRunId,
+      pendingRunId: getPendingRunId(),
+      sharedActiveRunId: sessionCoordinator?.getState()?.activeRun?.runId,
+      authoritativeActiveRunId,
+      taskStatus: runtimeState?.activeTask?.status,
+      messageTaskBoundaryId,
+      currentTaskBoundaryId: resolveCurrentTaskBoundaryCandidate(),
+      terminalState: typeof msg?.terminalState === 'string' ? msg.terminalState : undefined,
+    });
+  }
+  return ignored;
 }
 
 function normalizeAskUserQuestions(input: any): RoverAskUserQuestion[] {
@@ -8320,12 +8346,7 @@ function finalizeSuccessfulRunTimeline(runId?: string): void {
     latestAssistantByRunId.delete(runId);
   }
 
-  ui?.clearTimeline();
-  if (runtimeState) {
-    runtimeState.timeline = [];
-  }
-  sessionCoordinator?.clearTimeline();
-
+  ui?.clearLiveExecution?.({ preserveNarration: true });
 }
 
 function normalizeAssistantResponseKind(value: unknown): RoverTimelineEvent['responseKind'] | undefined {
@@ -8756,7 +8777,14 @@ function handleWorkerMessage(msg: any): void {
       !isTerminalRunCompletion
       && terminalState === 'in_progress'
       && continuationReason !== 'awaiting_user';
-    ui?.setRunning(shouldShowRunningIndicator);
+    const shouldPreserveCompletionNarration =
+      !shouldShowRunningIndicator
+      && msg?.ok !== false
+      && (completionState.needsUserInput || terminalState === 'completed');
+    ui?.setRunning(shouldShowRunningIndicator, {
+      preserveNarration: shouldPreserveCompletionNarration,
+      openOnStop: shouldPreserveCompletionNarration,
+    });
     if (runSafetyTimer) { clearTimeout(runSafetyTimer); runSafetyTimer = null; }
     const completedRunId = typeof msg.runId === 'string' && msg.runId ? msg.runId : undefined;
     const messageTaskBoundaryId =
@@ -8868,7 +8896,7 @@ function handleWorkerMessage(msg: any): void {
         status: 'error',
       });
     } else if (msg.ok) {
-      if (!isTaskRunning()) {
+      if (!isTaskRunning() && !isTerminalRunCompletion && !completionState.needsUserInput) {
         return;
       }
       const runComplete = completionState.runComplete;
