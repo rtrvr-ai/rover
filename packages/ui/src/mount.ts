@@ -1599,7 +1599,20 @@ export function mountWidget(opts: MountOptions): RoverUi {
     syncTaskStage();
   }
 
-  function setRunning(running: boolean): void {
+  function clearLiveExecutionVisuals(options?: { preserveNarration?: boolean }): void {
+    if (!options?.preserveNarration) cancelNarration();
+    liveStack.clear();
+    toolStartCount = 0;
+    toolResultCount = 0;
+    updateTideProgress();
+    filamentSystem.clearAll();
+    try { actionSpotlightSystem.clearAll(); } catch { /* spotlight is best-effort */ }
+    pulseBadge.textContent = '0';
+    syncTaskStage();
+    syncPulseState();
+  }
+
+  function setRunning(running: boolean, options?: { preserveNarration?: boolean; openOnStop?: boolean }): void {
     const wasRunning = isRunning;
     isRunning = running;
     if (running) {
@@ -1630,7 +1643,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       liveStack.hide();
       inputBar.setRunning(false);
       composerComp.setSendAsStop(false, () => {});
-      cancelNarration();
+      if (!options?.preserveNarration) cancelNarration();
       currentRunKind = undefined;
 
       waitingForFirstModelSignal = false;
@@ -1638,7 +1651,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       try { actionSpotlightSystem.clearAll(); } catch { /* spotlight is best-effort */ }
 
       // Open canvas with results if task completed and panel isn't already open
-      if (wasRunning && stateMachine.getState() !== 'window') {
+      if ((wasRunning || options?.openOnStop === true) && stateMachine.getState() !== 'window') {
         maximize();
       }
       // Scroll feed to bottom to show results
@@ -1959,6 +1972,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       try { actionSpotlightSystem.clearAll(); } catch { /* spotlight is best-effort */ }
       pulseBadge.textContent = '0';
     },
+    clearLiveExecution: clearLiveExecutionVisuals,
     setTaskSuggestion,
     setStatus,
     setRunning,

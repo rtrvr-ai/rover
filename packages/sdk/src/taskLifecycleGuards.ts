@@ -140,27 +140,31 @@ export function shouldIgnoreRunScopedMessage(params: {
   } = params;
   const currentBoundary = normalizeTaskBoundaryId(currentTaskBoundaryId);
   const messageBoundary = normalizeTaskBoundaryId(messageTaskBoundaryId);
-  const isCompletionEvent = type === 'run_state_transition' || type === 'run_completed';
+  const isCompletionEvent =
+    type === 'run_state_transition'
+    || type === 'run_completed'
+    || type === 'execution_state_transition'
+    || type === 'execution_completed';
   const isLifecycleBoundaryEvent =
     type === 'run_started'
     || type === 'run_resumed'
+    || type === 'execution_started'
     || isCompletionEvent;
   const canRelaxBoundaryForPendingCompletion =
     isCompletionEvent
     && !!messageRunId
     && !!pendingRunId
-    && messageRunId === pendingRunId
-    && taskStatus === 'running';
+    && messageRunId === pendingRunId;
   if (currentBoundary) {
     if (messageBoundary && messageBoundary !== currentBoundary) return true;
     if (isLifecycleBoundaryEvent && !messageBoundary && !canRelaxBoundaryForPendingCompletion) return true;
   }
-  if (!messageRunId && type !== 'run_started' && type !== 'run_resumed') return false;
+  if (!messageRunId && type !== 'run_started' && type !== 'run_resumed' && type !== 'execution_started') return false;
   if (messageRunId && ignoredRunIds?.has(messageRunId)) return true;
 
   const authoritativeRunId = authoritativeActiveRunId || sharedActiveRunId;
 
-  if (type === 'run_started' || type === 'run_resumed') {
+  if (type === 'run_started' || type === 'run_resumed' || type === 'execution_started') {
     if (!messageRunId) return false;
     if (authoritativeRunId && authoritativeRunId === messageRunId) return false;
     if (!pendingRunId) return true;
@@ -169,8 +173,12 @@ export function shouldIgnoreRunScopedMessage(params: {
 
   if (!messageRunId) return false;
 
-  if (type === 'run_completed' || type === 'run_state_transition') {
-    if (taskStatus !== 'running') return true;
+  if (isCompletionEvent) {
+    if (taskStatus !== 'running') {
+      if (pendingRunId && pendingRunId === messageRunId) return false;
+      if (authoritativeRunId && authoritativeRunId === messageRunId) return false;
+      return true;
+    }
     if (!pendingRunId) {
       if (authoritativeRunId && authoritativeRunId === messageRunId) return false;
       return true;
