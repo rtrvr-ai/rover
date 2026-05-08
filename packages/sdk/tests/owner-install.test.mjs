@@ -62,17 +62,21 @@ test('owner install bundle splits body runtime HTML from head discovery HTML', (
     emitLlmsTxt: true,
   });
 
-  assert.match(bundle.bodyInstallHtml, /application\/agent\+json/);
+  assert.doesNotMatch(bundle.bodyInstallHtml, /application\/agent\+json/);
   assert.doesNotMatch(bundle.bodyInstallHtml, STALE_A2W_PROTOCOL_PATTERN);
-  assert.match(bundle.bodyInstallHtml, /application\/agent-card\+json/);
-  assert.match(bundle.bodyInstallHtml, /application\/rover-site\+json/);
-  assert.match(bundle.bodyInstallHtml, /application\/rover-page\+json/);
+  assert.doesNotMatch(bundle.bodyInstallHtml, /application\/agent-card\+json/);
+  assert.doesNotMatch(bundle.bodyInstallHtml, /application\/rover-site\+json/);
+  assert.doesNotMatch(bundle.bodyInstallHtml, /application\/rover-page\+json/);
   assert.doesNotMatch(bundle.bodyInstallHtml, /rel="service-desc"/);
   assert.match(bundle.bodyInstallHtml, /embed\.js\?v=key_123/);
-  assert.match(bundle.bodyInstallHtml, /roverbook\.js\?v=key_123/);
-  assert.match(bundle.bodyInstallHtml, /enableRoverBook/);
-  assert.match(bundle.bodyInstallHtml, /"agentDiscovery"/);
-  assert.match(bundle.bodyInstallHtml, /"mode": "integrated"/);
+  assert.match(bundle.bodyInstallHtml, /data-site-id="site_123"/);
+  assert.match(bundle.bodyInstallHtml, /data-public-key="pk_site_123"/);
+  assert.match(bundle.bodyInstallHtml, /data-site-key-id="key_123"/);
+  assert.doesNotMatch(bundle.bodyInstallHtml, /rover\('boot'/);
+  assert.doesNotMatch(bundle.bodyInstallHtml, /roverbook\.js/);
+  assert.doesNotMatch(bundle.bodyInstallHtml, /enableRoverBook/);
+  assert.doesNotMatch(bundle.bodyInstallHtml, /data-rover-(instance|host|channel)/);
+  assert.doesNotMatch(bundle.bodyInstallHtml, /data-activity-enabled/);
 
   assert.match(bundle.headDiscoveryHtml, /rel="service-desc"/);
   assert.match(bundle.headDiscoveryHtml, /rel="service-doc"/);
@@ -139,7 +143,9 @@ test('owner install bundle keeps runtime install valid when public discovery is 
   assert.equal(bundle.agentCardJson, undefined);
   assert.equal(bundle.serviceDescLinkHeader, undefined);
   assert.equal(bundle.llmsTxt, undefined);
-  assert.match(bundle.bodyInstallHtml, /rover\('boot'/);
+  assert.match(bundle.bodyInstallHtml, /data-site-id="site_456"/);
+  assert.match(bundle.bodyInstallHtml, /data-public-key="pk_site_456"/);
+  assert.doesNotMatch(bundle.bodyInstallHtml, /rover\('boot'/);
 });
 
 test('owner install bundle respects explicit discovery disable even when ai access is enabled', () => {
@@ -173,7 +179,9 @@ test('owner install bundle materializes cloud sandbox owner config into tools.we
     },
   });
 
-  assert.match(bundle.bodyInstallHtml, /"cloudSandboxEnabled": true/);
-  assert.match(bundle.bodyInstallHtml, /"enableExternalWebContext": true/);
-  assert.match(bundle.bodyInstallHtml, /"scrapeMode": "on_demand"/);
+  assert.match(bundle.bodyInstallHtml, /data-site-id="site_cloud"/);
+  assert.match(bundle.bodyInstallHtml, /data-public-key="pk_site_cloud"/);
+  assert.doesNotMatch(bundle.bodyInstallHtml, /cloudSandboxEnabled/);
+  assert.doesNotMatch(bundle.bodyInstallHtml, /enableExternalWebContext/);
+  assert.doesNotMatch(bundle.bodyInstallHtml, /scrapeMode/);
 });

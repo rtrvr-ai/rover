@@ -34,17 +34,24 @@ test('preview bootstrap preserves ui voice, experience, cloud sandbox, and page 
     ui: {
       voice: {
         enabled: true,
+        provider: 'elevenlabs',
         language: 'en-US',
         autoStopMs: 2800,
+        sttModel: 'scribe_v2_realtime',
+        submitMode: 'draft',
       },
       experience: {
         audio: {
           narration: {
             enabled: false,
+            provider: 'elevenlabs',
             defaultMode: 'always',
             rate: 1.2,
             language: 'en-US<script>',
             voicePreference: 'natural',
+            voiceProfile: 'custom',
+            voiceId: 'Voice_123',
+            modelId: 'eleven_flash_v2_5',
           },
         },
         motion: {
@@ -62,6 +69,11 @@ test('preview bootstrap preserves ui voice, experience, cloud sandbox, and page 
   assert.match(consoleSnippet, /"enabled":\s*true/);
   assert.match(consoleSnippet, /"language":\s*"en-US"/);
   assert.match(consoleSnippet, /"autoStopMs":\s*2800/);
+  assert.doesNotMatch(consoleSnippet, /"provider":/);
+  assert.doesNotMatch(consoleSnippet, /"sttModel":/);
+  assert.doesNotMatch(consoleSnippet, /"submitMode":/);
+  assert.doesNotMatch(consoleSnippet, /"voiceId":/);
+  assert.doesNotMatch(consoleSnippet, /"modelId":/);
   assert.match(consoleSnippet, /"cloudSandboxEnabled":\s*true/);
   assert.match(consoleSnippet, /"disableAutoScroll":\s*true/);
   assert.match(consoleSnippet, /"narration":\s*\{/);
@@ -82,7 +94,12 @@ test('preview bootstrap preserves ui voice, experience, cloud sandbox, and page 
   assert.match(scriptSnippet, /data-narration-default-mode="always"/);
   assert.match(scriptSnippet, /data-narration-rate="1.15"/);
   assert.match(scriptSnippet, /data-narration-language="en-USscript"/);
-  assert.match(scriptSnippet, /data-narration-voice-preference="natural"/);
+  assert.doesNotMatch(scriptSnippet, /data-voice-provider=/);
+  assert.doesNotMatch(scriptSnippet, /data-voice-stt-model=/);
+  assert.doesNotMatch(scriptSnippet, /data-voice-submit-mode=/);
+  assert.doesNotMatch(scriptSnippet, /data-narration-provider=/);
+  assert.doesNotMatch(scriptSnippet, /data-narration-voice/);
+  assert.doesNotMatch(scriptSnippet, /data-narration-model-id=/);
   assert.match(scriptSnippet, /data-action-spotlight="false"/);
   assert.match(scriptSnippet, /data-action-spotlight-color="#2563EB"/);
 
@@ -96,13 +113,20 @@ test('preview bootstrap preserves ui voice, experience, cloud sandbox, and page 
         'data-cloud-sandbox-enabled': 'true',
         'data-disable-auto-scroll': 'true',
         'data-voice-enabled': 'true',
+        'data-voice-provider': 'elevenlabs',
         'data-voice-language': 'en-US',
         'data-voice-auto-stop-ms': '2800',
+        'data-voice-stt-model': 'scribe_v2_realtime',
+        'data-voice-submit-mode': 'draft',
         'data-narration-enabled': 'false',
+        'data-narration-provider': 'elevenlabs',
         'data-narration-default-mode': 'always',
         'data-narration-rate': '1.2',
         'data-narration-language': 'en-US<script>',
         'data-narration-voice-preference': 'natural',
+        'data-narration-voice-profile': 'custom',
+        'data-narration-voice-id': 'Voice_123',
+        'data-narration-model-id': 'eleven_flash_v2_5',
         'data-action-spotlight': 'false',
         'data-action-spotlight-color': '#2563eb',
       };
@@ -129,7 +153,6 @@ test('preview bootstrap preserves ui voice, experience, cloud sandbox, and page 
           defaultMode: 'always',
           rate: 1.15,
           language: 'en-USscript',
-          voicePreference: 'natural',
         },
       },
       motion: {

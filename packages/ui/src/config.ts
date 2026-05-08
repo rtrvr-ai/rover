@@ -208,12 +208,6 @@ export function sanitizeExperienceConfig(input?: RoverExperienceConfig): RoverEx
             ? Math.max(0.85, Math.min(1.15, Number(narrationInput.rate)))
             : undefined,
           language: String(narrationInput.language || '').trim().slice(0, 24) || undefined,
-          voicePreference:
-            narrationInput.voicePreference === 'auto' ||
-            narrationInput.voicePreference === 'system' ||
-            narrationInput.voicePreference === 'natural'
-              ? narrationInput.voicePreference
-              : undefined,
         },
       };
     }
@@ -314,7 +308,6 @@ export function resolveMountExperienceConfig(opts: MountOptions, agentName: stri
         defaultMode: explicit.audio?.narration?.defaultMode || presetNarrationMode || 'guided',
         rate: explicit.audio?.narration?.rate ?? 1,
         language: explicit.audio?.narration?.language || 'en-US',
-        voicePreference: explicit.audio?.narration?.voicePreference || 'auto',
       },
     },
     motion: {
@@ -448,7 +441,9 @@ export function resolveActionSpotlightDecision(input: ActionSpotlightDecisionInp
   }
   if (stepOverride !== undefined) return stepOverride;
   const runKindAllowed =
-    !currentRunKind || !allowedRunKinds || allowedRunKinds.length === 0 || allowedRunKinds.includes(currentRunKind);
+    !allowedRunKinds || allowedRunKinds.length === 0
+      ? true
+      : !!currentRunKind && allowedRunKinds.includes(currentRunKind);
   return visitorEnabled && runKindAllowed;
 }
 
@@ -463,5 +458,16 @@ export function resolveNarrationDefaultActiveForRun(
     : 'guided';
   if (defaultMode === 'off') return false;
   if (defaultMode === 'always') return true;
-  return !runKind || runKind === 'guide';
+  return runKind === 'guide';
+}
+
+const FREEFORM_TASK_WORD_RE = /\b(?:buy|submit|fill|download|extract|compare|book|order|apply)\b/i;
+const FREEFORM_GUIDE_PHRASE_RE = /\b(?:show me|walk me through|where is|help me find|tour|guide me)\b/i;
+
+export function deriveFreeformUiRunKind(input: string): 'guide' | 'task' {
+  const text = sanitizeText(input).toLowerCase();
+  if (!text) return 'task';
+  if (FREEFORM_TASK_WORD_RE.test(text)) return 'task';
+  if (FREEFORM_GUIDE_PHRASE_RE.test(text)) return 'guide';
+  return 'task';
 }

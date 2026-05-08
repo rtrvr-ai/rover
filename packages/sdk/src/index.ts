@@ -61,10 +61,12 @@ import {
 } from './previewBootstrap.js';
 import {
   createRoverOwnerInstallBundle,
+  createRoverProductionEmbedScriptTag,
   type RoverOwnerInstallBootConfig,
   type RoverOwnerInstallBundle,
   type RoverOwnerInstallBundleInput,
   type RoverOwnerInstallRoverBookConfig,
+  type RoverProductionEmbedScriptTagInput,
 } from './ownerInstall.js';
 import {
   buildRoverAgentDiscoveryPayloads,
@@ -7121,7 +7123,10 @@ async function dispatchUserPromptAsync(
     : resolveNarrationAvailableFromConfig(currentConfig);
   const effectiveNarrationEnabledForRun = options?.narrationEnabledForRun ?? fallbackNarrationAvailable;
   const effectiveNarrationPreferenceSource = options?.narrationPreferenceSource || narrationPreferenceSource;
-  const effectiveNarrationRunKind = normalizeRoverRunKind(options?.narrationRunKind);
+  const derivedFreeformRunKind = options?.narrationRunKind || options?.actionSpotlightRunKind
+    ? undefined
+    : deriveFreeformUiRunKind(trimmed);
+  const effectiveNarrationRunKind = normalizeRoverRunKind(options?.narrationRunKind) || derivedFreeformRunKind;
   const effectiveNarrationLanguage = options?.narrationLanguage || narrationLanguage;
   const effectiveNarrationDefaultActiveForRun = typeof options?.narrationDefaultActiveForRun === 'boolean'
     ? options.narrationDefaultActiveForRun
@@ -9366,13 +9371,6 @@ function sanitizeExperienceConfig(raw: unknown): RoverServerExperienceConfig | u
       }
       const language = String(narrationInput.language || '').trim();
       if (language) narration.language = language.slice(0, 24);
-      if (
-        narrationInput.voicePreference === 'auto' ||
-        narrationInput.voicePreference === 'system' ||
-        narrationInput.voicePreference === 'natural'
-      ) {
-        narration.voicePreference = narrationInput.voicePreference;
-      }
       if (Object.keys(narration).length) next.audio = { narration };
     }
   }
@@ -9507,6 +9505,17 @@ function normalizeRoverRunKind(input: unknown): 'guide' | 'task' | undefined {
   return input === 'guide' || input === 'task' ? input : undefined;
 }
 
+const FREEFORM_TASK_WORD_RE = /\b(?:buy|submit|fill|download|extract|compare|book|order|apply)\b/i;
+const FREEFORM_GUIDE_PHRASE_RE = /\b(?:show me|walk me through|where is|help me find|tour|guide me)\b/i;
+
+function deriveFreeformUiRunKind(input: string): 'guide' | 'task' {
+  const text = String(input || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!text) return 'task';
+  if (FREEFORM_TASK_WORD_RE.test(text)) return 'task';
+  if (FREEFORM_GUIDE_PHRASE_RE.test(text)) return 'guide';
+  return 'task';
+}
+
 function resolveDefaultActionSpotlightActiveForRunFromConfig(
   cfg: RoverInit | null,
   runKind: 'guide' | 'task' | undefined,
@@ -9527,7 +9536,8 @@ function resolveDefaultActionSpotlightActiveForRunFromConfig(
     : presetMode === 'guided'
       ? ['guide' as const]
       : undefined;
-  return !runKind || !allowedKinds || allowedKinds.length === 0 || allowedKinds.includes(runKind);
+  if (!allowedKinds || allowedKinds.length === 0) return true;
+  return !!runKind && allowedKinds.includes(runKind);
 }
 
 function resolveDefaultActionSpotlightActiveForRun(
@@ -9559,7 +9569,7 @@ function resolveDefaultNarrationActiveForRunFromConfig(
     : 'guided';
   if (defaultMode === 'off') return false;
   if (defaultMode === 'always') return true;
-  return !runKind || runKind === 'guide';
+  return runKind === 'guide';
 }
 
 function resolveDefaultNarrationActiveForRun(
@@ -11180,11 +11190,11 @@ function resolveEffectiveGreetingConfig(cfg: RoverInit | null): RoverGreetingCon
 }
 
 function resolveEffectiveVoiceConfig(cfg: RoverInit | null): RoverVoiceConfig | undefined {
-  if (!cfg) return undefined;
+  if (!cfg) return { enabled: true, autoStopMs: VOICE_AUTO_STOP_DEFAULT_MS };
   const fromBackend = sanitizeVoiceConfig(backendSiteConfig?.voice);
   const fromBoot = sanitizeVoiceConfig(cfg.ui?.voice);
-  if (!fromBackend && !fromBoot) return undefined;
   const merged: RoverVoiceConfig = {
+    enabled: true,
     ...(fromBackend || {}),
     ...(fromBoot || {}),
   };
@@ -12140,6 +12150,20 @@ function createRuntime(cfg: RoverInit): void {
     getLocalLogicalTabId: () => sessionCoordinator?.getLocalLogicalTabId(),
     panel: {
       resizable: cfg.ui?.panel?.resizable !== false,
+    },
+    apiBase: cfg.apiBase,
+    getAudioAuth: async () => {
+      if (currentConfig) {
+        await ensureRoverServerRuntime(currentConfig);
+        await roverServerRuntime?.ensureSession(false);
+      }
+      return {
+        sessionId: runtimeState?.sessionId,
+        sessionToken:
+          roverServerRuntime?.getSessionToken()
+          || runtimeSessionToken
+          || getRuntimeSessionToken(currentConfig),
+      };
     },
     shortcuts: getRenderableShortcuts(sanitizeShortcutList(cfg.ui?.shortcuts || [])),
     experience: deriveExperienceConfig(cfg),
@@ -13732,6 +13756,7 @@ export {
   createRoverBookmarklet,
   createRoverConsoleSnippet,
   createRoverOwnerInstallBundle,
+  createRoverProductionEmbedScriptTag,
   createRoverSiteProfile,
   createRoverSiteProfileJson,
   createRoverServiceDescLinkHeader,
@@ -13746,6 +13771,7 @@ export type {
   RoverOwnerInstallBundle,
   RoverOwnerInstallBundleInput,
   RoverOwnerInstallRoverBookConfig,
+  RoverProductionEmbedScriptTagInput,
 };
 
 type RoverGlobalFn = ((command: string, ...args: any[]) => any) & Partial<RoverInstance> & { q?: any[]; l?: number };

@@ -485,49 +485,34 @@ test('action spotlight target failures do not prevent scheduled narration', (t) 
 
 // ── Precedence: visitor explicit > planner per-step > site default ────────────
 //
-// The scheduler accepts an optional `shouldSpeakEvent(event)` predicate that takes
-// precedence over the global `isEnabled()` gate at scheduleEvent time. mount.ts
-// implements three-tier precedence (visitor explicit OFF blocks; visitor default
-// lets explicit per-step narration text override site default 'off'). These tests
-// exercise the scheduler-side mechanics that make that possible.
+// The scheduler accepts an optional `shouldSpeakEvent(event)` predicate. mount.ts
+// now gates runtime narration by owner/visitor mode; event narration text is
+// public copy and does not override a quiet run by itself.
 
-test('shouldSpeakEvent overrides isEnabled at scheduleEvent (planner narration on site-off)', () => {
+test('quiet run skips explicit event narration when default narration is off', () => {
   const frameQueue = createFrameQueue();
   const spoken = [];
-  // Simulate: visitor=default, site narration mode='off' (isEnabled false), planner emits text.
   const scheduler = createTimelineNarrationScheduler({
-    isEnabled: () => true, // permissive: visitor not explicit OFF, so flush is allowed
-    shouldSpeakEvent: (event) => {
-      // Mirror mount.ts logic: site default false, but explicit text → speak.
-      const explicitText = typeof event.narration === 'string' && event.narration.trim().length > 0;
-      return explicitText; // site default off; only explicit per-step wins
-    },
+    isEnabled: () => true,
+    shouldSpeakEvent: () => false,
     speak: (text) => spoken.push(text),
     scheduleFrame: callback => frameQueue.schedule(callback),
     cancelFrame: id => frameQueue.cancel(id),
   });
 
-  // Event with explicit narration text (planner per-step override) — should speak.
   scheduler.scheduleEvent({ kind: 'tool_start', title: 'Submit', narration: 'Submitting now.' });
-  // Event without explicit text and site default off — should be skipped.
   scheduler.scheduleEvent({ kind: 'tool_start', title: 'Scroll', narrationActive: true, actionCue: { kind: 'scroll' } });
   frameQueue.runAll();
 
-  assert.deepEqual(spoken, ['Submitting now.']);
+  assert.deepEqual(spoken, []);
 });
 
-test('explicit ACT action narration speaks when fallback narration is quiet', () => {
+test('guided run can speak sanitized event narration', () => {
   const frameQueue = createFrameQueue();
   const spoken = [];
   const scheduler = createTimelineNarrationScheduler({
-    // Permissive local gate: visitor has not explicitly turned narration off.
     isEnabled: () => true,
-    shouldSpeakEvent: (event) => {
-      // Simulates ACT on a task/default-off run: explicit args.ui.narration wins,
-      // but deterministic fallback narration stays quiet.
-      const explicitText = typeof event.narration === 'string' && event.narration.trim().length > 0;
-      return explicitText;
-    },
+    shouldSpeakEvent: () => true,
     speak: (text) => spoken.push(text),
     scheduleFrame: callback => frameQueue.schedule(callback),
     cancelFrame: id => frameQueue.cancel(id),

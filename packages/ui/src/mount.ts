@@ -53,7 +53,7 @@ import type {
   RoverVoiceConfig,
   RoverTimelineEvent,
 } from './types.js';
-import type { VoiceRecognitionError, VoiceTranscriber } from './voice.js';
+import type { VoiceRecognitionError, VoiceTranscriber, VoiceTranscriberHandlers } from './voice.js';
 
 import {
   resolveAgentName,
@@ -63,6 +63,7 @@ import {
   sanitizeExperienceConfig,
   sanitizeVoiceConfig,
   sanitizeText,
+  deriveFreeformUiRunKind,
   normalizeVoiceAutoStopMs,
   deriveAccentTokens,
   deriveActionSpotlightTokens,
@@ -93,8 +94,8 @@ import { createFeed } from './components/feed.js';
 import { createComposer } from './components/composer.js';
 import { createShortcuts } from './components/shortcuts.js';
 import { createWindow } from './components/window.js';
-import { createBrowserVoiceTranscriber, createAudioAnalyser } from './voice.js';
-import { createWebSpeechNarrator, listWebSpeechVoiceOptions } from './narrator.js';
+import { createBrowserVoiceTranscriber, createElevenLabsVoiceTranscriber, createAudioAnalyser } from './voice.js';
+import { createRoverNarrator, listWebSpeechVoiceOptions } from './narrator.js';
 import { createInputBar } from './components/input-bar.js';
 import { createCommandBar } from './components/command-bar.js';
 import { createVoiceSettingsPanel } from './components/voice-settings.js';
@@ -199,20 +200,28 @@ export function mountWidget(opts: MountOptions): RoverUi {
     String(narrationPreference.language || experience.audio?.narration?.language || voiceConfig?.language || getBrowserLanguage() || 'en-US').trim() || 'en-US'
   );
   const resolveEffectiveNarrationVoicePreference = (): 'auto' | 'system' | 'natural' => (
-    narrationPreference.voicePreference || experience.audio?.narration?.voicePreference || 'auto'
+    narrationPreference.voicePreference || 'auto'
   );
   const createNarratorForExperience = (
     config: RoverExperienceConfig,
     preference?: Pick<NarrationVisitorPreference, 'language' | 'voiceURI' | 'voicePreference'>,
-  ) => createWebSpeechNarrator({
+  ) => createRoverNarrator({
+    provider: 'elevenlabs',
+    apiBase: opts.apiBase,
+    getAuth: opts.getAudioAuth,
     lang: preference?.language || config.audio?.narration?.language || getBrowserLanguage(),
     rate: config.audio?.narration?.rate,
     voiceURI: preference?.voiceURI,
-    voicePreference: preference?.voicePreference || config.audio?.narration?.voicePreference,
+    voicePreference: preference?.voicePreference,
   });
-  const getNarrationDefaultOn = (config: RoverExperienceConfig): boolean => (
-    resolveNarrationDefaultActiveForRun(config)
-  );
+  const getNarrationDefaultOn = (config: RoverExperienceConfig): boolean => {
+    const narration = config.audio?.narration;
+    if (narration?.enabled === false) return false;
+    const defaultMode = narration?.defaultMode === 'always' || narration?.defaultMode === 'off'
+      ? narration.defaultMode
+      : 'guided';
+    return defaultMode !== 'off';
+  };
 
   let narrationPreference = resolveNarrationPreference({
     siteId: opts.siteId,
@@ -241,13 +250,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let isNarrationEnabled = allowNarrationToggle && narrationPreference.enabled;
   let voiceSettingsPanel: ReturnType<typeof createVoiceSettingsPanel> | null = null;
 
-  // Narration precedence (mirrors spotlight gate at the tool_start handler):
-  //   1. Visitor explicit OFF → never narrate (hard-blocked).
-  //   2. Visitor explicit ON  → narrate per agent emissions (event.narration / narrationActive).
-  //   3. Visitor default      → planner per-step ui.narration text overrides site default 'off';
-  //                             otherwise site default (isNarrationEnabled) decides.
-  // Permissive gate: narrator engine + scheduler flush are allowed unless visitor explicit OFF,
-  // so explicit per-step narrations can still speak on minimal/default-off sites.
+  // Runtime narration is gated by owner/visitor mode. Event text is public copy,
+  // not planner reasoning, and should not override a quiet run by itself.
   function isNarrationLocallyAllowed(): boolean {
     if (!allowNarrationToggle) return false;
     return narrationPreference.source !== 'visitor' || isNarrationEnabled;
@@ -255,8 +259,6 @@ export function mountWidget(opts: MountOptions): RoverUi {
   function shouldSpeakNarrationEvent(event: RoverTimelineEvent): boolean {
     if (!allowNarrationToggle) return false;
     if (narrationPreference.source === 'visitor') return isNarrationEnabled;
-    const explicitText = typeof event.narration === 'string' && event.narration.trim().length > 0;
-    if (explicitText) return true;
     return resolveNarrationDefaultActiveForRun(experience, currentRunKind);
   }
 
@@ -762,7 +764,16 @@ export function mountWidget(opts: MountOptions): RoverUi {
   }
 
   // ── Voice State ──
-  let voiceConfig = sanitizeVoiceConfig(opts.voice);
+  function resolveRuntimeVoiceConfig(input?: RoverVoiceConfig): RoverVoiceConfig {
+    const sanitized = sanitizeVoiceConfig(input);
+    return {
+      enabled: sanitized?.enabled ?? true,
+      ...(sanitized?.language ? { language: sanitized.language } : {}),
+      autoStopMs: sanitized?.autoStopMs ?? VOICE_AUTO_STOP_DEFAULT_MS,
+    };
+  }
+  let voiceConfig = resolveRuntimeVoiceConfig(opts.voice);
+  let voiceProviderKind: 'elevenlabs' | 'browser' = 'browser';
   let voiceState: 'idle' | 'listening' | 'error' = 'idle';
   let voiceErrorMessage = '';
   let voiceDraftBase = '';
@@ -942,11 +953,11 @@ export function mountWidget(opts: MountOptions): RoverUi {
     syncVoiceUi(); emitVoiceErrorTelemetry(error);
   }
 
-  const voiceProvider: VoiceTranscriber = createBrowserVoiceTranscriber({
+  const voiceHandlers: VoiceTranscriberHandlers = {
     onStart: () => {
       voiceState = 'listening'; voiceErrorMessage = ''; voiceLastError = null;
       scheduleVoiceGraceTimeout(); scheduleVoiceSessionTimeout();
-      if (voiceStartTelemetryPending) { emitVoiceTelemetry('voice_started', buildVoiceTelemetryContext({ provider: 'browser' })); voiceStartTelemetryPending = false; }
+      if (voiceStartTelemetryPending) { emitVoiceTelemetry('voice_started', buildVoiceTelemetryContext({ provider: voiceProviderKind })); voiceStartTelemetryPending = false; }
       syncVoiceUi();
     },
     onSpeechStart: () => {
@@ -994,7 +1005,45 @@ export function mountWidget(opts: MountOptions): RoverUi {
       if (shouldSubmit) submitComposerDraft();
     },
     onError: handleVoiceError,
-  });
+  };
+
+  function createVoiceProviderForConfig(): VoiceTranscriber {
+    const browserProvider = createBrowserVoiceTranscriber(voiceHandlers);
+    let elevenLabsProvider: VoiceTranscriber | null = null;
+    const elevenLabsHandlers: VoiceTranscriberHandlers = {
+      ...voiceHandlers,
+      onError: (error) => {
+        if (voiceProvider === elevenLabsProvider && !voiceHasSpeech && browserProvider.isSupported()) {
+          try { elevenLabsProvider?.dispose(); } catch { /* ignore */ }
+          voiceProvider = browserProvider;
+          voiceProviderKind = 'browser';
+          voiceErrorMessage = '';
+          voiceLastError = null;
+          syncVoiceUi();
+          voiceProvider.start({ language: resolveEffectiveVoiceLanguage() });
+          return;
+        }
+        voiceHandlers.onError?.(error);
+      },
+      onEnd: (meta) => {
+        if (voiceProvider !== elevenLabsProvider) return;
+        voiceHandlers.onEnd?.(meta);
+      },
+    };
+    elevenLabsProvider = createElevenLabsVoiceTranscriber({
+        apiBase: opts.apiBase,
+        getAuth: opts.getAudioAuth,
+        handlers: elevenLabsHandlers,
+      });
+    if (elevenLabsProvider.isSupported()) {
+      voiceProviderKind = 'elevenlabs';
+      return elevenLabsProvider;
+    }
+    voiceProviderKind = 'browser';
+    return browserProvider;
+  }
+
+  let voiceProvider: VoiceTranscriber = createVoiceProviderForConfig();
 
   // ── Composer Component ──
   const composerComp = createComposer({
@@ -1035,13 +1084,13 @@ export function mountWidget(opts: MountOptions): RoverUi {
     const message = text || (attachments.length > 0 ? 'Use the attached files as context for this task.' : '');
     if (!message) return;
     unlockNarration();
-    currentRunKind = undefined;
+    currentRunKind = deriveFreeformUiRunKind(message);
     setTaskSuggestion({ visible: false });
     latestTaskTitle = text || (attachments.length > 0 ? `Review ${attachments.length === 1 ? attachments[0].name : `${attachments.length} attachments`}` : latestTaskTitle);
     taskStartedAt = Date.now();
     opts.onSend(message, {
       ...(attachments.length > 0 ? { attachments } : {}),
-      ...buildNarrationSendMeta(),
+      ...buildNarrationSendMeta(currentRunKind),
     });
     composerComp.setText('');
     composerComp.clearAttachments();
@@ -1194,7 +1243,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     opts.onSend(rawText, {
       askUserAnswers: { answersByKey, rawText, keys },
       attachments: attachments.length ? attachments : undefined,
-      ...buildNarrationSendMeta(),
+      ...buildNarrationSendMeta(currentRunKind),
     });
     composerComp.clearAttachments();
   });
@@ -1728,13 +1777,19 @@ export function mountWidget(opts: MountOptions): RoverUi {
   }
 
   function setVoiceConfig(nextVoice?: RoverVoiceConfig): void {
-    const nextConfig = sanitizeVoiceConfig(nextVoice);
+    const nextConfig = resolveRuntimeVoiceConfig(nextVoice);
     const prevSig = JSON.stringify(voiceConfig || null);
     const nextSig = JSON.stringify(nextConfig || null);
     if (prevSig === nextSig) { syncVoiceUi(); return; }
+    const previousProvider = voiceProvider;
+    if (voiceState === 'listening') {
+      clearVoiceStopTimer(); clearVoiceGraceTimer(); clearVoiceSessionTimer(); clearVoiceRestartTimer();
+      try { previousProvider.stop(); } catch { /* ignore */ }
+    }
+    try { previousProvider.dispose(); } catch { /* ignore */ }
     voiceConfig = nextConfig; voiceErrorMessage = ''; pendingVoiceSubmit = false;
-    if (voiceState === 'listening') stopVoiceDictation('config');
-    else { resetVoiceDraftState(); resetVoiceSessionState(); voiceState = 'idle'; }
+    voiceProvider = createVoiceProviderForConfig();
+    resetVoiceDraftState(); resetVoiceSessionState(); voiceState = 'idle';
     syncVoiceUi();
   }
 

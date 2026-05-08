@@ -251,7 +251,6 @@ export type RoverExperienceConfig = {
       defaultMode?: 'guided' | 'always' | 'off';
       rate?: number;
       language?: string;
-      voicePreference?: 'auto' | 'system' | 'natural';
     };
   };
   motion?: {
@@ -336,6 +335,8 @@ export type MountOptions = {
   panel?: {
     resizable?: boolean;
   };
+  apiBase?: string;
+  getAudioAuth?: () => Promise<{ sessionId?: string; sessionToken?: string }>;
   siteId?: string;
   experience?: RoverExperienceConfig;
   voice?: RoverVoiceConfig;

@@ -17,7 +17,6 @@ export type RoverPreviewBootstrapExperienceConfig = {
       defaultMode?: 'guided' | 'always' | 'off';
       rate?: number;
       language?: string;
-      voicePreference?: 'auto' | 'system' | 'natural';
     };
   };
   motion?: {
@@ -151,13 +150,6 @@ function normalizeExperienceConfig(value: RoverPreviewBootstrapExperienceConfig 
       }
       const language = toStringValue(narrationInput.language).replace(/[^a-zA-Z0-9-]/g, '').slice(0, 24);
       if (language) narration.language = language;
-      if (
-        narrationInput.voicePreference === 'auto' ||
-        narrationInput.voicePreference === 'system' ||
-        narrationInput.voicePreference === 'natural'
-      ) {
-        narration.voicePreference = narrationInput.voicePreference;
-      }
       if (Object.keys(narration).length) experience.audio = { narration };
     }
   }
@@ -319,7 +311,6 @@ export function createRoverScriptTagSnippet(config: RoverPreviewBootstrapConfig)
   if (narration?.defaultMode) attrs.push(`data-narration-default-mode="${escapeHtmlAttr(narration.defaultMode)}"`);
   if (typeof narration?.rate === 'number') attrs.push(`data-narration-rate="${escapeHtmlAttr(String(narration.rate))}"`);
   if (narration?.language) attrs.push(`data-narration-language="${escapeHtmlAttr(narration.language)}"`);
-  if (narration?.voicePreference) attrs.push(`data-narration-voice-preference="${escapeHtmlAttr(narration.voicePreference)}"`);
   if (typeof normalized.ui?.experience?.motion?.actionSpotlight === 'boolean') {
     attrs.push(`data-action-spotlight="${escapeHtmlAttr(String(normalized.ui.experience.motion.actionSpotlight))}"`);
   }
@@ -402,7 +393,6 @@ export function readRoverScriptDataAttributes(
   const narrationDefaultMode = toStringValue(scriptEl.getAttribute('data-narration-default-mode'));
   const narrationRate = Number(toStringValue(scriptEl.getAttribute('data-narration-rate')));
   const narrationLanguage = toStringValue(scriptEl.getAttribute('data-narration-language'));
-  const narrationVoicePreference = toStringValue(scriptEl.getAttribute('data-narration-voice-preference'));
   const experienceMode = toStringValue(scriptEl.getAttribute('data-experience-mode'));
   const actionSpotlight = parseBooleanAttr(scriptEl.getAttribute('data-action-spotlight'));
   const actionSpotlightColor = normalizeHexColor(scriptEl.getAttribute('data-action-spotlight-color'));
@@ -414,7 +404,7 @@ export function readRoverScriptDataAttributes(
     ...(typeof voiceAutoStopMs === 'number' ? { autoStopMs: voiceAutoStopMs } : {}),
   });
   const experience = normalizeExperienceConfig({
-    ...(typeof narrationEnabled === 'boolean' || narrationDefaultMode || Number.isFinite(narrationRate) || narrationLanguage || narrationVoicePreference
+    ...(typeof narrationEnabled === 'boolean' || narrationDefaultMode || Number.isFinite(narrationRate) || narrationLanguage
       ? {
         audio: {
           narration: {
@@ -424,9 +414,6 @@ export function readRoverScriptDataAttributes(
               : {}),
             ...(Number.isFinite(narrationRate) ? { rate: narrationRate } : {}),
             ...(narrationLanguage ? { language: narrationLanguage } : {}),
-            ...(narrationVoicePreference === 'auto' || narrationVoicePreference === 'system' || narrationVoicePreference === 'natural'
-              ? { voicePreference: narrationVoicePreference }
-              : {}),
           },
         },
       }

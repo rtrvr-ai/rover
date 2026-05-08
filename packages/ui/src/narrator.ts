@@ -22,12 +22,16 @@ export type RoverSpeechVoiceOption = {
 };
 
 export type RoverNarratorOptions = {
+  provider?: 'browser' | 'elevenlabs';
   lang?: string;
   rate?: number;
   pitch?: number;
   voiceURI?: string;
   voicePreference?: 'auto' | 'system' | 'natural';
   voiceMatcher?: (voice: SpeechSynthesisVoice) => number;
+  apiBase?: string;
+  getAuth?: () => Promise<{ sessionId?: string; sessionToken?: string }>;
+  onProviderFailure?: (text?: string, options?: RoverNarratorSpeakOptions) => void;
 };
 
 const MAX_NARRATION_CHARS = 220;
@@ -46,6 +50,23 @@ function normalizeNarrationText(input: string): string {
     .trim()
     .slice(0, MAX_NARRATION_CHARS)
     .trim();
+}
+
+function resolveNarrationApiBase(apiBase?: string): string {
+  const raw = String(apiBase || '').trim();
+  if (!raw) return 'https://agent.rtrvr.ai';
+  if (/^https?:\/\//i.test(raw)) {
+    return raw.replace(/\/+$/, '');
+  }
+  try {
+    const parsed = new URL(raw, window.location.href);
+    parsed.pathname = parsed.pathname.replace(/\/+$/, '');
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return 'https://agent.rtrvr.ai';
+  }
 }
 
 function clampRate(value: unknown): number {
@@ -387,6 +408,316 @@ export function createWebSpeechNarrator(opts: RoverNarratorOptions = {}): RoverN
       try { synth?.removeEventListener?.('voiceschanged', handleVoicesChanged); } catch { /* ignore */ }
       if (typeof document !== 'undefined') {
         document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
+    },
+  };
+}
+
+export function createElevenLabsNarrator(opts: RoverNarratorOptions = {}): RoverNarrator {
+  const supported = typeof fetch === 'function'
+    && typeof Audio !== 'undefined'
+    && typeof URL !== 'undefined'
+    && typeof opts.getAuth === 'function';
+  let enabled = true;
+  let unlocked = false;
+  let disposed = false;
+  let activeAudio: HTMLAudioElement | null = null;
+  let activeObjectUrl: string | null = null;
+  let activeAbort: AbortController | null = null;
+  let playing = false;
+  let generation = 0;
+  let queue: Array<{
+    text: string;
+    key?: string;
+    priority: 'low' | 'normal' | 'high';
+    estimatedMs: number;
+  }> = [];
+
+  function notifyProviderFailure(item?: typeof queue[number]): void {
+    try {
+      opts.onProviderFailure?.(item?.text, item
+        ? { mode: 'append', key: item.key, priority: item.priority }
+        : undefined);
+    } catch {
+      // Narration fallback is best-effort.
+    }
+  }
+
+  function cleanupActive(): void {
+    if (activeAbort) {
+      try { activeAbort.abort(); } catch { /* ignore */ }
+      activeAbort = null;
+    }
+    if (activeAudio) {
+      try { activeAudio.pause(); } catch { /* ignore */ }
+      activeAudio.src = '';
+      activeAudio = null;
+    }
+    if (activeObjectUrl) {
+      try { URL.revokeObjectURL(activeObjectUrl); } catch { /* ignore */ }
+      activeObjectUrl = null;
+    }
+    playing = false;
+  }
+
+  function cancelSpeech(): void {
+    queue = [];
+    generation += 1;
+    cleanupActive();
+  }
+
+  function enforceQueueBudget(): void {
+    let totalMs = queue.reduce((sum, item) => sum + item.estimatedMs, 0);
+    while (queue.length > MAX_PENDING_UTTERANCES || totalMs > MAX_PENDING_SPEECH_MS) {
+      const dropIndex = queue.findIndex(item => item.priority !== 'high');
+      queue.splice(dropIndex >= 0 ? dropIndex : 0, 1);
+      totalMs = queue.reduce((sum, item) => sum + item.estimatedMs, 0);
+    }
+  }
+
+  async function playNext(currentGeneration: number): Promise<void> {
+    if (!supported || disposed || !enabled || !unlocked || playing) return;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    const item = queue.shift();
+    if (!item) return;
+    playing = true;
+    const abort = new AbortController();
+    activeAbort = abort;
+    try {
+      const auth = await opts.getAuth?.();
+      const sessionToken = String(auth?.sessionToken || '').trim();
+      if (!sessionToken || currentGeneration !== generation || disposed) {
+        cleanupActive();
+        return;
+      }
+      const response = await fetch(`${resolveNarrationApiBase(opts.apiBase)}/v2/rover/audio/narration/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${sessionToken}`,
+        },
+        signal: abort.signal,
+        body: JSON.stringify({
+          sessionToken,
+          sessionId: auth?.sessionId,
+          text: item.text,
+        }),
+      });
+      if (!response.ok || currentGeneration !== generation || disposed) {
+        notifyProviderFailure(item);
+        cleanupActive();
+        void playNext(generation);
+        return;
+      }
+      const streamed = await playStreamingResponse(response, currentGeneration);
+      if (streamed) return;
+      const blob = await response.blob();
+      if (currentGeneration !== generation || disposed) {
+        cleanupActive();
+        return;
+      }
+      const audio = new Audio();
+      activeAudio = audio;
+      activeObjectUrl = URL.createObjectURL(blob);
+      audio.src = activeObjectUrl;
+      audio.onended = () => {
+        cleanupActive();
+        void playNext(generation);
+      };
+      audio.onerror = () => {
+        cleanupActive();
+        void playNext(generation);
+      };
+      await audio.play().catch(() => {
+        notifyProviderFailure(item);
+        cleanupActive();
+        void playNext(generation);
+      });
+    } catch {
+      if (!abort.signal.aborted && currentGeneration === generation && !disposed) {
+        notifyProviderFailure(item);
+      }
+      cleanupActive();
+      void playNext(generation);
+    }
+  }
+
+  async function playStreamingResponse(response: Response, currentGeneration: number): Promise<boolean> {
+    const body = response.body;
+    const MediaSourceCtor = typeof MediaSource !== 'undefined' ? MediaSource : undefined;
+    if (!body || !MediaSourceCtor || !MediaSourceCtor.isTypeSupported?.('audio/mpeg')) return false;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    try {
+      const audio = new Audio();
+      const mediaSource = new MediaSourceCtor();
+      activeAudio = audio;
+      activeObjectUrl = URL.createObjectURL(mediaSource);
+      audio.src = activeObjectUrl;
+      audio.onended = () => {
+        cleanupActive();
+        void playNext(generation);
+      };
+      audio.onerror = () => {
+        cleanupActive();
+        void playNext(generation);
+      };
+      await new Promise<void>((resolve, reject) => {
+        const cleanup = () => {
+          try { mediaSource.removeEventListener('sourceopen', onOpen); } catch { /* ignore */ }
+          try { mediaSource.removeEventListener('error', onError); } catch { /* ignore */ }
+        };
+        const onOpen = () => { cleanup(); resolve(); };
+        const onError = () => { cleanup(); reject(new Error('MediaSource failed.')); };
+        if (mediaSource.readyState === 'open') {
+          resolve();
+          return;
+        }
+        mediaSource.addEventListener('sourceopen', onOpen, { once: true });
+        mediaSource.addEventListener('error', onError, { once: true });
+      });
+      if (currentGeneration !== generation || disposed) return true;
+      const sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+      const appendChunk = (chunk: Uint8Array) => new Promise<void>((resolve, reject) => {
+        const cleanup = () => {
+          try { sourceBuffer.removeEventListener('updateend', onDone); } catch { /* ignore */ }
+          try { sourceBuffer.removeEventListener('error', onError); } catch { /* ignore */ }
+        };
+        const onDone = () => { cleanup(); resolve(); };
+        const onError = () => { cleanup(); reject(new Error('Audio stream append failed.')); };
+        sourceBuffer.addEventListener('updateend', onDone, { once: true });
+        sourceBuffer.addEventListener('error', onError, { once: true });
+        const buffer = new ArrayBuffer(chunk.byteLength);
+        new Uint8Array(buffer).set(chunk);
+        sourceBuffer.appendBuffer(buffer);
+      });
+      reader = body.getReader();
+      let playStarted = false;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value?.byteLength) continue;
+        if (currentGeneration !== generation || disposed) return true;
+        await appendChunk(value);
+        if (!playStarted) {
+          playStarted = true;
+          await audio.play();
+        }
+      }
+      if (mediaSource.readyState === 'open') {
+        try { mediaSource.endOfStream(); } catch { /* ignore */ }
+      }
+      if (!playStarted) return false;
+      return true;
+    } catch {
+      try { await reader?.cancel(); } catch { /* ignore */ }
+      if (activeAudio) {
+        try { activeAudio.pause(); } catch { /* ignore */ }
+        activeAudio.src = '';
+        activeAudio = null;
+      }
+      if (activeObjectUrl) {
+        try { URL.revokeObjectURL(activeObjectUrl); } catch { /* ignore */ }
+        activeObjectUrl = null;
+      }
+      playing = false;
+      return false;
+    }
+  }
+
+  function enqueueSpeech(text: string, options: RoverNarratorSpeakOptions = {}): void {
+    if (!supported || disposed || !enabled) return;
+    const normalized = normalizeNarrationText(text);
+    if (!normalized) return;
+    if ((options.mode || 'replace') === 'replace') cancelSpeech();
+    const key = String(options.key || '').trim().slice(0, 160) || undefined;
+    if (key && queue.some(item => item.key === key)) return;
+    queue.push({
+      text: normalized,
+      key,
+      priority: options.priority || 'normal',
+      estimatedMs: estimateSpeechMs(normalized),
+    });
+    enforceQueueBudget();
+    void playNext(generation);
+  }
+
+  return {
+    isSupported: () => supported && !disposed,
+    unlock() {
+      if (!supported || disposed) return;
+      unlocked = true;
+      void playNext(generation);
+    },
+    speak(text: string, options?: RoverNarratorSpeakOptions) {
+      enqueueSpeech(text, options);
+    },
+    cancel() {
+      cancelSpeech();
+    },
+    setEnabled(nextEnabled: boolean) {
+      enabled = nextEnabled;
+      if (!enabled) cancelSpeech();
+    },
+    dispose() {
+      disposed = true;
+      cancelSpeech();
+    },
+  };
+}
+
+export function createRoverNarrator(opts: RoverNarratorOptions = {}): RoverNarrator {
+  const browserNarrator = createWebSpeechNarrator(opts);
+  if (opts.provider === 'browser') return browserNarrator;
+
+  let enabled = true;
+  let unlocked = false;
+  let disposed = false;
+  let active: RoverNarrator = browserNarrator;
+  let elevenLabsNarrator: RoverNarrator | null = null;
+
+  function switchToBrowserFallback(text?: string, options?: RoverNarratorSpeakOptions): void {
+    if (disposed || active === browserNarrator) return;
+    try { elevenLabsNarrator?.dispose(); } catch { /* ignore */ }
+    active = browserNarrator;
+    active.setEnabled(enabled);
+    if (unlocked) active.unlock();
+    if (text) active.speak(text, options);
+  }
+
+  elevenLabsNarrator = createElevenLabsNarrator({
+    ...opts,
+    provider: 'elevenlabs',
+    onProviderFailure: switchToBrowserFallback,
+  });
+  if (elevenLabsNarrator.isSupported()) {
+    active = elevenLabsNarrator;
+  }
+
+  return {
+    isSupported: () => !disposed && (active.isSupported() || browserNarrator.isSupported()),
+    unlock() {
+      if (disposed) return;
+      unlocked = true;
+      active.unlock();
+    },
+    speak(text: string, options?: RoverNarratorSpeakOptions) {
+      if (disposed) return;
+      active.speak(text, options);
+    },
+    cancel() {
+      active.cancel();
+      if (active !== browserNarrator) browserNarrator.cancel();
+    },
+    setEnabled(nextEnabled: boolean) {
+      enabled = nextEnabled;
+      active.setEnabled(nextEnabled);
+      if (active !== browserNarrator) browserNarrator.setEnabled(nextEnabled);
+    },
+    dispose() {
+      disposed = true;
+      try { active.dispose(); } catch { /* ignore */ }
+      if (active !== browserNarrator) {
+        try { browserNarrator.dispose(); } catch { /* ignore */ }
       }
     },
   };

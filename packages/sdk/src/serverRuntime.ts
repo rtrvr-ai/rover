@@ -44,7 +44,6 @@ export type RoverServerExperienceConfig = {
       defaultMode?: 'guided' | 'always' | 'off';
       rate?: number;
       language?: string;
-      voicePreference?: 'auto' | 'system' | 'natural';
     };
   };
   motion?: {
