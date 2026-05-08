@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   deriveActionSpotlightTokens,
+  deriveFreeformUiRunKind,
   normalizeHexColor,
   resolveMountExperienceConfig,
   resolveActionSpotlightDecision,
@@ -34,7 +35,6 @@ test('resolved mount experience defaults action spotlight on with default color'
     defaultMode: 'guided',
     rate: 1,
     language: 'en-US',
-    voicePreference: 'auto',
   });
   assert.equal(resolved.motion?.actionSpotlight, true);
   assert.equal(resolved.motion?.actionSpotlightColor, '#FF4C00');
@@ -56,10 +56,14 @@ test('resolved mount experience defaults action spotlight on with default color'
       audio: {
         narration: {
           enabled: false,
+          provider: 'elevenlabs',
           defaultMode: 'always',
           rate: 1.2,
           language: 'en-GB',
           voicePreference: 'natural',
+          voiceProfile: 'custom',
+          voiceId: 'Voice_123',
+          modelId: 'eleven_flash_v2_5',
         },
       },
     },
@@ -70,7 +74,6 @@ test('resolved mount experience defaults action spotlight on with default color'
     defaultMode: 'always',
     rate: 1.15,
     language: 'en-GB',
-    voicePreference: 'natural',
   });
 
   const themeFallback = resolveMountExperienceConfig({
@@ -116,7 +119,7 @@ test('narration default active follows defaultMode and run kind', () => {
   }, 'Rover', false);
   assert.equal(resolveNarrationDefaultActiveForRun(guided, 'guide'), true);
   assert.equal(resolveNarrationDefaultActiveForRun(guided, 'task'), false);
-  assert.equal(resolveNarrationDefaultActiveForRun(guided), true);
+  assert.equal(resolveNarrationDefaultActiveForRun(guided), false);
 
   const always = resolveMountExperienceConfig({
     experience: { audio: { narration: { defaultMode: 'always' } } },
@@ -257,13 +260,14 @@ test('spotlight: visitor default + no planner override falls through to site con
     }),
     false,
   );
-  // Free-text prompt (no runKind) on a guided site → fires (fall-through behavior).
+  // Neutral free-text is classified as task UI before this decision point, and
+  // missing runKind stays quiet on guide-only defaults.
   assert.equal(
     resolveActionSpotlightDecision({
       visitorSource: 'default', visitorEnabled: true,
       stepOverride: undefined, currentRunKind: undefined, allowedRunKinds: ['guide'],
     }),
-    true,
+    false,
   );
   // Site has actionSpotlight=false (minimal preset) → never fires absent planner override.
   assert.equal(
@@ -273,4 +277,12 @@ test('spotlight: visitor default + no planner override falls through to site con
     }),
     false,
   );
+});
+
+test('freeform UI mode heuristics keep task-like and neutral prompts quiet', () => {
+  assert.equal(deriveFreeformUiRunKind('show me where pricing lives'), 'guide');
+  assert.equal(deriveFreeformUiRunKind('walk me through checkout'), 'guide');
+  assert.equal(deriveFreeformUiRunKind('help me find and book an appointment'), 'task');
+  assert.equal(deriveFreeformUiRunKind('extract the pricing table'), 'task');
+  assert.equal(deriveFreeformUiRunKind('what does this page say?'), 'task');
 });

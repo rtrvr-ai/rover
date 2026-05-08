@@ -135,6 +135,13 @@ export type RoverOwnerInstallBundleInput = {
   llmsTxt?: string;
 };
 
+export type RoverProductionEmbedScriptTagInput = {
+  scriptUrl?: string;
+  siteId: string;
+  publicKey?: string;
+  siteKeyId?: string;
+};
+
 export type RoverOwnerInstallBundleMetadata = {
   discoveryEnabled: boolean;
   llmsPublished: boolean;
@@ -184,19 +191,6 @@ function escapeScriptJson(value: string): string {
     .replace(/</g, '\\u003c')
     .replace(/>/g, '\\u003e')
     .replace(/&/g, '\\u0026');
-}
-
-function replaceInlineDiscoveryScript(
-  html: string,
-  marker: 'agent-card' | 'rover-site',
-  script?: string,
-): string {
-  if (!script) return html;
-  const pattern = new RegExp(`<script[^>]+data-rover-agent-discovery="${marker}"[^>]*>[\\s\\S]*?<\\/script>`);
-  if (pattern.test(html)) {
-    return html.replace(pattern, script);
-  }
-  return [html, script].filter(Boolean).join('\n');
 }
 
 function decorateBundleWithExperience(
@@ -273,11 +267,6 @@ function decorateBundleWithExperience(
     agentCardJson,
     roverSite,
     roverSiteJson,
-    bodyInstallHtml: replaceInlineDiscoveryScript(
-      replaceInlineDiscoveryScript(bundle.bodyInstallHtml, 'agent-card', inlineAgentCardScript),
-      'rover-site',
-      inlineRoverSiteScript,
-    ),
     metadata: {
       ...bundle.metadata,
       roverSiteJson,
@@ -287,31 +276,12 @@ function decorateBundleWithExperience(
   };
 }
 
-function indentJson(value: unknown): string {
-  return JSON.stringify(value, null, 2)
-    .split('\n')
-    .map(line => `  ${line}`)
-    .join('\n');
-}
-
 function isObject(value: unknown): value is JsonRecord {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 function hasObjectEntries(value: unknown): value is JsonRecord {
   return isObject(value) && Object.keys(value).length > 0;
-}
-
-function normalizeAttachPollIntervalMs(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 10) return 50;
-  return Math.round(parsed);
-}
-
-function normalizeAttachMaxAttempts(value: unknown): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 1) return 300;
-  return Math.round(parsed);
 }
 
 function discoveryEnabled(config?: RoverAgentDiscoveryConfig | null): config is RoverAgentDiscoveryConfig {
@@ -397,12 +367,6 @@ function buildDefaultLlmsTxt(card: RoverAgentCard, options: { agentCardUrl: stri
   return lines.join('\n');
 }
 
-function buildQueueStubLines(): string[] {
-  return [
-    '(function(){ var r = window.rover = window.rover || function(){ (r.q = r.q || []).push(arguments); }; r.l = +new Date(); })();',
-  ];
-}
-
 function materializeCloudSandboxBootConfig(bootConfig: RoverOwnerInstallBootConfig): RoverOwnerInstallBootConfig {
   if (bootConfig.cloudSandboxEnabled !== true) {
     return bootConfig;
@@ -420,42 +384,18 @@ function materializeCloudSandboxBootConfig(bootConfig: RoverOwnerInstallBootConf
   };
 }
 
-function buildBootScript(bootConfig: RoverOwnerInstallBootConfig): string {
-  const normalizedBootConfig = materializeCloudSandboxBootConfig(bootConfig);
-  const lines = [
-    '<script>',
-    ...buildQueueStubLines().map(line => `  ${line}`),
-    `  rover('boot', ${indentJson(normalizedBootConfig)});`,
-    '</script>',
+export function createRoverProductionEmbedScriptTag(input: RoverProductionEmbedScriptTagInput): string {
+  const scriptUrl = text(input.scriptUrl) || DEFAULT_EMBED_SCRIPT_URL;
+  const attrs = [
+    `src="${escapeHtmlAttr(scriptUrl)}"`,
+    'async',
+    `data-site-id="${escapeHtmlAttr(input.siteId)}"`,
   ];
-  return lines.join('\n');
-}
-
-function buildRoverBookAttachScript(config: JsonRecord, options?: { pollIntervalMs?: number; maxAttempts?: number }): string {
-  const pollIntervalMs = normalizeAttachPollIntervalMs(options?.pollIntervalMs);
-  const maxAttempts = normalizeAttachMaxAttempts(options?.maxAttempts);
-  return [
-    '<script>',
-    '  (function(){',
-    `    var roverBookConfig = ${indentJson(config)};`,
-    '    function attachRoverBook(){',
-    '      if (window.__ROVERBOOK_INSTANCE__) return true;',
-    '      var roverApi = window.rover;',
-    '      var roverBook = window.RoverBook;',
-    "      if (!roverApi || typeof roverApi.on !== 'function' || typeof roverApi.requestSigned !== 'function') return false;",
-    "      if (!roverBook || typeof roverBook.enableRoverBook !== 'function') return false;",
-    '      window.__ROVERBOOK_INSTANCE__ = roverBook.enableRoverBook(roverApi, roverBookConfig);',
-    '      return true;',
-    '    }',
-    '    if (attachRoverBook()) return;',
-    '    var attempts = 0;',
-    '    var timer = setInterval(function(){',
-    '      attempts += 1;',
-    `      if (attachRoverBook() || attempts >= ${maxAttempts}) clearInterval(timer);`,
-    `    }, ${pollIntervalMs});`,
-    '  })();',
-    '</script>',
-  ].join('\n');
+  const publicKey = text(input.publicKey);
+  if (publicKey) attrs.push(`data-public-key="${escapeHtmlAttr(publicKey)}"`);
+  const siteKeyId = text(input.siteKeyId);
+  if (siteKeyId) attrs.push(`data-site-key-id="${escapeHtmlAttr(siteKeyId)}"`);
+  return `<script\n  ${attrs.join('\n  ')}></script>`;
 }
 
 export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInput): RoverOwnerInstallBundle {
@@ -495,37 +435,19 @@ export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInpu
     ? `<link rel="service-doc" href="${escapeHtmlAttr(publishedLlmsUrl)}" type="text/markdown" />`
     : undefined;
 
-  const bodyLines: string[] = [];
-  if (markerJson) {
-    bodyLines.push(`<script type="application/agent+json" data-rover-agent-discovery="marker">${markerJson}</script>`);
-  }
-  if (escapedRoverSiteJson) {
-    bodyLines.push(`<script type="application/rover-site+json" data-rover-agent-discovery="rover-site">${escapedRoverSiteJson}</script>`);
-  }
-  if (escapedPageManifestJson) {
-    bodyLines.push(`<script type="application/rover-page+json" data-rover-agent-discovery="page">${escapedPageManifestJson}</script>`);
-  }
-  if (escapedAgentCardJson) {
-    bodyLines.push(`<script type="application/agent-card+json" data-rover-agent-discovery="agent-card">${escapedAgentCardJson}</script>`);
-  }
-  bodyLines.push(buildBootScript(bootConfig));
-  bodyLines.push(`<script src="${escapeHtmlAttr(embedScriptUrl)}" async></script>`);
-  if (roverBookEnabled && roverBookScriptUrl) {
-    bodyLines.push(`<script src="${escapeHtmlAttr(roverBookScriptUrl)}" async></script>`);
-    bodyLines.push(
-      buildRoverBookAttachScript(input.roverBook?.config || {}, {
-        pollIntervalMs: input.roverBook?.attachPollIntervalMs,
-        maxAttempts: input.roverBook?.attachMaxAttempts,
-      }),
-    );
-  }
+  const bodyInstallHtml = createRoverProductionEmbedScriptTag({
+    scriptUrl: embedScriptUrl,
+    siteId: bootConfig.siteId,
+    publicKey: bootConfig.publicKey,
+    siteKeyId: bootConfig.siteKeyId,
+  });
 
   const llmsTxt = publishLlmsTxt && agentCard
     ? (text(input.llmsTxt) ? input.llmsTxt : buildDefaultLlmsTxt(agentCard, { agentCardUrl: publishedAgentCardUrl || DEFAULT_AGENT_CARD_PATH }))
     : undefined;
 
   return decorateBundleWithExperience({
-    bodyInstallHtml: bodyLines.join('\n'),
+    bodyInstallHtml,
     headDiscoveryHtml: [serviceDescLinkTag, serviceDocLinkTag].filter(Boolean).join('\n'),
     agentCard,
     agentCardJson,
