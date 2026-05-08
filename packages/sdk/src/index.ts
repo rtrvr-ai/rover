@@ -2845,6 +2845,7 @@ async function ensureRoverServerRuntime(cfg: RoverInit): Promise<void> {
             limits: sanitizeSiteConfigLimits(session.siteConfig.limits),
             pageConfig: sanitizeResolvedPageCaptureConfig(session.siteConfig.pageConfig),
             agentDiscovery: sanitizeRoverAgentDiscoveryRuntimeConfig(session.siteConfig.agentDiscovery),
+            entitlements: sanitizeRuntimeEntitlements(session.siteConfig.entitlements),
             version: session.siteConfig.version != null ? String(session.siteConfig.version) : undefined,
           };
           backendSiteConfig = resolvedSiteConfig;
@@ -9178,7 +9179,12 @@ type RoverResolvedSiteConfig = {
   limits?: RoverShortcutLimits;
   pageConfig?: RoverPageCaptureConfig;
   agentDiscovery?: RoverAgentDiscoveryRuntimeConfig;
+  entitlements?: RoverRuntimeEntitlements;
   version?: string;
+};
+
+type RoverRuntimeEntitlements = {
+  naturalVoiceNarration?: boolean;
 };
 
 function normalizeShortcutLimit(
@@ -9203,6 +9209,15 @@ function sanitizeSiteConfigLimits(raw: any): RoverShortcutLimits | undefined {
     fallback: SHORTCUTS_MAX_RENDERED,
   });
   return { shortcutMaxStored, shortcutMaxRendered };
+}
+
+function sanitizeRuntimeEntitlements(raw: any): RoverRuntimeEntitlements | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const next: RoverRuntimeEntitlements = {};
+  if (typeof raw.naturalVoiceNarration === 'boolean') {
+    next.naturalVoiceNarration = raw.naturalVoiceNarration;
+  }
+  return Object.keys(next).length ? next : undefined;
 }
 
 function sanitizeResolvedPageCaptureConfig(raw: unknown): RoverPageCaptureConfig | undefined {
@@ -11353,9 +11368,14 @@ function resolveEffectivePlaceholders(): string[] {
   return (type && BUSINESS_PLACEHOLDER_MAP[type]) ?? DEFAULT_PLACEHOLDER_PHRASES;
 }
 
+function resolveEffectiveRuntimeEntitlements(): RoverRuntimeEntitlements | undefined {
+  return sanitizeRuntimeEntitlements(backendSiteConfig?.entitlements);
+}
+
 function applyEffectiveSiteConfig(cfg: RoverInit): void {
   const merged = resolveEffectiveShortcuts(cfg);
   ui?.setShortcuts(getRenderableShortcuts(merged));
+  ui?.setEntitlements?.(resolveEffectiveRuntimeEntitlements());
   ui?.setExperience?.(deriveExperienceConfig(cfg));
   ui?.setVoiceConfig(resolveEffectiveVoiceConfig(cfg));
   ui?.setPlaceholders?.(resolveEffectivePlaceholders());
@@ -11414,6 +11434,7 @@ async function fetchBackendSiteConfig(cfg: RoverInit): Promise<RoverResolvedSite
     limits: sanitizeSiteConfigLimits(payload.limits),
     pageConfig: sanitizeResolvedPageCaptureConfig(payload.pageConfig),
     agentDiscovery: sanitizeRoverAgentDiscoveryRuntimeConfig(payload.agentDiscovery),
+    entitlements: sanitizeRuntimeEntitlements(payload.entitlements),
     version: payload.version != null ? String(payload.version) : undefined,
   };
 }
@@ -12169,6 +12190,7 @@ function createRuntime(cfg: RoverInit): void {
     experience: deriveExperienceConfig(cfg),
     greeting: resolveEffectiveGreetingConfig(cfg),
     voice: resolveEffectiveVoiceConfig(cfg),
+    entitlements: resolveEffectiveRuntimeEntitlements(),
     thoughtStyle: cfg.ui?.thoughtStyle,
     visitorName: resolvedVisitor?.name,
     onVoiceTelemetry: (event: RoverVoiceTelemetryEventName, payload?: Record<string, unknown>) => {
@@ -13721,6 +13743,7 @@ export const __roverInternalsForTests = {
           limits: sanitizeSiteConfigLimits(siteConfig.limits),
           pageConfig: sanitizeResolvedPageCaptureConfig(siteConfig.pageConfig),
           agentDiscovery: sanitizeRoverAgentDiscoveryRuntimeConfig(siteConfig.agentDiscovery),
+          entitlements: sanitizeRuntimeEntitlements(siteConfig.entitlements),
           version: typeof siteConfig.version === 'string' ? siteConfig.version : undefined,
         }
       : null;

@@ -23,6 +23,7 @@ export type {
   RoverPresenceState,
   RoverUi,
   RoverExperienceConfig,
+  RoverRuntimeEntitlements,
   RoverVoiceConfig,
   MountOptions,
   RoverMood,
@@ -52,6 +53,7 @@ import type {
   RoverPresenceState,
   RoverVoiceConfig,
   RoverTimelineEvent,
+  RoverRuntimeEntitlements,
 } from './types.js';
 import type { VoiceRecognitionError, VoiceTranscriber, VoiceTranscriberHandlers } from './voice.js';
 
@@ -202,11 +204,17 @@ export function mountWidget(opts: MountOptions): RoverUi {
   const resolveEffectiveNarrationVoicePreference = (): 'auto' | 'system' | 'natural' => (
     narrationPreference.voicePreference || 'auto'
   );
+  let runtimeEntitlements: RoverRuntimeEntitlements = {
+    naturalVoiceNarration: opts.entitlements?.naturalVoiceNarration === true,
+  };
+  const resolveNarrationProvider = (): 'browser' | 'elevenlabs' => (
+    runtimeEntitlements.naturalVoiceNarration === true ? 'elevenlabs' : 'browser'
+  );
   const createNarratorForExperience = (
     config: RoverExperienceConfig,
     preference?: Pick<NarrationVisitorPreference, 'language' | 'voiceURI' | 'voicePreference'>,
   ) => createRoverNarrator({
-    provider: 'elevenlabs',
+    provider: resolveNarrationProvider(),
     apiBase: opts.apiBase,
     getAuth: opts.getAudioAuth,
     lang: preference?.language || config.audio?.narration?.language || getBrowserLanguage(),
@@ -240,6 +248,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let narrationUnlocked = false;
   let narrationConfigSignature = JSON.stringify({
     owner: experience.audio?.narration || {},
+    provider: resolveNarrationProvider(),
+    entitlements: runtimeEntitlements,
     visitor: {
       language: narrationPreference.language,
       voiceURI: narrationPreference.voiceURI,
@@ -281,6 +291,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
     });
     const nextSignature = JSON.stringify({
       owner: experience.audio?.narration || {},
+      provider: resolveNarrationProvider(),
+      entitlements: runtimeEntitlements,
       visitor: {
         language: narrationPreference.language,
         voiceURI: narrationPreference.voiceURI,
@@ -302,6 +314,13 @@ export function mountWidget(opts: MountOptions): RoverUi {
     headerComp?.setNarrationEnabled(isNarrationEnabled);
     voiceSettingsPanel?.update(buildVoiceSettingsState());
     opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source, resolveEffectiveNarrationLanguage());
+  }
+
+  function applyEntitlements(nextEntitlements?: RoverRuntimeEntitlements): void {
+    runtimeEntitlements = {
+      naturalVoiceNarration: nextEntitlements?.naturalVoiceNarration === true,
+    };
+    syncNarrationConfig();
   }
 
   function unlockNarration(): void {
@@ -2054,6 +2073,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     dismissGreeting,
     setVisitorName,
     setVoiceConfig,
+    setEntitlements: applyEntitlements,
     setPlaceholders: (phrases: string[]) => { composerComp.setPlaceholders(phrases); },
     setExperience: applyExperience,
     open,

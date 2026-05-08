@@ -267,13 +267,17 @@ test('elevenlabs narrator starts MediaSource playback without waiting for blob f
   }
 });
 
-test('rover narrator defaults to ElevenLabs and falls back to browser speech on TTS failure', async () => {
+test('rover narrator defaults to browser speech', async () => {
   const fake = installSpeechFakes();
   const previousFetch = globalThis.fetch;
   const previousAudio = globalThis.Audio;
   const previousUrl = globalThis.URL;
+  let fetchCalled = false;
   try {
-    globalThis.fetch = async () => ({ ok: false, blob: async () => new Blob() });
+    globalThis.fetch = async () => {
+      fetchCalled = true;
+      return { ok: false, blob: async () => new Blob() };
+    };
     globalThis.Audio = class { async play() {} pause() {} };
     globalThis.URL = { createObjectURL: () => 'blob:fail', revokeObjectURL: () => undefined };
     const narrator = createRoverNarrator({
@@ -284,6 +288,45 @@ test('rover narrator defaults to ElevenLabs and falls back to browser speech on 
     narrator.speak('Opening checkout.', { mode: 'append', key: 'step-1' });
     await new Promise(resolve => setTimeout(resolve, 0));
     assert.equal(fake.spoken.at(-1).text, 'Opening checkout.');
+    assert.equal(fetchCalled, false);
+    narrator.dispose();
+  } finally {
+    globalThis.fetch = previousFetch;
+    globalThis.Audio = previousAudio;
+    globalThis.URL = previousUrl;
+    fake.restore();
+  }
+});
+
+test('rover narrator uses ElevenLabs when allowed and permanently falls back on 403', async () => {
+  const fake = installSpeechFakes();
+  const previousFetch = globalThis.fetch;
+  const previousAudio = globalThis.Audio;
+  const previousUrl = globalThis.URL;
+  let fetchCount = 0;
+  try {
+    globalThis.fetch = async () => {
+      fetchCount += 1;
+      return { ok: false, status: 403, blob: async () => new Blob() };
+    };
+    globalThis.Audio = class { async play() {} pause() {} };
+    globalThis.URL = { createObjectURL: () => 'blob:forbidden', revokeObjectURL: () => undefined };
+    const narrator = createRoverNarrator({
+      provider: 'elevenlabs',
+      apiBase: 'https://agent.test',
+      getAuth: async () => ({ sessionToken: 'rvrsess_123' }),
+    });
+    narrator.unlock();
+    narrator.speak('Opening checkout.', { mode: 'append', key: 'step-1' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(fetchCount, 1);
+    assert.equal(fake.spoken.at(-1).text, 'Opening checkout.');
+    narrator.speak('Typing the email field.', { mode: 'append', key: 'step-2' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(fetchCount, 1);
+    assert.equal(fake.spoken.at(-1).text, 'Opening checkout.');
+    fake.finishLast();
+    assert.equal(fake.spoken.at(-1).text, 'Typing the email field.');
     narrator.dispose();
   } finally {
     globalThis.fetch = previousFetch;

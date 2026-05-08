@@ -421,6 +421,7 @@ export function createElevenLabsNarrator(opts: RoverNarratorOptions = {}): Rover
   let enabled = true;
   let unlocked = false;
   let disposed = false;
+  let permanentlyDisabled = false;
   let activeAudio: HTMLAudioElement | null = null;
   let activeObjectUrl: string | null = null;
   let activeAbort: AbortController | null = null;
@@ -476,7 +477,7 @@ export function createElevenLabsNarrator(opts: RoverNarratorOptions = {}): Rover
   }
 
   async function playNext(currentGeneration: number): Promise<void> {
-    if (!supported || disposed || !enabled || !unlocked || playing) return;
+    if (!supported || permanentlyDisabled || disposed || !enabled || !unlocked || playing) return;
     if (typeof document !== 'undefined' && document.hidden) return;
     const item = queue.shift();
     if (!item) return;
@@ -503,6 +504,12 @@ export function createElevenLabsNarrator(opts: RoverNarratorOptions = {}): Rover
           text: item.text,
         }),
       });
+      if ((response.status === 401 || response.status === 403) && currentGeneration === generation && !disposed) {
+        permanentlyDisabled = true;
+        notifyProviderFailure(item);
+        cleanupActive();
+        return;
+      }
       if (!response.ok || currentGeneration !== generation || disposed) {
         notifyProviderFailure(item);
         cleanupActive();
@@ -625,7 +632,7 @@ export function createElevenLabsNarrator(opts: RoverNarratorOptions = {}): Rover
   }
 
   function enqueueSpeech(text: string, options: RoverNarratorSpeakOptions = {}): void {
-    if (!supported || disposed || !enabled) return;
+    if (!supported || permanentlyDisabled || disposed || !enabled) return;
     const normalized = normalizeNarrationText(text);
     if (!normalized) return;
     if ((options.mode || 'replace') === 'replace') cancelSpeech();
@@ -642,9 +649,9 @@ export function createElevenLabsNarrator(opts: RoverNarratorOptions = {}): Rover
   }
 
   return {
-    isSupported: () => supported && !disposed,
+    isSupported: () => supported && !permanentlyDisabled && !disposed,
     unlock() {
-      if (!supported || disposed) return;
+      if (!supported || permanentlyDisabled || disposed) return;
       unlocked = true;
       void playNext(generation);
     },
@@ -667,7 +674,7 @@ export function createElevenLabsNarrator(opts: RoverNarratorOptions = {}): Rover
 
 export function createRoverNarrator(opts: RoverNarratorOptions = {}): RoverNarrator {
   const browserNarrator = createWebSpeechNarrator(opts);
-  if (opts.provider === 'browser') return browserNarrator;
+  if (opts.provider !== 'elevenlabs') return browserNarrator;
 
   let enabled = true;
   let unlocked = false;

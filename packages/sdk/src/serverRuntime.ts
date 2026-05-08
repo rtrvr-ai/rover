@@ -156,6 +156,9 @@ export type RoverServerSiteConfig = {
   pageConfig?: RoverPageCaptureConfig | null;
   agentDiscovery?: RoverServerAgentDiscoveryConfig | null;
   businessType?: RoverBusinessType;
+  entitlements?: {
+    naturalVoiceNarration?: boolean;
+  };
   version?: string | number;
 };
 

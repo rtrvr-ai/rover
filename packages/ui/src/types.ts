@@ -182,6 +182,7 @@ export type RoverUi = {
   dismissGreeting: () => void;
   setVisitorName: (name: string) => void;
   setVoiceConfig: (voice?: RoverVoiceConfig) => void;
+  setEntitlements?: (entitlements?: RoverRuntimeEntitlements) => void;
   setPlaceholders?: (phrases: string[]) => void;
   setExperience: (experience?: RoverExperienceConfig) => void;
   open: () => void;
@@ -273,6 +274,10 @@ export type RoverExperienceConfig = {
   };
 };
 
+export type RoverRuntimeEntitlements = {
+  naturalVoiceNarration?: boolean;
+};
+
 export type MountOptions = {
   resolveElement?: (elementId: number) => Element | null;
   getLocalLogicalTabId?: () => number | undefined;
@@ -340,6 +345,7 @@ export type MountOptions = {
   siteId?: string;
   experience?: RoverExperienceConfig;
   voice?: RoverVoiceConfig;
+  entitlements?: RoverRuntimeEntitlements;
   visitorName?: string;
   // Multi-conversation callbacks
   onSwitchConversation?: (conversationId: string) => void;
