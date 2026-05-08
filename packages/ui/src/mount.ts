@@ -23,6 +23,7 @@ export type {
   RoverPresenceState,
   RoverUi,
   RoverExperienceConfig,
+  RoverRuntimeEntitlements,
   RoverVoiceConfig,
   MountOptions,
   RoverMood,
@@ -52,6 +53,7 @@ import type {
   RoverPresenceState,
   RoverVoiceConfig,
   RoverTimelineEvent,
+  RoverRuntimeEntitlements,
 } from './types.js';
 import type { VoiceRecognitionError, VoiceTranscriber, VoiceTranscriberHandlers } from './voice.js';
 
@@ -202,11 +204,17 @@ export function mountWidget(opts: MountOptions): RoverUi {
   const resolveEffectiveNarrationVoicePreference = (): 'auto' | 'system' | 'natural' => (
     narrationPreference.voicePreference || 'auto'
   );
+  let runtimeEntitlements: RoverRuntimeEntitlements = {
+    naturalVoiceNarration: opts.entitlements?.naturalVoiceNarration === true,
+  };
+  const resolveNarrationProvider = (): 'browser' | 'elevenlabs' => (
+    runtimeEntitlements.naturalVoiceNarration === true ? 'elevenlabs' : 'browser'
+  );
   const createNarratorForExperience = (
     config: RoverExperienceConfig,
     preference?: Pick<NarrationVisitorPreference, 'language' | 'voiceURI' | 'voicePreference'>,
   ) => createRoverNarrator({
-    provider: 'elevenlabs',
+    provider: resolveNarrationProvider(),
     apiBase: opts.apiBase,
     getAuth: opts.getAudioAuth,
     lang: preference?.language || config.audio?.narration?.language || getBrowserLanguage(),
@@ -240,6 +248,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let narrationUnlocked = false;
   let narrationConfigSignature = JSON.stringify({
     owner: experience.audio?.narration || {},
+    provider: resolveNarrationProvider(),
+    entitlements: runtimeEntitlements,
     visitor: {
       language: narrationPreference.language,
       voiceURI: narrationPreference.voiceURI,
@@ -281,6 +291,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
     });
     const nextSignature = JSON.stringify({
       owner: experience.audio?.narration || {},
+      provider: resolveNarrationProvider(),
+      entitlements: runtimeEntitlements,
       visitor: {
         language: narrationPreference.language,
         voiceURI: narrationPreference.voiceURI,
@@ -302,6 +314,13 @@ export function mountWidget(opts: MountOptions): RoverUi {
     headerComp?.setNarrationEnabled(isNarrationEnabled);
     voiceSettingsPanel?.update(buildVoiceSettingsState());
     opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source, resolveEffectiveNarrationLanguage());
+  }
+
+  function applyEntitlements(nextEntitlements?: RoverRuntimeEntitlements): void {
+    runtimeEntitlements = {
+      naturalVoiceNarration: nextEntitlements?.naturalVoiceNarration === true,
+    };
+    syncNarrationConfig();
   }
 
   function unlockNarration(): void {
@@ -1141,9 +1160,25 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   win.artifactStageToggle.addEventListener('click', () => { artifactExpanded = !artifactExpanded; renderArtifactStage(); });
 
+  type PanelOpenReason = 'manual' | 'progress' | 'result';
+
+  function shouldShowPanelBackdrop(): boolean {
+    const openState = win.panel.classList.contains('open') && !win.panel.classList.contains('closing');
+    return openState
+      && !isRunning
+      && (experience.shell?.dimBackground !== false || experience.shell?.blurBackground !== false);
+  }
+
+  function syncBackdropState(options?: { forceHidden?: boolean }): void {
+    if (options?.forceHidden) {
+      win.backdrop.classList.remove('visible');
+      return;
+    }
+    win.backdrop.classList.toggle('visible', shouldShowPanelBackdrop());
+  }
+
   function syncShellState(): void {
     const currentState = stateMachine.getState();
-    const openState = win.panel.classList.contains('open') && !win.panel.classList.contains('closing');
     if (currentState === 'bar') {
       wrapper.dataset.shell = 'bar';
     } else if (currentState === 'window') {
@@ -1151,8 +1186,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     } else {
       wrapper.dataset.shell = 'presence';
     }
-    const showBackdrop = openState && !isRunning && (experience.shell?.dimBackground !== false || experience.shell?.blurBackground !== false);
-    win.backdrop.classList.toggle('visible', showBackdrop);
+    syncBackdropState();
   }
 
   function syncProcessingIndicator(): void {
@@ -1280,7 +1314,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   liveStack.setOnExpand(() => {
     liveStack.hide();
     if (stateMachine.getState() === 'bar') {
-      maximize();
+      maximize('progress');
     }
     feedComp.setTraceExpanded(true, experience.stream?.maxVisibleLiveCards);
   });
@@ -1368,7 +1402,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     const usesMorph = experience.shell?.transitionStyle !== 'crossfade' && !prefersReducedMotion();
 
     if (usesMorph) {
-      win.backdrop.classList.remove('visible');
+      syncBackdropState({ forceHidden: true });
       win.panel.animate(
         [
           { opacity: 1, transform: 'translateY(0) scale(1)', filter: 'blur(0)' },
@@ -1390,7 +1424,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     } else {
       win.panel.classList.remove('open');
       win.panel.style.display = 'none';
-      win.backdrop.classList.remove('visible');
+      syncBackdropState({ forceHidden: true });
       syncShellState();
     }
 
@@ -1404,19 +1438,20 @@ export function mountWidget(opts: MountOptions): RoverUi {
     }
   }
 
-  function maximize(): void {
+  function maximize(reason: PanelOpenReason = isRunning ? 'progress' : 'manual'): void {
     if (stateMachine.getState() !== 'bar') return;
     win.applyLayout();
     win.panel.style.transition = '';   // clear any leftover collapse transition before showing
+    const isProgressOpen = reason === 'progress' || isRunning;
 
     const usesMorph = experience.shell?.transitionStyle !== 'crossfade' && !prefersReducedMotion();
     if (usesMorph) {
-      win.backdrop.classList.add('visible');
       win.panel.style.animation = 'none';
       win.panel.style.opacity = '0';        // ensure transparent on first paint
       win.panel.style.display = 'flex';     // set inline display BEFORE adding .open class so that on
       // first open (no prior inline display) the CSS panelOpen animation cannot race the WAAPI start
       win.panel.classList.add('open');
+      syncBackdropState();
       win.panel.animate(
         [
           { opacity: 0, transform: 'translateY(12px) scale(0.97)', filter: 'blur(3px)' },
@@ -1440,14 +1475,15 @@ export function mountWidget(opts: MountOptions): RoverUi {
     } else {
       win.panel.classList.add('open');
       win.panel.style.display = 'flex';
-      win.backdrop.classList.add('visible');
       syncShellState();
       if (!composerComp.textarea.disabled) composerComp.textarea.focus();
     }
 
     stateMachine.setState('window');
     inputBar.setExpanded(true);
+    if (isProgressOpen) feedComp.setTraceExpanded(true, experience.stream?.maxVisibleLiveCards);
     syncPulseState();
+    syncShellState();
     opts.onOpen?.();
   }
 
@@ -1463,7 +1499,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       win.panel.style.transform = '';
       win.panel.style.filter = '';
       win.panel.style.animation = '';
-      win.backdrop.classList.remove('visible');
+      syncBackdropState({ forceHidden: true });
       stateMachine.setState('bar');
       inputBar.setExpanded(false);
       syncPulseState();
@@ -1678,7 +1714,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
         win.panel.style.transform = '';
         win.panel.style.filter = '';
         win.panel.style.animation = '';
-        win.backdrop.classList.remove('visible');
+        syncBackdropState({ forceHidden: true });
         stateMachine.setState('bar');
         inputBar.setExpanded(false);
       }
@@ -1701,7 +1737,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
       // Open canvas with results if task completed and panel isn't already open
       if ((wasRunning || options?.openOnStop === true) && stateMachine.getState() !== 'window') {
-        maximize();
+        maximize('result');
       }
       // Scroll feed to bottom to show results
       setTimeout(() => feedComp.smartScrollToBottom(), 80);
@@ -2037,6 +2073,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     dismissGreeting,
     setVisitorName,
     setVoiceConfig,
+    setEntitlements: applyEntitlements,
     setPlaceholders: (phrases: string[]) => { composerComp.setPlaceholders(phrases); },
     setExperience: applyExperience,
     open,
