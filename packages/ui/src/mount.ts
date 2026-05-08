@@ -1695,7 +1695,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
         win.panel.style.transform = '';
         win.panel.style.filter = '';
         win.panel.style.animation = '';
-        syncBackdropState();
+        syncBackdropState({ forceHidden: true });
         stateMachine.setState('bar');
         inputBar.setExpanded(false);
       }
