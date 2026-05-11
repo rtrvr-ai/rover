@@ -11,7 +11,10 @@ export const ROVER_WEBMCP_DISCOVERY_GLOBAL = '__ROVER_WEBMCP_TOOL_DEFS__';
 export const ROVER_DISCOVERY_ACTION_SHEET_MAX_ACTIONS = 3;
 export const A2W_RUNS_PATH = '/v1/a2w/runs';
 export const A2W_WORKFLOWS_PATH = '/v1/a2w/workflows';
+export const A2W_FROM_URL_PATH = '/v1/a2w/from-url';
+export const A2W_GO_PATH = '/v1/a2w/go';
 const ROVER_DISCOVERY_SHORTCUT_PROMPT_MAX_CHARS = 2000;
+const A2W_GET_DEFAULT_WAIT_SECONDS = 25;
 
 type JsonSchema = Record<string, any>;
 
@@ -81,6 +84,8 @@ export type RoverPublicSkillDefinition = {
       preferExecution: RoverDiscoveryExecutionPreference;
     };
     deepLink?: string;
+    getRunUrl?: string;
+    deepLinkWithExecutor?: string;
     source?: 'shortcut' | 'client_tool' | 'webmcp' | 'additional';
   };
 };
@@ -136,7 +141,15 @@ export type RoverSiteProfile = {
   };
   auth: {
     runEndpoint: string;
+    a2wGetEndpoint?: string;
     workflowEndpoint: string;
+    fromUrlEndpoint?: string;
+    fromUrlTemplate?: string;
+    deepLinkParams?: {
+      prompt: string;
+      shortcut: string;
+      executor: string;
+    };
     acceptsHttpMessageSignatures: boolean;
     supportsUnsignedSelfReportedIdentity: boolean;
   };
@@ -182,7 +195,7 @@ export type RoverAgentCard = {
   };
   skills: RoverPublicSkillDefinition[];
   interfaces?: Array<{
-    type: 'run' | 'workflow' | 'site' | 'deep_link' | 'webmcp';
+    type: 'run' | 'run_get' | 'from_url' | 'workflow' | 'site' | 'deep_link' | 'webmcp';
     url: string;
     description?: string;
     available?: boolean;
@@ -192,10 +205,18 @@ export type RoverAgentCard = {
       siteId?: string;
       siteUrl: string;
       runEndpoint: string;
+      a2wGetEndpoint: string;
       workflowEndpoint: string;
+      fromUrlEndpoint: string;
+      fromUrlTemplate: string;
       serviceDescUrl: string;
       roverSiteUrl: string;
       llmsUrl?: string;
+      deepLinkParams: {
+        prompt: string;
+        shortcut: string;
+        executor: string;
+      };
       preferredExecution: RoverDiscoveryExecutionPreference;
       a2wRunsEnabled: boolean;
       cloudBrowserAllowed: boolean;
@@ -219,6 +240,9 @@ export type RoverAgentCard = {
         description?: string;
         prompt: string;
         routing?: 'auto' | 'act' | 'planner';
+        runKind?: 'guide' | 'task';
+        getRunUrl?: string;
+        deepLinkWithExecutor?: string;
       }>;
       webmcp: {
         available: boolean;
@@ -618,8 +642,57 @@ function buildRunEndpoint(apiBase?: string): string {
   return `${toBaseUrl(apiBase)}${A2W_RUNS_PATH}`;
 }
 
+function buildFromUrlEndpoint(apiBase?: string): string {
+  return `${toBaseUrl(apiBase)}${A2W_FROM_URL_PATH}`;
+}
+
+function buildGoEndpoint(apiBase?: string): string {
+  return `${toBaseUrl(apiBase)}${A2W_GO_PATH}`;
+}
+
 function buildWorkflowEndpoint(apiBase?: string): string {
   return `${toBaseUrl(apiBase)}${A2W_WORKFLOWS_PATH}`;
+}
+
+function encodeA2WGoDescriptor(input: { url: string; prompt?: string; shortcutId?: string }): string {
+  const payload = {
+    v: 1,
+    url: normalizeSiteUrl(input.url),
+    ...(text(input.shortcutId) ? { shortcutId: text(input.shortcutId) } : { prompt: text(input.prompt) }),
+  };
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  }
+  const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+  return encoded.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function buildA2WGetRunUrl(siteUrl: string, apiBase: string | undefined, input: { prompt?: string; shortcutId?: string }): string {
+  const url = new URL(buildRunEndpoint(apiBase));
+  url.searchParams.set('url', normalizeSiteUrl(siteUrl));
+  if (text(input.shortcutId)) url.searchParams.set('shortcutId', text(input.shortcutId));
+  else url.searchParams.set('prompt', text(input.prompt));
+  url.searchParams.set('execution', 'cloud');
+  url.searchParams.set('wait', String(A2W_GET_DEFAULT_WAIT_SECONDS));
+  url.searchParams.set('format', 'markdown');
+  return url.toString();
+}
+
+function buildA2WGoUrl(siteUrl: string, apiBase: string | undefined, input: { prompt?: string; shortcutId?: string }): string {
+  return `${buildGoEndpoint(apiBase)}/${encodeURIComponent(encodeA2WGoDescriptor({
+    url: siteUrl,
+    prompt: input.prompt,
+    shortcutId: input.shortcutId,
+  }))}`;
+}
+
+function buildFromUrlTemplate(apiBase?: string): string {
+  const url = new URL(buildFromUrlEndpoint(apiBase));
+  url.searchParams.set('url', '{current_url}');
+  url.searchParams.set('execution', 'cloud');
+  url.searchParams.set('wait', String(A2W_GET_DEFAULT_WAIT_SECONDS));
+  url.searchParams.set('format', 'markdown');
+  return url.toString().replace('%7Bcurrent_url%7D', '{current_url}');
 }
 
 function buildDeepLink(siteUrl: string, shortcutId: string): string {
@@ -630,6 +703,18 @@ function buildDeepLink(siteUrl: string, shortcutId: string): string {
   } catch {
     const sep = siteUrl.includes('?') ? '&' : '?';
     return `${siteUrl}${sep}rover_shortcut=${encodeURIComponent(shortcutId)}`;
+  }
+}
+
+function buildDeepLinkWithExecutor(siteUrl: string, apiBase: string | undefined, shortcutId: string): string {
+  try {
+    const url = new URL(siteUrl);
+    url.searchParams.set('rover_shortcut', shortcutId);
+    url.searchParams.set('rover_exec', buildA2WGoUrl(siteUrl, apiBase, { shortcutId }));
+    return url.toString();
+  } catch {
+    const sep = siteUrl.includes('?') ? '&' : '?';
+    return `${siteUrl}${sep}rover_shortcut=${encodeURIComponent(shortcutId)}&rover_exec=${encodeURIComponent(buildA2WGoUrl(siteUrl, apiBase, { shortcutId }))}`;
   }
 }
 
@@ -753,13 +838,15 @@ function buildToolDescription(
   return parts.join(' ').trim();
 }
 
-function normalizePublishedShortcut(shortcut: RoverShortcut): {
+function normalizePublishedShortcut(shortcut: RoverShortcut, config: RoverAgentDiscoveryConfig): {
   id: string;
   label: string;
   prompt: string;
   description?: string;
   routing?: 'auto' | 'act' | 'planner';
   runKind?: 'guide' | 'task';
+  getRunUrl?: string;
+  deepLinkWithExecutor?: string;
 } | null {
   const id = text(shortcut.id, 80);
   const label = text(shortcut.label, 120);
@@ -774,6 +861,8 @@ function normalizePublishedShortcut(shortcut: RoverShortcut): {
     ...(description ? { description } : {}),
     ...(shortcut.routing ? { routing: shortcut.routing } : {}),
     ...(shortcut.runKind === 'guide' || shortcut.runKind === 'task' ? { runKind: shortcut.runKind } : {}),
+    getRunUrl: buildA2WGetRunUrl(config.siteUrl, config.apiBase, { shortcutId: id }),
+    deepLinkWithExecutor: buildDeepLinkWithExecutor(config.siteUrl, config.apiBase, id),
   };
 }
 
@@ -782,7 +871,7 @@ function buildShortcutSkill(
   config: RoverAgentDiscoveryConfig,
   runEndpoint: string,
 ): RoverPublicSkillDefinition | null {
-  const publishedShortcut = normalizePublishedShortcut(shortcut);
+  const publishedShortcut = normalizePublishedShortcut(shortcut, config);
   if (!publishedShortcut) return null;
   const { id, label, prompt } = publishedShortcut;
 
@@ -834,6 +923,8 @@ function buildShortcutSkill(
       routing: shortcut.routing,
       runKind: shortcut.runKind,
       deepLink: buildDeepLink(config.siteUrl, id),
+      getRunUrl: buildA2WGetRunUrl(config.siteUrl, config.apiBase, { shortcutId: id }),
+      deepLinkWithExecutor: buildDeepLinkWithExecutor(config.siteUrl, config.apiBase, id),
       run: {
         endpoint: runEndpoint,
         payload: {
@@ -1127,6 +1218,8 @@ function buildInlineDataUrl(json: string): string {
 export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAgentCard {
   const siteUrl = normalizeSiteUrl(config.siteUrl);
   const runEndpoint = buildRunEndpoint(config.apiBase);
+  const fromUrlEndpoint = buildFromUrlEndpoint(config.apiBase);
+  const fromUrlTemplate = buildFromUrlTemplate(config.apiBase);
   const workflowEndpoint = buildWorkflowEndpoint(config.apiBase);
   const serviceDescUrl = text(config.agentCardUrl) || DEFAULT_AGENT_CARD_PATH;
   const roverSiteUrl = text(config.roverSiteUrl) || DEFAULT_ROVER_SITE_PATH;
@@ -1206,6 +1299,18 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
         available: publicRunEnabled,
       },
       {
+        type: 'run_get',
+        url: runEndpoint,
+        description: 'GET-compatible A2W run creation endpoint for browserless chatbot URL-fetch tools. Use query parameters url, prompt or shortcutId, execution=cloud, wait, and format.',
+        available: publicRunEnabled && cloudBrowserAllowed,
+      },
+      {
+        type: 'from_url',
+        url: fromUrlEndpoint,
+        description: 'GET resolver for browser-first Rover deep links. Send the full current URL in the url query parameter when it contains rover or rover_shortcut.',
+        available: publicRunEnabled && cloudBrowserAllowed,
+      },
+      {
         type: 'workflow',
         url: workflowEndpoint,
         description: 'Aggregated Rover workflow resource for delegated runs.',
@@ -1235,10 +1340,18 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
         siteId: text(config.siteId, 120) || undefined,
         siteUrl,
         runEndpoint,
+        a2wGetEndpoint: runEndpoint,
         workflowEndpoint,
+        fromUrlEndpoint,
+        fromUrlTemplate,
         serviceDescUrl,
         roverSiteUrl,
         ...(llmsUrl ? { llmsUrl } : {}),
+        deepLinkParams: {
+          prompt: 'rover',
+          shortcut: 'rover_shortcut',
+          executor: 'rover_exec',
+        },
         preferredExecution: config.preferExecution || 'auto',
         a2wRunsEnabled: publicRunEnabled,
         cloudBrowserAllowed,
@@ -1246,6 +1359,9 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
         instructions: [
           'Prefer exact Rover shortcuts and explicit site tools over raw DOM automation when the user goal matches a published skill.',
           'Use POST /v1/a2w/runs when you need structured A2W progress, continuation input, or a stable final result channel.',
+          'If you can only fetch URLs, use GET /v1/a2w/runs with url plus prompt or shortcutId, execution=cloud, wait=25, and format=markdown.',
+          'If a page URL contains rover_exec, fetch that Rover executor URL to run the task in Rover cloud.',
+          `If a page URL contains rover or rover_shortcut without rover_exec, fetch ${fromUrlTemplate}. Replace {current_url} with the full current page URL.`,
           'For browserless calls, send Prefer: execution=cloud, wait=10 and follow links.stream, links.ndjson, or links.poll until terminal or input_required.',
           'Fall back to generic DOM automation only when no matching Rover shortcut or explicit tool exists for the requested outcome.',
         ],
@@ -1254,7 +1370,7 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
         currentPage: capabilityGraph.currentPage,
         discoverySurface: effectiveDiscoverySurface,
         shortcuts: (config.shortcuts || [])
-          .map(shortcut => normalizePublishedShortcut(shortcut))
+          .map(shortcut => normalizePublishedShortcut(shortcut, config))
           .filter((shortcut): shortcut is NonNullable<typeof shortcut> => !!shortcut),
         webmcp: {
           available: webmcpSkills.length > 0,
@@ -1286,7 +1402,15 @@ export function createRoverSiteProfile(config: RoverAgentDiscoveryConfig): Rover
     },
     auth: {
       runEndpoint: rover?.runEndpoint || buildRunEndpoint(config.apiBase),
+      a2wGetEndpoint: rover?.a2wGetEndpoint || buildRunEndpoint(config.apiBase),
       workflowEndpoint: rover?.workflowEndpoint || buildWorkflowEndpoint(config.apiBase),
+      fromUrlEndpoint: rover?.fromUrlEndpoint || buildFromUrlEndpoint(config.apiBase),
+      fromUrlTemplate: rover?.fromUrlTemplate || buildFromUrlTemplate(config.apiBase),
+      deepLinkParams: rover?.deepLinkParams || {
+        prompt: 'rover',
+        shortcut: 'rover_shortcut',
+        executor: 'rover_exec',
+      },
       acceptsHttpMessageSignatures: true,
       supportsUnsignedSelfReportedIdentity: true,
     },
@@ -1330,6 +1454,9 @@ export function buildRoverAgentDiscoveryPayloads(config: RoverAgentDiscoveryConf
   marker: {
     a2w?: string;
     run?: string;
+    a2wGet?: string;
+    fromUrl?: string;
+    fromUrlTemplate?: string;
     card: string;
     roverSite: string;
     site?: string;
@@ -1340,6 +1467,12 @@ export function buildRoverAgentDiscoveryPayloads(config: RoverAgentDiscoveryConf
     hostSurface?: RoverDiscoveryHostSurface;
     actionReveal?: RoverDiscoveryActionReveal;
     beaconLabel?: string;
+    deepLinkParams?: {
+      prompt: string;
+      shortcut: string;
+      executor: string;
+    };
+    chatbotInstructions?: string[];
     skills: Array<{ id: string; name: string }>;
     capabilities: Array<{ capabilityId: string; label: string }>;
   };
@@ -1361,6 +1494,9 @@ export function buildRoverAgentDiscoveryPayloads(config: RoverAgentDiscoveryConf
   const marker = {
     a2w: card.extensions?.rover.runEndpoint,
     run: card.extensions?.rover.runEndpoint,
+    a2wGet: card.extensions?.rover.a2wGetEndpoint,
+    fromUrl: card.extensions?.rover.fromUrlEndpoint,
+    fromUrlTemplate: card.extensions?.rover.fromUrlTemplate,
     card: serviceDescHref,
     roverSite: roverSiteHref,
     site: card.extensions?.rover.siteUrl,
@@ -1371,6 +1507,12 @@ export function buildRoverAgentDiscoveryPayloads(config: RoverAgentDiscoveryConf
     hostSurface: card.extensions?.rover.discoverySurface.hostSurface,
     actionReveal: card.extensions?.rover.discoverySurface.actionReveal,
     beaconLabel: card.extensions?.rover.discoverySurface.beaconLabel,
+    deepLinkParams: card.extensions?.rover.deepLinkParams,
+    chatbotInstructions: [
+      'If this page URL contains rover_exec, fetch that URL to run the task in Rover cloud.',
+      'If this page URL contains rover or rover_shortcut but no rover_exec, fetch fromUrlTemplate with the full current URL.',
+      'If POST is available, prefer a structured POST to a2w; if only URL fetch is available, use a2wGet with execution=cloud.',
+    ],
     skills: card.skills.slice(0, 24).map(skill => ({
       id: skill.id,
       name: skill.name,
@@ -1426,6 +1568,8 @@ export function createRoverWellKnownSiteProfile(
 export function createRoverServiceDescLinkHeader(config: {
   agentCardUrl?: string;
   llmsUrl?: string;
+  a2wGetUrl?: string;
+  fromUrlEndpoint?: string;
 }): string {
   const parts = [
     `<${text(config.agentCardUrl) || DEFAULT_AGENT_CARD_PATH}>; rel="service-desc"; type="application/json"`,
@@ -1433,6 +1577,14 @@ export function createRoverServiceDescLinkHeader(config: {
   const llmsUrl = text(config.llmsUrl);
   if (llmsUrl) {
     parts.push(`<${llmsUrl}>; rel="service-doc"; type="text/markdown"`);
+  }
+  const a2wGetUrl = text(config.a2wGetUrl);
+  if (a2wGetUrl) {
+    parts.push(`<${a2wGetUrl}>; rel="agent-run"; type="text/markdown"; method="GET POST"`);
+  }
+  const fromUrlEndpoint = text(config.fromUrlEndpoint);
+  if (fromUrlEndpoint) {
+    parts.push(`<${fromUrlEndpoint}>; rel="agent-resolver"; type="text/markdown"; method="GET"`);
   }
   return parts.join(', ');
 }

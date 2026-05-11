@@ -53,10 +53,11 @@ rtrvr-cloud-website
 ## End-To-End Runtime Flow
 
 ```text
-Agent / Operator / WebMCP / POST /v1/a2w/runs
+Agent / Operator / WebMCP / POST or GET /v1/a2w/runs
                   |
                   v
              A2W run create
+        (GET chatbot runs default to cloud)
       (optional agent attribution input)
                   |
                   v

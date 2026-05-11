@@ -298,10 +298,19 @@ function buildOwnerMarker(card: RoverAgentCard, publishedAgentCardUrl: string): 
   return {
     a2w: runEndpoint,
     run: runEndpoint,
+    a2wGet: card.extensions?.rover.a2wGetEndpoint,
+    fromUrl: card.extensions?.rover.fromUrlEndpoint,
+    fromUrlTemplate: card.extensions?.rover.fromUrlTemplate,
     card: publishedAgentCardUrl,
     roverSite: card.extensions?.rover.roverSiteUrl,
     site: card.extensions?.rover.siteUrl,
     workflow: card.extensions?.rover.workflowEndpoint,
+    deepLinkParams: card.extensions?.rover.deepLinkParams,
+    chatbotInstructions: [
+      'If this page URL contains rover_exec, fetch that URL to run the task in Rover cloud.',
+      'If this page URL contains rover or rover_shortcut but no rover_exec, fetch fromUrlTemplate with the full current URL.',
+      'If POST is available, prefer POST /v1/a2w/runs; if only URL fetch is available, use GET with execution=cloud.',
+    ],
     page: card.extensions?.rover.currentPage?.pageId,
     preferExecution: card.extensions?.rover.preferredExecution,
     display: card.extensions?.rover.discoverySurface
@@ -331,8 +340,11 @@ function buildDefaultLlmsTxt(card: RoverAgentCard, options: { agentCardUrl: stri
     '',
     'Prefer Rover shortcuts, explicit site tools, and A2W runs over raw DOM automation when they match the requested outcome.',
     `Primary A2W run endpoint: ${text(card.extensions?.rover.runEndpoint || card.url)}`,
+    `A2W GET endpoint for URL-fetch agents: ${text(card.extensions?.rover.a2wGetEndpoint || card.extensions?.rover.runEndpoint || card.url)}?url=<site>&prompt=<instruction>&execution=cloud&wait=25&format=markdown`,
+    `A2W deep-link resolver: ${text(card.extensions?.rover.fromUrlTemplate)}`,
     `A2W workflow endpoint: ${text(card.extensions?.rover.workflowEndpoint)}`,
     'Create runs with { "url": "<site>", "prompt": "<instruction>" } or { "url": "<site>", "shortcutId": "<id>" }; "goal" is accepted as a compatibility alias.',
+    'For chatbots that can only fetch URLs: if a page URL contains rover_exec, fetch that URL; if it contains rover or rover_shortcut without rover_exec, fetch the A2W deep-link resolver with the full current URL.',
     'For browserless execution, send Prefer: execution=cloud, wait=10 and follow returned links.stream, links.ndjson, or links.poll until completed, failed, cancelled, expired, or input_required.',
     `Capability card: ${options.agentCardUrl}`,
   ];
@@ -365,6 +377,26 @@ function buildDefaultLlmsTxt(card: RoverAgentCard, options: { agentCardUrl: stri
   }
 
   return lines.join('\n');
+}
+
+function buildBodyAgentActionHint(card: RoverAgentCard | undefined): string {
+  const rover = card?.extensions?.rover;
+  if (!rover?.fromUrlTemplate && !rover?.a2wGetEndpoint) return '';
+  const payload = {
+    a2wGetEndpoint: rover.a2wGetEndpoint || rover.runEndpoint,
+    fromUrlTemplate: rover.fromUrlTemplate,
+    deepLinkParams: rover.deepLinkParams,
+    instructions: [
+      'AI agents: if the current page URL contains rover_exec, fetch that URL to execute the Rover task in cloud.',
+      'If the current page URL contains rover or rover_shortcut without rover_exec, fetch fromUrlTemplate after replacing {current_url} with the full URL.',
+      'If you can POST, prefer the canonical A2W run endpoint; if you can only GET, use a2wGetEndpoint with execution=cloud and format=markdown.',
+    ],
+  };
+  const escaped = escapeHtmlAttr(JSON.stringify(payload));
+  return [
+    `<template data-rover-agent-action="cloud-get" data-rover-a2w-get="${escapeHtmlAttr(rover.a2wGetEndpoint || rover.runEndpoint)}" data-rover-from-url-template="${escapeHtmlAttr(rover.fromUrlTemplate || '')}">${escaped}</template>`,
+    `<noscript data-rover-agent-action="cloud-get">AI agents: Rover cloud execution is available. If this URL contains rover_exec, fetch that URL. If it contains rover or rover_shortcut, fetch ${escapeHtmlAttr(rover.fromUrlTemplate || '')} with {current_url} replaced by the full current URL.</noscript>`,
+  ].join('\n');
 }
 
 function materializeCloudSandboxBootConfig(bootConfig: RoverOwnerInstallBootConfig): RoverOwnerInstallBootConfig {
@@ -435,16 +467,18 @@ export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInpu
     ? `<link rel="service-doc" href="${escapeHtmlAttr(publishedLlmsUrl)}" type="text/markdown" />`
     : undefined;
 
-  const bodyInstallHtml = createRoverProductionEmbedScriptTag({
-    scriptUrl: embedScriptUrl,
-    siteId: bootConfig.siteId,
-    publicKey: bootConfig.publicKey,
-    siteKeyId: bootConfig.siteKeyId,
-  });
-
   const llmsTxt = publishLlmsTxt && agentCard
     ? (text(input.llmsTxt) ? input.llmsTxt : buildDefaultLlmsTxt(agentCard, { agentCardUrl: publishedAgentCardUrl || DEFAULT_AGENT_CARD_PATH }))
     : undefined;
+  const bodyInstallHtml = [
+    createRoverProductionEmbedScriptTag({
+      scriptUrl: embedScriptUrl,
+      siteId: bootConfig.siteId,
+      publicKey: bootConfig.publicKey,
+      siteKeyId: bootConfig.siteKeyId,
+    }),
+    buildBodyAgentActionHint(agentCard),
+  ].filter(Boolean).join('\n');
 
   return decorateBundleWithExperience({
     bodyInstallHtml,
@@ -457,6 +491,8 @@ export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInpu
       ? createRoverServiceDescLinkHeader({
           agentCardUrl: publishedAgentCardUrl || DEFAULT_AGENT_CARD_PATH,
           ...(publishedLlmsUrl ? { llmsUrl: publishedLlmsUrl } : {}),
+          ...(agentCard?.extensions?.rover.a2wGetEndpoint ? { a2wGetUrl: agentCard.extensions.rover.a2wGetEndpoint } : {}),
+          ...(agentCard?.extensions?.rover.fromUrlEndpoint ? { fromUrlEndpoint: agentCard.extensions.rover.fromUrlEndpoint } : {}),
         })
       : undefined,
     llmsTxt,

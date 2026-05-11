@@ -77,17 +77,28 @@ test('owner install bundle splits body runtime HTML from head discovery HTML', (
   assert.doesNotMatch(bundle.bodyInstallHtml, /enableRoverBook/);
   assert.doesNotMatch(bundle.bodyInstallHtml, /data-rover-(instance|host|channel)/);
   assert.doesNotMatch(bundle.bodyInstallHtml, /data-activity-enabled/);
+  assert.match(bundle.bodyInstallHtml, /data-rover-agent-action="cloud-get"/);
+  assert.match(bundle.bodyInstallHtml, /data-rover-from-url-template=/);
 
   assert.match(bundle.headDiscoveryHtml, /rel="service-desc"/);
   assert.match(bundle.headDiscoveryHtml, /rel="service-doc"/);
-  assert.equal(
-    bundle.serviceDescLinkHeader,
-    '</.well-known/agent-card.json>; rel="service-desc"; type="application/json", </llms.txt>; rel="service-doc"; type="text/markdown"',
-  );
+  assert.match(bundle.serviceDescLinkHeader || '', /^<\/\.well-known\/agent-card\.json>; rel="service-desc"; type="application\/json", <\/llms\.txt>; rel="service-doc"; type="text\/markdown"/);
+  assert.match(bundle.serviceDescLinkHeader || '', /rel="agent-run"/);
+  assert.match(bundle.serviceDescLinkHeader || '', /rel="agent-resolver"/);
   assert.match(bundle.llmsTxt || '', /book_demo: Book Demo/);
+  assert.match(bundle.llmsTxt || '', /A2W GET endpoint/);
+  assert.match(bundle.llmsTxt || '', /rover_exec/);
+  assert.match(bundle.llmsTxt || '', /format=markdown/);
+  assert.match(bundle.agentCard?.extensions?.rover?.fromUrlTemplate || '', /\/v1\/a2w\/from-url/);
+  assert.equal(bundle.agentCard?.extensions?.rover?.deepLinkParams?.executor, 'rover_exec');
+  assert.match(bundle.agentCard?.extensions?.rover?.shortcuts?.[0]?.getRunUrl || '', /execution=cloud/);
+  assert.match(bundle.agentCard?.extensions?.rover?.shortcuts?.[0]?.deepLinkWithExecutor || '', /rover_exec=/);
   assert.equal(bundle.agentCard?.name, 'Example Store');
   assert.equal(bundle.agentCard?.extensions?.rover?.discoverySurface?.mode, 'beacon');
   assert.equal(bundle.roverSite?.identity.siteId, 'site_123');
+  assert.match(bundle.roverSite?.auth?.a2wGetEndpoint || '', /\/v1\/a2w\/runs$/);
+  assert.match(bundle.roverSite?.auth?.fromUrlTemplate || '', /format=markdown/);
+  assert.equal(bundle.roverSite?.auth?.deepLinkParams?.executor, 'rover_exec');
   assert.equal(bundle.roverSite?.display?.mode, 'beacon');
   assert.equal(bundle.roverSite?.display?.compactActionMaxActions, 3);
   assert.equal(bundle.roverSite?.artifacts.roverSiteUrl, '/.well-known/rover-site.json');
@@ -112,10 +123,9 @@ test('owner install bundle advertises generated llms.txt with the default servic
   });
 
   assert.match(bundle.headDiscoveryHtml, /href="\/llms\.txt"/);
-  assert.equal(
-    bundle.serviceDescLinkHeader,
-    '</.well-known/agent-card.json>; rel="service-desc"; type="application/json", </llms.txt>; rel="service-doc"; type="text/markdown"',
-  );
+  assert.match(bundle.serviceDescLinkHeader || '', /^<\/\.well-known\/agent-card\.json>; rel="service-desc"; type="application\/json", <\/llms\.txt>; rel="service-doc"; type="text\/markdown"/);
+  assert.match(bundle.serviceDescLinkHeader || '', /rel="agent-run"/);
+  assert.match(bundle.serviceDescLinkHeader || '', /rel="agent-resolver"/);
   assert.equal(bundle.agentCard?.extensions?.rover?.llmsUrl, '/llms.txt');
   assert.equal(bundle.roverSite?.artifacts?.llmsUrl, '/llms.txt');
   assert.match(bundle.llmsTxt || '', /Primary A2W run endpoint/);

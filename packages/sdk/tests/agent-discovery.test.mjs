@@ -5,6 +5,7 @@ import {
   createRoverAgentCard,
   createRoverAgentDiscoverySnapshot,
   createRoverAgentDiscoveryTags,
+  buildRoverAgentDiscoveryPayloads,
   createRoverServiceDescLinkHeader,
   createRoverWellKnownAgentCard,
   createRoverWellKnownSiteProfile,
@@ -103,6 +104,11 @@ test('agent card maps shortcuts and explicit tools into published skills', () =>
   assert.equal(card.extensions.rover.discoverySurface.mode, 'beacon');
   assert.equal(card.extensions.rover.discoverySurface.branding, 'site');
   assert.equal(card.extensions.rover.discoverySurface.compactActionMaxActions, 3);
+  assert.equal(card.extensions.rover.a2wGetEndpoint, 'https://agent.rtrvr.ai/v1/a2w/runs');
+  assert.match(card.extensions.rover.fromUrlTemplate, /\/v1\/a2w\/from-url/);
+  assert.equal(card.extensions.rover.deepLinkParams.executor, 'rover_exec');
+  assert.equal(card.interfaces.find(entry => entry.type === 'run_get')?.available, true);
+  assert.equal(card.interfaces.find(entry => entry.type === 'from_url')?.available, true);
   assert.equal(card.skills.length, 3);
 
   const checkoutSkill = card.skills.find(skill => skill.id === 'start_checkout');
@@ -110,6 +116,9 @@ test('agent card maps shortcuts and explicit tools into published skills', () =>
   assert.equal(checkoutSkill.preferredInterface, 'shortcut');
   assert.equal(checkoutSkill.rover.run.endpoint, 'https://agent.rtrvr.ai/v1/a2w/runs');
   assert.equal(checkoutSkill.rover.run.payload.shortcutId, 'start_checkout');
+  assert.match(checkoutSkill.rover.getRunUrl, /execution=cloud/);
+  assert.match(checkoutSkill.rover.getRunUrl, /format=markdown/);
+  assert.match(checkoutSkill.rover.deepLinkWithExecutor, /rover_exec=/);
   assert.equal('shortcut' in checkoutSkill.rover.run.payload, false);
   assert.equal(checkoutSkill.rover.runKind, 'guide');
   assert.equal(card.extensions.rover.shortcuts[0].runKind, 'guide');
@@ -189,6 +198,30 @@ test('agent discovery snapshot normalizes callable Rover surfaces from the publi
   const checkoutSkill = snapshot.skills.find(skill => skill.id === 'checkout_flow');
   assert.equal(checkoutSkill?.runPayload.shortcutId, 'checkout_flow');
   assert.equal('shortcut' in (checkoutSkill?.runPayload || {}), false);
+
+  const payloads = buildRoverAgentDiscoveryPayloads({
+    siteUrl: 'https://example.com/',
+    siteName: 'Example Store',
+    apiBase: 'https://agent.rtrvr.ai',
+    roverSiteUrl: '/.well-known/rover-site.json',
+    agentCardUrl: '/.well-known/agent-card.json',
+    llmsUrl: '/llms.txt',
+    aiAccess: {
+      enabled: true,
+      allowCloudBrowser: true,
+    },
+    shortcuts: [
+      {
+        id: 'checkout_flow',
+        label: 'Checkout Flow',
+        prompt: 'start checkout',
+      },
+    ],
+  });
+  assert.equal(payloads.marker.deepLinkParams?.executor, 'rover_exec');
+  assert.match(payloads.marker.fromUrlTemplate || '', /format=markdown/);
+  assert.equal(payloads.roverSite.auth.deepLinkParams.executor, 'rover_exec');
+  assert.match(payloads.roverSite.auth.a2wGetEndpoint || '', /\/v1\/a2w\/runs$/);
 });
 
 test('agent card disables public A2W capability when ai access is off', () => {

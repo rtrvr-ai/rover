@@ -2078,6 +2078,43 @@ type DirectToolResult = ToolExecutionResult & {
   navigation?: string;
 };
 
+const ASYNC_WORKFLOW_STATUSES = new Set([
+  'accepted',
+  'initializing',
+  'in_progress',
+  'pending',
+  'queued',
+  'running',
+  'started',
+  'submitted',
+]);
+
+function isAsyncWorkflowOutput(output: unknown): boolean {
+  if (!output) return false;
+  if (typeof output === 'string') {
+    const text = output.toLowerCase();
+    return /status:\s*(running|queued|pending|in progress|initializing|started)/.test(text)
+      && /(thread id|thread_id|job id|job_id|workflow|execution)/.test(text);
+  }
+  if (Array.isArray(output)) return output.some(item => isAsyncWorkflowOutput(item));
+  if (typeof output !== 'object') return false;
+  const record = output as Record<string, unknown>;
+  const status = String(record.taskStatus || record.status || record.state || record.workflowStatus || '').trim().toLowerCase();
+  const normalizedStatus = status.replace(/\s+/g, '_');
+  const hasAsyncId = Boolean(
+    record.threadId
+    || record.thread_id
+    || record.jobId
+    || record.job_id
+    || record.workflowId
+    || record.workflow_id
+    || record.executionId
+    || record.execution_id,
+  );
+  if (ASYNC_WORKFLOW_STATUSES.has(normalizedStatus)) return true;
+  return hasAsyncId && (!status || ASYNC_WORKFLOW_STATUSES.has(normalizedStatus));
+}
+
 function deriveDirectToolRunOutcome(result: DirectToolResult | undefined): RunOutcome {
   if (!result || typeof result !== 'object') {
     return {
@@ -2103,6 +2140,15 @@ function deriveDirectToolRunOutcome(result: DirectToolResult | undefined): RunOu
 
   const questions = extractQuestionsFromResult(result);
   if (result.error) return { taskComplete: false, terminalState: 'failed' };
+
+  if (isAsyncWorkflowOutput(result.output ?? result.data ?? result)) {
+    return {
+      taskComplete: false,
+      terminalState: 'in_progress',
+      continuationReason: 'loop_continue',
+      contextResetRecommended: false,
+    };
+  }
 
   const output = result.output ?? result.data;
   if (output && typeof output === 'object') {
@@ -2169,6 +2215,14 @@ function deriveDirectToolRunOutcome(result: DirectToolResult | undefined): RunOu
       }
       if (taskStatus === 'failure' || taskStatus === 'failed' || taskStatus === 'error') {
         return { taskComplete: false, terminalState: 'failed' };
+      }
+      if (ASYNC_WORKFLOW_STATUSES.has(taskStatus.replace(/\s+/g, '_'))) {
+        return {
+          taskComplete: false,
+          terminalState: 'in_progress',
+          continuationReason: 'loop_continue',
+          contextResetRecommended: false,
+        };
       }
     }
   }
@@ -2803,6 +2857,7 @@ async function handleUserMessage(
       directToolResult.data ??
       directToolResult.generatedContentRef ??
       directToolResult.schemaHeaderSheetInfo;
+    const asyncWorkflowStarted = isAsyncWorkflowOutput(output);
     const structuredError = extractStructuredErrorFromToolResult(directToolResult);
     if (structuredError?.error.requires_api_key) {
       postAuthRequired(structuredError.error);
@@ -2821,12 +2876,16 @@ async function handleUserMessage(
         })
       : postAssistantMessage({
         ...buildAssistantPayloadFromToolOutput(output, {
-          label: 'Tool output',
-          fallbackText: 'I finished the step.',
+          label: asyncWorkflowStarted ? 'Workflow status' : 'Tool output',
+          fallbackText: asyncWorkflowStarted ? 'Workflow started.' : 'I finished the step.',
         }),
-        responseKind: 'final',
+        responseKind: asyncWorkflowStarted ? 'checkpoint' : 'final',
       });
-    postStatus('Execution completed', structuredError?.error.message, 'complete');
+    postStatus(
+      asyncWorkflowStarted ? 'Workflow started' : 'Execution completed',
+      structuredError?.error.message,
+      asyncWorkflowStarted ? 'execute' : 'complete',
+    );
     postStateSnapshot();
     return {
       route: result.route,

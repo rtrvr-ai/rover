@@ -128,6 +128,8 @@ The same optional `agent` object is accepted on:
 - `POST /v1/a2w/runs/{id}/handoffs`
 - WebMCP run creation and explicit RoverBook feedback/note tools
 
+URL-fetch chatbots that use `GET /v1/a2w/runs`, `/v1/a2w/from-url`, or `/v1/a2w/go/<descriptor>` usually cannot send a structured `agent` object or signed headers. Rover still records heuristic attribution from `User-Agent`, request headers, and the anonymous caller bucket used for GET idempotency.
+
 ## Heuristic inputs
 
 If no explicit `agent` object is provided, Rover can still classify the visitor heuristically from:

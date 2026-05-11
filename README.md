@@ -35,7 +35,7 @@ One product, two planes:
 | Reads DOM | No | Vision/pixels | Direct DOM + a11y tree |
 | Latency | N/A | Seconds per action | Milliseconds |
 | Infrastructure | Iframe/server | Remote VM | Zero, runs in-browser |
-| AI / agent access | No | No | `POST /v1/a2w/runs`, handoffs, WebMCP |
+| AI / agent access | No | No | `POST /v1/a2w/runs`, chatbot GET, handoffs, WebMCP |
 | Open Source | Varies | No | FSL-1.1-Apache-2.0 |
 
 ### For websites
@@ -44,7 +44,7 @@ Drop in Rover and users get an assistant that can actually use the page.
 
 ### For AI agents
 
-Rover exposes machine-readable A2W run resources at `POST https://agent.rtrvr.ai/v1/a2w/runs`, delegated handoffs, workflow lineage, optional WebMCP tools discovery, and helper utilities for publishing `/.well-known/rover-site.json`, `/.well-known/agent-card.json`, and `service-desc` discovery metadata.
+Rover exposes machine-readable A2W run resources at `POST https://agent.rtrvr.ai/v1/a2w/runs`, chatbot-friendly GET execution at the same run endpoint, delegated handoffs, workflow lineage, optional WebMCP tools discovery, and helper utilities for publishing `/.well-known/rover-site.json`, `/.well-known/agent-card.json`, `/llms.txt`, and `service-desc` discovery metadata.
 
 ### For site owners
 
@@ -71,7 +71,13 @@ The same core runtime works in websites, Chrome extensions, Electron apps, and o
 ### Script tag
 
 ```html
-<script type="application/agent+json">{"a2w":"https://agent.rtrvr.ai/v1/a2w/runs","run":"https://agent.rtrvr.ai/v1/a2w/runs"}</script>
+<script type="application/agent+json">{
+  "a2w": "https://agent.rtrvr.ai/v1/a2w/runs",
+  "run": "https://agent.rtrvr.ai/v1/a2w/runs",
+  "a2wGet": "https://agent.rtrvr.ai/v1/a2w/runs",
+  "fromUrlTemplate": "https://agent.rtrvr.ai/v1/a2w/from-url?url={current_url}&execution=cloud&wait=25&format=markdown",
+  "deepLinkParams": { "prompt": "rover", "shortcut": "rover_shortcut", "executor": "rover_exec" }
+}</script>
 <script>
   (function () {
     var r = window.rover = window.rover || function () {
@@ -299,7 +305,7 @@ Use the hosted API when you want signed-in preview creation, preview tokens, hos
 ## Features
 
 - **Browser-first deep links**: trigger tasks via `?rover=` and `?rover_shortcut=`
-- **Agent-to-Web Protocol (A2W)**: `POST /v1/a2w/runs` for public machine-readable site execution
+- **Agent-to-Web Protocol (A2W)**: `POST /v1/a2w/runs` for API agents, plus `GET /v1/a2w/runs`, `/from-url`, and `/go` for URL-fetch chatbots
 - **Cross-site workflows and handoffs**: delegate from one Rover-enabled site to another with shared workflow lineage
 - **WebMCP support**: discoverable Rover and RoverBook tools for compatible agents
 - **Universal DOM agent**: websites, extensions, Electron, any DOM environment
@@ -318,7 +324,7 @@ Use the hosted API when you want signed-in preview creation, preview tokens, hos
 
 ## Agent-to-Web Protocol (A2W)
 
-Rover-enabled sites support browser-first convenience and machine-first A2W runs.
+Rover-enabled sites support browser-first convenience, canonical machine A2W runs, and browserless chatbot execution through GET.
 
 ### Machine path
 
@@ -369,13 +375,41 @@ Run creation can return `202 Accepted` before work is done. Follow the returned 
 
 Anonymous AI callers do **not** need `siteId`, `publicKey`, or `siteKeyId`. Those values are only for website owners installing Rover.
 
+### Chatbot GET path
+
+URL-fetch agents that cannot POST should use GET. Rover opens the target site in the hosted cloud browser and returns markdown by default:
+
+```text
+https://agent.rtrvr.ai/v1/a2w/runs?url=https%3A%2F%2Fexample.com&prompt=Find%20the%20pricing%20page&execution=cloud&wait=25&format=markdown
+```
+
+Saved shortcut runs use `shortcutId`:
+
+```text
+https://agent.rtrvr.ai/v1/a2w/runs?url=https%3A%2F%2Fexample.com&shortcutId=checkout_flow&execution=cloud&wait=25&format=markdown
+```
+
+If a page URL contains `rover_exec`, fetch that URL. If it contains `rover` or `rover_shortcut` without `rover_exec`, fetch:
+
+```text
+https://agent.rtrvr.ai/v1/a2w/from-url?url=<current_absolute_url>&execution=cloud&wait=25&format=markdown
+```
+
+Generated discovery surfaces publish `a2wGetEndpoint`, `fromUrlTemplate`, `deepLinkParams.executor = "rover_exec"`, per-shortcut `getRunUrl`, and `deepLinkWithExecutor`.
+
 If the site emits the discovery marker below, AI tools can detect A2W support directly from HTML:
 
 ```html
-<script type="application/agent+json">{"a2w":"https://agent.rtrvr.ai/v1/a2w/runs","run":"https://agent.rtrvr.ai/v1/a2w/runs"}</script>
+<script type="application/agent+json">{
+  "a2w": "https://agent.rtrvr.ai/v1/a2w/runs",
+  "run": "https://agent.rtrvr.ai/v1/a2w/runs",
+  "a2wGet": "https://agent.rtrvr.ai/v1/a2w/runs",
+  "fromUrlTemplate": "https://agent.rtrvr.ai/v1/a2w/from-url?url={current_url}&execution=cloud&wait=25&format=markdown",
+  "deepLinkParams": { "prompt": "rover", "shortcut": "rover_shortcut", "executor": "rover_exec" }
+}</script>
 ```
 
-For stronger discovery, publish `/.well-known/rover-site.json` as Rover's authoritative rich profile, publish `/.well-known/agent-card.json` as the broad interop card, add a `Link: </.well-known/agent-card.json>; rel="service-desc"` header for generic agents, and include source-visible discovery tags from the SDK helper `createRoverAgentDiscoveryTags(...)`.
+For stronger discovery, publish `/.well-known/rover-site.json` as Rover's authoritative rich profile, publish `/.well-known/agent-card.json` as the broad interop card, add the generated `Link` header with `service-desc`, `service-doc`, `agent-run`, and `agent-resolver` relations for generic agents, and include source-visible discovery tags from the SDK helper `createRoverAgentDiscoveryTags(...)`.
 
 ### Delegated handoffs
 
@@ -418,7 +452,7 @@ Shortcut deep links:
 https://example.com?rover_shortcut=checkout_flow
 ```
 
-These are browser convenience flows. If you need structured progress or results back, use `/v1/a2w/runs`.
+These are browser convenience flows. If you need structured progress or results back, use `/v1/a2w/runs`; for URL-only chatbots, add or follow `rover_exec` so Rover executes in cloud and returns markdown.
 
 For the full external-agent contract, see [SKILLS.md](SKILLS.md).
 

@@ -596,8 +596,8 @@ export const windowStyles = `
     }
 
     .entry.trace.pending {
-      border-color: var(--rv-accent-border);
-      background: rgba(255, 76, 0, 0.03);
+      border-color: rgba(15, 23, 42, 0.08);
+      background: rgba(255,255,255,0.78);
     }
 
     .entry.trace.success {
@@ -720,13 +720,13 @@ export const windowStyles = `
 
     /* Thought Card Styling */
     .entry.trace[data-kind="thought"] {
-      border-left: 3px solid var(--rv-accent);
-      background: var(--rv-accent-soft);
+      border-left: 3px solid rgba(15, 23, 42, 0.12);
+      background: rgba(255,255,255,0.78);
     }
     .entry.trace[data-kind="thought"] .traceStage {
-      background: var(--rv-accent-soft);
-      color: var(--rv-accent);
-      border-color: var(--rv-accent-border);
+      background: var(--rv-surface);
+      color: var(--rv-text-secondary);
+      border-color: var(--rv-border-strong);
     }
 
     .traceSegment {
