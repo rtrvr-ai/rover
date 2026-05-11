@@ -142,9 +142,19 @@ test('owner install bundle deep links work when browser Buffer lacks base64url s
           enabled: true,
         },
       },
+      emitLlmsTxt: true,
     });
 
-    assert.match(JSON.stringify(bundle.agentCard), /\/v1\/a2w\/go\//);
+    const deepLinkWithExecutor = bundle.agentCard?.extensions?.rover?.shortcuts?.[0]?.deepLinkWithExecutor || '';
+    const executor = new URL(deepLinkWithExecutor).searchParams.get('rover_exec') || '';
+    assert.match(executor, /\/v1\/a2w\/go\//);
+    const descriptor = executor.split('/').pop() || '';
+    const decoded = JSON.parse(originalBuffer.from(decodeURIComponent(descriptor), 'base64url').toString('utf8'));
+    assert.deepEqual(decoded, {
+      v: 1,
+      url: 'https://example.com/',
+      shortcutId: 'pricing_tour',
+    });
     assert.match(bundle.llmsTxt || '', /rover_exec/);
   } finally {
     globalThis.Buffer = originalBuffer;
