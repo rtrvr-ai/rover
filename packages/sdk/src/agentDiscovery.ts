@@ -654,17 +654,27 @@ function buildWorkflowEndpoint(apiBase?: string): string {
   return `${toBaseUrl(apiBase)}${A2W_WORKFLOWS_PATH}`;
 }
 
+function encodeUtf8Base64Url(value: string): string {
+  const bytes = typeof TextEncoder !== 'undefined'
+    ? new TextEncoder().encode(value)
+    : Uint8Array.from(unescape(encodeURIComponent(value)), (char) => char.charCodeAt(0));
+  let binary = '';
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  const base64 = typeof btoa === 'function'
+    ? btoa(binary)
+    : Buffer.from(binary, 'binary').toString('base64');
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
 function encodeA2WGoDescriptor(input: { url: string; prompt?: string; shortcutId?: string }): string {
   const payload = {
     v: 1,
     url: normalizeSiteUrl(input.url),
     ...(text(input.shortcutId) ? { shortcutId: text(input.shortcutId) } : { prompt: text(input.prompt) }),
   };
-  if (typeof Buffer !== 'undefined') {
-    return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  }
-  const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
-  return encoded.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  return encodeUtf8Base64Url(JSON.stringify(payload));
 }
 
 function buildA2WGetRunUrl(siteUrl: string, apiBase: string | undefined, input: { prompt?: string; shortcutId?: string }): string {
