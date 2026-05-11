@@ -282,7 +282,12 @@ test('spotlight: visitor default + no planner override falls through to site con
 test('freeform UI mode heuristics keep task-like and neutral prompts quiet', () => {
   assert.equal(deriveFreeformUiRunKind('show me where pricing lives'), 'guide');
   assert.equal(deriveFreeformUiRunKind('walk me through checkout'), 'guide');
+  assert.equal(deriveFreeformUiRunKind('give me a demo of this product'), 'guide');
+  assert.equal(deriveFreeformUiRunKind('show a tutorial for the dashboard'), 'guide');
+  assert.equal(deriveFreeformUiRunKind('how do I change settings?'), 'guide');
+  assert.equal(deriveFreeformUiRunKind('explain how this works'), 'guide');
   assert.equal(deriveFreeformUiRunKind('help me find and book an appointment'), 'task');
+  assert.equal(deriveFreeformUiRunKind('book a demo'), 'task');
   assert.equal(deriveFreeformUiRunKind('extract the pricing table'), 'task');
   assert.equal(deriveFreeformUiRunKind('what does this page say?'), 'task');
 });

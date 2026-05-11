@@ -9521,7 +9521,7 @@ function normalizeRoverRunKind(input: unknown): 'guide' | 'task' | undefined {
 }
 
 const FREEFORM_TASK_WORD_RE = /\b(?:buy|submit|fill|download|extract|compare|book|order|apply)\b/i;
-const FREEFORM_GUIDE_PHRASE_RE = /\b(?:show me|walk me through|where is|help me find|tour|guide me)\b/i;
+const FREEFORM_GUIDE_PHRASE_RE = /\b(?:show me|walk me through|where is|help me find|tour|guide me|give me a tour|demo|tutorial|teach me|how do i|how to|explain how)\b/i;
 
 function deriveFreeformUiRunKind(input: string): 'guide' | 'task' {
   const text = String(input || '').replace(/\s+/g, ' ').trim().toLowerCase();

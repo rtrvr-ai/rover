@@ -223,11 +223,14 @@ function normalizeNarrationRunKind(input: unknown): 'guide' | 'task' | undefined
   return input === 'guide' || input === 'task' ? input : undefined;
 }
 
+const FREEFORM_TASK_WORD_RE = /\b(?:buy|submit|fill|download|extract|compare|book|order|apply)\b/i;
+const FREEFORM_GUIDE_PHRASE_RE = /\b(?:show me|walk me through|where is|help me find|tour|guide me|give me a tour|demo|tutorial|teach me|how do i|how to|explain how)\b/i;
+
 function classifyNarrationRunKind(input?: string): 'guide' | 'task' {
   const text = String(input || '').toLowerCase();
-  if (/\b(show me|walk me through|guide me|give me a tour|demo|tutorial|teach me|how do i|how to|explain how)\b/.test(text)) {
-    return 'guide';
-  }
+  if (!text.trim()) return 'task';
+  if (FREEFORM_TASK_WORD_RE.test(text)) return 'task';
+  if (FREEFORM_GUIDE_PHRASE_RE.test(text)) return 'guide';
   return 'task';
 }
 
