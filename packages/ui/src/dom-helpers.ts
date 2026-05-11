@@ -32,6 +32,119 @@ export function normalizeTimelineStatus(event: RoverTimelineEvent): 'pending' | 
   return 'info';
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizedKeySet(value: Record<string, unknown>): Set<string> {
+  return new Set(Object.keys(value).map(key => key.trim().toLowerCase()).filter(Boolean));
+}
+
+function hasUsefulScalar(value: unknown): boolean {
+  if (typeof value === 'string') return sanitizeText(value).length > 0;
+  if (typeof value === 'number') return Number.isFinite(value);
+  return false;
+}
+
+function isMeaningfulArtifactData(data: unknown, depth = 0): boolean {
+  if (data == null || typeof data === 'boolean' || typeof data === 'number') return false;
+  if (typeof data === 'string') {
+    const text = sanitizeText(data);
+    if (!text) return false;
+    return text.length > 240
+      || /https?:\/\//i.test(text)
+      || /(^|\n)\s*\|.+\|\s*(\n|$)/.test(text)
+      || /(^|\n)\s*#{1,4}\s+\S/.test(text)
+      || /```/.test(text);
+  }
+  if (Array.isArray(data)) {
+    if (data.length === 0) return false;
+    if (depth > 2) return true;
+    return data.some(item => isMeaningfulArtifactData(item, depth + 1));
+  }
+  if (!isPlainRecord(data)) return false;
+  const keys = normalizedKeySet(data);
+  if (keys.size === 0) return false;
+  const failureOnlyKeys = new Set(['success', 'error', 'allowfallback', 'code', 'message', 'status']);
+  const hasFailureSignal = data.success === false || keys.has('error');
+  const onlyFailureShape = Array.from(keys).every(key => failureOnlyKeys.has(key));
+  if (hasFailureSignal && onlyFailureShape) return false;
+
+  const artifactKeys = [
+    'artifact',
+    'artifacts',
+    'chart',
+    'columns',
+    'csv',
+    'data',
+    'downloadurl',
+    'file',
+    'files',
+    'generatedcontentref',
+    'html',
+    'image',
+    'items',
+    'link',
+    'links',
+    'markdown',
+    'records',
+    'result',
+    'results',
+    'rows',
+    'table',
+    'url',
+    'urls',
+  ];
+  for (const key of artifactKeys) {
+    if (!keys.has(key)) continue;
+    const originalKey = Object.keys(data).find(candidate => candidate.toLowerCase() === key);
+    if (originalKey && isMeaningfulArtifactData(data[originalKey], depth + 1)) return true;
+    if (originalKey && hasUsefulScalar(data[originalKey])) return true;
+  }
+  return false;
+}
+
+export function isMeaningfulArtifactBlock(block: RoverMessageBlock | undefined): boolean {
+  if (!block || block.type === 'text') return false;
+  const label = sanitizeText(block.label || '').toLowerCase();
+  if (/error|failure|raw json|tool output/.test(label) && !isMeaningfulArtifactData(block.data)) return false;
+  return isMeaningfulArtifactData(block.data);
+}
+
+const LOW_SIGNAL_TRACE_TITLES = new Set([
+  'data extracted successfully',
+  'execution completed',
+  'final response',
+  'run completed',
+  'verified result',
+  'verifying planner output',
+  'verifying result',
+]);
+
+function normalizeTraceTitle(value: string | undefined): string {
+  return sanitizeText(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+export function shouldRenderTraceEvent(event: RoverTimelineEvent): boolean {
+  const title = sanitizeText(event.title || '');
+  if (!title) return false;
+  if (title.toLowerCase() === 'assistant update') return false;
+  if (event.kind === 'assistant_response' && event.responseKind === 'final') return false;
+  return true;
+}
+
+export function isLowSignalTraceEvent(event: RoverTimelineEvent): boolean {
+  const title = normalizeTraceTitle(event.title);
+  if (LOW_SIGNAL_TRACE_TITLES.has(title)) return true;
+  if (event.kind === 'status' && /^complete:?/.test(title)) return true;
+  if (event.kind === 'thought' && LOW_SIGNAL_TRACE_TITLES.has(title)) return true;
+  const detail = normalizeTraceTitle(event.detail);
+  return !!detail && detail === title && LOW_SIGNAL_TRACE_TITLES.has(title);
+}
+
 export function deriveTraceKey(event: RoverTimelineEvent): string {
   const toolCallId = sanitizeText(event.actionCue?.toolCallId || '');
   if ((event.kind === 'tool_start' || event.kind === 'tool_result') && toolCallId) {

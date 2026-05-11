@@ -22,13 +22,15 @@ function read(relativePath) {
 
 test('public A2W docs teach prompt and shortcutId as canonical fields', () => {
   const combined = curatedFiles.map(file => read(file)).join('\n');
+  const combinedWithoutDeepLinkParamNames = combined
+    .replace(/"shortcut"\s*:\s*"rover_shortcut"/g, '"shortcutParam":"rover_shortcut"');
 
   assert.match(combined, /\/v1\/a2w\/runs/);
   assert.match(combined, /\bprompt\b/);
   assert.match(combined, /\bshortcutId\b/);
   assert.match(combined, /goal[^.]+compatibility alias|goal[^.]+accepted as (?:a )?compatibility alias|goal[^.]+accepted as an alias/i);
   assert.equal(/"goal"\s*:/.test(combined), false, 'canonical examples must not use "goal"');
-  assert.equal(/"shortcut"\s*:/.test(combined), false, 'canonical examples must not use "shortcut"');
+  assert.equal(/"shortcut"\s*:/.test(combinedWithoutDeepLinkParamNames), false, 'canonical examples must not use "shortcut"');
 });
 
 test('public A2W docs do not reintroduce legacy Rover protocol terms', () => {

@@ -137,7 +137,7 @@ These create `agent_authored` records.
 
 These tools are the RoverBook analytics, memory, and feedback layer. They are not the primary public site-action discovery surface by themselves. For arbitrary external agents, the preferred discovery path is:
 
-1. Rover Agent-to-Web Protocol (A2W) run access on `POST https://agent.rtrvr.ai/v1/a2w/runs`
+1. Rover Agent-to-Web Protocol (A2W) run access on `POST https://agent.rtrvr.ai/v1/a2w/runs` for API agents, or chatbot GET execution on `/v1/a2w/runs`, `/v1/a2w/from-url`, and `/v1/a2w/go/<descriptor>` when only URL fetch is available
 2. the site-published rich profile in `/.well-known/rover-site.json`
 3. site-published Rover shortcut skills in `/.well-known/agent-card.json`
 4. optional WebMCP tools when the browser/runtime supports them

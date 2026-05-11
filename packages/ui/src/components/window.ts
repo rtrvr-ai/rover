@@ -156,7 +156,7 @@ export function createWindow(opts: WindowOptions): WindowComponent {
   artifactStageHeader.className = 'artifactStageHeader';
   const artifactStageLabel = document.createElement('span');
   artifactStageLabel.className = 'artifactStageLabel';
-  artifactStageLabel.textContent = 'Live artifact';
+  artifactStageLabel.textContent = 'Result preview';
   const artifactStageToggle = document.createElement('button');
   artifactStageToggle.type = 'button';
   artifactStageToggle.className = 'artifactStageToggle';

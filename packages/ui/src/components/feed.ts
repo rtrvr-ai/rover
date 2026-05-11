@@ -12,9 +12,11 @@ import {
   mergeTranscriptItems,
   normalizeTimelineStatus,
   deriveTraceKey,
+  isLowSignalTraceEvent,
   renderAssistantMessageContent,
   renderMessageBlock,
   renderRichContent,
+  shouldRenderTraceEvent,
   type TranscriptMessageLike,
   type TranscriptSegment,
   type TranscriptTimelineLike,
@@ -324,9 +326,8 @@ export function createFeed(options: FeedOptions = {}): FeedComponent {
     const stableIndexByKey = new Map<string, number>();
     for (const rawEvent of events) {
       const title = sanitizeText(rawEvent.title || '');
-      if (!title) continue;
-      if (title.toLowerCase() === 'assistant update') continue;
       const event = { ...rawEvent, title };
+      if (!shouldRenderTraceEvent(event)) continue;
       const key = deriveTraceKey(event);
       const useStableKey =
         key === 'run'
@@ -442,6 +443,7 @@ export function createFeed(options: FeedOptions = {}): FeedComponent {
     entry.dataset.status = status;
     entry.dataset.kind = event.kind;
     entry.dataset.visibility = classifyVisibility(event);
+    entry.dataset.signal = isLowSignalTraceEvent(event) ? 'low' : 'normal';
 
     const tooltipText = event.actionCue ? '' : sanitizeText(event.detail || '');
     if (tooltipText) entry.dataset.tooltipText = tooltipText.slice(0, 400);
@@ -451,10 +453,20 @@ export function createFeed(options: FeedOptions = {}): FeedComponent {
   }
 
   function applyTraceSegmentVisibility(cards: HTMLDivElement[], expanded: boolean): void {
-    const visibleCards = expanded ? cards.length : getCollapsedVisibleCount(cards.length);
+    const highSignalIndexes = cards
+      .map((card, index) => ({ card, index }))
+      .filter(item => item.card.dataset.signal !== 'low')
+      .map(item => item.index);
+    const collapsedVisible = Math.min(getCollapsedVisibleCount(cards.length), highSignalIndexes.length);
+    const collapsedIndexes = collapsedVisible > 0 ? highSignalIndexes.slice(-collapsedVisible) : [];
+    const visibleIndexSet = new Set<number>(
+      expanded
+        ? cards.map((_, index) => index)
+        : collapsedIndexes,
+    );
     for (let i = 0; i < cards.length; i++) {
       const card = cards[i];
-      const isVisible = expanded || i >= cards.length - visibleCards;
+      const isVisible = visibleIndexSet.has(i);
       card.style.display = isVisible ? '' : 'none';
       const status = card.dataset.status;
       const done = status === 'success' || status === 'error' || status === 'info';
@@ -476,7 +488,7 @@ export function createFeed(options: FeedOptions = {}): FeedComponent {
 
     const label = document.createElement('span');
     label.className = 'traceSegmentLabel';
-    label.textContent = 'Execution log';
+    label.textContent = 'Workflow trace';
 
     const count = document.createElement('span');
     count.className = 'traceSegmentCount';
@@ -485,8 +497,8 @@ export function createFeed(options: FeedOptions = {}): FeedComponent {
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'traceSegmentToggle';
-    toggle.textContent = expanded ? 'Collapse' : `Show all (${displayedEvents.length})`;
-    toggle.style.display = displayedEvents.length > getCollapsedVisibleCount(displayedEvents.length) || expanded ? '' : 'none';
+    toggle.textContent = expanded ? 'Hide trace' : `Show trace (${displayedEvents.length})`;
+    toggle.style.display = displayedEvents.length > 1 || expanded ? '' : 'none';
     toggle.addEventListener('click', (event) => {
       event.stopPropagation();
       traceSegmentExpansion.set(segment.id, !expanded);

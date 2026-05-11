@@ -87,7 +87,7 @@ import {
   serializeNarrationVisitorPreference,
   type NarrationVisitorPreference,
 } from './audio.js';
-import { composeVoiceDraft, formatTime, renderMessageBlock, summarizeTaskText } from './dom-helpers.js';
+import { composeVoiceDraft, formatTime, isMeaningfulArtifactBlock, renderMessageBlock, summarizeTaskText } from './dom-helpers.js';
 import { createStateMachine } from './state-machine.js';
 import { morphSeedToWindow, morphWindowToSeed, morphBarToSeed, morphSeedToBar, prefersReducedMotion, scaleDuration } from './animation.js';
 import { createSeed } from './components/seed.js';
@@ -1151,7 +1151,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   function captureArtifactFromBlocks(blocks?: RoverMessageBlock[]): void {
     if (!Array.isArray(blocks) || blocks.length === 0) return;
-    const artifact = blocks.find(b => b.type === 'tool_output' || b.type === 'json') || null;
+    const artifact = blocks.find(isMeaningfulArtifactBlock) || null;
     if (!artifact) return;
     latestArtifactBlock = artifact;
     if (experience.stream?.artifactAutoMinimize !== false) artifactExpanded = false;
@@ -1704,6 +1704,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
       waitingForFirstModelSignal = true;
       if (!taskStartedAt) taskStartedAt = Date.now();
       toolStartCount = 0; toolResultCount = 0; updateTideProgress();
+      latestArtifactBlock = null;
+      artifactExpanded = false;
+      renderArtifactStage();
       if (experience.motion?.particles !== false) particleSystem.setMode('ambient');
 
       // Close panel if open — live stack replaces it during running

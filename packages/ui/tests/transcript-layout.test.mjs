@@ -9,6 +9,9 @@ import {
   deriveTimelineBody,
   deriveTimelineHeading,
   deriveTraceKey,
+  isLowSignalTraceEvent,
+  isMeaningfulArtifactBlock,
+  shouldRenderTraceEvent,
   summarizeTaskText,
 } from '../dist/dom-helpers.js';
 import { computeChipPlacement } from '../dist/components/action-spotlight.js';
@@ -102,6 +105,56 @@ test('action cues drive deterministic timeline text without exposing raw tool de
   assert.equal(deriveTraceKey(event), 'tool:call-1');
   assert.equal(deriveTimelineHeading(event), 'Clicking Checkout');
   assert.equal(deriveTimelineBody(event), '');
+});
+
+test('artifact preview ignores raw tool failures but keeps meaningful result payloads', () => {
+  assert.equal(
+    isMeaningfulArtifactBlock({
+      type: 'tool_output',
+      label: 'Tool output',
+      data: { success: false, error: 'Target element missing', allowFallback: true },
+    }),
+    false,
+  );
+
+  assert.equal(
+    isMeaningfulArtifactBlock({
+      type: 'json',
+      label: 'Results',
+      data: { rows: [{ title: 'Launch news', url: 'https://news.ycombinator.com/' }] },
+    }),
+    true,
+  );
+
+  assert.equal(
+    isMeaningfulArtifactBlock({
+      type: 'tool_output',
+      label: 'Tool output',
+      data: { success: true, data: {} },
+    }),
+    false,
+  );
+});
+
+test('collapsed workflow trace can hide generic spam and final response rows', () => {
+  assert.equal(
+    shouldRenderTraceEvent({ id: 'final', kind: 'assistant_response', responseKind: 'final', title: 'Final response' }),
+    false,
+  );
+  assert.equal(
+    isLowSignalTraceEvent({ id: 'verify', kind: 'thought', title: 'Verifying result', detail: 'Verifying result' }),
+    true,
+  );
+  assert.equal(
+    isLowSignalTraceEvent({ id: 'tool', kind: 'tool_start', title: 'Running click_element', toolName: 'click_element' }),
+    false,
+  );
+});
+
+test('feed labels the collapsed execution area as workflow trace', () => {
+  const source = read('src/components/feed.ts');
+  assert.match(source, /label\.textContent = 'Workflow trace'/);
+  assert.match(source, /Show trace/);
 });
 
 test('action spotlight chip placement avoids target, panel, viewport, and occupied chips', () => {
