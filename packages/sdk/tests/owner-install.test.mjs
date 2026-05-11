@@ -105,6 +105,52 @@ test('owner install bundle splits body runtime HTML from head discovery HTML', (
   assert.match(bundle.roverSiteJson || '', /"siteId": "site_123"/);
 });
 
+test('owner install bundle deep links work when browser Buffer lacks base64url support', () => {
+  const originalBuffer = globalThis.Buffer;
+  globalThis.Buffer = {
+    from() {
+      return {
+        toString(encoding) {
+          if (encoding === 'base64url') {
+            throw new TypeError('Unknown encoding: base64url');
+          }
+          return 'unused';
+        },
+      };
+    },
+  };
+
+  try {
+    const bundle = createRoverOwnerInstallBundle({
+      bootConfig: {
+        siteId: 'site_browser_buffer',
+        publicKey: 'pk_site_browser_buffer',
+        siteKeyId: 'key_browser_buffer',
+      },
+      discovery: {
+        siteId: 'site_browser_buffer',
+        siteUrl: 'https://example.com/',
+        siteName: 'Browser Buffer Store',
+        shortcuts: [
+          {
+            id: 'pricing_tour',
+            label: 'Pricing Tour',
+            prompt: 'Show me pricing.',
+          },
+        ],
+        aiAccess: {
+          enabled: true,
+        },
+      },
+    });
+
+    assert.match(JSON.stringify(bundle.agentCard), /\/v1\/a2w\/go\//);
+    assert.match(bundle.llmsTxt || '', /rover_exec/);
+  } finally {
+    globalThis.Buffer = originalBuffer;
+  }
+});
+
 test('owner install bundle advertises generated llms.txt with the default service-doc URL', () => {
   const bundle = createRoverOwnerInstallBundle({
     bootConfig: {
