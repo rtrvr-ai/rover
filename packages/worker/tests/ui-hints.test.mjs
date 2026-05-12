@@ -2,14 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  extractActionNarrationFromArgs,
-  extractActionHighlightFromArgs,
-  sanitizeActionNarration,
   stripToolUiHintsFromArgs,
 } from '../dist/agent/uiHints.js';
 import { createAgentContext } from '../dist/agent/context.js';
 
-test('tool ui narration is sanitized and stripped from executable args', () => {
+test('legacy tool ui hints are stripped from executable args only', () => {
   const args = {
     tab_id: 1,
     element_id: 42,
@@ -19,45 +16,6 @@ test('tool ui narration is sanitized and stripped from executable args', () => {
     },
   };
 
-  assert.equal(extractActionNarrationFromArgs(args), 'Opening checkout so you can review the next step.');
-  assert.equal(sanitizeActionNarration('Password is hunter2'), undefined);
-  assert.equal(
-    extractActionNarrationFromArgs({
-      text: 'secret@example.com',
-      ui: { narration: 'Typing secret@example.com into the email field.' },
-    }),
-    undefined,
-  );
-  assert.equal(
-    extractActionNarrationFromArgs({
-      option_value: 'XL',
-      ui: { narration: 'Selecting XL for the size filter.' },
-    }),
-    undefined,
-  );
-  assert.equal(
-    extractActionNarrationFromArgs({
-      file_name: 'tax-return.pdf',
-      file_url: 'https://files.example.com/private/tax-return.pdf',
-      ui: { narration: 'Uploading tax-return.pdf to the form.' },
-    }),
-    undefined,
-  );
-  assert.equal(
-    extractActionNarrationFromArgs({
-      path: '/Users/customer/private.pdf',
-      ui: { narration: 'Uploading /Users/customer/private.pdf now.' },
-    }),
-    undefined,
-  );
-  assert.equal(
-    extractActionNarrationFromArgs({
-      query: 'winter jackets',
-      ui: { narration: 'Searching for products now.' },
-    }),
-    'Searching for products now.',
-  );
-
   const stripped = stripToolUiHintsFromArgs(args);
   assert.deepEqual(stripped, {
     tab_id: 1,
@@ -65,19 +23,6 @@ test('tool ui narration is sanitized and stripped from executable args', () => {
     text: 'typed value',
   });
   assert.equal(Object.prototype.hasOwnProperty.call(args, 'ui'), true);
-});
-
-test('action highlight extraction returns boolean only when explicitly set', () => {
-  assert.equal(extractActionHighlightFromArgs({ ui: { highlight: true } }), true);
-  assert.equal(extractActionHighlightFromArgs({ ui: { highlight: false } }), false);
-  // Omitted highlight → undefined (defer to defaults)
-  assert.equal(extractActionHighlightFromArgs({ ui: { narration: 'Click submit' } }), undefined);
-  assert.equal(extractActionHighlightFromArgs({ ui: {} }), undefined);
-  assert.equal(extractActionHighlightFromArgs({}), undefined);
-  assert.equal(extractActionHighlightFromArgs(null), undefined);
-  // Non-boolean must be rejected (no truthy coercion)
-  assert.equal(extractActionHighlightFromArgs({ ui: { highlight: 'true' } }), undefined);
-  assert.equal(extractActionHighlightFromArgs({ ui: { highlight: 1 } }), undefined);
 });
 
 test('rover runtime context preserves explicit narration ui hints', async () => {

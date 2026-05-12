@@ -151,7 +151,7 @@ function createFrameQueue() {
   };
 }
 
-test('timeline narration text uses explicit narration and no-target action fallback', () => {
+test('timeline narration text uses explicit narration and avoids low-level action fallback', () => {
   assert.equal(resolveTimelineNarrationText({
     kind: 'tool_start',
     title: 'Running click',
@@ -163,7 +163,7 @@ test('timeline narration text uses explicit narration and no-target action fallb
     title: 'Running scroll_page',
     narrationActive: true,
     actionCue: { kind: 'scroll' },
-  }), 'Scrolling page');
+  }), '');
 
   assert.equal(resolveTimelineNarrationText({
     kind: 'tool_result',
@@ -330,6 +330,64 @@ test('final response narration prunes stale low-priority backlog', () => {
 
   frameQueue.runAll();
   assert.deepEqual(spoken.map(item => item.text), ['The answer is ready.']);
+});
+
+test('assistant answers and questions speak displayed text only when narration is active', () => {
+  const frameQueue = createFrameQueue();
+  const spoken = [];
+  const scheduler = createTimelineNarrationScheduler({
+    isEnabled: () => true,
+    shouldSpeakEvent: event => event.narrationActive === true,
+    speak: (text, options) => spoken.push({ text, options }),
+    scheduleFrame: callback => frameQueue.schedule(callback),
+    cancelFrame: id => frameQueue.cancel(id),
+  });
+
+  scheduler.scheduleEvent({
+    kind: 'assistant_response',
+    title: 'Final response',
+    responseKind: 'final',
+    detail: 'I found the right setup path.',
+    narrationActive: true,
+  });
+  scheduler.scheduleEvent({
+    kind: 'assistant_response',
+    title: 'Needs input',
+    responseKind: 'question',
+    detail: 'I need one detail: which workspace should I use?',
+    narrationActive: true,
+  });
+  scheduler.scheduleEvent({
+    kind: 'assistant_response',
+    title: 'Muted final',
+    responseKind: 'final',
+    detail: 'This should stay quiet.',
+    narrationActive: false,
+  });
+
+  frameQueue.runAll();
+  assert.deepEqual(spoken.map(item => item.text), [
+    'I found the right setup path.',
+    'I need one detail: which workspace should I use?',
+  ]);
+  assert.deepEqual(spoken.map(item => item.options.priority), ['high', 'high']);
+});
+
+test('assistant answers and questions are not sent through action narration fallbacks', () => {
+  assert.equal(resolveTimelineNarrationText({
+    kind: 'assistant_response',
+    title: 'Final response',
+    responseKind: 'final',
+    detail: 'I found the right setup path.',
+    narrationActive: false,
+  }), '');
+  assert.equal(resolveTimelineNarrationText({
+    kind: 'assistant_response',
+    title: 'Needs input',
+    responseKind: 'question',
+    detail: 'I need one detail.',
+    narrationActive: true,
+  }), 'I need one detail.');
 });
 
 test('timeline narration cancel prevents pending speech', () => {

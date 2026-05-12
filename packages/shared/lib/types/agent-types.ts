@@ -5,6 +5,7 @@ export enum SUB_AGENTS {
   extract = 'extract',
   infer = 'infer',
   processTabWorkflows = 'processTabWorkflows',
+  roverNarrationCompose = 'roverNarrationCompose',
   processText = 'processText',
   createSheetFromData = 'createSheetFromData',
   queryRtrvrDocs = 'queryRtrvrDocs',

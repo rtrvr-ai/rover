@@ -16,6 +16,13 @@ import { createRoverError, toRoverErrorEnvelope } from './errors.js';
 
 export type BridgeRpc = (method: string, params?: any) => Promise<any>;
 
+export type CallExtensionRouterOptions = {
+  timeoutMs?: number;
+  retry?: boolean;
+  signal?: AbortSignal;
+  sessionTokenWaitMs?: number;
+};
+
 export type RoverAgentConfig = {
   apiBase?: string;
   sessionToken?: string;
@@ -81,7 +88,7 @@ export type AgentContext = {
       runId?: string;
     },
   ) => Promise<any>;
-  callExtensionRouter: (action: string, data: any) => Promise<any>;
+  callExtensionRouter: (action: string, data: any, options?: CallExtensionRouterOptions) => Promise<any>;
   apiMode: boolean;
   apiToolsConfig?: ApiToolsConfig;
   tabularStore: TabularStore;
@@ -381,15 +388,21 @@ export function createAgentContext(
   const ACTIVE_TAB_CACHE_TTL_MS = 250;
   const EXTERNAL_PAGE_CACHE_TTL_MS = 45_000;
 
-  const callExtensionRouter = async (action: string, data: any): Promise<any> => {
+  const callExtensionRouter = async (action: string, data: any, options?: CallExtensionRouterOptions): Promise<any> => {
     let sessionToken = String(config.sessionToken || config.authToken || '').trim();
 
     // Brief wait for session token if not yet available (post-navigation resume).
     // The worker-level `config` object is mutable — when `update_config` arrives from the
     // main thread (even while this function is awaiting), `config.sessionToken` gets updated.
     if (!sessionToken || !sessionToken.startsWith('rvrsess_')) {
-      for (let wait = 0; wait < 3; wait++) {
-        await new Promise(resolve => setTimeout(resolve, 800));
+      const sessionTokenWaitMs = options?.sessionTokenWaitMs === undefined
+        ? 2_400
+        : Math.max(0, Number(options.sessionTokenWaitMs) || 0);
+      const waitSliceMs = 800;
+      const waitAttempts = Math.ceil(sessionTokenWaitMs / waitSliceMs);
+      for (let wait = 0; wait < waitAttempts; wait++) {
+        const delay = Math.min(waitSliceMs, sessionTokenWaitMs - (wait * waitSliceMs));
+        if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
         sessionToken = String(config.sessionToken || config.authToken || '').trim();
         if (sessionToken && sessionToken.startsWith('rvrsess_')) break;
       }
@@ -406,38 +419,60 @@ export function createAgentContext(
     }
 
     let lastError: Error | undefined;
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const maxRetries = options?.retry === false ? 0 : MAX_RETRIES;
+    const timeoutMs = Math.max(0, Number(options?.timeoutMs) || 0);
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (attempt > 0) {
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[attempt - 1]));
       }
 
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain',
-        },
-        body: JSON.stringify({
-          action,
-          data:
-            data && typeof data === 'object'
-              ? {
-                  ...data,
-                  sessionToken,
-                  sessionId: String(config.sessionId || '').trim() || undefined,
-                  runId: String(config.activeRunId || '').trim() || undefined,
-                  requestNonce: createRequestNonce(),
-                  ...(!(data as any).runtimeContext && runtimeContext ? { runtimeContext } : {}),
-                }
-              : {
-                  payload: data,
-                  sessionToken,
-                  sessionId: String(config.sessionId || '').trim() || undefined,
-                  runId: String(config.activeRunId || '').trim() || undefined,
-                  requestNonce: createRequestNonce(),
-                },
-        }),
-        signal: config.signal,
-      });
+      const requestController = timeoutMs > 0 || options?.signal || config.signal
+        ? new AbortController()
+        : undefined;
+      const abortRequest = () => {
+        try { requestController?.abort(); } catch { /* best-effort abort */ }
+      };
+      if (requestController && (config.signal?.aborted || options?.signal?.aborted)) {
+        abortRequest();
+      }
+      config.signal?.addEventListener?.('abort', abortRequest, { once: true });
+      options?.signal?.addEventListener?.('abort', abortRequest, { once: true });
+      const timeout = timeoutMs > 0 ? setTimeout(abortRequest, timeoutMs) : undefined;
+
+      let response: Response;
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain',
+          },
+          body: JSON.stringify({
+            action,
+            data:
+              data && typeof data === 'object'
+                ? {
+                    ...data,
+                    sessionToken,
+                    sessionId: String(config.sessionId || '').trim() || undefined,
+                    runId: String(config.activeRunId || '').trim() || undefined,
+                    requestNonce: createRequestNonce(),
+                    ...(!(data as any).runtimeContext && runtimeContext ? { runtimeContext } : {}),
+                  }
+                : {
+                    payload: data,
+                    sessionToken,
+                    sessionId: String(config.sessionId || '').trim() || undefined,
+                    runId: String(config.activeRunId || '').trim() || undefined,
+                    requestNonce: createRequestNonce(),
+                  },
+          }),
+          signal: requestController?.signal ?? config.signal,
+        });
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        config.signal?.removeEventListener?.('abort', abortRequest);
+        options?.signal?.removeEventListener?.('abort', abortRequest);
+      }
 
       if (!response.ok) {
         if (response.status === 429) {
@@ -448,7 +483,7 @@ export function createAgentContext(
             retryable: true,
             details: { status: 429, retryAfter },
           });
-          if (attempt < MAX_RETRIES) {
+          if (attempt < maxRetries) {
             lastError = err;
             continue;
           }

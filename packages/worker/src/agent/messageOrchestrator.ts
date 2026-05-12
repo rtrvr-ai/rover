@@ -380,6 +380,7 @@ export async function handleSendMessageWithFunctions(
         bridgeRpc: context.bridgeRpc,
         functionDeclarations: context.functionDeclarations,
         onPrevStepsUpdate: context.onPrevStepsUpdate,
+        actionUx: context.actionUx,
       });
       if (Array.isArray(actResult.prevSteps) && actResult.prevSteps.length > 0) {
         routedAgentPrevSteps = actResult.prevSteps;
@@ -444,6 +445,8 @@ export async function handleSendMessageWithFunctions(
       functionDeclarations: context.functionDeclarations,
       onPrevStepsUpdate: context.onPrevStepsUpdate,
       onPlannerHistoryUpdate: context.onPlannerHistoryUpdate,
+      onAssistantCheckpoint: context.onAssistantCheckpoint,
+      actionUx: context.actionUx,
     };
 
     const plannerResult = await executePlannerWithTools(plannerOptions, []);

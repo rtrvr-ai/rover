@@ -419,7 +419,7 @@ export type ActionSpotlightDecisionInput = {
   visitorSource: 'default' | 'visitor';
   /** Resolved on/off boolean — visitor's stored value when explicit, site default otherwise. */
   visitorEnabled: boolean;
-  /** Per-step planner override from `args.ui.highlight` (true=force on, false=suppress, undefined=defer). */
+  /** Presentation-layer override from local UI/controller state (true=force on, false=suppress, undefined=defer). */
   stepOverride?: boolean;
   /** runKind of the current run; undefined for free-text prompts (no shortcut). */
   currentRunKind?: 'guide' | 'task';
@@ -430,8 +430,8 @@ export type ActionSpotlightDecisionInput = {
 /**
  * Pure precedence rule for the action spotlight gate. Top wins:
  *   1. Visitor explicit OFF  → never fire (accessibility / preference is sacred).
- *   2. Visitor explicit ON   → fire unless planner per-step explicitly suppresses.
- *   3. Visitor default       → planner per-step (when set) overrides site config; otherwise
+ *   2. Visitor explicit ON   → fire unless local controller state explicitly suppresses.
+ *   3. Visitor default       → local controller state (when set) overrides site config; otherwise
  *                              site default + runKind allowedKinds decides.
  */
 export function resolveActionSpotlightDecision(input: ActionSpotlightDecisionInput): boolean {
@@ -459,15 +459,4 @@ export function resolveNarrationDefaultActiveForRun(
   if (defaultMode === 'off') return false;
   if (defaultMode === 'always') return true;
   return runKind === 'guide';
-}
-
-const FREEFORM_TASK_WORD_RE = /\b(?:buy|submit|fill|download|extract|compare|book|order|apply)\b/i;
-const FREEFORM_GUIDE_PHRASE_RE = /\b(?:show me|walk me through|where is|help me find|tour|guide me|give me a tour|demo|tutorial|teach me|how do i|how to|explain how)\b/i;
-
-export function deriveFreeformUiRunKind(input: string): 'guide' | 'task' {
-  const text = sanitizeText(input).toLowerCase();
-  if (!text) return 'task';
-  if (FREEFORM_TASK_WORD_RE.test(text)) return 'task';
-  if (FREEFORM_GUIDE_PHRASE_RE.test(text)) return 'guide';
-  return 'task';
 }

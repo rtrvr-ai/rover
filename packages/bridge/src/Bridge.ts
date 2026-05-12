@@ -514,6 +514,92 @@ export class Bridge {
     if (this.highlightEl) this.highlightEl.style.display = 'none';
   }
 
+  describeActionTarget(params?: {
+    call?: { name?: string; args?: Record<string, any> };
+    elementId?: number;
+    targetId?: string;
+  }): {
+    target?: {
+      targetId: string;
+      elementId?: number;
+      role?: string;
+      name?: string;
+      label?: string;
+      sectionLabel?: string;
+      formLabel?: string;
+      valueKind?: string;
+      sensitivity: 'none' | 'personal' | 'secret' | 'payment';
+      visible?: boolean;
+      bounds?: { x: number; y: number; width: number; height: number };
+    };
+    page: { title?: string; url?: string; host?: string };
+  } {
+    const args = params?.call?.args && typeof params.call.args === 'object' ? params.call.args : {};
+    const elementId = normalizePositiveElementId(params?.elementId) ?? getPrimaryElementId(args);
+    const page = {
+      title: document.title || undefined,
+      url: window.location.href || undefined,
+      host: window.location.hostname || undefined,
+    };
+    const fallbackTargetId = typeof params?.targetId === 'string' && params.targetId.trim()
+      ? params.targetId.trim().slice(0, 80)
+      : undefined;
+    if (!elementId) {
+      return fallbackTargetId
+        ? { target: { targetId: fallbackTargetId, sensitivity: 'none' }, page }
+        : { page };
+    }
+    const el = resolveInteractiveElementById(document, elementId);
+    if (!el) {
+      return { target: { targetId: `element:${elementId}`, elementId, sensitivity: 'none', visible: false }, page };
+    }
+
+    const rect = el.getBoundingClientRect();
+    const label = getElementVisibleLabel(el);
+    const name = getElementAccessibleName(el) || label;
+    const role = getElementRole(el);
+    const formLabel = getElementFormLabel(el);
+    const sectionLabel = getElementSectionLabel(el);
+    const visible = rect.width > 0 && rect.height > 0;
+    return {
+      target: {
+        targetId: `element:${elementId}`,
+        elementId,
+        role,
+        name,
+        label,
+        sectionLabel,
+        formLabel,
+        valueKind: getElementValueKind(el),
+        sensitivity: classifyElementSensitivity(el),
+        visible,
+        bounds: {
+          x: Math.round(rect.left),
+          y: Math.round(rect.top),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height),
+        },
+      },
+      page,
+    };
+  }
+
+  previewActionTarget(params?: {
+    call?: { name?: string; args?: Record<string, any> };
+    elementId?: number;
+    targetId?: string;
+  }): ReturnType<Bridge['describeActionTarget']> {
+    const description = this.describeActionTarget(params);
+    if (description.target?.elementId) {
+      this.highlight(description.target.elementId);
+    }
+    return description;
+  }
+
+  clearActionTarget(): void {
+    this.clearHighlight();
+  }
+
   setUploadBytesProvider(fn: (args: { token: string; byteLength: number; timeoutMs?: number }) => Promise<ArrayBuffer>): void {
     (window as any).__ROVER_UPLOAD_BYTES__ = fn;
   }
@@ -1779,6 +1865,101 @@ function hasAnyElementContext(args: Record<string, any>): boolean {
 function getPrimaryElementId(args: Record<string, any>): number | null {
   const ids = collectElementIdsFromArgs(args);
   return ids.length ? ids[0] : null;
+}
+
+function compactElementText(input: unknown, max = 96): string | undefined {
+  const text = String(input || '').replace(/\s+/g, ' ').trim();
+  if (!text) return undefined;
+  return text.slice(0, max);
+}
+
+function getElementRole(el: Element): string | undefined {
+  const explicit = compactElementText(el.getAttribute('role'), 48);
+  if (explicit) return explicit;
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'button') return 'button';
+  if (tag === 'a') return 'link';
+  if (tag === 'select') return 'combobox';
+  if (tag === 'textarea') return 'textbox';
+  if (tag === 'input') {
+    const type = String((el as HTMLInputElement).type || '').toLowerCase();
+    if (type === 'checkbox') return 'checkbox';
+    if (type === 'radio') return 'radio';
+    if (type === 'submit' || type === 'button') return 'button';
+    return 'textbox';
+  }
+  return tag || undefined;
+}
+
+function getElementVisibleLabel(el: Element): string | undefined {
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
+    const id = el.id ? (typeof CSS !== 'undefined' && typeof CSS.escape === 'function' ? CSS.escape(el.id) : el.id.replace(/"/g, '\\"')) : '';
+    const label = id ? document.querySelector(`label[for="${id}"]`) : null;
+    const wrapped = el.closest('label');
+    return compactElementText(label?.textContent || wrapped?.textContent || el.getAttribute('placeholder'));
+  }
+  return compactElementText(el.textContent);
+}
+
+function getElementAccessibleName(el: Element): string | undefined {
+  const labelledBy = compactElementText(el.getAttribute('aria-labelledby'), 160);
+  if (labelledBy) {
+    const parts = labelledBy
+      .split(/\s+/)
+      .map(id => document.getElementById(id)?.textContent || '')
+      .filter(Boolean)
+      .join(' ');
+    const resolved = compactElementText(parts);
+    if (resolved) return resolved;
+  }
+  return compactElementText(
+    el.getAttribute('aria-label')
+      || el.getAttribute('title')
+      || (el instanceof HTMLImageElement ? el.alt : '')
+      || getElementVisibleLabel(el),
+  );
+}
+
+function getElementFormLabel(el: Element): string | undefined {
+  const form = (el as any).form || el.closest('form');
+  if (!form) return undefined;
+  return compactElementText(
+    form.getAttribute?.('aria-label')
+      || form.getAttribute?.('name')
+      || form.querySelector?.('legend')?.textContent
+      || form.querySelector?.('h1,h2,h3,h4')?.textContent,
+  );
+}
+
+function getElementSectionLabel(el: Element): string | undefined {
+  const section = el.closest('section,main,article,aside,[role="region"],[aria-label]');
+  if (!section) return undefined;
+  return compactElementText(
+    section.getAttribute('aria-label')
+      || section.querySelector?.('h1,h2,h3,h4')?.textContent,
+  );
+}
+
+function getElementValueKind(el: Element): string | undefined {
+  if (el instanceof HTMLInputElement) return compactElementText(el.type || 'text', 48);
+  if (el instanceof HTMLTextAreaElement) return 'textarea';
+  if (el instanceof HTMLSelectElement) return 'select';
+  return undefined;
+}
+
+function classifyElementSensitivity(el: Element): 'none' | 'personal' | 'secret' | 'payment' {
+  const attrs = [
+    el.getAttribute('type'),
+    el.getAttribute('name'),
+    el.getAttribute('id'),
+    el.getAttribute('autocomplete'),
+    el.getAttribute('aria-label'),
+    getElementVisibleLabel(el),
+  ].join(' ').toLowerCase();
+  if (/(card|cc-|credit|cvv|cvc|expiry|exp-|iban|bank)/.test(attrs)) return 'payment';
+  if (/(password|passcode|secret|token|otp|mfa|verification|code)/.test(attrs)) return 'secret';
+  if (/(email|phone|name|address|zip|postal|city|state|country|company)/.test(attrs)) return 'personal';
+  return 'none';
 }
 
 function findByText(doc: Document, text: string): Element | null {

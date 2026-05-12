@@ -7148,10 +7148,7 @@ async function dispatchUserPromptAsync(
     : resolveNarrationAvailableFromConfig(currentConfig);
   const effectiveNarrationEnabledForRun = options?.narrationEnabledForRun ?? fallbackNarrationAvailable;
   const effectiveNarrationPreferenceSource = options?.narrationPreferenceSource || narrationPreferenceSource;
-  const derivedFreeformRunKind = options?.narrationRunKind || options?.actionSpotlightRunKind
-    ? undefined
-    : deriveFreeformUiRunKind(trimmed);
-  const effectiveNarrationRunKind = normalizeRoverRunKind(options?.narrationRunKind) || derivedFreeformRunKind;
+  const effectiveNarrationRunKind = normalizeRoverRunKind(options?.narrationRunKind);
   const effectiveNarrationLanguage = options?.narrationLanguage || narrationLanguage;
   const effectiveNarrationDefaultActiveForRun = typeof options?.narrationDefaultActiveForRun === 'boolean'
     ? options.narrationDefaultActiveForRun
@@ -8354,6 +8351,9 @@ function setupSessionCoordinator(cfg: RoverInit): void {
       return pageData;
     }
     if (request.method === 'executeTool') return bridge.executeTool(request.params.call, request.params.payload);
+    if (request.method === 'describeActionTarget') return bridge.describeActionTarget(request.params);
+    if (request.method === 'previewActionTarget') return bridge.previewActionTarget(request.params);
+    if (request.method === 'clearActionTarget') return bridge.clearActionTarget();
     throw new Error(`Unknown RPC method: ${request.method}`);
   });
 
@@ -8532,10 +8532,11 @@ function handleWorkerMessage(msg: any): void {
     const actionCue = buildRoverActionCue(msg.call, msg.toolCallId, { logicalTabId });
     const toolStartElementId = actionCue?.primaryElementId
       ?? (typeof msg.call?.args?.element_id === 'number' ? msg.call.args.element_id : undefined);
+    const guidedPresentation = msg.narrationActive === true || msg.actionSpotlightActive === true;
     appendTimelineEvent({
       kind: 'tool_start',
-      title: `Running ${msg.call?.name || 'tool'}`,
-      detailBlocks: buildToolStartDetailBlocks(msg.call),
+      title: guidedPresentation ? 'Rover is taking the next step' : `Running ${msg.call?.name || 'tool'}`,
+      detailBlocks: guidedPresentation ? undefined : buildToolStartDetailBlocks(msg.call),
       status: 'pending',
       elementId: toolStartElementId,
       toolName: msg.call?.name,
@@ -8567,11 +8568,13 @@ function handleWorkerMessage(msg: any): void {
     const actionCue = buildRoverActionCue(msg.call, msg.toolCallId, { logicalTabId });
     const toolResultElementId = actionCue?.primaryElementId
       ?? (typeof msg.call?.args?.element_id === 'number' ? msg.call.args.element_id : undefined);
+    const guidedPresentation = msg.narrationActive === true || msg.actionSpotlightActive === true;
+    const failed = msg?.result?.success === false;
     appendTimelineEvent({
       kind: 'tool_result',
-      title: `${msg.call?.name || 'tool'} completed`,
-      detailBlocks,
-      status: msg?.result?.success === false ? 'error' : 'success',
+      title: guidedPresentation && !failed ? 'Step completed' : `${msg.call?.name || 'tool'} completed`,
+      detailBlocks: guidedPresentation && !failed ? undefined : detailBlocks,
+      status: failed ? 'error' : 'success',
       elementId: toolResultElementId,
       toolName: msg.call?.name,
       narration: typeof msg.narration === 'string' ? msg.narration : undefined,
@@ -9546,17 +9549,6 @@ function deriveExperienceConfig(cfg: RoverInit | null): RoverServerExperienceCon
 
 function normalizeRoverRunKind(input: unknown): 'guide' | 'task' | undefined {
   return input === 'guide' || input === 'task' ? input : undefined;
-}
-
-const FREEFORM_TASK_WORD_RE = /\b(?:buy|submit|fill|download|extract|compare|book|order|apply)\b/i;
-const FREEFORM_GUIDE_PHRASE_RE = /\b(?:show me|walk me through|where is|help me find|tour|guide me|give me a tour|demo|tutorial|teach me|how do i|how to|explain how)\b/i;
-
-function deriveFreeformUiRunKind(input: string): 'guide' | 'task' {
-  const text = String(input || '').replace(/\s+/g, ' ').trim().toLowerCase();
-  if (!text) return 'task';
-  if (FREEFORM_TASK_WORD_RE.test(text)) return 'task';
-  if (FREEFORM_GUIDE_PHRASE_RE.test(text)) return 'guide';
-  return 'task';
 }
 
 function resolveDefaultActionSpotlightActiveForRunFromConfig(
@@ -12034,6 +12026,60 @@ function createRuntime(cfg: RoverInit): void {
       } catch {
         return buildTabAccessToolError(runtimeCfg, targetTab, 'cross_tab_execute_failed');
       }
+    },
+    describeActionTarget: async (params: any) => {
+      const tabId = Number(params?.call?.args?.tab_id);
+      const activeTabId = sessionCoordinator?.getActiveLogicalTabId();
+      const routeTabId = (Number.isFinite(tabId) && tabId > 0) ? tabId : activeTabId;
+      const localTabId = sessionCoordinator?.getLocalLogicalTabId();
+      if (!routeTabId || routeTabId === localTabId || !sessionCoordinator) {
+        return bridge!.describeActionTarget(params);
+      }
+      const targetTab = sessionCoordinator.listTabs().find(t => t.logicalTabId === routeTabId);
+      if (!targetTab?.runtimeId || targetTab.external || !sessionCoordinator.isTabAlive(routeTabId)) {
+        return bridge!.describeActionTarget(params);
+      }
+      try {
+        return await sessionCoordinator.sendCrossTabRpc(targetTab.runtimeId, 'describeActionTarget', params, 800);
+      } catch {
+        return bridge!.describeActionTarget(params);
+      }
+    },
+    previewActionTarget: async (params: any) => {
+      const tabId = Number(params?.call?.args?.tab_id);
+      const activeTabId = sessionCoordinator?.getActiveLogicalTabId();
+      const routeTabId = (Number.isFinite(tabId) && tabId > 0) ? tabId : activeTabId;
+      const localTabId = sessionCoordinator?.getLocalLogicalTabId();
+      if (!routeTabId || routeTabId === localTabId || !sessionCoordinator) {
+        return bridge!.previewActionTarget(params);
+      }
+      const targetTab = sessionCoordinator.listTabs().find(t => t.logicalTabId === routeTabId);
+      if (!targetTab?.runtimeId || targetTab.external || !sessionCoordinator.isTabAlive(routeTabId)) {
+        return bridge!.describeActionTarget(params);
+      }
+      try {
+        return await sessionCoordinator.sendCrossTabRpc(targetTab.runtimeId, 'previewActionTarget', params, 800);
+      } catch {
+        return bridge!.describeActionTarget(params);
+      }
+    },
+    clearActionTarget: async (params: any) => {
+      const tabId = Number(params?.call?.args?.tab_id);
+      const activeTabId = sessionCoordinator?.getActiveLogicalTabId();
+      const routeTabId = (Number.isFinite(tabId) && tabId > 0) ? tabId : activeTabId;
+      const localTabId = sessionCoordinator?.getLocalLogicalTabId();
+      if (!routeTabId || routeTabId === localTabId || !sessionCoordinator) {
+        return bridge!.clearActionTarget();
+      }
+      const targetTab = sessionCoordinator.listTabs().find(t => t.logicalTabId === routeTabId);
+      if (targetTab?.runtimeId && !targetTab.external && sessionCoordinator.isTabAlive(routeTabId)) {
+        try {
+          return await sessionCoordinator.sendCrossTabRpc(targetTab.runtimeId, 'clearActionTarget', params, 800);
+        } catch {
+          return bridge!.clearActionTarget();
+        }
+      }
+      return bridge!.clearActionTarget();
     },
     executeClientTool: (params: any) => bridge!.executeClientTool(params.name, params.args),
     listClientTools: () => bridge!.listClientTools(),
