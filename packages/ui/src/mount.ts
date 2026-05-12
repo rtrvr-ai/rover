@@ -65,7 +65,6 @@ import {
   sanitizeExperienceConfig,
   sanitizeVoiceConfig,
   sanitizeText,
-  deriveFreeformUiRunKind,
   normalizeVoiceAutoStopMs,
   deriveAccentTokens,
   deriveActionSpotlightTokens,
@@ -1149,7 +1148,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     const message = text || (attachments.length > 0 ? 'Use the attached files as context for this task.' : '');
     if (!message) return;
     unlockNarration();
-    currentRunKind = deriveFreeformUiRunKind(message);
+    currentRunKind = undefined;
     setTaskSuggestion({ visible: false });
     latestTaskTitle = text || (attachments.length > 0 ? `Review ${attachments.length === 1 ? attachments[0].name : `${attachments.length} attachments`}` : latestTaskTitle);
     taskStartedAt = Date.now();

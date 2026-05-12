@@ -8,6 +8,7 @@ import {
   buildWorkerStopSignal,
 } from './utils.js';
 import type { SystemNavigationOutcome } from './systemTools.js';
+import type { ActionUxToolHooks } from './systemTools.js';
 import type { FunctionCall, PreviousSteps, FunctionDeclaration, StatusStage } from './types.js';
 import type { AgentContext } from './context.js';
 import { resolveRuntimeTabs } from './runtimeTabs.js';
@@ -31,6 +32,7 @@ export type AgenticSeekOptions = {
   bridgeRpc: (method: string, params?: any) => Promise<any>;
   ctx: AgentContext;
   onPrevStepsUpdate?: (steps: PreviousSteps[]) => void;
+  actionUx?: ActionUxToolHooks;
 };
 
 export type AgenticSeekResult = {
@@ -83,6 +85,7 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
     bridgeRpc,
     ctx,
     onPrevStepsUpdate,
+    actionUx,
   } = options;
   const requestUserInput = resolveActLoopUserInput(userInput, ctx.rootUserInput);
 
@@ -243,6 +246,7 @@ export async function executeAgenticSeek(options: AgenticSeekOptions): Promise<A
         userFunctionDeclarations: functionDeclarations,
         onStatusUpdate,
         onPrevStepsUpdate,
+        actionUx,
       });
       if (ctx.isCancelled?.()) {
         return { error: 'Run cancelled', prevSteps: accumulatedPrevSteps, creditsUsed: totalCreditsUsed };

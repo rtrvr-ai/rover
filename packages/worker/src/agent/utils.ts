@@ -12,6 +12,7 @@ import type {
   StatusStage,
 } from './types.js';
 import type { LLMFunction, SystemNavigationOutcome } from './systemTools.js';
+import type { ActionUxToolHooks } from './systemTools.js';
 import { executeSystemToolCallsSequentially } from './systemTools.js';
 
 const SYSTEM_TOOL_ALIASES: Record<string, string> = {
@@ -85,6 +86,7 @@ export async function processActionResponse({
   userFunctionDeclarations,
   onStatusUpdate,
   onPrevStepsUpdate,
+  actionUx,
 }: {
   request: any;
   response: any;
@@ -96,6 +98,7 @@ export async function processActionResponse({
   userFunctionDeclarations?: FunctionDeclaration[];
   onStatusUpdate?: (message: string, thought?: string, stage?: StatusStage) => void;
   onPrevStepsUpdate?: (steps: PreviousSteps[]) => void;
+  actionUx?: ActionUxToolHooks;
 }): Promise<{
   needsRetry: boolean;
   data?: Record<string, unknown>[];
@@ -259,7 +262,7 @@ export async function processActionResponse({
 
     if (systemCalls.length > 0) {
       throwIfCancelled();
-      onStatusUpdate?.(`Executing browser actions: ${systemCalls.map(c => c.name).join(', ')}`, thought, 'execute');
+      onStatusUpdate?.(actionUx ? 'Working on the page' : `Executing browser actions: ${systemCalls.map(c => c.name).join(', ')}`, thought, 'execute');
       prevSteps.push({
         accTreeId,
         thought,
@@ -288,6 +291,7 @@ export async function processActionResponse({
         calls: systemCalls,
         bridgeRpc,
         isCancelled,
+        actionUx,
       });
       disableAutoScroll = isScroll;
       throwIfCancelled();

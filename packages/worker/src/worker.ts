@@ -24,7 +24,8 @@ import { isApiKeyRequiredError, toRoverErrorEnvelope } from './agent/errors.js';
 import { resolveRuntimeTabs } from './agent/runtimeTabs.js';
 import { shouldClearHistoryForRun } from './runHistoryGuards.js';
 import { classifyNavigationContinuation } from './navigationContinuation.js';
-import { extractActionNarrationFromArgs, extractActionHighlightFromArgs, stripToolUiHintsFromArgs } from './agent/uiHints.js';
+import { stripToolUiHintsFromArgs } from './agent/uiHints.js';
+import { ActionUxController } from './agent/actionUx.js';
 import {
   deriveResponseNarrationFromOutput,
   deriveResponseTextFromOutput,
@@ -208,6 +209,10 @@ let lastRuntimeTabsDiagnosticsKey = '';
 const terminalRuns = new Map<string, TerminalRunResult>();
 let activeActionNarration = false;
 let activeActionNarrationDefaultActive = false;
+let activeActionSpotlight = false;
+let activeActionSpotlightDefaultActive = false;
+let activeNarrationRunKind: 'guide' | 'task' | undefined;
+let activeNarrationLanguage: string | undefined;
 let lastAssistantResponseNarrationKey = '';
 
 let RPC_TIMEOUT_MS = 30_000;
@@ -223,17 +228,6 @@ function normalizeNarrationRunKind(input: unknown): 'guide' | 'task' | undefined
   return input === 'guide' || input === 'task' ? input : undefined;
 }
 
-const FREEFORM_TASK_WORD_RE = /\b(?:buy|submit|fill|download|extract|compare|book|order|apply)\b/i;
-const FREEFORM_GUIDE_PHRASE_RE = /\b(?:show me|walk me through|where is|help me find|tour|guide me|give me a tour|demo|tutorial|teach me|how do i|how to|explain how)\b/i;
-
-function classifyNarrationRunKind(input?: string): 'guide' | 'task' {
-  const text = String(input || '').toLowerCase();
-  if (!text.trim()) return 'task';
-  if (FREEFORM_TASK_WORD_RE.test(text)) return 'task';
-  if (FREEFORM_GUIDE_PHRASE_RE.test(text)) return 'guide';
-  return 'task';
-}
-
 function normalizeActionSpotlightRunKinds(input: unknown): Array<'guide' | 'task'> | undefined {
   if (!Array.isArray(input)) return undefined;
   const kinds = input.filter((kind): kind is 'guide' | 'task' => kind === 'guide' || kind === 'task');
@@ -244,7 +238,8 @@ function isDefaultActionSpotlightActive(config: RoverWorkerConfig | null, runKin
   const motion = config?.ui?.experience?.motion;
   if (motion?.actionSpotlight === false) return false;
   const allowedKinds = normalizeActionSpotlightRunKinds(motion?.actionSpotlightRunKinds);
-  return !runKind || !allowedKinds || allowedKinds.length === 0 || allowedKinds.includes(runKind);
+  if (!runKind) return false;
+  return !allowedKinds || allowedKinds.length === 0 || allowedKinds.includes(runKind);
 }
 
 function isDefaultNarrationActive(config: RoverWorkerConfig | null, runKind?: 'guide' | 'task'): boolean {
@@ -258,12 +253,12 @@ function isDefaultNarrationActive(config: RoverWorkerConfig | null, runKind?: 'g
     : 'guided';
   if (defaultMode === 'off') return false;
   if (defaultMode === 'always') return true;
-  return !runKind || runKind === 'guide';
+  return runKind === 'guide';
 }
 
 function resolveActionNarrationHints(
   config: RoverWorkerConfig | null,
-  userInput?: string,
+  _userInput?: string,
   options?: {
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
@@ -291,8 +286,7 @@ function resolveActionNarrationHints(
       ? 'off'
     : 'guided';
   const runKind = normalizeNarrationRunKind(options?.narrationRunKind)
-    || normalizeNarrationRunKind(options?.actionSpotlightRunKind)
-    || classifyNarrationRunKind(userInput || rootUserInput);
+    || normalizeNarrationRunKind(options?.actionSpotlightRunKind);
   const next: {
     actionNarration?: boolean;
     actionNarrationDefaultActive?: boolean;
@@ -719,20 +713,22 @@ function wrapBridgeRpcWithToolLifecycle(
     }
 
     const toolCallId = typeof rawCall.id === 'string' && rawCall.id.trim() ? rawCall.id.trim() : crypto.randomUUID();
-    const narration = extractActionNarrationFromArgs(rawCall.args);
-    const actionSpotlightActive = extractActionHighlightFromArgs(rawCall.args);
     const call = cloneToolCall(rawCall, toolCallId);
-    postToolLifecycleEvent('tool_start', { call, toolCallId, narration, actionSpotlightActive });
+    if (params?.uxManaged === true) {
+      return rawBridgeRpc(method, { ...(params || {}), call });
+    }
+    const actionSpotlightActive = activeActionSpotlight === true && activeActionSpotlightDefaultActive === true;
+    postToolLifecycleEvent('tool_start', { call, toolCallId, actionSpotlightActive });
     try {
       const result = await rawBridgeRpc(method, { ...(params || {}), call });
-      postToolLifecycleEvent('tool_result', { call, toolCallId, narration, actionSpotlightActive, result: cloneUnknown(result) });
+      postToolLifecycleEvent('tool_result', { call, toolCallId, actionSpotlightActive, result: cloneUnknown(result) });
       return result;
     } catch (err: any) {
       const result = {
         success: false,
         error: err?.message || String(err),
       };
-      postToolLifecycleEvent('tool_result', { call, toolCallId, narration, actionSpotlightActive, result });
+      postToolLifecycleEvent('tool_result', { call, toolCallId, actionSpotlightActive, result });
       throw err;
     }
   };
@@ -2517,6 +2513,10 @@ async function handleUserMessage(
   });
   activeActionNarration = narrationHints.actionNarration === true;
   activeActionNarrationDefaultActive = narrationHints.actionNarrationDefaultActive === true;
+  activeActionSpotlight = narrationHints.actionSpotlight === true;
+  activeActionSpotlightDefaultActive = narrationHints.actionSpotlightDefaultActive === true;
+  activeNarrationRunKind = narrationHints.runKind;
+  activeNarrationLanguage = narrationHints.narrationLanguage;
   const runtimeContext = buildRoverRuntimeContext({
     tabs: tabsForRun,
     config,
@@ -2540,6 +2540,26 @@ async function handleUserMessage(
     tabularStore,
   );
   ctx.isCancelled = () => !!(activeRunId && cancelledRunIds.has(activeRunId));
+  const actionUx = (narrationHints.actionNarration || narrationHints.actionSpotlight)
+    ? new ActionUxController({
+        ctx,
+        bridgeRpc,
+        runtimeContext,
+        runId: activeRunId,
+        trajectoryId: taskTrajectoryId,
+        rootUserInput: normalizeRootUserInput(rootUserInput),
+        runKind: narrationHints.runKind,
+        runKindSource: narrationHints.runKind ? 'explicit' : 'unspecified',
+        narrationLanguage: narrationHints.narrationLanguage,
+        actionNarration: narrationHints.actionNarration,
+        actionNarrationDefaultActive: narrationHints.actionNarrationDefaultActive,
+        actionSpotlight: narrationHints.actionSpotlight,
+        actionSpotlightDefaultActive: narrationHints.actionSpotlightDefaultActive,
+        postToolLifecycleEvent,
+        postStatus,
+        isCancelled: ctx.isCancelled,
+      })
+    : undefined;
   // Only pass user/client-declared tools. Planner built-ins come from backend.
   const functionDeclarations = dedupeFunctionDeclarations(
     removePlannerNameCollisions(toolRegistry.getFunctionDeclarations()),
@@ -2598,6 +2618,7 @@ async function handleUserMessage(
     onPrevStepsUpdate,
     onPlannerHistoryUpdate,
     onAssistantCheckpoint,
+    actionUx,
   });
   throwIfCancelledRun(activeRunId);
   if (result.directToolResult) {

@@ -3,7 +3,6 @@ import test from 'node:test';
 
 import {
   deriveActionSpotlightTokens,
-  deriveFreeformUiRunKind,
   normalizeHexColor,
   resolveMountExperienceConfig,
   resolveActionSpotlightDecision,
@@ -175,12 +174,12 @@ test('explicit actionSpotlightRunKinds wins over guided preset and missing kinds
 //
 // Top wins (sacred order):
 //   1. Visitor explicit OFF → never fire (accessibility).
-//   2. Visitor explicit ON  → fire unless planner per-step explicitly suppresses.
-//   3. Visitor default      → planner per-step (when set) overrides site config; otherwise
+//   2. Visitor explicit ON  → fire unless local controller state explicitly suppresses.
+//   3. Visitor default      → local controller state (when set) overrides site config; otherwise
 //                             site default + runKind allowedKinds decides.
 
-test('spotlight: visitor explicit OFF blocks everything (planner cannot re-enable)', () => {
-  // Visitor turned off in the header → no override (even from planner) brings it back.
+test('spotlight: visitor explicit OFF blocks everything', () => {
+  // Visitor turned off in the header; no presentation override brings it back.
   assert.equal(
     resolveActionSpotlightDecision({
       visitorSource: 'visitor', visitorEnabled: false,
@@ -197,8 +196,8 @@ test('spotlight: visitor explicit OFF blocks everything (planner cannot re-enabl
   );
 });
 
-test('spotlight: visitor explicit ON fires unless planner explicitly suppresses', () => {
-  // Visitor opted in. Planner unset / true → fire.
+test('spotlight: visitor explicit ON fires unless controller explicitly suppresses', () => {
+  // Visitor opted in. Controller unset / true -> fire.
   assert.equal(
     resolveActionSpotlightDecision({
       visitorSource: 'visitor', visitorEnabled: true,
@@ -213,8 +212,7 @@ test('spotlight: visitor explicit ON fires unless planner explicitly suppresses'
     }),
     true,
   );
-  // Planner says false to suppress a noisy step → respect it (visitor opted in but agent
-  // has contextual reason to skip this one).
+  // Controller says false to suppress a noisy step; respect it.
   assert.equal(
     resolveActionSpotlightDecision({
       visitorSource: 'visitor', visitorEnabled: true,
@@ -224,8 +222,8 @@ test('spotlight: visitor explicit ON fires unless planner explicitly suppresses'
   );
 });
 
-test('spotlight: visitor default + planner per-step overrides site config', () => {
-  // Site OFF (e.g., minimal preset), visitor never set pref, planner forces ON for a critical step.
+test('spotlight: visitor default + local override can beat site config', () => {
+  // Site OFF (e.g., minimal preset), visitor never set pref, controller forces ON for a critical step.
   assert.equal(
     resolveActionSpotlightDecision({
       visitorSource: 'default', visitorEnabled: false,
@@ -233,7 +231,7 @@ test('spotlight: visitor default + planner per-step overrides site config', () =
     }),
     true,
   );
-  // Site ON for guide runs, but planner suppresses a noisy step.
+  // Site ON for guide runs, but controller suppresses a noisy step.
   assert.equal(
     resolveActionSpotlightDecision({
       visitorSource: 'default', visitorEnabled: true,
@@ -243,7 +241,7 @@ test('spotlight: visitor default + planner per-step overrides site config', () =
   );
 });
 
-test('spotlight: visitor default + no planner override falls through to site config + runKind', () => {
+test('spotlight: visitor default + no local override falls through to site config + runKind', () => {
   // Guided preset: actionSpotlight=true, allowedKinds=['guide']. Guide run → fires.
   assert.equal(
     resolveActionSpotlightDecision({
@@ -260,8 +258,8 @@ test('spotlight: visitor default + no planner override falls through to site con
     }),
     false,
   );
-  // Neutral free-text is classified as task UI before this decision point, and
-  // missing runKind stays quiet on guide-only defaults.
+  // Free-text prompts do not get regex-classified; missing runKind stays quiet
+  // on guide-only defaults.
   assert.equal(
     resolveActionSpotlightDecision({
       visitorSource: 'default', visitorEnabled: true,
@@ -269,7 +267,7 @@ test('spotlight: visitor default + no planner override falls through to site con
     }),
     false,
   );
-  // Site has actionSpotlight=false (minimal preset) → never fires absent planner override.
+  // Site has actionSpotlight=false (minimal preset) -> never fires absent local override.
   assert.equal(
     resolveActionSpotlightDecision({
       visitorSource: 'default', visitorEnabled: false,
@@ -277,17 +275,4 @@ test('spotlight: visitor default + no planner override falls through to site con
     }),
     false,
   );
-});
-
-test('freeform UI mode heuristics keep task-like and neutral prompts quiet', () => {
-  assert.equal(deriveFreeformUiRunKind('show me where pricing lives'), 'guide');
-  assert.equal(deriveFreeformUiRunKind('walk me through checkout'), 'guide');
-  assert.equal(deriveFreeformUiRunKind('give me a demo of this product'), 'guide');
-  assert.equal(deriveFreeformUiRunKind('show a tutorial for the dashboard'), 'guide');
-  assert.equal(deriveFreeformUiRunKind('how do I change settings?'), 'guide');
-  assert.equal(deriveFreeformUiRunKind('explain how this works'), 'guide');
-  assert.equal(deriveFreeformUiRunKind('help me find and book an appointment'), 'task');
-  assert.equal(deriveFreeformUiRunKind('book a demo'), 'task');
-  assert.equal(deriveFreeformUiRunKind('extract the pricing table'), 'task');
-  assert.equal(deriveFreeformUiRunKind('what does this page say?'), 'task');
 });

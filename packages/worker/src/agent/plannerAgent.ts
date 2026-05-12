@@ -241,6 +241,7 @@ export async function executePlannerWithTools(
         bridgeRpc: options.bridgeRpc,
         functionDeclarations: options.functionDeclarations,
         onPrevStepsUpdate: options.onPrevStepsUpdate,
+        actionUx: options.actionUx,
       });
 
     const toolResultWithName: ToolExecutionResult = {

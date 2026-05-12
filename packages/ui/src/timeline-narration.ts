@@ -1,5 +1,4 @@
 import { sanitizeText } from './config.js';
-import { deriveActionCueText } from './dom-helpers.js';
 import type { RoverTimelineEvent } from './types.js';
 import type { RoverNarratorSpeakOptions } from './narrator.js';
 
@@ -17,9 +16,9 @@ type TimelineNarrationSchedulerOptions = {
   // (visitor explicitly turned narration off, or no narrator support). Used to drop
   // pending narrations on flush if the visitor flips OFF mid-batch.
   isEnabled: () => boolean;
-  // Event-aware precedence gate (visitor explicit > planner per-step > site default).
-  // When provided, scheduleEvent uses this in place of isEnabled so an explicit
-  // per-step narration can override site default 'off'. Defaults to isEnabled.
+  // Event-aware precedence gate (visitor explicit > presentation event > site default).
+  // When provided, scheduleEvent uses this in place of isEnabled so explicit
+  // user-facing narration text can be spoken only when allowed. Defaults to isEnabled.
   shouldSpeakEvent?: (event: RoverTimelineEvent) => boolean;
   speak: (text: string, options?: RoverNarratorSpeakOptions) => void;
   scheduleFrame?: FrameScheduler;
@@ -85,10 +84,7 @@ export function resolveTimelineNarrationText(event: RoverTimelineEvent): string 
     if (event.kind === 'assistant_response') {
       return explicit || (event.narrationActive === true ? normalizeNarrationText(event.detail) : '');
     }
-    const fallback = !explicit && event.kind === 'tool_start' && event.narrationActive === true
-      ? normalizeNarrationText(deriveActionCueText(event))
-      : '';
-    return explicit || fallback;
+    return explicit;
   } catch {
     return '';
   }

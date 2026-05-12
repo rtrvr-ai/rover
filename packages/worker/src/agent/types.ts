@@ -1,5 +1,6 @@
 import type { ToolOutput } from '@rover/shared/lib/types/index.js';
 import type { AssistantResponseKind } from './responseNarration.js';
+import type { ActionUxToolHooks } from './systemTools.js';
 
 export type RuntimeToolOutput =
   | ToolOutput
@@ -260,6 +261,7 @@ export type MessageOrchestratorOptions = {
   onPrevStepsUpdate?: (steps: PreviousSteps[]) => void;
   onPlannerHistoryUpdate?: (steps: PlannerPreviousStep[]) => void;
   onAssistantCheckpoint?: (payload: AssistantCheckpointPayload) => void;
+  actionUx?: ActionUxToolHooks;
 };
 
 export type PlannerOptions = {
@@ -285,6 +287,7 @@ export type PlannerOptions = {
   onPrevStepsUpdate?: (steps: PreviousSteps[]) => void;
   onPlannerHistoryUpdate?: (steps: PlannerPreviousStep[]) => void;
   onAssistantCheckpoint?: (payload: AssistantCheckpointPayload) => void;
+  actionUx?: ActionUxToolHooks;
 };
 
 export type ToolExecutionContext = {
@@ -311,4 +314,5 @@ export type ToolExecutionContext = {
   driveAuthToken?: string;
   agentLog?: AgentLogState;
   onPrevStepsUpdate?: (steps: PreviousSteps[]) => void;
+  actionUx?: ActionUxToolHooks;
 };

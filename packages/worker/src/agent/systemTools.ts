@@ -36,6 +36,12 @@ export type SystemToolBatchResult = {
   logicalTabId?: number;
 };
 
+export type ActionUxToolHooks = {
+  beforeTool?: (call: FunctionCall, index: number, calls: FunctionCall[]) => Promise<FunctionCall | void> | FunctionCall | void;
+  afterTool?: (call: FunctionCall, result: LLMFunction, index: number, calls: FunctionCall[]) => Promise<void> | void;
+  onBatchFinish?: (result: Pick<SystemToolBatchResult, 'navigationOccurred' | 'navigationTool' | 'navigationOutcome'>) => Promise<void> | void;
+};
+
 const NAVIGATION_TOOLS = new Set<SystemToolNames>([
   SystemToolNames.goto_url,
   SystemToolNames.google_search,
@@ -77,10 +83,12 @@ export async function executeSystemToolCallsSequentially({
   calls,
   bridgeRpc,
   isCancelled,
+  actionUx,
 }: {
   calls: FunctionCall[];
   bridgeRpc: (method: string, params?: any) => Promise<BridgeToolResponse>;
   isCancelled?: () => boolean;
+  actionUx?: ActionUxToolHooks;
 }): Promise<SystemToolBatchResult> {
   const results: LLMFunction[] = [];
   let sawViewportSensitiveToolSuccess = false;
@@ -89,19 +97,20 @@ export async function executeSystemToolCallsSequentially({
   let navigationOutcome: SystemNavigationOutcome | undefined;
   let logicalTabId: number | undefined;
 
+  try {
   for (const call of calls) {
     throwIfCancelled(isCancelled);
 
-    const name = call.name as SystemToolNames;
-    const args = (call.args || {}) as Record<string, any>;
+    const rawName = call.name as SystemToolNames;
+    const rawArgs = (call.args || {}) as Record<string, any>;
 
     if (navigationOccurred) {
       const skippedResult = {
-        name: name || 'unknown',
-        args,
+        name: rawName || 'unknown',
+        args: rawArgs,
         response: {
           status: 'Failure',
-          error: `Tool '${name}' skipped because navigation tool '${navigationTool}' already ran. Re-plan using new page state.`,
+          error: `Tool '${rawName}' skipped because navigation tool '${navigationTool}' already ran. Re-plan using new page state.`,
           output: undefined,
           allowFallback: true,
         },
@@ -110,10 +119,21 @@ export async function executeSystemToolCallsSequentially({
       continue;
     }
 
+    let executableCall = call;
+    try {
+      const nextCall = await actionUx?.beforeTool?.(call, results.length, calls);
+      if (nextCall && typeof nextCall === 'object') executableCall = nextCall;
+    } catch {
+      executableCall = call;
+    }
+
+    const name = executableCall.name as SystemToolNames;
+    const args = (executableCall.args || {}) as Record<string, any>;
+
     let response: BridgeToolResponse;
     try {
       throwIfCancelled(isCancelled);
-      response = await bridgeRpc('executeTool', { call });
+      response = await bridgeRpc('executeTool', { call: executableCall, uxManaged: true });
     } catch (err: any) {
       throwIfCancelled(isCancelled);
       response = { success: false, error: err?.message || String(err), allowFallback: true };
@@ -128,6 +148,7 @@ export async function executeSystemToolCallsSequentially({
 
     const resolvedResult = { name: name || 'unknown', args, response: llmResponse } satisfies LLMFunction;
     results.push(resolvedResult);
+    try { await actionUx?.afterTool?.(executableCall, resolvedResult, results.length - 1, calls); } catch { /* best-effort UX */ }
 
     if (response?.success) {
       const output = response?.output && typeof response.output === 'object'
@@ -183,6 +204,13 @@ export async function executeSystemToolCallsSequentially({
     if (ACTION_DELAY_MS > 0) {
       await new Promise(resolve => setTimeout(resolve, ACTION_DELAY_MS));
       throwIfCancelled(isCancelled);
+    }
+  }
+  } finally {
+    try {
+      await actionUx?.onBatchFinish?.({ navigationOccurred, navigationTool, navigationOutcome });
+    } catch {
+      // best-effort UX cleanup
     }
   }
 
