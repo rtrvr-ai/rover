@@ -7,6 +7,7 @@ import type { RoverAgentDiscoverySnapshot } from '@rover/shared/lib/types/index.
 export const DEFAULT_AGENT_CARD_PATH = '/.well-known/agent-card.json';
 export const DEFAULT_ROVER_SITE_PATH = '/.well-known/rover-site.json';
 export const DEFAULT_LLMS_PATH = '/llms.txt';
+export const DEFAULT_A2W_OPENAPI_URL = 'https://rtrvr.ai/openapi/a2w.yaml';
 export const ROVER_WEBMCP_DISCOVERY_GLOBAL = '__ROVER_WEBMCP_TOOL_DEFS__';
 export const ROVER_DISCOVERY_ACTION_SHEET_MAX_ACTIONS = 3;
 export const A2W_RUNS_PATH = '/v1/a2w/runs';
@@ -174,6 +175,7 @@ export type RoverSiteProfile = {
     agentCardUrl: string;
     roverSiteUrl: string;
     llmsUrl?: string;
+    openApiUrl?: string;
     siteUrl: string;
   };
   interfaces?: RoverAgentCard['interfaces'];
@@ -212,6 +214,7 @@ export type RoverAgentCard = {
       serviceDescUrl: string;
       roverSiteUrl: string;
       llmsUrl?: string;
+      openApiUrl?: string;
       deepLinkParams: {
         prompt: string;
         shortcut: string;
@@ -263,6 +266,7 @@ export type RoverAgentDiscoveryConfig = {
   agentCardUrl?: string;
   roverSiteUrl?: string;
   llmsUrl?: string;
+  openApiUrl?: string;
   visibleCue?: boolean;
   discoverySurface?: RoverDiscoverySurfacePolicy;
   hostSurfaceSelector?: string;
@@ -1234,6 +1238,7 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
   const serviceDescUrl = text(config.agentCardUrl) || DEFAULT_AGENT_CARD_PATH;
   const roverSiteUrl = text(config.roverSiteUrl) || DEFAULT_ROVER_SITE_PATH;
   const llmsUrl = text(config.llmsUrl);
+  const openApiUrl = text(config.openApiUrl) || DEFAULT_A2W_OPENAPI_URL;
   const launchAccess = resolveAiLaunchAccess(config.aiAccess);
   const publicRunEnabled = launchAccess.enabled;
   const cloudBrowserAllowed = config.aiAccess?.allowCloudBrowser !== false;
@@ -1357,6 +1362,7 @@ export function createRoverAgentCard(config: RoverAgentDiscoveryConfig): RoverAg
         serviceDescUrl,
         roverSiteUrl,
         ...(llmsUrl ? { llmsUrl } : {}),
+        ...(openApiUrl ? { openApiUrl } : {}),
         deepLinkParams: {
           prompt: 'rover',
           shortcut: 'rover_shortcut',
@@ -1445,6 +1451,7 @@ export function createRoverSiteProfile(config: RoverAgentDiscoveryConfig): Rover
       agentCardUrl: rover?.serviceDescUrl || text(config.agentCardUrl) || DEFAULT_AGENT_CARD_PATH,
       roverSiteUrl: rover?.roverSiteUrl || text(config.roverSiteUrl) || DEFAULT_ROVER_SITE_PATH,
       ...(rover?.llmsUrl ? { llmsUrl: rover.llmsUrl } : {}),
+      ...(rover?.openApiUrl ? { openApiUrl: rover.openApiUrl } : {}),
       siteUrl: rover?.siteUrl || normalizeSiteUrl(config.siteUrl),
     },
     interfaces: card.interfaces,
@@ -1460,7 +1467,9 @@ export function buildRoverAgentDiscoveryPayloads(config: RoverAgentDiscoveryConf
   roverSiteHref: string;
   pageManifest: RoverPageDefinition;
   pageManifestJson: string;
-  llmsUrl?: string;
+    llmsUrl?: string;
+    openApi?: string;
+    openApiUrl?: string;
   marker: {
     a2w?: string;
     run?: string;
@@ -1511,6 +1520,8 @@ export function buildRoverAgentDiscoveryPayloads(config: RoverAgentDiscoveryConf
     roverSite: roverSiteHref,
     site: card.extensions?.rover.siteUrl,
     workflow: card.extensions?.rover.workflowEndpoint,
+    openApi: card.extensions?.rover.openApiUrl,
+    openApiUrl: card.extensions?.rover.openApiUrl,
     page: pageManifest.pageId,
     preferExecution: card.extensions?.rover.preferredExecution,
     discoveryMode: card.extensions?.rover.discoverySurface.mode,
@@ -1599,8 +1610,34 @@ export function createRoverServiceDescLinkHeader(config: {
   return parts.join(', ');
 }
 
+export function createRoverAgentDiscoveryHeadLinkTags(config: {
+  agentCardUrl?: string;
+  llmsUrl?: string;
+  a2wGetUrl?: string;
+  fromUrlEndpoint?: string;
+  dataAttrs?: boolean;
+}): string {
+  const lines = [
+    `<link rel="service-desc" href="${escapeHtmlAttr(text(config.agentCardUrl) || DEFAULT_AGENT_CARD_PATH)}" type="application/json"${config.dataAttrs ? ' data-rover-agent-discovery="service-desc"' : ''} />`,
+  ];
+  const llmsUrl = text(config.llmsUrl);
+  if (llmsUrl) {
+    lines.push(`<link rel="service-doc" href="${escapeHtmlAttr(llmsUrl)}" type="text/markdown"${config.dataAttrs ? ' data-rover-agent-discovery="service-doc"' : ''} />`);
+  }
+  const a2wGetUrl = text(config.a2wGetUrl);
+  if (a2wGetUrl) {
+    lines.push(`<link rel="agent-run" href="${escapeHtmlAttr(a2wGetUrl)}" type="text/markdown"${config.dataAttrs ? ' data-rover-agent-discovery="agent-run" data-rover-methods="GET POST"' : ''} />`);
+  }
+  const fromUrlEndpoint = text(config.fromUrlEndpoint);
+  if (fromUrlEndpoint) {
+    lines.push(`<link rel="agent-resolver" href="${escapeHtmlAttr(fromUrlEndpoint)}" type="text/markdown"${config.dataAttrs ? ' data-rover-agent-discovery="agent-resolver" data-rover-methods="GET"' : ''} />`);
+  }
+  return lines.join('\n');
+}
+
 export function createRoverAgentDiscoveryTags(config: RoverAgentDiscoveryConfig): string {
   const {
+    card,
     cardJson,
     llmsUrl,
     markerJson,
@@ -1608,6 +1645,7 @@ export function createRoverAgentDiscoveryTags(config: RoverAgentDiscoveryConfig)
     roverSiteJson,
     serviceDescHref,
   } = buildRoverAgentDiscoveryPayloads(config);
+  const rover = card.extensions?.rover;
   const escapedCardJson = escapeScriptJson(cardJson);
   const escapedRoverSiteJson = escapeScriptJson(roverSiteJson);
   const escapedPageManifestJson = escapeScriptJson(pageManifestJson);
@@ -1617,6 +1655,12 @@ export function createRoverAgentDiscoveryTags(config: RoverAgentDiscoveryConfig)
   ];
   if (llmsUrl) {
     lines.push(`<link rel="service-doc" href="${escapeHtmlAttr(llmsUrl)}" type="text/markdown" data-rover-agent-discovery="service-doc" />`);
+  }
+  if (rover?.a2wGetEndpoint) {
+    lines.push(`<link rel="agent-run" href="${escapeHtmlAttr(rover.a2wGetEndpoint)}" type="text/markdown" data-rover-agent-discovery="agent-run" data-rover-methods="GET POST" />`);
+  }
+  if (rover?.fromUrlEndpoint) {
+    lines.push(`<link rel="agent-resolver" href="${escapeHtmlAttr(rover.fromUrlEndpoint)}" type="text/markdown" data-rover-agent-discovery="agent-resolver" data-rover-methods="GET" />`);
   }
   lines.push(`<script type="application/rover-site+json" data-rover-agent-discovery="rover-site">${escapedRoverSiteJson}</script>`);
   lines.push(`<script type="application/rover-page+json" data-rover-agent-discovery="page">${escapedPageManifestJson}</script>`);

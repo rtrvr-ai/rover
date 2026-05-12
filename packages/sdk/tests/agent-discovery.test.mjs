@@ -324,6 +324,11 @@ test('discovery tags include marker, service description, and inline agent card'
   assert.match(html, /data-rover-agent-discovery="marker"/);
   assert.match(html, /rel="service-desc"/);
   assert.match(html, /data-rover-agent-discovery="service-desc"/);
+  assert.match(html, /rel="agent-run"/);
+  assert.match(html, /data-rover-agent-discovery="agent-run"/);
+  assert.match(html, /data-rover-methods="GET POST"/);
+  assert.match(html, /rel="agent-resolver"/);
+  assert.match(html, /data-rover-agent-discovery="agent-resolver"/);
   assert.match(html, /application\/agent-card\+json/);
   assert.match(html, /data-rover-agent-discovery="agent-card"/);
   assert.match(html, /application\/rover-site\+json/);
@@ -341,6 +346,7 @@ test('well-known card helper and Link header helper produce deployable outputs',
   });
   const parsed = JSON.parse(json);
   assert.equal(parsed.name, 'Example Store');
+  assert.equal(parsed.extensions?.rover?.openApiUrl, 'https://rtrvr.ai/openapi/a2w.yaml');
 
   const linkHeader = createRoverServiceDescLinkHeader({
     agentCardUrl: '/.well-known/agent-card.json',

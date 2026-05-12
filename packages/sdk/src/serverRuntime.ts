@@ -158,6 +158,7 @@ export type RoverServerSiteConfig = {
   businessType?: RoverBusinessType;
   entitlements?: {
     naturalVoiceNarration?: boolean;
+    naturalVoiceDictation?: boolean;
   };
   version?: string | number;
 };

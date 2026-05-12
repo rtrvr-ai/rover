@@ -194,6 +194,7 @@ export interface RoverAgentDiscoverySnapshot {
   workflowEndpoint: string;
   serviceDescUrl?: string;
   llmsUrl?: string;
+  openApiUrl?: string;
   roverSiteUrl?: string;
   preferredExecution: RoverDiscoveryExecutionPreference;
   a2wRunsEnabled: boolean;

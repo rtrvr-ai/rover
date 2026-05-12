@@ -10,7 +10,14 @@ export type RoverVoiceTelemetryEvent =
   | 'voice_transcript_ready'
   | 'voice_error'
   | 'voice_permission_denied'
-  | 'voice_provider_selected';
+  | 'voice_provider_selected'
+  | 'voice_audio_capture_started'
+  | 'voice_audio_context_state'
+  | 'voice_first_audio_chunk'
+  | 'voice_stt_token_failed'
+  | 'voice_stt_socket_open'
+  | 'voice_stt_socket_close'
+  | 'voice_stt_socket_error';
 
 export type VoiceRecognitionResult = {
   finalTranscript: string;
@@ -432,11 +439,22 @@ function normalizeScribeError(message: string): VoiceRecognitionError {
   };
 }
 
+function normalizeAudioCaptureError(message: string): VoiceRecognitionError {
+  return {
+    code: /permission|notallowed|denied/i.test(message) ? 'permission_denied' : 'audio_capture',
+    message: message || 'Microphone audio could not be captured.',
+    recoverable: true,
+  };
+}
+
+const ELEVENLABS_FIRST_AUDIO_CHUNK_TIMEOUT_MS = 2_500;
+
 export function createElevenLabsVoiceTranscriber(input: {
   apiBase?: string;
   getAuth?: VoiceAuthProvider;
   modelId?: string;
   handlers?: VoiceTranscriberHandlers;
+  onTelemetry?: (event: RoverVoiceTelemetryEvent, payload?: Record<string, unknown>) => void;
 }): VoiceTranscriber {
   const handlers = input.handlers || {};
   let disposed = false;
@@ -454,11 +472,19 @@ export function createElevenLabsVoiceTranscriber(input: {
   let starting = false;
   let endEmitted = true;
   let stopCommitTimer: ReturnType<typeof setTimeout> | null = null;
+  let firstAudioChunkTimer: ReturnType<typeof setTimeout> | null = null;
+  let firstAudioChunkSent = false;
 
   function clearStopCommitTimer(): void {
     if (!stopCommitTimer) return;
     try { clearTimeout(stopCommitTimer); } catch { /* ignore */ }
     stopCommitTimer = null;
+  }
+
+  function clearFirstAudioChunkTimer(): void {
+    if (!firstAudioChunkTimer) return;
+    try { clearTimeout(firstAudioChunkTimer); } catch { /* ignore */ }
+    firstAudioChunkTimer = null;
   }
 
   function cleanupAudio(): void {
@@ -506,6 +532,7 @@ export function createElevenLabsVoiceTranscriber(input: {
     starting = false;
     started = false;
     clearStopCommitTimer();
+    clearFirstAudioChunkTimer();
     cleanupAudio();
     cleanupSocket();
     handlers.onEnd?.({ requested });
@@ -557,39 +584,67 @@ export function createElevenLabsVoiceTranscriber(input: {
     const auth = await input.getAuth?.();
     const sessionToken = String(auth?.sessionToken || '').trim();
     if (!sessionToken) throw new Error('Rover session is not ready for ElevenLabs dictation.');
-    const response = await fetch(`${resolveAudioApiBase(input.apiBase)}/v2/rover/audio/stt-token`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${sessionToken}`,
-      },
-      body: JSON.stringify({
-        sessionToken,
-        sessionId: auth?.sessionId,
-        language,
-        modelId: input.modelId,
-      }),
-    });
-    if (!response.ok) throw new Error(`ElevenLabs dictation token failed (${response.status}).`);
-    const json = await response.json() as ElevenLabsRealtimeTokenResponse;
-    return String(json.wssUrl || json.data?.wssUrl || '').trim();
+    try {
+      const response = await fetch(`${resolveAudioApiBase(input.apiBase)}/v2/rover/audio/stt-token`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${sessionToken}`,
+        },
+        body: JSON.stringify({
+          sessionToken,
+          sessionId: auth?.sessionId,
+          language,
+          modelId: input.modelId,
+        }),
+      });
+      if (!response.ok) {
+        const error = new Error(`ElevenLabs dictation token failed (${response.status}).`);
+        (error as Error & { roverStatus?: number }).roverStatus = response.status;
+        throw error;
+      }
+      const json = await response.json() as ElevenLabsRealtimeTokenResponse;
+      return String(json.wssUrl || json.data?.wssUrl || '').trim();
+    } catch (error) {
+      const status = typeof (error as { roverStatus?: unknown })?.roverStatus === 'number'
+        ? (error as { roverStatus: number }).roverStatus
+        : undefined;
+      input.onTelemetry?.('voice_stt_token_failed', {
+        ...(status ? { status } : {}),
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
   }
 
-  async function startAudioCapture(socket: WebSocket): Promise<void> {
-    stream = await navigator.mediaDevices.getUserMedia({
+  async function prepareAudioCapture(): Promise<void> {
+    const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
+    audioCtx = new AudioContextCtor();
+    input.onTelemetry?.('voice_audio_context_state', { state: audioCtx.state || 'unknown', phase: 'created' });
+    const resumePromise = typeof audioCtx.resume === 'function'
+      ? audioCtx.resume().catch(() => undefined)
+      : Promise.resolve(undefined);
+    const streamPromise = navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
       },
     });
-    const AudioContextCtor = window.AudioContext || (window as any).webkitAudioContext;
-    audioCtx = new AudioContextCtor();
+    await resumePromise;
+    input.onTelemetry?.('voice_audio_context_state', { state: audioCtx.state || 'unknown', phase: 'resumed' });
+    const nextStream = await streamPromise;
+    if (disposed || stopRequested || endEmitted) {
+      nextStream.getTracks().forEach(track => track.stop());
+      return;
+    }
+    stream = nextStream;
     source = audioCtx.createMediaStreamSource(stream);
     processor = audioCtx.createScriptProcessor(2048, 1, 1);
     sink = audioCtx.createGain();
     sink.gain.value = 0;
+    input.onTelemetry?.('voice_audio_capture_started', { sampleRate: audioCtx.sampleRate || 0 });
     processor.onaudioprocess = (event) => {
-      if (!ws || socket.readyState !== WebSocket.OPEN) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
       const channel = event.inputBuffer.getChannelData(0);
       const downsampled = downsampleTo16k(channel, audioCtx?.sampleRate || 48000);
       let energy = 0;
@@ -601,16 +656,39 @@ export function createElevenLabsVoiceTranscriber(input: {
         }
       }
       const pcm = floatTo16BitPcm(downsampled);
-      socket.send(JSON.stringify({
+      ws.send(JSON.stringify({
         message_type: 'input_audio_chunk',
         audio_base_64: bytesToBase64(new Uint8Array(pcm.buffer)),
         sample_rate: 16000,
         commit: false,
       }));
+      if (!firstAudioChunkSent) {
+        firstAudioChunkSent = true;
+        clearFirstAudioChunkTimer();
+        input.onTelemetry?.('voice_first_audio_chunk', { audioContextState: audioCtx?.state || 'unknown' });
+      }
     };
     source.connect(processor);
     processor.connect(sink);
     sink.connect(audioCtx.destination);
+    if (typeof audioCtx.resume === 'function') {
+      await audioCtx.resume().catch(() => undefined);
+      input.onTelemetry?.('voice_audio_context_state', { state: audioCtx.state || 'unknown', phase: 'connected' });
+    }
+  }
+
+  function scheduleFirstAudioChunkTimeout(): void {
+    clearFirstAudioChunkTimer();
+    firstAudioChunkTimer = setTimeout(() => {
+      if (firstAudioChunkSent || disposed || stopRequested || endEmitted) return;
+      const error: VoiceRecognitionError = {
+        code: 'audio_capture',
+        message: 'Microphone started, but Rover did not receive audio. Check microphone permission and try again.',
+        recoverable: true,
+      };
+      handlers.onError?.(error);
+      finishEnd(false);
+    }, ELEVENLABS_FIRST_AUDIO_CHUNK_TIMEOUT_MS);
   }
 
   function waitForCommittedStop(): void {
@@ -633,8 +711,16 @@ export function createElevenLabsVoiceTranscriber(input: {
       endEmitted = false;
       committedTranscript = '';
       interimTranscript = '';
+      firstAudioChunkSent = false;
       void (async () => {
+        let audioPrepared = false;
         try {
+          await prepareAudioCapture();
+          audioPrepared = true;
+          if (disposed || stopRequested || endEmitted) {
+            finishEnd(stopRequested);
+            return;
+          }
           const wssUrl = await fetchToken(options?.language);
           if (!wssUrl || disposed || stopRequested || endEmitted) {
             finishEnd(stopRequested);
@@ -650,21 +736,22 @@ export function createElevenLabsVoiceTranscriber(input: {
             starting = false;
             started = true;
             handlers.onStart?.();
-            void startAudioCapture(socket).catch((error) => {
-              handlers.onError?.(normalizeScribeError(error instanceof Error ? error.message : String(error)));
-              finishEnd(false);
-            });
+            input.onTelemetry?.('voice_stt_socket_open');
+            scheduleFirstAudioChunkTimeout();
           };
           socket.onmessage = handleMessage;
           socket.onerror = () => {
+            input.onTelemetry?.('voice_stt_socket_error');
             handlers.onError?.(normalizeScribeError('ElevenLabs dictation socket failed.'));
             finishEnd(false);
           };
           socket.onclose = () => {
+            input.onTelemetry?.('voice_stt_socket_close', { requested: stopRequested });
             finishEnd(stopRequested);
           };
         } catch (error) {
-          handlers.onError?.(normalizeScribeError(error instanceof Error ? error.message : String(error)));
+          const message = error instanceof Error ? error.message : String(error);
+          handlers.onError?.(audioPrepared ? normalizeScribeError(message) : normalizeAudioCaptureError(message));
           finishEnd(false);
         }
       })();

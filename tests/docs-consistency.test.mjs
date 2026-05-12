@@ -36,6 +36,9 @@ test('Rover docs publish the vNext discovery and identity model consistently', (
   assert.match(combined, /verified_signed/);
   assert.match(combined, /signed_directory_only/);
   assert.match(combined, /goal/);
+  assert.match(combined, /openapi\/a2w\.yaml/);
+  assert.match(combined, /robots\.txt/);
+  assert.match(combined, /Do not rely|do not rely/i);
 
   assert.match(docs['README.md'], /\/\.well-known\/rover-site\.json/);
   assert.match(docs['packages/sdk/README.md'], /beaconLabel/);

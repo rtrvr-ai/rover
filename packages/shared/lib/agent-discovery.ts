@@ -238,6 +238,7 @@ export function createRoverAgentDiscoverySnapshot(cardLike: unknown): RoverAgent
     workflowEndpoint,
     serviceDescUrl: text(rover.serviceDescUrl, 2048) || undefined,
     llmsUrl: text(rover.llmsUrl, 2048) || undefined,
+    openApiUrl: text(rover.openApiUrl, 2048) || undefined,
     roverSiteUrl: text(rover.roverSiteUrl, 2048) || undefined,
     preferredExecution: normalizeExecutionPreference(rover.preferredExecution),
     a2wRunsEnabled,
