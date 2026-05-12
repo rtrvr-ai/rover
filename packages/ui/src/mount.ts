@@ -206,6 +206,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   );
   let runtimeEntitlements: RoverRuntimeEntitlements = {
     naturalVoiceNarration: opts.entitlements?.naturalVoiceNarration === true,
+    naturalVoiceDictation: opts.entitlements?.naturalVoiceDictation === true,
   };
   const resolveNarrationProvider = (): 'browser' | 'elevenlabs' => (
     runtimeEntitlements.naturalVoiceNarration === true ? 'elevenlabs' : 'browser'
@@ -314,13 +315,6 @@ export function mountWidget(opts: MountOptions): RoverUi {
     headerComp?.setNarrationEnabled(isNarrationEnabled);
     voiceSettingsPanel?.update(buildVoiceSettingsState());
     opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source, resolveEffectiveNarrationLanguage());
-  }
-
-  function applyEntitlements(nextEntitlements?: RoverRuntimeEntitlements): void {
-    runtimeEntitlements = {
-      naturalVoiceNarration: nextEntitlements?.naturalVoiceNarration === true,
-    };
-    syncNarrationConfig();
   }
 
   function unlockNarration(): void {
@@ -841,6 +835,17 @@ export function mountWidget(opts: MountOptions): RoverUi {
   function buildVoiceTelemetryContext(extra?: Record<string, unknown>): Record<string, unknown> {
     return { hadSpeech: voiceHasSpeech, restartCount: voicePreSpeechRestartCount, durationMs: getVoiceSessionDurationMs(), autoStopMs: getVoiceAutoStopMs(), ...(extra || {}) };
   }
+  function emitVoiceProviderSelected(reason: string): void {
+    const key = `${voiceProviderKind}:${voiceProvider.isSupported() ? 'supported' : 'unsupported'}:${runtimeEntitlements.naturalVoiceDictation === true ? 'natural' : 'browser'}`;
+    if (key === reportedVoiceProviderKey) return;
+    reportedVoiceProviderKey = key;
+    emitVoiceTelemetry('voice_provider_selected', buildVoiceTelemetryContext({
+      provider: voiceProviderKind,
+      supported: voiceProvider.isSupported(),
+      naturalVoiceDictation: runtimeEntitlements.naturalVoiceDictation === true,
+      reason,
+    }));
+  }
   function createNoSpeechVoiceError(): VoiceRecognitionError {
     return { code: 'no_speech', message: 'No speech was detected.', recoverable: true };
   }
@@ -955,12 +960,14 @@ export function mountWidget(opts: MountOptions): RoverUi {
     }
     voiceErrorMessage = ''; voiceState = 'listening'; pendingVoiceSubmit = false; voiceStopReason = null;
     voiceDraftBase = composerComp.textarea.value; voiceFinalTranscript = ''; voiceInterimTranscript = '';
-    resetVoiceSessionState(); voiceSessionStartedAt = Date.now(); voiceStartTelemetryPending = true;
-    scheduleVoiceGraceTimeout(); scheduleVoiceSessionTimeout(); syncVoiceUi();
+    resetVoiceSessionState(); voiceStartTelemetryPending = true;
+    syncVoiceUi();
     voiceProvider.start({ language: resolveEffectiveVoiceLanguage() });
     // Voice-active visual
     seed.root.classList.add('voice-active');
-    audioAnalyser.start();
+    if (voiceProviderKind === 'browser') {
+      audioAnalyser.start();
+    }
   }
 
   function handleVoiceError(error: VoiceRecognitionError): void {
@@ -975,6 +982,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   const voiceHandlers: VoiceTranscriberHandlers = {
     onStart: () => {
       voiceState = 'listening'; voiceErrorMessage = ''; voiceLastError = null;
+      if (!voiceSessionStartedAt) voiceSessionStartedAt = Date.now();
       scheduleVoiceGraceTimeout(); scheduleVoiceSessionTimeout();
       if (voiceStartTelemetryPending) { emitVoiceTelemetry('voice_started', buildVoiceTelemetryContext({ provider: voiceProviderKind })); voiceStartTelemetryPending = false; }
       syncVoiceUi();
@@ -1032,13 +1040,15 @@ export function mountWidget(opts: MountOptions): RoverUi {
     const elevenLabsHandlers: VoiceTranscriberHandlers = {
       ...voiceHandlers,
       onError: (error) => {
-        if (voiceProvider === elevenLabsProvider && !voiceHasSpeech && browserProvider.isSupported()) {
+        if (voiceProvider === elevenLabsProvider && !voiceHasSpeech && error.code !== 'permission_denied' && browserProvider.isSupported()) {
           try { elevenLabsProvider?.dispose(); } catch { /* ignore */ }
           voiceProvider = browserProvider;
           voiceProviderKind = 'browser';
           voiceErrorMessage = '';
           voiceLastError = null;
           syncVoiceUi();
+          emitVoiceProviderSelected('fallback');
+          audioAnalyser.start();
           voiceProvider.start({ language: resolveEffectiveVoiceLanguage() });
           return;
         }
@@ -1053,8 +1063,14 @@ export function mountWidget(opts: MountOptions): RoverUi {
         apiBase: opts.apiBase,
         getAuth: opts.getAudioAuth,
         handlers: elevenLabsHandlers,
+        onTelemetry: (event, payload) => {
+          emitVoiceTelemetry(event, buildVoiceTelemetryContext({
+            provider: 'elevenlabs',
+            ...(payload || {}),
+          }));
+        },
       });
-    if (elevenLabsProvider.isSupported()) {
+    if (runtimeEntitlements.naturalVoiceDictation === true && elevenLabsProvider.isSupported()) {
       voiceProviderKind = 'elevenlabs';
       return elevenLabsProvider;
     }
@@ -1063,6 +1079,36 @@ export function mountWidget(opts: MountOptions): RoverUi {
   }
 
   let voiceProvider: VoiceTranscriber = createVoiceProviderForConfig();
+  emitVoiceProviderSelected('initial');
+
+  function rebuildVoiceProvider(reason: string): void {
+    const previousProvider = voiceProvider;
+    if (voiceState === 'listening') {
+      clearVoiceStopTimer(); clearVoiceGraceTimer(); clearVoiceSessionTimer(); clearVoiceRestartTimer();
+      try { previousProvider.stop(); } catch { /* ignore */ }
+    }
+    try { previousProvider.dispose(); } catch { /* ignore */ }
+    voiceProvider = createVoiceProviderForConfig();
+    voiceErrorMessage = ''; pendingVoiceSubmit = false;
+    resetVoiceDraftState(); resetVoiceSessionState(); voiceState = 'idle';
+    syncVoiceUi();
+    emitVoiceProviderSelected(reason);
+  }
+
+  function applyEntitlements(nextEntitlements?: RoverRuntimeEntitlements): void {
+    const previousDictation = runtimeEntitlements.naturalVoiceDictation === true;
+    runtimeEntitlements = {
+      naturalVoiceNarration: nextEntitlements?.naturalVoiceNarration === true,
+      naturalVoiceDictation: nextEntitlements?.naturalVoiceDictation === true,
+    };
+    syncNarrationConfig();
+    if (previousDictation !== (runtimeEntitlements.naturalVoiceDictation === true)) {
+      rebuildVoiceProvider('entitlements');
+    } else {
+      emitVoiceProviderSelected('entitlements');
+      syncVoiceUi();
+    }
+  }
 
   // ── Composer Component ──
   const composerComp = createComposer({
@@ -1820,16 +1866,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
     const prevSig = JSON.stringify(voiceConfig || null);
     const nextSig = JSON.stringify(nextConfig || null);
     if (prevSig === nextSig) { syncVoiceUi(); return; }
-    const previousProvider = voiceProvider;
-    if (voiceState === 'listening') {
-      clearVoiceStopTimer(); clearVoiceGraceTimer(); clearVoiceSessionTimer(); clearVoiceRestartTimer();
-      try { previousProvider.stop(); } catch { /* ignore */ }
-    }
-    try { previousProvider.dispose(); } catch { /* ignore */ }
     voiceConfig = nextConfig; voiceErrorMessage = ''; pendingVoiceSubmit = false;
-    voiceProvider = createVoiceProviderForConfig();
-    resetVoiceDraftState(); resetVoiceSessionState(); voiceState = 'idle';
-    syncVoiceUi();
+    rebuildVoiceProvider('voice_config');
   }
 
   function applyExperience(nextExperience?: RoverExperienceConfig): void {

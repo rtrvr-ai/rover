@@ -409,7 +409,9 @@ If the site emits the discovery marker below, AI tools can detect A2W support di
 }</script>
 ```
 
-For stronger discovery, publish `/.well-known/rover-site.json` as Rover's authoritative rich profile, publish `/.well-known/agent-card.json` as the broad interop card, add the generated `Link` header with `service-desc`, `service-doc`, `agent-run`, and `agent-resolver` relations for generic agents, and include source-visible discovery tags from the SDK helper `createRoverAgentDiscoveryTags(...)`.
+For stronger discovery, publish `/.well-known/rover-site.json` as Rover's authoritative rich profile, publish `/.well-known/agent-card.json` as the broad interop card, add the generated `Link` header with `service-desc`, `service-doc`, `agent-run`, and `agent-resolver` relations for generic agents, and include source-visible discovery tags from the SDK helper `createRoverAgentDiscoveryTags(...)`. The A2W wire contract is documented at `https://rtrvr.ai/openapi/a2w.yaml`.
+
+Rely on A2W POST/GET, well-known JSON, and service-desc/action/resolver pointers. Treat `llms.txt`, `robots.txt` comments, inline markers, visual cues, and deep links as supplemental surfaces. Do not rely on POST-only, JavaScript-only, deep-link-only, or `llms.txt`-only discovery as the primary action path.
 
 ### Delegated handoffs
 

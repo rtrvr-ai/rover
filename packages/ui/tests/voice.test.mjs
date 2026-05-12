@@ -13,6 +13,7 @@ test('elevenlabs dictation keeps partial text as draft and waits for committed t
   const results = [];
   const ends = [];
   const processorSizes = [];
+  const startOrder = [];
 
   class FakeWebSocket {
     static OPEN = 1;
@@ -42,7 +43,9 @@ test('elevenlabs dictation keeps partial text as draft and waits for committed t
   class FakeAudioContext {
     constructor() {
       this.sampleRate = 48000;
+      this.state = 'running';
       this.destination = {};
+      startOrder.push('audio-context');
     }
     createMediaStreamSource() {
       return { connect() {}, disconnect() {} };
@@ -54,10 +57,15 @@ test('elevenlabs dictation keeps partial text as draft and waits for committed t
     createGain() {
       return { gain: { value: 1 }, connect() {}, disconnect() {} };
     }
+    async resume() {
+      startOrder.push('audio-resume');
+      this.state = 'running';
+    }
     async close() {}
   }
 
   globalThis.fetch = async (url, init) => {
+    startOrder.push('fetch-token');
     fetchCalls.push({ url: String(url), init });
     return {
       ok: true,
@@ -76,6 +84,11 @@ test('elevenlabs dictation keeps partial text as draft and waits for committed t
       },
     },
   });
+  const originalGetUserMedia = globalThis.navigator.mediaDevices.getUserMedia;
+  globalThis.navigator.mediaDevices.getUserMedia = async (...args) => {
+    startOrder.push('get-user-media');
+    return originalGetUserMedia(...args);
+  };
   globalThis.window = { AudioContext: FakeAudioContext };
   globalThis.WebSocket = FakeWebSocket;
 
@@ -93,8 +106,11 @@ test('elevenlabs dictation keeps partial text as draft and waits for committed t
     transcriber.start({ language: 'en-US' });
     await new Promise(resolve => setTimeout(resolve, 0));
     await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise(resolve => setTimeout(resolve, 0));
 
     assert.equal(fetchCalls[0].url, 'https://agent.test/v2/rover/audio/stt-token');
+    assert.ok(startOrder.indexOf('get-user-media') !== -1);
+    assert.ok(startOrder.indexOf('get-user-media') < startOrder.indexOf('fetch-token'));
     assert.equal(sockets.length, 1);
     assert.deepEqual(processorSizes, [2048]);
     sockets[0].onmessage?.({

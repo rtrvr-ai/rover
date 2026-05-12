@@ -321,11 +321,33 @@ export function createRoverScriptTagSnippet(config: RoverPreviewBootstrapConfig)
     attrs.push(`data-action-spotlight-run-kinds="${escapeHtmlAttr(normalized.ui.experience.motion.actionSpotlightRunKinds.join(','))}"`);
   }
   const runEndpoint = `${toStringValue(normalized.apiBase) || DEFAULT_AGENT_BASE}/v1/a2w/runs`;
-  const markerJson = escapeScriptJson(JSON.stringify({ a2w: runEndpoint, run: runEndpoint }));
+  const fromUrlEndpoint = `${toStringValue(normalized.apiBase) || DEFAULT_AGENT_BASE}/v1/a2w/from-url`;
+  const fromUrlTemplate = `${fromUrlEndpoint}?url={current_url}&execution=cloud&wait=25&format=markdown`;
+  const markerJson = escapeScriptJson(JSON.stringify({
+    a2w: runEndpoint,
+    run: runEndpoint,
+    a2wGet: runEndpoint,
+    fromUrl: fromUrlEndpoint,
+    fromUrlTemplate,
+    card: '/.well-known/agent-card.json',
+    roverSite: '/.well-known/rover-site.json',
+    deepLinkParams: {
+      prompt: 'rover',
+      shortcut: 'rover_shortcut',
+      executor: 'rover_exec',
+    },
+    chatbotInstructions: [
+      'If this page URL contains rover_exec, fetch that URL to run the task in Rover cloud.',
+      'If this page URL contains rover or rover_shortcut but no rover_exec, fetch fromUrlTemplate with the full current URL.',
+      'If POST is available, prefer POST /v1/a2w/runs; if only URL fetch is available, use GET with execution=cloud.',
+    ],
+  }));
   return [
     `<script type="application/agent+json" data-rover-agent-discovery="marker">${markerJson}</script>`,
     '<link rel="service-desc" href="/.well-known/agent-card.json" type="application/json" data-rover-agent-discovery="service-desc" />',
     '<link rel="service-doc" href="/llms.txt" type="text/markdown" data-rover-agent-discovery="service-doc" />',
+    `<link rel="agent-run" href="${escapeHtmlAttr(runEndpoint)}" type="text/markdown" data-rover-agent-discovery="agent-run" data-rover-methods="GET POST" />`,
+    `<link rel="agent-resolver" href="${escapeHtmlAttr(fromUrlEndpoint)}" type="text/markdown" data-rover-agent-discovery="agent-resolver" data-rover-methods="GET" />`,
     `<script ${attrs.join(' ')}></script>`,
   ].join('\n');
 }

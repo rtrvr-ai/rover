@@ -17,6 +17,10 @@ test('script tag snippet includes default-on Rover discovery marker and service 
   assert.match(snippet, /data-rover-agent-discovery="marker"/);
   assert.match(snippet, /rel="service-desc"/);
   assert.match(snippet, /rel="service-doc"/);
+  assert.match(snippet, /rel="agent-run"/);
+  assert.match(snippet, /rel="agent-resolver"/);
+  assert.match(snippet, /rover_exec/);
+  assert.match(snippet, /fromUrlTemplate/);
   assert.match(snippet, /data-site-id="site_123"/);
   assert.doesNotMatch(snippet, /"task"/);
 });

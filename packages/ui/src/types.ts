@@ -276,6 +276,7 @@ export type RoverExperienceConfig = {
 
 export type RoverRuntimeEntitlements = {
   naturalVoiceNarration?: boolean;
+  naturalVoiceDictation?: boolean;
 };
 
 export type MountOptions = {

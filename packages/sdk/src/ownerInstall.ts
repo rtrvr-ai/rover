@@ -6,6 +6,7 @@ import {
   DEFAULT_ROVER_SITE_PATH,
   createRoverAgentCard,
   createRoverAgentCardJson,
+  createRoverAgentDiscoveryHeadLinkTags,
   createRoverSiteProfile,
   createRoverSiteProfileJson,
   createRoverServiceDescLinkHeader,
@@ -153,6 +154,8 @@ export type RoverOwnerInstallBundleMetadata = {
   publishedLlmsUrl?: string;
   serviceDescLinkTag?: string;
   serviceDocLinkTag?: string;
+  agentRunLinkTag?: string;
+  agentResolverLinkTag?: string;
   markerJson?: string;
   markerScript?: string;
   inlineAgentCardScript?: string;
@@ -305,6 +308,8 @@ function buildOwnerMarker(card: RoverAgentCard, publishedAgentCardUrl: string): 
     roverSite: card.extensions?.rover.roverSiteUrl,
     site: card.extensions?.rover.siteUrl,
     workflow: card.extensions?.rover.workflowEndpoint,
+    openApi: card.extensions?.rover.openApiUrl,
+    openApiUrl: card.extensions?.rover.openApiUrl,
     deepLinkParams: card.extensions?.rover.deepLinkParams,
     chatbotInstructions: [
       'If this page URL contains rover_exec, fetch that URL to run the task in Rover cloud.',
@@ -343,6 +348,7 @@ function buildDefaultLlmsTxt(card: RoverAgentCard, options: { agentCardUrl: stri
     `A2W GET endpoint for URL-fetch agents: ${text(card.extensions?.rover.a2wGetEndpoint || card.extensions?.rover.runEndpoint || card.url)}?url=<site>&prompt=<instruction>&execution=cloud&wait=25&format=markdown`,
     `A2W deep-link resolver: ${text(card.extensions?.rover.fromUrlTemplate)}`,
     `A2W workflow endpoint: ${text(card.extensions?.rover.workflowEndpoint)}`,
+    `A2W OpenAPI spec: ${text(card.extensions?.rover.openApiUrl)}`,
     'Create runs with { "url": "<site>", "prompt": "<instruction>" } or { "url": "<site>", "shortcutId": "<id>" }; "goal" is accepted as a compatibility alias.',
     'For chatbots that can only fetch URLs: if a page URL contains rover_exec, fetch that URL; if it contains rover or rover_shortcut without rover_exec, fetch the A2W deep-link resolver with the full current URL.',
     'For browserless execution, send Prefer: execution=cloud, wait=10 and follow returned links.stream, links.ndjson, or links.poll until completed, failed, cancelled, expired, or input_required.',
@@ -466,6 +472,12 @@ export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInpu
   const serviceDocLinkTag = discoveryConfig && publishedLlmsUrl
     ? `<link rel="service-doc" href="${escapeHtmlAttr(publishedLlmsUrl)}" type="text/markdown" />`
     : undefined;
+  const agentRunLinkTag = discoveryConfig && agentCard?.extensions?.rover.a2wGetEndpoint
+    ? `<link rel="agent-run" href="${escapeHtmlAttr(agentCard.extensions.rover.a2wGetEndpoint)}" type="text/markdown" data-rover-methods="GET POST" />`
+    : undefined;
+  const agentResolverLinkTag = discoveryConfig && agentCard?.extensions?.rover.fromUrlEndpoint
+    ? `<link rel="agent-resolver" href="${escapeHtmlAttr(agentCard.extensions.rover.fromUrlEndpoint)}" type="text/markdown" data-rover-methods="GET" />`
+    : undefined;
 
   const llmsTxt = publishLlmsTxt && agentCard
     ? (text(input.llmsTxt) ? input.llmsTxt : buildDefaultLlmsTxt(agentCard, { agentCardUrl: publishedAgentCardUrl || DEFAULT_AGENT_CARD_PATH }))
@@ -482,7 +494,15 @@ export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInpu
 
   return decorateBundleWithExperience({
     bodyInstallHtml,
-    headDiscoveryHtml: [serviceDescLinkTag, serviceDocLinkTag].filter(Boolean).join('\n'),
+    headDiscoveryHtml: discoveryConfig
+      ? createRoverAgentDiscoveryHeadLinkTags({
+          agentCardUrl: publishedAgentCardUrl || DEFAULT_AGENT_CARD_PATH,
+          ...(publishedLlmsUrl ? { llmsUrl: publishedLlmsUrl } : {}),
+          ...(agentCard?.extensions?.rover.a2wGetEndpoint ? { a2wGetUrl: agentCard.extensions.rover.a2wGetEndpoint } : {}),
+          ...(agentCard?.extensions?.rover.fromUrlEndpoint ? { fromUrlEndpoint: agentCard.extensions.rover.fromUrlEndpoint } : {}),
+          dataAttrs: true,
+        })
+      : '',
     agentCard,
     agentCardJson,
     roverSite,
@@ -507,6 +527,8 @@ export function createRoverOwnerInstallBundle(input: RoverOwnerInstallBundleInpu
       publishedLlmsUrl: publishedLlmsUrl || undefined,
       serviceDescLinkTag,
       serviceDocLinkTag,
+      agentRunLinkTag,
+      agentResolverLinkTag,
       markerJson,
       markerScript: markerJson
         ? `<script type="application/agent+json" data-rover-agent-discovery="marker">${markerJson}</script>`

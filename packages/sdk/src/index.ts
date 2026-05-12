@@ -490,7 +490,14 @@ type RoverVoiceTelemetryEventName =
   | 'voice_transcript_ready'
   | 'voice_error'
   | 'voice_permission_denied'
-  | 'voice_provider_selected';
+  | 'voice_provider_selected'
+  | 'voice_audio_capture_started'
+  | 'voice_audio_context_state'
+  | 'voice_first_audio_chunk'
+  | 'voice_stt_token_failed'
+  | 'voice_stt_socket_open'
+  | 'voice_stt_socket_close'
+  | 'voice_stt_socket_error';
 
 export type RoverInstance = {
   boot: (cfg: RoverInit) => RoverInstance;
@@ -1173,6 +1180,11 @@ function upsertAgentDiscoveryLink(kind: string, rel: string, href: string, type:
   node.rel = rel;
   node.href = href;
   node.type = type;
+  if (kind === 'agent-run') {
+    node.setAttribute('data-rover-methods', 'GET POST');
+  } else if (kind === 'agent-resolver') {
+    node.setAttribute('data-rover-methods', 'GET');
+  }
 }
 
 function syncAgentDiscoveryTags(cfg: RoverInit | null): void {
@@ -1187,6 +1199,7 @@ function syncAgentDiscoveryTags(cfg: RoverInit | null): void {
     return;
   }
   const {
+    card,
     cardJson,
     llmsUrl,
     marker,
@@ -1194,12 +1207,23 @@ function syncAgentDiscoveryTags(cfg: RoverInit | null): void {
     roverSiteJson,
     serviceDescHref,
   } = buildRoverAgentDiscoveryPayloads(config);
+  const rover = card.extensions?.rover;
   upsertAgentDiscoveryScript('marker', 'application/agent+json', JSON.stringify(marker));
   upsertAgentDiscoveryLink('service-desc', 'service-desc', serviceDescHref, 'application/json');
   if (llmsUrl) {
     upsertAgentDiscoveryLink('service-doc', 'service-doc', llmsUrl, 'text/markdown');
   } else {
     document.querySelector(`link[${ROVER_AGENT_DISCOVERY_ATTR}="service-doc"]`)?.remove();
+  }
+  if (rover?.a2wGetEndpoint) {
+    upsertAgentDiscoveryLink('agent-run', 'agent-run', rover.a2wGetEndpoint, 'text/markdown');
+  } else {
+    document.querySelector(`link[${ROVER_AGENT_DISCOVERY_ATTR}="agent-run"]`)?.remove();
+  }
+  if (rover?.fromUrlEndpoint) {
+    upsertAgentDiscoveryLink('agent-resolver', 'agent-resolver', rover.fromUrlEndpoint, 'text/markdown');
+  } else {
+    document.querySelector(`link[${ROVER_AGENT_DISCOVERY_ATTR}="agent-resolver"]`)?.remove();
   }
   upsertAgentDiscoveryScript('rover-site', 'application/rover-site+json', roverSiteJson);
   upsertAgentDiscoveryScript('page', 'application/rover-page+json', pageManifestJson);
@@ -9185,6 +9209,7 @@ type RoverResolvedSiteConfig = {
 
 type RoverRuntimeEntitlements = {
   naturalVoiceNarration?: boolean;
+  naturalVoiceDictation?: boolean;
 };
 
 function normalizeShortcutLimit(
@@ -9216,6 +9241,9 @@ function sanitizeRuntimeEntitlements(raw: any): RoverRuntimeEntitlements | undef
   const next: RoverRuntimeEntitlements = {};
   if (typeof raw.naturalVoiceNarration === 'boolean') {
     next.naturalVoiceNarration = raw.naturalVoiceNarration;
+  }
+  if (typeof raw.naturalVoiceDictation === 'boolean') {
+    next.naturalVoiceDictation = raw.naturalVoiceDictation;
   }
   return Object.keys(next).length ? next : undefined;
 }

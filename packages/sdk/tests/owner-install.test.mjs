@@ -82,6 +82,9 @@ test('owner install bundle splits body runtime HTML from head discovery HTML', (
 
   assert.match(bundle.headDiscoveryHtml, /rel="service-desc"/);
   assert.match(bundle.headDiscoveryHtml, /rel="service-doc"/);
+  assert.match(bundle.headDiscoveryHtml, /rel="agent-run"/);
+  assert.match(bundle.headDiscoveryHtml, /rel="agent-resolver"/);
+  assert.match(bundle.headDiscoveryHtml, /data-rover-methods="GET POST"/);
   assert.match(bundle.serviceDescLinkHeader || '', /^<\/\.well-known\/agent-card\.json>; rel="service-desc"; type="application\/json", <\/llms\.txt>; rel="service-doc"; type="text\/markdown"/);
   assert.match(bundle.serviceDescLinkHeader || '', /rel="agent-run"/);
   assert.match(bundle.serviceDescLinkHeader || '', /rel="agent-resolver"/);
@@ -89,6 +92,8 @@ test('owner install bundle splits body runtime HTML from head discovery HTML', (
   assert.match(bundle.llmsTxt || '', /A2W GET endpoint/);
   assert.match(bundle.llmsTxt || '', /rover_exec/);
   assert.match(bundle.llmsTxt || '', /format=markdown/);
+  assert.match(bundle.llmsTxt || '', /A2W OpenAPI spec/);
+  assert.equal(bundle.agentCard?.extensions?.rover?.openApiUrl, 'https://rtrvr.ai/openapi/a2w.yaml');
   assert.match(bundle.agentCard?.extensions?.rover?.fromUrlTemplate || '', /\/v1\/a2w\/from-url/);
   assert.equal(bundle.agentCard?.extensions?.rover?.deepLinkParams?.executor, 'rover_exec');
   assert.match(bundle.agentCard?.extensions?.rover?.shortcuts?.[0]?.getRunUrl || '', /execution=cloud/);
@@ -102,6 +107,7 @@ test('owner install bundle splits body runtime HTML from head discovery HTML', (
   assert.equal(bundle.roverSite?.display?.mode, 'beacon');
   assert.equal(bundle.roverSite?.display?.compactActionMaxActions, 3);
   assert.equal(bundle.roverSite?.artifacts.roverSiteUrl, '/.well-known/rover-site.json');
+  assert.equal(bundle.roverSite?.artifacts.openApiUrl, 'https://rtrvr.ai/openapi/a2w.yaml');
   assert.match(bundle.roverSiteJson || '', /"siteId": "site_123"/);
 });
 
@@ -179,6 +185,8 @@ test('owner install bundle advertises generated llms.txt with the default servic
   });
 
   assert.match(bundle.headDiscoveryHtml, /href="\/llms\.txt"/);
+  assert.match(bundle.headDiscoveryHtml, /rel="agent-run"/);
+  assert.match(bundle.headDiscoveryHtml, /rel="agent-resolver"/);
   assert.match(bundle.serviceDescLinkHeader || '', /^<\/\.well-known\/agent-card\.json>; rel="service-desc"; type="application\/json", <\/llms\.txt>; rel="service-doc"; type="text\/markdown"/);
   assert.match(bundle.serviceDescLinkHeader || '', /rel="agent-run"/);
   assert.match(bundle.serviceDescLinkHeader || '', /rel="agent-resolver"/);

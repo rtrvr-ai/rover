@@ -26,6 +26,7 @@ test('public A2W docs teach prompt and shortcutId as canonical fields', () => {
     .replace(/"shortcut"\s*:\s*"rover_shortcut"/g, '"shortcutParam":"rover_shortcut"');
 
   assert.match(combined, /\/v1\/a2w\/runs/);
+  assert.match(combined, /openapi\/a2w\.yaml/);
   assert.match(combined, /\bprompt\b/);
   assert.match(combined, /\bshortcutId\b/);
   assert.match(combined, /goal[^.]+compatibility alias|goal[^.]+accepted as (?:a )?compatibility alias|goal[^.]+accepted as an alias/i);
