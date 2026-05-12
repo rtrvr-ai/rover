@@ -112,6 +112,10 @@ test('guided and minimal presets expose narration hints separately from default 
     __roverInternalsForTests.resolveNarrationAvailableForTests(guided),
     true,
   );
+  assert.equal(
+    __roverInternalsForTests.resolveDefaultNarrationActiveForRunForTests(guided, undefined, true),
+    false,
+  );
 
   const minimal = {
     siteId: 'site_test',
@@ -127,7 +131,7 @@ test('guided and minimal presets expose narration hints separately from default 
   );
   assert.equal(
     __roverInternalsForTests.resolveNarrationAvailableForTests(minimal),
-    true,
+    false,
   );
   assert.equal(
     __roverInternalsForTests.resolveDefaultNarrationActiveForRunForTests(minimal, undefined, true),
@@ -149,5 +153,35 @@ test('guided and minimal presets expose narration hints separately from default 
   assert.equal(
     __roverInternalsForTests.resolveNarrationAvailableForTests(ownerDisabled),
     false,
+  );
+
+  const ownerOff = {
+    siteId: 'site_test',
+    ui: {
+      experience: {
+        audio: { narration: { enabled: true, defaultMode: 'off' } },
+      },
+    },
+  };
+  assert.equal(
+    __roverInternalsForTests.resolveNarrationAvailableForTests(ownerOff),
+    false,
+  );
+
+  const ownerAlways = {
+    siteId: 'site_test',
+    ui: {
+      experience: {
+        audio: { narration: { enabled: true, defaultMode: 'always' } },
+      },
+    },
+  };
+  assert.equal(
+    __roverInternalsForTests.resolveNarrationAvailableForTests(ownerAlways),
+    true,
+  );
+  assert.equal(
+    __roverInternalsForTests.resolveDefaultNarrationActiveForRunForTests(ownerAlways, undefined, true),
+    true,
   );
 });

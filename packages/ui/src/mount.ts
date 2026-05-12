@@ -69,6 +69,7 @@ import {
   deriveAccentTokens,
   deriveActionSpotlightTokens,
   resolveActionSpotlightDecision,
+  resolveNarrationComposeAvailable,
   resolveNarrationDefaultActiveForRun,
   DEFAULT_AGENT_NAME,
   DEFAULT_ATTACHMENT_LIMIT,
@@ -271,7 +272,6 @@ export function mountWidget(opts: MountOptions): RoverUi {
     if (narrationPreference.source === 'visitor') return isNarrationEnabled;
     return resolveNarrationDefaultActiveForRun(experience, currentRunKind);
   }
-
   narrator.setEnabled(isNarrationLocallyAllowed());
   opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source, resolveEffectiveNarrationLanguage());
 
@@ -360,7 +360,12 @@ export function mountWidget(opts: MountOptions): RoverUi {
   } {
     const allowedKinds = experience.motion?.actionSpotlightRunKinds;
     const runKindAllowed = !runKind || !allowedKinds || allowedKinds.length === 0 || allowedKinds.includes(runKind);
-    const narrationAvailableForRun = allowNarrationToggle && (narrationPreference.source !== 'visitor' || isNarrationEnabled);
+    const narrationAvailableForRun = resolveNarrationComposeAvailable({
+      config: experience,
+      locallySupported: allowNarrationToggle,
+      preferenceSource: narrationPreference.source,
+      visitorEnabled: isNarrationEnabled,
+    });
     const narrationDefaultActiveForRun = narrationAvailableForRun && (
       narrationPreference.source === 'visitor'
         ? isNarrationEnabled

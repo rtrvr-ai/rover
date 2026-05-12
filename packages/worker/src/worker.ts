@@ -308,7 +308,7 @@ function resolveActionNarrationHints(
     : isDefaultNarrationActive(config, runKind);
   const narrationAvailable = narrationOwnerEnabled && (
     options?.narrationEnabledForRun === true
-      || (options?.narrationEnabledForRun === undefined && defaultMode !== 'off' && (defaultMode === 'always' || runKind === 'guide'))
+      || (options?.narrationEnabledForRun === undefined && defaultMode !== 'off')
   );
   if (narrationAvailable) {
     next.actionNarration = true;

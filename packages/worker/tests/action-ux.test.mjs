@@ -93,6 +93,82 @@ test('narration-only target description does not block action execution', async 
   assert.equal(order.includes('previewActionTarget'), false);
 });
 
+test('narration compose runs when voice is not default-active for the run', async () => {
+  const narrationRequests = [];
+  const statuses = [];
+  const bridgeRpc = async (method, params) => {
+    if (method === 'describeActionTarget') return target(params?.call?.args?.element_id || 1, 'Run workflow');
+    if (method === 'getTabContext') return { title: 'RTRVR', url: 'https://www.rtrvr.ai/' };
+    if (method === 'executeTool') return { success: true, output: {} };
+    return {};
+  };
+  const actionUx = new ActionUxController({
+    ctx: createCtx(async (action, payload) => {
+      narrationRequests.push({ action, payload });
+      return {
+        data: {
+          shouldNarrate: true,
+          speechText: 'I’ll open the workflow demo.',
+          displayText: 'Opening the workflow demo.',
+          spotlightTargetIds: ['element:1'],
+          captionTtlMs: 2500,
+        },
+      };
+    }),
+    bridgeRpc,
+    runtimeContext: { mode: 'rover_embed', uiHints: { actionNarration: true, actionNarrationDefaultActive: false } },
+    rootUserInput: 'Show me a demo of how to run a workflow on the cloud.',
+    actionNarration: true,
+    actionNarrationDefaultActive: false,
+    postToolLifecycleEvent: () => {},
+    postStatus: (message, _thought, _stage, meta) => statuses.push({ message, meta }),
+  });
+
+  await executeSystemToolCallsSequentially({
+    calls: [{ name: 'click_element', args: { element_id: 1 } }],
+    bridgeRpc,
+    actionUx,
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(narrationRequests.length, 1);
+  assert.equal(narrationRequests[0].action, 'roverNarrationCompose');
+  assert.equal(narrationRequests[0].payload.runKind, undefined);
+  assert.equal(narrationRequests[0].payload.runKindSource, 'unspecified');
+  assert.equal(statuses.length, 1);
+  assert.equal(statuses[0].message, 'Opening the workflow demo.');
+  assert.equal(statuses[0].meta.narrationActive, false);
+});
+
+test('narration compose is skipped when narration is not available for the run', async () => {
+  let narrationCalls = 0;
+  const bridgeRpc = async (method) => {
+    if (method === 'executeTool') return { success: true, output: {} };
+    return {};
+  };
+  const actionUx = new ActionUxController({
+    ctx: createCtx(async () => {
+      narrationCalls += 1;
+      return { data: { shouldNarrate: true, speechText: 'Opening.', displayText: 'Opening.' } };
+    }),
+    bridgeRpc,
+    runtimeContext: { mode: 'rover_embed', uiHints: { actionNarration: false } },
+    actionNarration: false,
+    actionNarrationDefaultActive: false,
+    postToolLifecycleEvent: () => {},
+    postStatus: () => {},
+  });
+
+  await executeSystemToolCallsSequentially({
+    calls: [{ name: 'click_element', args: { element_id: 1 } }],
+    bridgeRpc,
+    actionUx,
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(narrationCalls, 0);
+});
+
 test('fast consecutive form fields are composed as one narration request', async () => {
   const narrationRequests = [];
   const bridgeRpc = async (method, params) => {

@@ -681,7 +681,6 @@ let currentMode: RoverExecutionMode = 'controller';
 let narrationEnabledForRun = false;
 let narrationPreferenceSource: 'default' | 'visitor' = 'default';
 let narrationLanguage: string | undefined = undefined;
-let narrationDefaultActiveForRun = false;
 let actionSpotlightEnabledForRun = false;
 let actionSpotlightPreferenceSource: 'default' | 'visitor' = 'default';
 let workerReady = false;
@@ -6834,7 +6833,7 @@ function postRun(
 	  const workerNarrationPreferenceSource = options?.narrationPreferenceSource || narrationPreferenceSource;
 	  const workerActionSpotlightPreferenceSource = options?.actionSpotlightPreferenceSource || actionSpotlightPreferenceSource;
 	  const workerNarrationAvailable = options?.narrationEnabledForRun
-	    ?? (narrationPreferenceSource === 'visitor' ? narrationEnabledForRun : resolveNarrationAvailableFromConfig(currentConfig));
+	    ?? (workerNarrationPreferenceSource === 'visitor' ? narrationEnabledForRun : resolveNarrationAvailableFromConfig(currentConfig));
 	  const workerNarrationDefaultActive = typeof options?.narrationDefaultActiveForRun === 'boolean'
 	    ? options.narrationDefaultActiveForRun
 	    : workerNarrationPreferenceSource === 'visitor'
@@ -7143,20 +7142,18 @@ async function dispatchUserPromptAsync(
     }
   }
 
-  const fallbackNarrationAvailable = narrationPreferenceSource === 'visitor'
+  const effectiveNarrationPreferenceSource = options?.narrationPreferenceSource || narrationPreferenceSource;
+  const fallbackNarrationAvailable = effectiveNarrationPreferenceSource === 'visitor'
     ? narrationEnabledForRun
     : resolveNarrationAvailableFromConfig(currentConfig);
   const effectiveNarrationEnabledForRun = options?.narrationEnabledForRun ?? fallbackNarrationAvailable;
-  const effectiveNarrationPreferenceSource = options?.narrationPreferenceSource || narrationPreferenceSource;
   const effectiveNarrationRunKind = normalizeRoverRunKind(options?.narrationRunKind);
   const effectiveNarrationLanguage = options?.narrationLanguage || narrationLanguage;
   const effectiveNarrationDefaultActiveForRun = typeof options?.narrationDefaultActiveForRun === 'boolean'
     ? options.narrationDefaultActiveForRun
     : effectiveNarrationPreferenceSource === 'visitor'
       ? effectiveNarrationEnabledForRun === true
-      : effectiveNarrationRunKind
-        ? resolveDefaultNarrationActiveForRun(effectiveNarrationRunKind, effectiveNarrationEnabledForRun === true)
-      : narrationDefaultActiveForRun;
+      : resolveDefaultNarrationActiveForRun(effectiveNarrationRunKind, effectiveNarrationEnabledForRun === true);
   const fallbackActionSpotlightAvailable = actionSpotlightPreferenceSource === 'visitor'
     ? actionSpotlightEnabledForRun
     : true;
@@ -9584,7 +9581,14 @@ function resolveDefaultActionSpotlightActiveForRun(
 
 function resolveNarrationAvailableFromConfig(cfg: RoverInit | null): boolean {
   const experience = deriveExperienceConfig(cfg);
-  return experience?.audio?.narration?.enabled !== false;
+  const narration = experience?.audio?.narration;
+  if (narration?.enabled === false) return false;
+  const defaultMode = narration?.defaultMode === 'always' || narration?.defaultMode === 'off'
+    ? narration.defaultMode
+    : experience?.experienceMode === 'minimal'
+      ? 'off'
+      : 'guided';
+  return defaultMode !== 'off';
 }
 
 function resolveDefaultNarrationActiveForRunFromConfig(
@@ -12340,10 +12344,11 @@ function createRuntime(cfg: RoverInit): void {
       source: 'default' | 'visitor',
       language?: string,
     ) => {
-      narrationEnabledForRun = available && (source !== 'visitor' || enabled);
+      narrationEnabledForRun = source === 'visitor'
+        ? available && enabled
+        : resolveNarrationAvailableFromConfig(currentConfig);
       narrationPreferenceSource = source === 'visitor' ? 'visitor' : 'default';
       narrationLanguage = language;
-      narrationDefaultActiveForRun = enabled;
     },
     onSpotlightPreferenceChange: (
       enabled: boolean,
