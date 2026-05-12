@@ -6,6 +6,7 @@ import {
   normalizeHexColor,
   resolveMountExperienceConfig,
   resolveActionSpotlightDecision,
+  resolveNarrationComposeAvailable,
   resolveNarrationDefaultActiveForRun,
 } from '../dist/config.js';
 
@@ -131,6 +132,43 @@ test('narration default active follows defaultMode and run kind', () => {
     onSend: () => {},
   }, 'Rover', false);
   assert.equal(resolveNarrationDefaultActiveForRun(disabled, 'guide'), false);
+});
+
+test('narration compose availability is separate from default voice activity', () => {
+  const guided = resolveMountExperienceConfig({
+    experience: { audio: { narration: { defaultMode: 'guided' } } },
+    onSend: () => {},
+  }, 'Rover', false);
+  assert.equal(resolveNarrationComposeAvailable({
+    config: guided,
+    locallySupported: true,
+    preferenceSource: 'default',
+    visitorEnabled: true,
+  }), true);
+  assert.equal(resolveNarrationDefaultActiveForRun(guided), false);
+
+  const ownerOff = resolveMountExperienceConfig({
+    experience: { audio: { narration: { enabled: true, defaultMode: 'off' } } },
+    onSend: () => {},
+  }, 'Rover', false);
+  assert.equal(resolveNarrationComposeAvailable({
+    config: ownerOff,
+    locallySupported: true,
+    preferenceSource: 'default',
+    visitorEnabled: true,
+  }), false);
+  assert.equal(resolveNarrationComposeAvailable({
+    config: ownerOff,
+    locallySupported: true,
+    preferenceSource: 'visitor',
+    visitorEnabled: true,
+  }), true);
+  assert.equal(resolveNarrationComposeAvailable({
+    config: ownerOff,
+    locallySupported: true,
+    preferenceSource: 'visitor',
+    visitorEnabled: false,
+  }), false);
 });
 
 test('explicit motion.actionSpotlight value wins over preset', () => {

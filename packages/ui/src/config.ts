@@ -460,3 +460,19 @@ export function resolveNarrationDefaultActiveForRun(
   if (defaultMode === 'always') return true;
   return runKind === 'guide';
 }
+
+export function resolveNarrationComposeAvailable(input: {
+  config: RoverExperienceConfig;
+  locallySupported: boolean;
+  preferenceSource: 'default' | 'visitor';
+  visitorEnabled: boolean;
+}): boolean {
+  if (!input.locallySupported) return false;
+  if (input.preferenceSource === 'visitor') return input.visitorEnabled;
+  const narration = input.config.audio?.narration;
+  if (narration?.enabled === false) return false;
+  const defaultMode = narration?.defaultMode === 'always' || narration?.defaultMode === 'off'
+    ? narration.defaultMode
+    : 'guided';
+  return defaultMode !== 'off';
+}

@@ -318,7 +318,6 @@ export class ActionUxController implements ActionUxToolHooks {
 
   private shouldComposeNarration(call: FunctionCall, index: number, calls: FunctionCall[]): boolean {
     if (this.opts.actionNarration !== true) return false;
-    if (this.opts.actionNarrationDefaultActive !== true) return false;
     if (this.opts.isCancelled?.()) return false;
     if (isFieldAction(call) && index > 0 && isFieldAction(calls[index - 1])) return false;
     return true;
