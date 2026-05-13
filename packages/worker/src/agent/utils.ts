@@ -8,6 +8,7 @@ import type {
   FunctionDeclaration,
   PlannerQuestion,
   PreviousSteps,
+  RoverPresentationDirective,
   RoverStopSignal,
   StatusStage,
 } from './types.js';
@@ -18,6 +19,23 @@ import { executeSystemToolCallsSequentially } from './systemTools.js';
 const SYSTEM_TOOL_ALIASES: Record<string, string> = {
   open_url_new_tab: 'open_new_tab',
 };
+
+function normalizeRoverPresentation(input: unknown): RoverPresentationDirective | undefined {
+  if (!input || typeof input !== 'object') return undefined;
+  const raw = input as RoverPresentationDirective;
+  if (raw.shouldNarrate !== true) return undefined;
+  const displayText = String(raw.displayText || raw.speechText || '').replace(/\s+/g, ' ').trim();
+  const speechText = String(raw.speechText || displayText || '').replace(/\s+/g, ' ').trim();
+  if (!displayText && !speechText) return undefined;
+  return {
+    ...raw,
+    displayText: displayText.slice(0, 150),
+    speechText: speechText.slice(0, 150),
+    spotlightTargetIds: Array.isArray(raw.spotlightTargetIds)
+      ? raw.spotlightTargetIds.map(item => String(item || '').trim()).filter(Boolean).slice(0, 3)
+      : [],
+  };
+}
 
 export const DEFAULT_WEBPAGEMAP = {
   url: '',
@@ -96,7 +114,7 @@ export async function processActionResponse({
   bridgeRpc: (method: string, params?: any) => Promise<any>;
   isCancelled?: () => boolean;
   userFunctionDeclarations?: FunctionDeclaration[];
-  onStatusUpdate?: (message: string, thought?: string, stage?: StatusStage) => void;
+  onStatusUpdate?: (message: string, thought?: string, stage?: StatusStage, meta?: { narration?: string; narrationActive?: boolean }) => void;
   onPrevStepsUpdate?: (steps: PreviousSteps[]) => void;
   actionUx?: ActionUxToolHooks;
 }): Promise<{
@@ -262,7 +280,12 @@ export async function processActionResponse({
 
     if (systemCalls.length > 0) {
       throwIfCancelled();
-      onStatusUpdate?.(actionUx ? 'Working on the page' : `Executing browser actions: ${systemCalls.map(c => c.name).join(', ')}`, thought, 'execute');
+      const roverPresentation = normalizeRoverPresentation(response?.roverPresentation);
+      actionUx?.setServerPresentations?.(roverPresentation);
+      const willPresentServerNarration = !!roverPresentation && typeof actionUx?.setServerPresentations === 'function';
+      if (!willPresentServerNarration) {
+        onStatusUpdate?.(actionUx ? 'Working on the page' : `Executing browser actions: ${systemCalls.map(c => c.name).join(', ')}`, thought, 'execute');
+      }
       prevSteps.push({
         accTreeId,
         thought,

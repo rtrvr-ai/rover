@@ -541,13 +541,12 @@ test('action spotlight target failures do not prevent scheduled narration', (t) 
   system.destroy();
 });
 
-// ── Precedence: visitor explicit > planner per-step > site default ────────────
+// ── Precedence: visitor explicit > run event > site default ───────────────────
 //
 // The scheduler accepts an optional `shouldSpeakEvent(event)` predicate. mount.ts
-// now gates runtime narration by owner/visitor mode; event narration text is
-// public copy and does not override a quiet run by itself.
+// owns the pure speech decision, including visitor hard-off and run-scoped voice.
 
-test('quiet run skips explicit event narration when default narration is off', () => {
+test('visitor explicit off skips explicit event narration', () => {
   const frameQueue = createFrameQueue();
   const spoken = [];
   const scheduler = createTimelineNarrationScheduler({

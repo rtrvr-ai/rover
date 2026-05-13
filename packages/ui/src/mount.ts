@@ -69,8 +69,10 @@ import {
   deriveAccentTokens,
   deriveActionSpotlightTokens,
   resolveActionSpotlightDecision,
+  resolveNarrationEventSpeechDecision,
   resolveNarrationComposeAvailable,
   resolveNarrationDefaultActiveForRun,
+  resolveVoiceStartedNarrationActive,
   DEFAULT_AGENT_NAME,
   DEFAULT_ATTACHMENT_LIMIT,
   VOICE_AUTO_STOP_DEFAULT_MS,
@@ -261,16 +263,20 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let isNarrationEnabled = allowNarrationToggle && narrationPreference.enabled;
   let voiceSettingsPanel: ReturnType<typeof createVoiceSettingsPanel> | null = null;
 
-  // Runtime narration is gated by owner/visitor mode. Event text is public copy,
-  // not planner reasoning, and should not override a quiet run by itself.
+  // Runtime narration is gated by owner/visitor mode. For default visitors,
+  // worker-provided narrationActive is authoritative for run-scoped voice.
   function isNarrationLocallyAllowed(): boolean {
     if (!allowNarrationToggle) return false;
     return narrationPreference.source !== 'visitor' || isNarrationEnabled;
   }
   function shouldSpeakNarrationEvent(event: RoverTimelineEvent): boolean {
-    if (!allowNarrationToggle) return false;
-    if (narrationPreference.source === 'visitor') return isNarrationEnabled;
-    return resolveNarrationDefaultActiveForRun(experience, currentRunKind);
+    return resolveNarrationEventSpeechDecision({
+      locallySupported: allowNarrationToggle,
+      preferenceSource: narrationPreference.source,
+      visitorEnabled: isNarrationEnabled,
+      eventNarrationActive: typeof event.narrationActive === 'boolean' ? event.narrationActive : undefined,
+      siteDefaultActive: resolveNarrationDefaultActiveForRun(experience, currentRunKind),
+    });
   }
   narrator.setEnabled(isNarrationLocallyAllowed());
   opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source, resolveEffectiveNarrationLanguage());
@@ -347,7 +353,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
     opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source, resolveEffectiveNarrationLanguage());
   }
 
-  function buildNarrationSendMeta(runKind?: RoverShortcut['runKind']): {
+  function buildNarrationSendMeta(
+    runKind?: RoverShortcut['runKind'],
+    options?: { voiceStarted?: boolean },
+  ): {
     narrationEnabledForRun: boolean;
     narrationPreferenceSource: 'default' | 'visitor';
     narrationDefaultActiveForRun: boolean;
@@ -360,17 +369,23 @@ export function mountWidget(opts: MountOptions): RoverUi {
   } {
     const allowedKinds = experience.motion?.actionSpotlightRunKinds;
     const runKindAllowed = !runKind || !allowedKinds || allowedKinds.length === 0 || allowedKinds.includes(runKind);
-    const narrationAvailableForRun = resolveNarrationComposeAvailable({
+    const voiceStartedNarrationActive = options?.voiceStarted === true && resolveVoiceStartedNarrationActive({
       config: experience,
       locallySupported: allowNarrationToggle,
       preferenceSource: narrationPreference.source,
       visitorEnabled: isNarrationEnabled,
     });
-    const narrationDefaultActiveForRun = narrationAvailableForRun && (
+    const narrationAvailableForRun = voiceStartedNarrationActive || resolveNarrationComposeAvailable({
+      config: experience,
+      locallySupported: allowNarrationToggle,
+      preferenceSource: narrationPreference.source,
+      visitorEnabled: isNarrationEnabled,
+    });
+    const narrationDefaultActiveForRun = voiceStartedNarrationActive || (narrationAvailableForRun && (
       narrationPreference.source === 'visitor'
         ? isNarrationEnabled
         : resolveNarrationDefaultActiveForRun(experience, runKind)
-    );
+    ));
     const spotlightAvailableForRun = allowSpotlightToggle && (spotlightVisitorSource !== 'visitor' || isActionSpotlightEnabled);
     const spotlightDefaultActiveForRun = spotlightAvailableForRun && (
       spotlightVisitorSource === 'visitor'
@@ -796,6 +811,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let voiceDraftBase = '';
   let voiceFinalTranscript = '';
   let voiceInterimTranscript = '';
+  let composerVoiceOriginText = '';
   let pendingVoiceSubmit = false;
   let voiceStopReason: string | null = null;
   let voiceStopTimer: ReturnType<typeof setTimeout> | null = null;
@@ -963,6 +979,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       return;
     }
     voiceErrorMessage = ''; voiceState = 'listening'; pendingVoiceSubmit = false; voiceStopReason = null;
+    composerVoiceOriginText = '';
     voiceDraftBase = composerComp.textarea.value; voiceFinalTranscript = ''; voiceInterimTranscript = '';
     resetVoiceSessionState(); voiceStartTelemetryPending = true;
     syncVoiceUi();
@@ -1007,6 +1024,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       }
       voiceFinalTranscript = finalTranscript; voiceInterimTranscript = interimTranscript;
       applyVoiceDraft();
+      if (voiceHasSpeech) composerVoiceOriginText = sanitizeText(buildVoiceDraft());
       if (voiceHasSpeech && !voiceSpeechActive) scheduleVoiceStop();
       syncVoiceUi();
     },
@@ -1029,6 +1047,8 @@ export function mountWidget(opts: MountOptions): RoverUi {
       } else if (!requested && !voiceStopReason && voiceHasSpeech) { stoppedReason = 'silence'; }
       else if (voiceStopReason) { stoppedReason = voiceStopReason; }
       if (voiceState !== 'error') { voiceState = 'idle'; voiceErrorMessage = ''; }
+      if (voiceHasSpeech && finalDraft) composerVoiceOriginText = finalDraft;
+      else if (!finalDraft) composerVoiceOriginText = '';
       if (finalDraft) emitVoiceTelemetry('voice_transcript_ready', buildVoiceTelemetryContext({ chars: finalDraft.length, hadExistingDraft }));
       emitVoiceTelemetry('voice_stopped', buildVoiceTelemetryContext({ reason: stoppedReason, stopReason: stoppedReason, requested, errorCode: lastError?.code }));
       const shouldSubmit = pendingVoiceSubmit;
@@ -1123,6 +1143,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
       if (voiceState === 'listening') { pendingVoiceSubmit = true; stopVoiceDictation('submit'); return; }
       submitComposerDraft();
     },
+    onTextInput: () => {
+      if (voiceState !== 'listening') composerVoiceOriginText = '';
+    },
     onVoiceStart: () => {
       unlockNarration();
       if (voiceState === 'listening') { stopVoiceDictation('manual'); return; }
@@ -1152,6 +1175,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     const attachments = composerComp.getPendingAttachments();
     const message = text || (attachments.length > 0 ? 'Use the attached files as context for this task.' : '');
     if (!message) return;
+    const submittedFromVoice = !!composerVoiceOriginText && sanitizeText(message) === composerVoiceOriginText;
     unlockNarration();
     currentRunKind = undefined;
     setTaskSuggestion({ visible: false });
@@ -1159,9 +1183,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
     taskStartedAt = Date.now();
     opts.onSend(message, {
       ...(attachments.length > 0 ? { attachments } : {}),
-      ...buildNarrationSendMeta(currentRunKind),
+      ...buildNarrationSendMeta(currentRunKind, { voiceStarted: submittedFromVoice }),
     });
     composerComp.setText('');
+    composerVoiceOriginText = '';
     composerComp.clearAttachments();
     voiceErrorMessage = ''; voiceState = 'idle'; resetVoiceDraftState(); resetVoiceSessionState();
     pendingVoiceSubmit = false; voiceStopReason = null;

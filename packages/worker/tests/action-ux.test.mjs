@@ -58,28 +58,34 @@ test('action UX previews spotlight target before executing the tool', async () =
   assert.deepEqual(lifecycle.slice(0, 2), ['tool_start', 'tool_result']);
 });
 
-test('narration-only target description does not block action execution', async () => {
+test('narration-only server presentation does not block action execution', async () => {
   const order = [];
   const bridgeRpc = async (method) => {
-    if (method === 'describeActionTarget') {
-      order.push('describe:start');
-      await new Promise(resolve => setTimeout(resolve, 180));
-      order.push('describe:end');
-      return target();
-    }
     order.push(method);
-    if (method === 'getTabContext') return { title: 'Acme', url: 'https://example.com/demo' };
     if (method === 'executeTool') return { success: true, output: {} };
     return {};
   };
+  const statuses = [];
   const actionUx = new ActionUxController({
-    ctx: createCtx(async () => ({ data: { shouldNarrate: false } })),
+    ctx: createCtx(async () => {
+      throw new Error('worker should not compose narration');
+    }),
     bridgeRpc,
     runtimeContext: { mode: 'rover_embed', uiHints: { actionNarration: true } },
     actionNarration: true,
     actionNarrationDefaultActive: true,
     postToolLifecycleEvent: () => {},
-    postStatus: () => {},
+    postStatus: message => {
+      order.push('status');
+      statuses.push(message);
+    },
+  });
+  actionUx.setServerPresentations({
+    source: 'act',
+    shouldNarrate: true,
+    speechText: 'Opening the workflow demo.',
+    displayText: 'Opening the workflow demo.',
+    spotlightTargetIds: ['element:1'],
   });
 
   await executeSystemToolCallsSequentially({
@@ -88,32 +94,23 @@ test('narration-only target description does not block action execution', async 
     actionUx,
   });
 
-  assert.ok(order.indexOf('executeTool') > order.indexOf('describe:start'));
-  assert.ok(order.indexOf('executeTool') < order.indexOf('describe:end'));
+  assert.ok(order.indexOf('status') >= 0);
+  assert.ok(order.indexOf('status') < order.indexOf('executeTool'));
   assert.equal(order.includes('previewActionTarget'), false);
+  assert.deepEqual(statuses, ['Opening the workflow demo.']);
 });
 
-test('narration compose runs when voice is not default-active for the run', async () => {
-  const narrationRequests = [];
+test('server narration presentation does not call extensionRouter and preserves inactive voice meta', async () => {
   const statuses = [];
-  const bridgeRpc = async (method, params) => {
-    if (method === 'describeActionTarget') return target(params?.call?.args?.element_id || 1, 'Run workflow');
-    if (method === 'getTabContext') return { title: 'RTRVR', url: 'https://www.rtrvr.ai/' };
+  const bridgeRpc = async (method) => {
     if (method === 'executeTool') return { success: true, output: {} };
     return {};
   };
+  let routerCalls = 0;
   const actionUx = new ActionUxController({
-    ctx: createCtx(async (action, payload) => {
-      narrationRequests.push({ action, payload });
-      return {
-        data: {
-          shouldNarrate: true,
-          speechText: 'I’ll open the workflow demo.',
-          displayText: 'Opening the workflow demo.',
-          spotlightTargetIds: ['element:1'],
-          captionTtlMs: 2500,
-        },
-      };
+    ctx: createCtx(async () => {
+      routerCalls += 1;
+      return undefined;
     }),
     bridgeRpc,
     runtimeContext: { mode: 'rover_embed', uiHints: { actionNarration: true, actionNarrationDefaultActive: false } },
@@ -123,6 +120,14 @@ test('narration compose runs when voice is not default-active for the run', asyn
     postToolLifecycleEvent: () => {},
     postStatus: (message, _thought, _stage, meta) => statuses.push({ message, meta }),
   });
+  actionUx.setServerPresentations({
+    source: 'act',
+    shouldNarrate: true,
+    speechText: 'I’ll open the workflow demo.',
+    displayText: 'Opening the workflow demo.',
+    spotlightTargetIds: ['element:1'],
+    narrationActive: false,
+  });
 
   await executeSystemToolCallsSequentially({
     calls: [{ name: 'click_element', args: { element_id: 1 } }],
@@ -131,26 +136,21 @@ test('narration compose runs when voice is not default-active for the run', asyn
   });
   await new Promise(resolve => setTimeout(resolve, 0));
 
-  assert.equal(narrationRequests.length, 1);
-  assert.equal(narrationRequests[0].action, 'roverNarrationCompose');
-  assert.equal(narrationRequests[0].payload.runKind, undefined);
-  assert.equal(narrationRequests[0].payload.runKindSource, 'unspecified');
+  assert.equal(routerCalls, 0);
   assert.equal(statuses.length, 1);
   assert.equal(statuses[0].message, 'Opening the workflow demo.');
   assert.equal(statuses[0].meta.narrationActive, false);
 });
 
-test('narration compose is skipped when narration is not available for the run', async () => {
-  let narrationCalls = 0;
+test('missing server narration presentation does not block action execution', async () => {
+  const order = [];
   const bridgeRpc = async (method) => {
+    order.push(method);
     if (method === 'executeTool') return { success: true, output: {} };
     return {};
   };
   const actionUx = new ActionUxController({
-    ctx: createCtx(async () => {
-      narrationCalls += 1;
-      return { data: { shouldNarrate: true, speechText: 'Opening.', displayText: 'Opening.' } };
-    }),
+    ctx: createCtx(async () => undefined),
     bridgeRpc,
     runtimeContext: { mode: 'rover_embed', uiHints: { actionNarration: false } },
     actionNarration: false,
@@ -166,56 +166,12 @@ test('narration compose is skipped when narration is not available for the run',
   });
   await new Promise(resolve => setTimeout(resolve, 0));
 
-  assert.equal(narrationCalls, 0);
+  assert.equal(order.includes('executeTool'), true);
 });
 
-test('fast consecutive form fields are composed as one narration request', async () => {
-  const narrationRequests = [];
-  const bridgeRpc = async (method, params) => {
-    if (method === 'describeActionTarget') return target(params?.call?.args?.element_id || 1);
-    if (method === 'getTabContext') return { title: 'Acme', url: 'https://example.com/demo' };
-    if (method === 'executeTool') return { success: true, output: {} };
-    return {};
-  };
-  const actionUx = new ActionUxController({
-    ctx: createCtx(async (_action, payload) => {
-      narrationRequests.push(payload);
-      return {
-        data: {
-          shouldNarrate: true,
-          speechText: 'I will complete the demo request details.',
-          displayText: 'Completing the demo request details.',
-          captionTtlMs: 2500,
-        },
-      };
-    }),
-    bridgeRpc,
-    runtimeContext: { mode: 'rover_embed', uiHints: { actionNarration: true } },
-    actionNarration: true,
-    actionNarrationDefaultActive: true,
-    postToolLifecycleEvent: () => {},
-    postStatus: () => {},
-  });
-
-  await executeSystemToolCallsSequentially({
-    calls: [
-      { name: 'type_into_element', args: { element_id: 1, text: 'private@example.com' } },
-      { name: 'type_into_element', args: { element_id: 2, text: 'Ada Lovelace' } },
-    ],
-    bridgeRpc,
-    actionUx,
-  });
-
-  assert.equal(narrationRequests.length, 1);
-  assert.equal(narrationRequests[0].actions.length, 2);
-  assert.doesNotMatch(JSON.stringify(narrationRequests[0]), /private@example\.com|Ada Lovelace/);
-});
-
-test('stale narration is dropped after navigation output changes the action batch', async () => {
+test('queued server narration is cleared after navigation output changes the action batch', async () => {
   const statuses = [];
-  const bridgeRpc = async (method, params) => {
-    if (method === 'describeActionTarget') return target(params?.call?.args?.element_id || 1, 'Continue');
-    if (method === 'getTabContext') return { title: 'Acme', url: 'https://example.com/demo' };
+  const bridgeRpc = async (method) => {
     if (method === 'executeTool') {
       return {
         success: true,
@@ -229,18 +185,7 @@ test('stale narration is dropped after navigation output changes the action batc
     return {};
   };
   const actionUx = new ActionUxController({
-    ctx: createCtx(async () => {
-      await new Promise(resolve => setTimeout(resolve, 20));
-      return {
-        data: {
-          shouldNarrate: true,
-          speechText: 'Opening the next step.',
-          displayText: 'Opening the next step.',
-          spotlightTargetIds: ['element:1'],
-          captionTtlMs: 2500,
-        },
-      };
-    }),
+    ctx: createCtx(async () => undefined),
     bridgeRpc,
     runtimeContext: { mode: 'rover_embed', uiHints: { actionNarration: true } },
     actionNarration: true,
@@ -248,6 +193,24 @@ test('stale narration is dropped after navigation output changes the action batc
     postToolLifecycleEvent: () => {},
     postStatus: message => statuses.push(message),
   });
+  actionUx.setServerPresentations([
+    {
+      source: 'act',
+      shouldNarrate: true,
+      speechText: 'Opening the next step.',
+      displayText: 'Opening the next step.',
+      spotlightTargetIds: ['element:1'],
+      captionTtlMs: 2500,
+    },
+    {
+      source: 'act',
+      shouldNarrate: true,
+      speechText: 'This should clear before another batch.',
+      displayText: 'This should clear before another batch.',
+      spotlightTargetIds: ['element:2'],
+      captionTtlMs: 2500,
+    },
+  ]);
 
   await executeSystemToolCallsSequentially({
     calls: [{ name: 'goto_url', args: { url: 'https://example.com/next', element_id: 1 } }],
@@ -255,7 +218,7 @@ test('stale narration is dropped after navigation output changes the action batc
     actionUx,
   });
 
-  assert.deepEqual(statuses, []);
+  assert.deepEqual(statuses, ['Opening the next step.']);
 });
 
 test('spotlight cleanup runs after cancellation before tool execution', async () => {

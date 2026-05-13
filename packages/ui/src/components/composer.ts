@@ -7,6 +7,7 @@ export type ComposerOptions = {
   onSubmit: (text: string, attachments: File[]) => void;
   onVoiceStart: () => void;
   onVoiceStop: () => void;
+  onTextInput?: (text: string) => void;
 };
 
 export type ComposerComponent = {
@@ -275,6 +276,7 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
 
   textarea.addEventListener('input', () => {
     syncTextareaHeight();
+    opts.onTextInput?.(textarea.value);
   });
 
   textarea.addEventListener('keydown', (e) => {
