@@ -42,6 +42,10 @@ const CATCH_UP_NARRATION = 'Continuing through the form.';
 const VOICE_POLL_INTERVAL_MS = 250;
 const VOICE_POLL_ATTEMPTS = 10;
 const NATURAL_VOICE_RE = /google|natural|neural|online|premium|enhanced/i;
+const ELEVENLABS_CACHE_MAX_ITEMS = 64;
+const ELEVENLABS_CACHE_MAX_TEXT_CHARS = 140;
+const ELEVENLABS_NARRATION_CACHE = new Map<string, Promise<Blob>>();
+const ELEVENLABS_AUDIO_PROFILE_CACHE = new Map<string, { voiceId?: string; modelId?: string; language?: string }>();
 
 function normalizeNarrationText(input: string): string {
   return String(input || '')
@@ -67,6 +71,38 @@ function resolveNarrationApiBase(apiBase?: string): string {
   } catch {
     return 'https://agent.rtrvr.ai';
   }
+}
+
+function normalizeCachePart(input: unknown): string {
+  return String(input || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180) || 'default';
+}
+
+function buildElevenLabsSessionCacheKey(apiBase: string, sessionId: string): string {
+  return `${apiBase}:${normalizeCachePart(sessionId)}`;
+}
+
+function buildElevenLabsCacheKey(input: {
+  apiBase: string;
+  sessionId?: string;
+  language?: string;
+  voiceId?: string;
+  modelId?: string;
+  voiceURI?: string;
+  voicePreference?: string;
+  text: string;
+}): string {
+  const voice = input.voiceId || input.voiceURI || input.voicePreference || 'server';
+  return [
+    normalizeCachePart(input.apiBase),
+    `session=${normalizeCachePart(input.sessionId)}`,
+    `lang=${normalizeCachePart(input.language || 'default')}`,
+    `voice=${normalizeCachePart(voice)}`,
+    `model=${normalizeCachePart(input.modelId || 'server')}`,
+    normalizeNarrationText(input.text).toLowerCase(),
+  ].join('|');
 }
 
 function clampRate(value: unknown): number {
@@ -434,7 +470,7 @@ export function createElevenLabsNarrator(opts: RoverNarratorOptions = {}): Rover
     estimatedMs: number;
   }> = [];
 
-  function notifyProviderFailure(item?: typeof queue[number]): void {
+  function notifyProviderFailure(item?: { text: string; key?: string; priority: 'low' | 'normal' | 'high' }): void {
     try {
       opts.onProviderFailure?.(item?.text, item
         ? { mode: 'append', key: item.key, priority: item.priority }
@@ -476,6 +512,42 @@ export function createElevenLabsNarrator(opts: RoverNarratorOptions = {}): Rover
     }
   }
 
+  function rememberCachedBlob(key: string, blobPromise: Promise<Blob>): void {
+    if (ELEVENLABS_NARRATION_CACHE.has(key)) {
+      ELEVENLABS_NARRATION_CACHE.delete(key);
+    }
+    ELEVENLABS_NARRATION_CACHE.set(key, blobPromise);
+    while (ELEVENLABS_NARRATION_CACHE.size > ELEVENLABS_CACHE_MAX_ITEMS) {
+      const oldest = ELEVENLABS_NARRATION_CACHE.keys().next().value;
+      if (!oldest) break;
+      ELEVENLABS_NARRATION_CACHE.delete(oldest);
+    }
+  }
+
+  async function playBlob(blob: Blob, item: { text: string; key?: string; priority: 'low' | 'normal' | 'high' }, currentGeneration: number): Promise<void> {
+    if (currentGeneration !== generation || disposed) {
+      cleanupActive();
+      return;
+    }
+    const audio = new Audio();
+    activeAudio = audio;
+    activeObjectUrl = URL.createObjectURL(blob);
+    audio.src = activeObjectUrl;
+    audio.onended = () => {
+      cleanupActive();
+      void playNext(generation);
+    };
+    audio.onerror = () => {
+      cleanupActive();
+      void playNext(generation);
+    };
+    await audio.play().catch(() => {
+      notifyProviderFailure(item);
+      cleanupActive();
+      void playNext(generation);
+    });
+  }
+
   async function playNext(currentGeneration: number): Promise<void> {
     if (!supported || permanentlyDisabled || disposed || !enabled || !unlocked || playing) return;
     if (typeof document !== 'undefined' && document.hidden) return;
@@ -491,7 +563,29 @@ export function createElevenLabsNarrator(opts: RoverNarratorOptions = {}): Rover
         cleanupActive();
         return;
       }
-      const response = await fetch(`${resolveNarrationApiBase(opts.apiBase)}/v2/rover/audio/narration/stream`, {
+      const apiBase = resolveNarrationApiBase(opts.apiBase);
+      const sessionId = String(auth?.sessionId || '').trim();
+      const profileKey = buildElevenLabsSessionCacheKey(apiBase, sessionId);
+      const profile = ELEVENLABS_AUDIO_PROFILE_CACHE.get(profileKey);
+      const cacheKey = buildElevenLabsCacheKey({
+        apiBase,
+        sessionId,
+        language: profile?.language || opts.lang,
+        voiceId: profile?.voiceId,
+        modelId: profile?.modelId,
+        voiceURI: opts.voiceURI,
+        voicePreference: opts.voicePreference,
+        text: item.text,
+      });
+      const cached = item.text.length <= ELEVENLABS_CACHE_MAX_TEXT_CHARS
+        ? ELEVENLABS_NARRATION_CACHE.get(cacheKey)
+        : undefined;
+      if (cached) {
+        const blob = await cached;
+        await playBlob(blob, item, currentGeneration);
+        return;
+      }
+      const response = await fetch(`${apiBase}/v2/rover/audio/narration/stream`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -516,30 +610,43 @@ export function createElevenLabsNarrator(opts: RoverNarratorOptions = {}): Rover
         void playNext(generation);
         return;
       }
+      const responseVoiceId = response.headers?.get?.('x-rover-voice-id') || undefined;
+      const responseModelId = response.headers?.get?.('x-rover-tts-model')
+        || response.headers?.get?.('x-rover-audio-model')
+        || undefined;
+      const responseLanguage = response.headers?.get?.('x-rover-tts-language') || undefined;
+      if (responseVoiceId || responseModelId || responseLanguage) {
+        ELEVENLABS_AUDIO_PROFILE_CACHE.set(profileKey, {
+          voiceId: responseVoiceId || profile?.voiceId,
+          modelId: responseModelId || profile?.modelId,
+          language: responseLanguage || profile?.language || opts.lang,
+        });
+      }
+      const responseCacheKey = buildElevenLabsCacheKey({
+        apiBase,
+        sessionId,
+        language: responseLanguage || profile?.language || opts.lang,
+        voiceId: responseVoiceId || profile?.voiceId,
+        modelId: responseModelId || profile?.modelId,
+        voiceURI: opts.voiceURI,
+        voicePreference: opts.voicePreference,
+        text: item.text,
+      });
+      const cachedBlobPromise = item.text.length <= ELEVENLABS_CACHE_MAX_TEXT_CHARS
+        ? response.clone().blob()
+        : undefined;
+      if (cachedBlobPromise) {
+        cachedBlobPromise.catch(() => {
+          ELEVENLABS_NARRATION_CACHE.delete(cacheKey);
+          ELEVENLABS_NARRATION_CACHE.delete(responseCacheKey);
+        });
+        rememberCachedBlob(cacheKey, cachedBlobPromise);
+        if (responseCacheKey !== cacheKey) rememberCachedBlob(responseCacheKey, cachedBlobPromise);
+      }
       const streamed = await playStreamingResponse(response, currentGeneration);
       if (streamed) return;
-      const blob = await response.blob();
-      if (currentGeneration !== generation || disposed) {
-        cleanupActive();
-        return;
-      }
-      const audio = new Audio();
-      activeAudio = audio;
-      activeObjectUrl = URL.createObjectURL(blob);
-      audio.src = activeObjectUrl;
-      audio.onended = () => {
-        cleanupActive();
-        void playNext(generation);
-      };
-      audio.onerror = () => {
-        cleanupActive();
-        void playNext(generation);
-      };
-      await audio.play().catch(() => {
-        notifyProviderFailure(item);
-        cleanupActive();
-        void playNext(generation);
-      });
+      const blob = cachedBlobPromise ? await cachedBlobPromise : await response.blob();
+      await playBlob(blob, item, currentGeneration);
     } catch {
       if (!abort.signal.aborted && currentGeneration === generation && !disposed) {
         notifyProviderFailure(item);

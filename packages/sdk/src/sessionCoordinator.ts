@@ -36,8 +36,11 @@ export type SharedTimelineEvent = {
   sourceRuntimeId?: string;
   elementId?: number;
   toolName?: string;
+  presentation?: RoverTimelineEvent['presentation'];
   narration?: string;
   narrationActive?: boolean;
+  spotlightActive?: boolean;
+  /** Alternate name accepted on read; canonical is `spotlightActive`. Both shapes flow through for cross-product compatibility. */
   actionSpotlightActive?: boolean;
   responseKind?: RoverTimelineEvent['responseKind'];
   actionCue?: RoverActionCue;
@@ -380,6 +383,7 @@ function sanitizeSharedTimeline(input: unknown): SharedTimelineEvent[] {
       sourceRuntimeId: typeof event?.sourceRuntimeId === 'string' ? event.sourceRuntimeId : undefined,
       elementId: Number.isFinite(Number(event?.elementId)) ? Math.trunc(Number(event.elementId)) : undefined,
       toolName: typeof event?.toolName === 'string' ? event.toolName.slice(0, 120) : undefined,
+      presentation: event?.presentation && typeof event.presentation === 'object' ? event.presentation : undefined,
       narration: typeof event?.narration === 'string' ? event.narration.replace(/\s+/g, ' ').trim().slice(0, 220) || undefined : undefined,
       narrationActive: typeof event?.narrationActive === 'boolean' ? event.narrationActive : undefined,
       responseKind: event?.responseKind === 'checkpoint' || event?.responseKind === 'final' || event?.responseKind === 'question' || event?.responseKind === 'error'
@@ -1450,6 +1454,7 @@ export class SessionCoordinator {
       sourceRuntimeId: this.runtimeId,
       elementId: Number.isFinite(Number(event.elementId)) ? Math.trunc(Number(event.elementId)) : undefined,
       toolName: typeof event.toolName === 'string' ? event.toolName.slice(0, 120) : undefined,
+      presentation: event.presentation && typeof event.presentation === 'object' ? event.presentation : undefined,
       narration: typeof event.narration === 'string' ? event.narration.replace(/\s+/g, ' ').trim().slice(0, 220) || undefined : undefined,
       narrationActive: typeof event.narrationActive === 'boolean' ? event.narrationActive : undefined,
       responseKind: event.responseKind === 'checkpoint' || event.responseKind === 'final' || event.responseKind === 'question' || event.responseKind === 'error'

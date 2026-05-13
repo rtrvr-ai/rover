@@ -14,6 +14,9 @@
     "lint": "eslint .",
     "type-check": "tsc --noEmit"
   },
+  "dependencies": {
+    "@rover/shared": "workspace:*"
+  },
   "devDependencies": {
     "@rover/tsconfig": "workspace:*",
     "@types/node": "^20.11.30",

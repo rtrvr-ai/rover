@@ -23,8 +23,12 @@ export type PersistedTimelineEvent = {
   sourceRuntimeId?: string;
   elementId?: number;
   toolName?: string;
+  presentation?: RoverTimelineEvent['presentation'];
   narration?: string;
   narrationActive?: boolean;
+  speechProvider?: RoverTimelineEvent['speechProvider'];
+  spotlightActive?: boolean;
+  /** Alternate name accepted on read. Reader prefers `spotlightActive`; both shapes are accepted for cross-product (rtrvr extension / boot-config / older Rover payloads) compatibility. */
   actionSpotlightActive?: boolean;
   responseKind?: RoverTimelineEvent['responseKind'];
   actionCue?: RoverActionCue;

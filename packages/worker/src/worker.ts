@@ -11,6 +11,7 @@ import type {
   PreviousSteps,
   ToolExecutionResult,
   RuntimeToolOutput,
+  RoverPresentationDirective,
   StatusStage,
   TaskRoutingConfig,
   AssistantCheckpointPayload,
@@ -20,6 +21,12 @@ import { createAgentContext, type RoverAgentConfig } from './agent/context.js';
 import { handleSendMessageWithFunctions } from './agent/messageOrchestrator.js';
 import { TabularStore } from './tabular-memory/tabular-store.js';
 import { PLANNER_FUNCTION_CALLS } from '@rover/shared/lib/utils/constants.js';
+import {
+  resolveRoverPresentationPolicy,
+  type RoverPresentationIntent,
+  type RoverPresentationPolicySource,
+  type RoverSpeechProvider,
+} from '@rover/shared/lib/utils/presentation-policy.js';
 import { isApiKeyRequiredError, toRoverErrorEnvelope } from './agent/errors.js';
 import { resolveRuntimeTabs } from './agent/runtimeTabs.js';
 import { shouldClearHistoryForRun } from './runHistoryGuards.js';
@@ -207,12 +214,15 @@ let lastStatusKey = '';
 let seenStatusKeys = new Set<string>();
 let lastRuntimeTabsDiagnosticsKey = '';
 const terminalRuns = new Map<string, TerminalRunResult>();
-let activeActionNarration = false;
-let activeActionNarrationDefaultActive = false;
-let activeActionSpotlight = false;
-let activeActionSpotlightDefaultActive = false;
+let activePresentationVoiceAvailable = false;
+let activePresentationVoice = false;
+let activePresentationSpotlightAvailable = false;
+let activePresentationSpotlight = false;
 let activeNarrationRunKind: 'guide' | 'task' | undefined;
 let activeNarrationLanguage: string | undefined;
+let activeSpeechProvider: RoverSpeechProvider | undefined;
+let recentPresentationNarrations: string[] = [];
+let recentPresentationGroupKeys: string[] = [];
 let lastAssistantResponseNarrationKey = '';
 
 let RPC_TIMEOUT_MS = 30_000;
@@ -234,14 +244,6 @@ function normalizeActionSpotlightRunKinds(input: unknown): Array<'guide' | 'task
   return kinds.length ? Array.from(new Set(kinds)) : undefined;
 }
 
-function isDefaultActionSpotlightActive(config: RoverWorkerConfig | null, runKind?: 'guide' | 'task'): boolean {
-  const motion = config?.ui?.experience?.motion;
-  if (motion?.actionSpotlight === false) return false;
-  const allowedKinds = normalizeActionSpotlightRunKinds(motion?.actionSpotlightRunKinds);
-  if (!runKind) return false;
-  return !allowedKinds || allowedKinds.length === 0 || allowedKinds.includes(runKind);
-}
-
 function isDefaultNarrationActive(config: RoverWorkerConfig | null, runKind?: 'guide' | 'task'): boolean {
   const experience = config?.ui?.experience;
   const narration = experience?.audio?.narration;
@@ -256,26 +258,32 @@ function isDefaultNarrationActive(config: RoverWorkerConfig | null, runKind?: 'g
   return runKind === 'guide';
 }
 
-function resolveActionNarrationHints(
+function resolvePresentationHints(
   config: RoverWorkerConfig | null,
-  _userInput?: string,
-  options?: {
-    narrationEnabledForRun?: boolean;
-    narrationPreferenceSource?: 'default' | 'visitor';
-    narrationDefaultActiveForRun?: boolean;
-    narrationRunKind?: 'guide' | 'task';
-    narrationLanguage?: string;
-    actionSpotlightEnabledForRun?: boolean;
-    actionSpotlightRunKind?: 'guide' | 'task';
-    actionSpotlightDefaultActiveForRun?: boolean;
-  },
+  userInput?: string,
+	  options?: {
+	    presentationVoiceAvailable?: boolean;
+	    presentationVoicePreferenceSource?: 'default' | 'visitor';
+	    presentationVoiceDefaultActive?: boolean;
+	    presentationRunKind?: 'guide' | 'task';
+	    narrationLanguage?: string;
+	    presentationIntent?: RoverPresentationIntent;
+	    presentationPolicySource?: RoverPresentationPolicySource;
+	    speechProvider?: RoverSpeechProvider;
+	    presentationSpotlightAvailable?: boolean;
+	    presentationSpotlightPreferenceSource?: 'default' | 'visitor';
+	    presentationSpotlightDefaultActive?: boolean;
+	  },
 ): {
-  actionNarration?: boolean;
-  actionNarrationDefaultActive?: boolean;
-  actionSpotlight?: boolean;
-  actionSpotlightDefaultActive?: boolean;
+  presentationActive?: boolean;
+  voiceActive?: boolean;
+  spotlightActive?: boolean;
+  captionActive?: boolean;
   runKind?: 'guide' | 'task';
   narrationLanguage?: string;
+  presentationIntent?: RoverPresentationIntent;
+  presentationPolicySource?: RoverPresentationPolicySource;
+  speechProvider?: RoverSpeechProvider;
 } {
   const experience = config?.ui?.experience;
   const narration = experience?.audio?.narration;
@@ -285,40 +293,74 @@ function resolveActionNarrationHints(
     : experience?.experienceMode === 'minimal'
       ? 'off'
     : 'guided';
-  const runKind = normalizeNarrationRunKind(options?.narrationRunKind)
-    || normalizeNarrationRunKind(options?.actionSpotlightRunKind);
+	  const requestedRunKind = normalizeNarrationRunKind(options?.presentationRunKind);
+	  const narrationAvailable = narrationOwnerEnabled && (
+	    options?.presentationVoiceAvailable === true
+	      || (options?.presentationVoiceAvailable === undefined && defaultMode !== 'off')
+	  );
+	  const spotlightAvailable = options?.presentationSpotlightAvailable === true
+	    || (options?.presentationSpotlightAvailable === undefined && experience?.motion?.actionSpotlight !== false);
+  const policy = resolveRoverPresentationPolicy({
+    userInput,
+    explicitRunKind: requestedRunKind,
+    explicitRunKindSource: options?.presentationPolicySource === 'shortcut'
+      || options?.presentationPolicySource === 'query'
+      || options?.presentationPolicySource === 'api'
+      || options?.presentationPolicySource === 'site_default'
+      ? options.presentationPolicySource
+      : undefined,
+    narrationOwnerEnabled,
+    narrationAvailable,
+    narrationDefaultMode: defaultMode,
+	    narrationVisitorSource: options?.presentationVoicePreferenceSource || 'default',
+	    narrationVisitorEnabled: options?.presentationVoiceAvailable !== false,
+	    actionSpotlightOwnerEnabled: experience?.motion?.actionSpotlight !== false,
+	    actionSpotlightAvailable: spotlightAvailable,
+	    actionSpotlightAllowedRunKinds: normalizeActionSpotlightRunKinds(experience?.motion?.actionSpotlightRunKinds),
+	    actionSpotlightVisitorSource: options?.presentationSpotlightPreferenceSource || 'default',
+	    actionSpotlightVisitorEnabled: options?.presentationSpotlightAvailable !== false,
+    browserVoiceSupported: true,
+  });
+  const runKind = requestedRunKind || policy.runKind;
   const next: {
-    actionNarration?: boolean;
-    actionNarrationDefaultActive?: boolean;
-    actionSpotlight?: boolean;
-    actionSpotlightDefaultActive?: boolean;
+    presentationActive?: boolean;
+    voiceActive?: boolean;
+    spotlightActive?: boolean;
+    captionActive?: boolean;
     runKind?: 'guide' | 'task';
     narrationLanguage?: string;
+    presentationIntent?: RoverPresentationIntent;
+    presentationPolicySource?: RoverPresentationPolicySource;
+    speechProvider?: RoverSpeechProvider;
   } = {};
 
-  if (options?.actionSpotlightEnabledForRun === true) {
-    next.actionSpotlight = true;
-    next.actionSpotlightDefaultActive = typeof options.actionSpotlightDefaultActiveForRun === 'boolean'
-      ? options.actionSpotlightDefaultActiveForRun
-      : isDefaultActionSpotlightActive(config, runKind);
-  }
+	  const spotlightActive = spotlightAvailable && options?.presentationIntent !== 'off'
+	    ? (typeof options?.presentationSpotlightDefaultActive === 'boolean'
+	      ? options.presentationSpotlightDefaultActive
+	      : policy.spotlightActive)
+	    : false;
+  if (spotlightActive) next.spotlightActive = true;
 
-  const narrationDefaultActive = typeof options?.narrationDefaultActiveForRun === 'boolean'
-    ? options.narrationDefaultActiveForRun
-    : isDefaultNarrationActive(config, runKind);
-  const narrationAvailable = narrationOwnerEnabled && (
-    options?.narrationEnabledForRun === true
-      || (options?.narrationEnabledForRun === undefined && defaultMode !== 'off')
-  );
-  if (narrationAvailable) {
-    next.actionNarration = true;
-    next.actionNarrationDefaultActive = narrationDefaultActive;
+	  const narrationDefaultActive = typeof options?.presentationVoiceDefaultActive === 'boolean'
+	    ? options.presentationVoiceDefaultActive
+	    : policy.voiceActive || isDefaultNarrationActive(config, runKind);
+  const voiceActive = narrationAvailable && options?.presentationIntent !== 'off' && narrationDefaultActive;
+  if (voiceActive) {
+    next.voiceActive = true;
     if (normalizeNarrationLanguage(options?.narrationLanguage)) {
       next.narrationLanguage = normalizeNarrationLanguage(options?.narrationLanguage);
     }
   }
 
-  if (next.actionNarration || next.actionSpotlight) next.runKind = runKind;
+  const captionActive = options?.presentationIntent !== 'off' && (voiceActive || spotlightActive || policy.presentationIntent === 'guide');
+  if (captionActive) next.captionActive = true;
+  if (voiceActive || spotlightActive || captionActive) {
+    next.presentationActive = true;
+    next.runKind = runKind;
+  }
+  next.presentationIntent = options?.presentationIntent || policy.presentationIntent;
+  next.presentationPolicySource = options?.presentationPolicySource || policy.source;
+  next.speechProvider = options?.speechProvider || policy.speechProvider;
   return next;
 }
 
@@ -330,6 +372,23 @@ function normalizeNarrationLanguage(input: unknown): string | undefined {
     .split('-')
     .map((part, index) => index === 0 ? part.toLowerCase() : part.toUpperCase())
     .join('-');
+}
+
+function normalizePresentationPolicySource(input: unknown): RoverPresentationPolicySource | undefined {
+  const value = String(input || '').trim();
+  if (
+    value === 'visitor'
+    || value === 'shortcut'
+    || value === 'query'
+    || value === 'api'
+    || value === 'site_default'
+    || value === 'voice'
+    || value === 'heuristic'
+    || value === 'default'
+  ) {
+    return value;
+  }
+  return undefined;
 }
 
 function hostFromUrl(url?: string): string | undefined {
@@ -352,12 +411,17 @@ function buildRoverRuntimeContext(params: {
   config: RoverWorkerConfig | null;
   agentName: string;
   taskBoundaryId?: string;
-  actionNarration?: boolean;
-  actionNarrationDefaultActive?: boolean;
-  actionSpotlight?: boolean;
-  actionSpotlightDefaultActive?: boolean;
+  presentationActive?: boolean;
+  voiceActive?: boolean;
+  spotlightActive?: boolean;
+  captionActive?: boolean;
   runKind?: 'guide' | 'task';
   narrationLanguage?: string;
+  presentationIntent?: RoverPresentationIntent;
+  presentationPolicySource?: RoverPresentationPolicySource;
+  speechProvider?: RoverSpeechProvider;
+  previousNarrations?: string[];
+  previousGroupKeys?: string[];
 }): RoverRuntimeContext {
   const externalTabs = params.tabs
     .map((tab, index): RoverRuntimeContextExternalTab | undefined => {
@@ -400,15 +464,20 @@ function buildRoverRuntimeContext(params: {
     ...(site ? { site } : {}),
     tabIdContract: 'tree_index_mapped_by_tab_order',
     taskBoundaryId: params.taskBoundaryId,
-    ...(params.actionNarration || typeof params.actionNarrationDefaultActive === 'boolean' || params.actionSpotlight || typeof params.actionSpotlightDefaultActive === 'boolean' || params.runKind || params.narrationLanguage
+    ...(params.presentationActive || params.voiceActive || params.spotlightActive || params.captionActive || params.runKind || params.narrationLanguage || params.presentationIntent || params.presentationPolicySource || params.speechProvider || params.previousNarrations?.length || params.previousGroupKeys?.length
       ? {
           uiHints: {
-            ...(params.actionNarration ? { actionNarration: true } : {}),
-            ...(typeof params.actionNarrationDefaultActive === 'boolean' ? { actionNarrationDefaultActive: params.actionNarrationDefaultActive } : {}),
-            ...(params.actionSpotlight ? { actionSpotlight: true } : {}),
-            ...(typeof params.actionSpotlightDefaultActive === 'boolean' ? { actionSpotlightDefaultActive: params.actionSpotlightDefaultActive } : {}),
+            ...(params.presentationActive ? { presentationActive: true } : {}),
+            ...(params.voiceActive ? { voiceActive: true } : {}),
+            ...(params.spotlightActive ? { spotlightActive: true } : {}),
+            ...(params.captionActive ? { captionActive: true } : {}),
             ...(params.runKind ? { runKind: params.runKind } : {}),
             ...(params.narrationLanguage ? { narrationLanguage: params.narrationLanguage } : {}),
+            ...(params.presentationIntent ? { presentationIntent: params.presentationIntent } : {}),
+            ...(params.presentationPolicySource && params.presentationPolicySource !== 'default' ? { presentationPolicySource: params.presentationPolicySource } : {}),
+            ...(params.speechProvider ? { speechProvider: params.speechProvider } : {}),
+            ...(params.previousNarrations?.length ? { previousNarrations: params.previousNarrations.slice(-4) } : {}),
+            ...(params.previousGroupKeys?.length ? { previousGroupKeys: params.previousGroupKeys.slice(-4) } : {}),
           },
         }
       : {}),
@@ -630,7 +699,26 @@ function compactThought(message: string, thought?: string): string {
   return source.length <= 120 ? source : `${source.slice(0, 119)}…`;
 }
 
-function postStatus(message: string, thought?: string, stage?: StatusStage, meta?: { narration?: string; narrationActive?: boolean }) {
+function rememberPresentationNarration(input: unknown): void {
+  const text = String(input || '').replace(/\s+/g, ' ').trim().slice(0, 180);
+  if (!text) return;
+  const key = text.toLowerCase();
+  recentPresentationNarrations = [
+    ...recentPresentationNarrations.filter(item => item.toLowerCase() !== key),
+    text,
+  ].slice(-4);
+}
+
+function rememberPresentationGroupKey(input: unknown): void {
+  const key = String(input || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  if (!key) return;
+  recentPresentationGroupKeys = [
+    ...recentPresentationGroupKeys.filter(item => item !== key),
+    key,
+  ].slice(-4);
+}
+
+function postStatus(message: string, thought?: string, stage?: StatusStage, meta?: { narration?: string; narrationActive?: boolean; speechProvider?: RoverSpeechProvider }) {
   const resolvedStage = inferStatusStage(message, thought, stage);
   const compact = compactThought(message, thought);
   const runId = activeRun?.runId || 'no-run';
@@ -651,8 +739,10 @@ function postStatus(message: string, thought?: string, stage?: StatusStage, meta
     compactThought: compact,
     executionId: activeRun?.runId,
     narration: meta?.narration,
-    narrationActive: meta?.narrationActive ?? (activeActionNarrationDefaultActive || undefined),
+    narrationActive: meta?.narrationActive ?? (activePresentationVoice || undefined),
+    speechProvider: meta?.speechProvider || activeSpeechProvider,
   });
+  if (meta?.narration) rememberPresentationNarration(meta.narration);
   postStateSnapshot();
 }
 
@@ -682,8 +772,11 @@ function extractToolLifecycleLogicalTabId(args: unknown): number | undefined {
 function postToolLifecycleEvent(type: 'tool_start' | 'tool_result', payload: {
   call: FunctionCall & { id?: string };
   toolCallId: string;
+  presentation?: RoverPresentationDirective;
   narration?: string;
-  actionSpotlightActive?: boolean;
+  narrationActive?: boolean;
+  speechProvider?: RoverSpeechProvider;
+  spotlightActive?: boolean;
   result?: unknown;
 }): void {
   const runId = activeRun?.runId || 'no-run';
@@ -692,13 +785,28 @@ function postToolLifecycleEvent(type: 'tool_start' | 'tool_result', payload: {
     type,
     call: payload.call,
     toolCallId: payload.toolCallId,
-    narration: type === 'tool_start' ? payload.narration : undefined,
-    narrationActive: activeActionNarrationDefaultActive || undefined,
-    actionSpotlightActive: typeof payload.actionSpotlightActive === 'boolean' ? payload.actionSpotlightActive : undefined,
+    presentation: type === 'tool_start' ? payload.presentation : undefined,
+    // narration flows on BOTH tool_start (planner/ACT in-band sidecar) and
+    // tool_result (visitor-visible tool output, summarized by
+    // deriveResponseNarrationFromOutput in actionUx.afterTool).
+    narration: typeof payload.narration === 'string' ? payload.narration : undefined,
+    narrationActive: typeof payload.narrationActive === 'boolean'
+      ? payload.narrationActive
+      : (type === 'tool_start' ? (activePresentationVoice || undefined) : undefined),
+    speechProvider: typeof payload.narration === 'string'
+      ? (payload.speechProvider || activeSpeechProvider)
+      : (type === 'tool_start' ? (payload.speechProvider || activeSpeechProvider) : undefined),
+    spotlightActive: typeof payload.spotlightActive === 'boolean' ? payload.spotlightActive : undefined,
     logicalTabId: extractToolLifecycleLogicalTabId(payload.call.args),
     result: payload.result,
     executionId: activeRun?.runId,
   });
+  if (type === 'tool_start') {
+    rememberPresentationNarration(payload.presentation?.speechText || payload.presentation?.displayText || payload.narration);
+    rememberPresentationGroupKey(payload.presentation?.groupKey);
+  } else if (type === 'tool_result' && typeof payload.narration === 'string') {
+    rememberPresentationNarration(payload.narration);
+  }
 }
 
 function wrapBridgeRpcWithToolLifecycle(
@@ -717,18 +825,18 @@ function wrapBridgeRpcWithToolLifecycle(
     if (params?.uxManaged === true) {
       return rawBridgeRpc(method, { ...(params || {}), call });
     }
-    const actionSpotlightActive = activeActionSpotlight === true && activeActionSpotlightDefaultActive === true;
-    postToolLifecycleEvent('tool_start', { call, toolCallId, actionSpotlightActive });
+    const spotlightActive = activePresentationSpotlightAvailable === true && activePresentationSpotlight === true;
+    postToolLifecycleEvent('tool_start', { call, toolCallId, spotlightActive });
     try {
       const result = await rawBridgeRpc(method, { ...(params || {}), call });
-      postToolLifecycleEvent('tool_result', { call, toolCallId, actionSpotlightActive, result: cloneUnknown(result) });
+      postToolLifecycleEvent('tool_result', { call, toolCallId, spotlightActive, result: cloneUnknown(result) });
       return result;
     } catch (err: any) {
       const result = {
         success: false,
         error: err?.message || String(err),
       };
-      postToolLifecycleEvent('tool_result', { call, toolCallId, actionSpotlightActive, result });
+      postToolLifecycleEvent('tool_result', { call, toolCallId, spotlightActive, result });
       throw err;
     }
   };
@@ -1495,7 +1603,7 @@ function normalizeResponseNarration(
   input: unknown,
   kind: AssistantResponseKind,
 ): string | undefined {
-  if (!activeActionNarration) return undefined;
+  if (!activePresentationVoiceAvailable) return undefined;
   return sanitizeResponseNarration(input, { responseKind: kind });
 }
 
@@ -1509,7 +1617,7 @@ function shouldEmitResponseNarration(narration: string | undefined): boolean {
 }
 
 function postAssistantResponse(payload: AssistantCheckpointPayload): string {
-  if (!activeActionNarration) return '';
+  if (!activePresentationVoiceAvailable) return '';
   const kind = payload.responseKind || 'checkpoint';
   const rawText = payload.text
     || deriveResponseNarrationFromOutput(payload.output, {
@@ -1531,7 +1639,7 @@ function postAssistantResponse(payload: AssistantCheckpointPayload): string {
     responseKind: kind,
     sourceToolName: payload.sourceToolName,
     narration: shouldNarrate ? narration : undefined,
-    narrationActive: activeActionNarrationDefaultActive || undefined,
+    narrationActive: activePresentationVoice || undefined,
     executionId: runId,
   });
   return text || narration || '';
@@ -1571,7 +1679,7 @@ function postAssistantMessage(payload: string | AssistantMessagePayload): string
     blocks,
     responseKind: kind,
     narration: shouldNarrate ? narration : undefined,
-    narrationActive: kind ? (activeActionNarrationDefaultActive || undefined) : undefined,
+    narrationActive: kind ? (activePresentationVoice || undefined) : undefined,
     executionId: runId,
   });
   return resolvedText;
@@ -2320,6 +2428,8 @@ function clearTaskScopedContextAfterBoundary(_reason: 'cancel' | 'end' | 'new_ta
   rootUserInput = '';
   taskSeedChatLog = [];
   attachedFiles = [];
+  recentPresentationNarrations = [];
+  recentPresentationGroupKeys = [];
 }
 
 async function maybeWaitForNewTab(
@@ -2340,18 +2450,21 @@ async function handleUserMessage(
     resume?: boolean;
     preserveHistory?: boolean;
     seedChatLog?: FollowupChatLogEntry[];
-    files?: LLMDataInput[];
-    routing?: 'auto' | 'act' | 'planner';
-    askUserAnswers?: AskUserAnswerMeta;
-    narrationEnabledForRun?: boolean;
-    narrationPreferenceSource?: 'default' | 'visitor';
-    narrationDefaultActiveForRun?: boolean;
-    narrationRunKind?: 'guide' | 'task';
-    narrationLanguage?: string;
-    actionSpotlightEnabledForRun?: boolean;
-    actionSpotlightRunKind?: 'guide' | 'task';
-    actionSpotlightDefaultActiveForRun?: boolean;
-  },
+	    files?: LLMDataInput[];
+	    routing?: 'auto' | 'act' | 'planner';
+	    askUserAnswers?: AskUserAnswerMeta;
+	    presentationVoiceAvailable?: boolean;
+	    presentationVoicePreferenceSource?: 'default' | 'visitor';
+	    presentationVoiceDefaultActive?: boolean;
+	    presentationRunKind?: 'guide' | 'task';
+	    narrationLanguage?: string;
+	    presentationIntent?: RoverPresentationIntent;
+	    presentationPolicySource?: RoverPresentationPolicySource;
+	    speechProvider?: RoverSpeechProvider;
+	    presentationSpotlightAvailable?: boolean;
+	    presentationSpotlightPreferenceSource?: 'default' | 'visitor';
+	    presentationSpotlightDefaultActive?: boolean;
+	  },
 ): Promise<RunOutcome> {
   if (!config) throw new Error('Worker not initialized');
   if (!bridgeRpc) throw new Error('Bridge RPC not initialized');
@@ -2501,28 +2614,34 @@ async function handleUserMessage(
     tabularStore = new TabularStore(`rover-${taskTrajectoryId}`);
   }
   const agentName = resolveAgentName(config);
-  const narrationHints = resolveActionNarrationHints(config, rootUserInput, {
-    narrationEnabledForRun: options?.narrationEnabledForRun,
-    narrationPreferenceSource: options?.narrationPreferenceSource,
-    narrationDefaultActiveForRun: options?.narrationDefaultActiveForRun,
-    narrationRunKind: options?.narrationRunKind,
-    narrationLanguage: options?.narrationLanguage,
-    actionSpotlightEnabledForRun: options?.actionSpotlightEnabledForRun,
-    actionSpotlightRunKind: options?.actionSpotlightRunKind,
-    actionSpotlightDefaultActiveForRun: options?.actionSpotlightDefaultActiveForRun,
-  });
-  activeActionNarration = narrationHints.actionNarration === true;
-  activeActionNarrationDefaultActive = narrationHints.actionNarrationDefaultActive === true;
-  activeActionSpotlight = narrationHints.actionSpotlight === true;
-  activeActionSpotlightDefaultActive = narrationHints.actionSpotlightDefaultActive === true;
-  activeNarrationRunKind = narrationHints.runKind;
-  activeNarrationLanguage = narrationHints.narrationLanguage;
+	  const presentationHints = resolvePresentationHints(config, rootUserInput, {
+	    presentationVoiceAvailable: options?.presentationVoiceAvailable,
+	    presentationVoicePreferenceSource: options?.presentationVoicePreferenceSource,
+	    presentationVoiceDefaultActive: options?.presentationVoiceDefaultActive,
+	    presentationRunKind: options?.presentationRunKind,
+	    narrationLanguage: options?.narrationLanguage,
+	    presentationIntent: options?.presentationIntent,
+	    presentationPolicySource: options?.presentationPolicySource,
+	    speechProvider: options?.speechProvider,
+	    presentationSpotlightAvailable: options?.presentationSpotlightAvailable,
+	    presentationSpotlightPreferenceSource: options?.presentationSpotlightPreferenceSource,
+	    presentationSpotlightDefaultActive: options?.presentationSpotlightDefaultActive,
+	  });
+  activePresentationVoiceAvailable = presentationHints.voiceActive === true;
+  activePresentationVoice = presentationHints.voiceActive === true;
+  activePresentationSpotlightAvailable = presentationHints.spotlightActive === true;
+  activePresentationSpotlight = presentationHints.spotlightActive === true;
+  activeNarrationRunKind = presentationHints.runKind;
+  activeNarrationLanguage = presentationHints.narrationLanguage;
+  activeSpeechProvider = presentationHints.speechProvider;
   const runtimeContext = buildRoverRuntimeContext({
     tabs: tabsForRun,
     config,
     agentName,
     taskBoundaryId,
-    ...narrationHints,
+    previousNarrations: recentPresentationNarrations,
+    previousGroupKeys: recentPresentationGroupKeys,
+    ...presentationHints,
   });
   const ctx = createAgentContext(
     {
@@ -2540,7 +2659,7 @@ async function handleUserMessage(
     tabularStore,
   );
   ctx.isCancelled = () => !!(activeRunId && cancelledRunIds.has(activeRunId));
-  const actionUx = (narrationHints.actionNarration || narrationHints.actionSpotlight)
+  const actionUx = (presentationHints.presentationActive || presentationHints.voiceActive || presentationHints.spotlightActive || presentationHints.captionActive)
     ? new ActionUxController({
         ctx,
         bridgeRpc,
@@ -2548,13 +2667,21 @@ async function handleUserMessage(
         runId: activeRunId,
         trajectoryId: taskTrajectoryId,
         rootUserInput: normalizeRootUserInput(rootUserInput),
-        runKind: narrationHints.runKind,
-        runKindSource: narrationHints.runKind ? 'explicit' : 'unspecified',
-        narrationLanguage: narrationHints.narrationLanguage,
-        actionNarration: narrationHints.actionNarration,
-        actionNarrationDefaultActive: narrationHints.actionNarrationDefaultActive,
-        actionSpotlight: narrationHints.actionSpotlight,
-        actionSpotlightDefaultActive: narrationHints.actionSpotlightDefaultActive,
+        runKind: presentationHints.runKind,
+        runKindSource: presentationHints.presentationPolicySource === 'shortcut'
+          ? 'shortcut'
+          : presentationHints.presentationPolicySource === 'api' || presentationHints.presentationPolicySource === 'query'
+          ? 'launch'
+          : presentationHints.presentationPolicySource === 'site_default'
+            ? 'config'
+            : presentationHints.presentationPolicySource === 'voice' || presentationHints.presentationPolicySource === 'heuristic'
+              ? 'session'
+              : presentationHints.presentationPolicySource === 'default'
+                ? 'unspecified'
+                : presentationHints.runKind ? 'explicit' : 'unspecified',
+        narrationLanguage: presentationHints.narrationLanguage,
+        presentationVoiceActive: presentationHints.voiceActive,
+        presentationSpotlightActive: presentationHints.spotlightActive,
         postToolLifecycleEvent,
         postStatus,
         isCancelled: ctx.isCancelled,
@@ -3035,19 +3162,22 @@ async function runUserMessage(
     trajectoryId?: string;
     resume?: boolean;
     preserveHistory?: boolean;
-    seedChatLog?: FollowupChatLogEntry[];
-    files?: LLMDataInput[];
-    routing?: 'auto' | 'act' | 'planner';
-    askUserAnswers?: AskUserAnswerMeta;
-    narrationEnabledForRun?: boolean;
-    narrationPreferenceSource?: 'default' | 'visitor';
-    narrationDefaultActiveForRun?: boolean;
-    narrationRunKind?: 'guide' | 'task';
-    narrationLanguage?: string;
-    actionSpotlightEnabledForRun?: boolean;
-    actionSpotlightRunKind?: 'guide' | 'task';
-    actionSpotlightDefaultActiveForRun?: boolean;
-  },
+	    seedChatLog?: FollowupChatLogEntry[];
+	    files?: LLMDataInput[];
+	    routing?: 'auto' | 'act' | 'planner';
+	    askUserAnswers?: AskUserAnswerMeta;
+	    presentationVoiceAvailable?: boolean;
+	    presentationVoicePreferenceSource?: 'default' | 'visitor';
+	    presentationVoiceDefaultActive?: boolean;
+	    presentationRunKind?: 'guide' | 'task';
+	    narrationLanguage?: string;
+	    presentationIntent?: RoverPresentationIntent;
+	    presentationPolicySource?: RoverPresentationPolicySource;
+	    speechProvider?: RoverSpeechProvider;
+	    presentationSpotlightAvailable?: boolean;
+	    presentationSpotlightPreferenceSource?: 'default' | 'visitor';
+	    presentationSpotlightDefaultActive?: boolean;
+	  },
 ): Promise<void> {
   const runId = meta?.runId || crypto.randomUUID();
   const terminal = terminalRuns.get(runId);
@@ -3115,15 +3245,18 @@ async function runUserMessage(
       files: Array.isArray(meta?.files) ? sanitizeAttachedFiles(meta.files) : undefined,
       routing: meta?.routing,
       askUserAnswers: meta?.askUserAnswers,
-      narrationEnabledForRun: meta?.narrationEnabledForRun,
-      narrationPreferenceSource: meta?.narrationPreferenceSource,
-      narrationDefaultActiveForRun: meta?.narrationDefaultActiveForRun,
-      narrationRunKind: meta?.narrationRunKind,
-      narrationLanguage: meta?.narrationLanguage,
-      actionSpotlightEnabledForRun: meta?.actionSpotlightEnabledForRun,
-      actionSpotlightRunKind: meta?.actionSpotlightRunKind,
-      actionSpotlightDefaultActiveForRun: meta?.actionSpotlightDefaultActiveForRun,
-    }));
+	      presentationVoiceAvailable: meta?.presentationVoiceAvailable,
+	      presentationVoicePreferenceSource: meta?.presentationVoicePreferenceSource,
+	      presentationVoiceDefaultActive: meta?.presentationVoiceDefaultActive,
+	      presentationRunKind: meta?.presentationRunKind,
+	      narrationLanguage: meta?.narrationLanguage,
+	      presentationIntent: meta?.presentationIntent,
+	      presentationPolicySource: meta?.presentationPolicySource,
+	      speechProvider: meta?.speechProvider,
+	      presentationSpotlightAvailable: meta?.presentationSpotlightAvailable,
+	      presentationSpotlightPreferenceSource: meta?.presentationSpotlightPreferenceSource,
+	      presentationSpotlightDefaultActive: meta?.presentationSpotlightDefaultActive,
+	    }));
     const isTerminalOutcome =
       outcome.terminalState === 'completed'
       || outcome.terminalState === 'failed';
@@ -3206,8 +3339,13 @@ async function runUserMessage(
   } finally {
     activeAbortController = null;
     activeRun = null;
-    activeActionNarration = false;
-    activeActionNarrationDefaultActive = false;
+    activePresentationVoiceAvailable = false;
+    activePresentationVoice = false;
+    activePresentationSpotlightAvailable = false;
+    activePresentationSpotlight = false;
+    activeNarrationRunKind = undefined;
+    activeNarrationLanguage = undefined;
+    activeSpeechProvider = undefined;
     lastAssistantResponseNarrationKey = '';
     postStateSnapshot();
   }
@@ -3333,17 +3471,32 @@ async function runUserMessage(
         preserveHistory: !!data.preserveHistory,
         seedChatLog: Array.isArray(seedChatLogInput) ? normalizeFollowupChatLog(seedChatLogInput) : undefined,
         files: Array.isArray(data.files) ? sanitizeAttachedFiles(data.files) : undefined,
-        routing: data.routing,
-        askUserAnswers: data.askUserAnswers,
-        narrationEnabledForRun: typeof data.narrationEnabledForRun === 'boolean' ? data.narrationEnabledForRun : undefined,
-        narrationPreferenceSource: data.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
-        narrationDefaultActiveForRun: typeof data.narrationDefaultActiveForRun === 'boolean' ? data.narrationDefaultActiveForRun : undefined,
-        narrationRunKind: data.narrationRunKind === 'guide' || data.narrationRunKind === 'task' ? data.narrationRunKind : undefined,
-        narrationLanguage: normalizeNarrationLanguage(data.narrationLanguage),
-        actionSpotlightEnabledForRun: typeof data.actionSpotlightEnabledForRun === 'boolean' ? data.actionSpotlightEnabledForRun : undefined,
-        actionSpotlightRunKind: data.actionSpotlightRunKind === 'guide' || data.actionSpotlightRunKind === 'task' ? data.actionSpotlightRunKind : undefined,
-        actionSpotlightDefaultActiveForRun: typeof data.actionSpotlightDefaultActiveForRun === 'boolean' ? data.actionSpotlightDefaultActiveForRun : undefined,
-      });
+	        routing: data.routing,
+	        askUserAnswers: data.askUserAnswers,
+	        presentationVoiceAvailable: typeof data.presentationVoiceAvailable === 'boolean'
+	          ? data.presentationVoiceAvailable
+	          : (typeof data.narrationEnabledForRun === 'boolean' ? data.narrationEnabledForRun : undefined),
+	        presentationVoicePreferenceSource: (data.presentationVoicePreferenceSource || data.narrationPreferenceSource) === 'visitor' ? 'visitor' : 'default',
+	        presentationVoiceDefaultActive: typeof data.presentationVoiceDefaultActive === 'boolean'
+	          ? data.presentationVoiceDefaultActive
+	          : (typeof data.narrationDefaultActiveForRun === 'boolean' ? data.narrationDefaultActiveForRun : undefined),
+	        presentationRunKind: data.presentationRunKind === 'guide' || data.presentationRunKind === 'task'
+	          ? data.presentationRunKind
+	          : (data.narrationRunKind === 'guide' || data.narrationRunKind === 'task'
+	            ? data.narrationRunKind
+	            : (data.actionSpotlightRunKind === 'guide' || data.actionSpotlightRunKind === 'task' ? data.actionSpotlightRunKind : undefined)),
+	        narrationLanguage: normalizeNarrationLanguage(data.narrationLanguage),
+	        presentationIntent: data.presentationIntent === 'guide' || data.presentationIntent === 'task' || data.presentationIntent === 'off' ? data.presentationIntent : undefined,
+	        presentationPolicySource: normalizePresentationPolicySource(data.presentationPolicySource),
+	        speechProvider: data.speechProvider === 'elevenlabs' || data.speechProvider === 'browser' || data.speechProvider === 'none' ? data.speechProvider : undefined,
+	        presentationSpotlightAvailable: typeof data.presentationSpotlightAvailable === 'boolean'
+	          ? data.presentationSpotlightAvailable
+	          : (typeof data.actionSpotlightEnabledForRun === 'boolean' ? data.actionSpotlightEnabledForRun : undefined),
+	        presentationSpotlightPreferenceSource: (data.presentationSpotlightPreferenceSource || data.actionSpotlightPreferenceSource) === 'visitor' ? 'visitor' : 'default',
+	        presentationSpotlightDefaultActive: typeof data.presentationSpotlightDefaultActive === 'boolean'
+	          ? data.presentationSpotlightDefaultActive
+	          : (typeof data.actionSpotlightDefaultActiveForRun === 'boolean' ? data.actionSpotlightDefaultActiveForRun : undefined),
+	      });
       return;
     }
 
@@ -3356,17 +3509,32 @@ async function runUserMessage(
         resume: !!data.resume,
         preserveHistory: !!data.preserveHistory,
         seedChatLog: Array.isArray(seedChatLogInput) ? normalizeFollowupChatLog(seedChatLogInput) : undefined,
-        files: Array.isArray(data.files) ? sanitizeAttachedFiles(data.files) : undefined,
-        askUserAnswers: data.askUserAnswers,
-        narrationEnabledForRun: typeof data.narrationEnabledForRun === 'boolean' ? data.narrationEnabledForRun : undefined,
-        narrationPreferenceSource: data.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
-        narrationDefaultActiveForRun: typeof data.narrationDefaultActiveForRun === 'boolean' ? data.narrationDefaultActiveForRun : undefined,
-        narrationRunKind: data.narrationRunKind === 'guide' || data.narrationRunKind === 'task' ? data.narrationRunKind : undefined,
-        narrationLanguage: normalizeNarrationLanguage(data.narrationLanguage),
-        actionSpotlightEnabledForRun: typeof data.actionSpotlightEnabledForRun === 'boolean' ? data.actionSpotlightEnabledForRun : undefined,
-        actionSpotlightRunKind: data.actionSpotlightRunKind === 'guide' || data.actionSpotlightRunKind === 'task' ? data.actionSpotlightRunKind : undefined,
-        actionSpotlightDefaultActiveForRun: typeof data.actionSpotlightDefaultActiveForRun === 'boolean' ? data.actionSpotlightDefaultActiveForRun : undefined,
-      });
+	        files: Array.isArray(data.files) ? sanitizeAttachedFiles(data.files) : undefined,
+	        askUserAnswers: data.askUserAnswers,
+	        presentationVoiceAvailable: typeof data.presentationVoiceAvailable === 'boolean'
+	          ? data.presentationVoiceAvailable
+	          : (typeof data.narrationEnabledForRun === 'boolean' ? data.narrationEnabledForRun : undefined),
+	        presentationVoicePreferenceSource: (data.presentationVoicePreferenceSource || data.narrationPreferenceSource) === 'visitor' ? 'visitor' : 'default',
+	        presentationVoiceDefaultActive: typeof data.presentationVoiceDefaultActive === 'boolean'
+	          ? data.presentationVoiceDefaultActive
+	          : (typeof data.narrationDefaultActiveForRun === 'boolean' ? data.narrationDefaultActiveForRun : undefined),
+	        presentationRunKind: data.presentationRunKind === 'guide' || data.presentationRunKind === 'task'
+	          ? data.presentationRunKind
+	          : (data.narrationRunKind === 'guide' || data.narrationRunKind === 'task'
+	            ? data.narrationRunKind
+	            : (data.actionSpotlightRunKind === 'guide' || data.actionSpotlightRunKind === 'task' ? data.actionSpotlightRunKind : undefined)),
+	        narrationLanguage: normalizeNarrationLanguage(data.narrationLanguage),
+	        presentationIntent: data.presentationIntent === 'guide' || data.presentationIntent === 'task' || data.presentationIntent === 'off' ? data.presentationIntent : undefined,
+	        presentationPolicySource: normalizePresentationPolicySource(data.presentationPolicySource),
+	        speechProvider: data.speechProvider === 'elevenlabs' || data.speechProvider === 'browser' || data.speechProvider === 'none' ? data.speechProvider : undefined,
+	        presentationSpotlightAvailable: typeof data.presentationSpotlightAvailable === 'boolean'
+	          ? data.presentationSpotlightAvailable
+	          : (typeof data.actionSpotlightEnabledForRun === 'boolean' ? data.actionSpotlightEnabledForRun : undefined),
+	        presentationSpotlightPreferenceSource: (data.presentationSpotlightPreferenceSource || data.actionSpotlightPreferenceSource) === 'visitor' ? 'visitor' : 'default',
+	        presentationSpotlightDefaultActive: typeof data.presentationSpotlightDefaultActive === 'boolean'
+	          ? data.presentationSpotlightDefaultActive
+	          : (typeof data.actionSpotlightDefaultActiveForRun === 'boolean' ? data.actionSpotlightDefaultActiveForRun : undefined),
+	      });
       return;
     }
   } catch (err: any) {

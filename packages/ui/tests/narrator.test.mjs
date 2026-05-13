@@ -150,6 +150,7 @@ test('elevenlabs narrator fetches Rover audio endpoint with session token', asyn
     return {
       ok: true,
       blob: async () => new Blob(['audio'], { type: 'audio/mpeg' }),
+      clone() { return this; },
     };
   };
   globalThis.Audio = FakeAudio;
@@ -170,6 +171,67 @@ test('elevenlabs narrator fetches Rover audio endpoint with session token', asyn
     assert.equal(calls[0].url, 'https://agent.test/v2/rover/audio/narration/stream');
     assert.equal(calls[0].init.headers.Authorization, 'Bearer rvrsess_123');
     assert.match(String(calls[0].init.body), /Opening checkout/);
+    narrator.dispose();
+  } finally {
+    globalThis.fetch = previousFetch;
+    globalThis.Audio = previousAudio;
+    globalThis.URL = previousUrl;
+    globalThis.document = previousDocument;
+  }
+});
+
+test('elevenlabs narrator caches by session voice model language and text', async () => {
+  const previousFetch = globalThis.fetch;
+  const previousAudio = globalThis.Audio;
+  const previousUrl = globalThis.URL;
+  const previousDocument = globalThis.document;
+  const calls = [];
+  class FakeAudio {
+    constructor() {
+      this.src = '';
+      this.onended = null;
+      this.onerror = null;
+    }
+    async play() {
+      this.onended?.();
+    }
+    pause() {}
+  }
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return {
+      ok: true,
+      headers: {
+        get(name) {
+          const key = String(name || '').toLowerCase();
+          if (key === 'x-rover-voice-id') return 'voice_123';
+          if (key === 'x-rover-tts-model') return 'eleven_flash_v2_5';
+          if (key === 'x-rover-tts-language') return 'en-US';
+          return null;
+        },
+      },
+      blob: async () => new Blob(['audio'], { type: 'audio/mpeg' }),
+      clone() { return this; },
+    };
+  };
+  globalThis.Audio = FakeAudio;
+  globalThis.URL = {
+    createObjectURL: () => 'blob:rover-audio',
+    revokeObjectURL: () => undefined,
+  };
+  globalThis.document = { hidden: false };
+  try {
+    const narrator = createElevenLabsNarrator({
+      apiBase: 'https://agent.test',
+      lang: 'en-US',
+      getAuth: async () => ({ sessionId: 'sess_cache', sessionToken: 'rvrsess_cache' }),
+    });
+    narrator.unlock();
+    narrator.speak('Comparing the plans.', { mode: 'append', key: 'step-1' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    narrator.speak('Comparing the plans.', { mode: 'append', key: 'step-2' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(calls.length, 1);
     narrator.dispose();
   } finally {
     globalThis.fetch = previousFetch;
@@ -237,6 +299,11 @@ test('elevenlabs narrator starts MediaSource playback without waiting for blob f
       blobCalled = true;
       return new Blob(['audio'], { type: 'audio/mpeg' });
     },
+    clone() {
+      return {
+        blob: async () => new Blob(['cached-audio'], { type: 'audio/mpeg' }),
+      };
+    },
   });
   globalThis.Audio = FakeAudio;
   globalThis.URL = {
@@ -249,10 +316,10 @@ test('elevenlabs narrator starts MediaSource playback without waiting for blob f
   try {
     const narrator = createElevenLabsNarrator({
       apiBase: 'https://agent.test',
-      getAuth: async () => ({ sessionId: 'sess_123', sessionToken: 'rvrsess_123' }),
+      getAuth: async () => ({ sessionId: 'sess_stream', sessionToken: 'rvrsess_123' }),
     });
     narrator.unlock();
-    narrator.speak('Opening checkout.', { mode: 'append', key: 'step-1' });
+    narrator.speak('Streaming checkout.', { mode: 'append', key: 'step-1' });
     await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(blobCalled, false);
     assert.equal(playCount, 1);

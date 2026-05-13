@@ -1,4 +1,9 @@
 import type { ToolOutput } from '@rover/shared/lib/types/index.js';
+import type {
+  RoverPresentationIntent,
+  RoverPresentationPolicySource,
+  RoverSpeechProvider,
+} from '@rover/shared/lib/utils/presentation-policy.js';
 import type { AssistantResponseKind } from './responseNarration.js';
 import type { ActionUxToolHooks } from './systemTools.js';
 
@@ -56,12 +61,18 @@ export type RoverRuntimeContext = {
   taskBoundaryId?: string;
   externalTabs?: RoverRuntimeContextExternalTab[];
   uiHints?: {
-    actionNarration?: boolean;
-    actionNarrationDefaultActive?: boolean;
-    actionSpotlight?: boolean;
-    actionSpotlightDefaultActive?: boolean;
+    presentationActive?: boolean;
+    voiceActive?: boolean;
+    spotlightActive?: boolean;
+    captionActive?: boolean;
+    spotlightColor?: string;
     runKind?: 'guide' | 'task';
     narrationLanguage?: string;
+    presentationIntent?: RoverPresentationIntent;
+    presentationPolicySource?: RoverPresentationPolicySource;
+    speechProvider?: RoverSpeechProvider;
+    previousNarrations?: string[];
+    previousGroupKeys?: string[];
   };
 };
 
@@ -153,6 +164,7 @@ export type StatusStage = 'analyze' | 'route' | 'execute' | 'verify' | 'complete
 export type StatusUpdateMeta = {
   narration?: string;
   narrationActive?: boolean;
+  speechProvider?: RoverSpeechProvider;
 };
 
 export type RoverPresentationDirective = {
@@ -167,6 +179,7 @@ export type RoverPresentationDirective = {
   sensitivity?: 'none' | 'personal' | 'secret' | 'payment';
   actionRefs?: string[];
   narrationActive?: boolean;
+  speechProvider?: RoverSpeechProvider;
 };
 
 export type TaskRoutingMode = 'auto' | 'act' | 'planner';

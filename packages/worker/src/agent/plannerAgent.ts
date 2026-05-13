@@ -19,6 +19,7 @@ function postPlannerPresentation(
   onStatusUpdate?.(displayText || speechText, undefined, 'execute', {
     narration: speechText || displayText,
     narrationActive: presentation.narrationActive,
+    speechProvider: presentation.speechProvider,
   });
 }
 

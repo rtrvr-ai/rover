@@ -41,9 +41,8 @@ test('action UX previews spotlight target before executing the tool', async () =
   const actionUx = new ActionUxController({
     ctx: createCtx(async () => undefined),
     bridgeRpc,
-    runtimeContext: { mode: 'rover_embed', uiHints: { actionSpotlight: true, actionSpotlightDefaultActive: true } },
-    actionSpotlight: true,
-    actionSpotlightDefaultActive: true,
+    runtimeContext: { mode: 'rover_embed', uiHints: { presentationActive: true, spotlightActive: true, captionActive: true } },
+    presentationSpotlightActive: true,
     postToolLifecycleEvent: (type) => lifecycle.push(type),
     postStatus: () => {},
   });
@@ -65,20 +64,19 @@ test('narration-only server presentation does not block action execution', async
     if (method === 'executeTool') return { success: true, output: {} };
     return {};
   };
-  const statuses = [];
+  const lifecycle = [];
   const actionUx = new ActionUxController({
     ctx: createCtx(async () => {
       throw new Error('worker should not compose narration');
     }),
     bridgeRpc,
-    runtimeContext: { mode: 'rover_embed', uiHints: { actionNarration: true } },
-    actionNarration: true,
-    actionNarrationDefaultActive: true,
-    postToolLifecycleEvent: () => {},
-    postStatus: message => {
-      order.push('status');
-      statuses.push(message);
+    runtimeContext: { mode: 'rover_embed', uiHints: { presentationActive: true, voiceActive: true, captionActive: true } },
+    presentationVoiceActive: true,
+    postToolLifecycleEvent: (type, payload) => {
+      order.push(type);
+      lifecycle.push({ type, payload });
     },
+    postStatus: () => {},
   });
   actionUx.setServerPresentations({
     source: 'act',
@@ -94,14 +92,17 @@ test('narration-only server presentation does not block action execution', async
     actionUx,
   });
 
-  assert.ok(order.indexOf('status') >= 0);
-  assert.ok(order.indexOf('status') < order.indexOf('executeTool'));
+  assert.ok(order.indexOf('tool_start') >= 0);
+  assert.ok(order.indexOf('tool_start') < order.indexOf('executeTool'));
   assert.equal(order.includes('previewActionTarget'), false);
-  assert.deepEqual(statuses, ['Opening the workflow demo.']);
+  assert.equal(lifecycle[0].type, 'tool_start');
+  assert.equal(lifecycle[0].payload.presentation?.speechText, 'Opening the workflow demo.');
+  assert.equal(lifecycle[0].payload.narration, 'Opening the workflow demo.');
+  assert.equal(lifecycle[0].payload.narrationActive, true);
 });
 
 test('server narration presentation does not call extensionRouter and preserves inactive voice meta', async () => {
-  const statuses = [];
+  const lifecycle = [];
   const bridgeRpc = async (method) => {
     if (method === 'executeTool') return { success: true, output: {} };
     return {};
@@ -113,12 +114,11 @@ test('server narration presentation does not call extensionRouter and preserves 
       return undefined;
     }),
     bridgeRpc,
-    runtimeContext: { mode: 'rover_embed', uiHints: { actionNarration: true, actionNarrationDefaultActive: false } },
+    runtimeContext: { mode: 'rover_embed', uiHints: { presentationActive: true, captionActive: true } },
     rootUserInput: 'Show me a demo of how to run a workflow on the cloud.',
-    actionNarration: true,
-    actionNarrationDefaultActive: false,
-    postToolLifecycleEvent: () => {},
-    postStatus: (message, _thought, _stage, meta) => statuses.push({ message, meta }),
+    presentationVoiceActive: false,
+    postToolLifecycleEvent: (type, payload) => lifecycle.push({ type, payload }),
+    postStatus: () => {},
   });
   actionUx.setServerPresentations({
     source: 'act',
@@ -137,9 +137,10 @@ test('server narration presentation does not call extensionRouter and preserves 
   await new Promise(resolve => setTimeout(resolve, 0));
 
   assert.equal(routerCalls, 0);
-  assert.equal(statuses.length, 1);
-  assert.equal(statuses[0].message, 'Opening the workflow demo.');
-  assert.equal(statuses[0].meta.narrationActive, false);
+  assert.equal(lifecycle.length, 2);
+  assert.equal(lifecycle[0].type, 'tool_start');
+  assert.equal(lifecycle[0].payload.narration, 'I’ll open the workflow demo.');
+  assert.equal(lifecycle[0].payload.narrationActive, false);
 });
 
 test('missing server narration presentation does not block action execution', async () => {
@@ -152,9 +153,8 @@ test('missing server narration presentation does not block action execution', as
   const actionUx = new ActionUxController({
     ctx: createCtx(async () => undefined),
     bridgeRpc,
-    runtimeContext: { mode: 'rover_embed', uiHints: { actionNarration: false } },
-    actionNarration: false,
-    actionNarrationDefaultActive: false,
+    runtimeContext: { mode: 'rover_embed', uiHints: { presentationActive: false, voiceActive: false } },
+    presentationVoiceActive: false,
     postToolLifecycleEvent: () => {},
     postStatus: () => {},
   });
@@ -170,7 +170,7 @@ test('missing server narration presentation does not block action execution', as
 });
 
 test('queued server narration is cleared after navigation output changes the action batch', async () => {
-  const statuses = [];
+  const lifecycle = [];
   const bridgeRpc = async (method) => {
     if (method === 'executeTool') {
       return {
@@ -187,11 +187,10 @@ test('queued server narration is cleared after navigation output changes the act
   const actionUx = new ActionUxController({
     ctx: createCtx(async () => undefined),
     bridgeRpc,
-    runtimeContext: { mode: 'rover_embed', uiHints: { actionNarration: true } },
-    actionNarration: true,
-    actionNarrationDefaultActive: true,
-    postToolLifecycleEvent: () => {},
-    postStatus: message => statuses.push(message),
+    runtimeContext: { mode: 'rover_embed', uiHints: { presentationActive: true, voiceActive: true, captionActive: true } },
+    presentationVoiceActive: true,
+    postToolLifecycleEvent: (type, payload) => lifecycle.push({ type, payload }),
+    postStatus: () => {},
   });
   actionUx.setServerPresentations([
     {
@@ -218,7 +217,8 @@ test('queued server narration is cleared after navigation output changes the act
     actionUx,
   });
 
-  assert.deepEqual(statuses, ['Opening the next step.']);
+  assert.equal(lifecycle[0].type, 'tool_start');
+  assert.equal(lifecycle[0].payload.narration, 'Opening the next step.');
 });
 
 test('spotlight cleanup runs after cancellation before tool execution', async () => {
@@ -235,9 +235,8 @@ test('spotlight cleanup runs after cancellation before tool execution', async ()
   const actionUx = new ActionUxController({
     ctx: createCtx(async () => undefined),
     bridgeRpc,
-    runtimeContext: { mode: 'rover_embed', uiHints: { actionSpotlight: true } },
-    actionSpotlight: true,
-    actionSpotlightDefaultActive: true,
+    runtimeContext: { mode: 'rover_embed', uiHints: { presentationActive: true, spotlightActive: true, captionActive: true } },
+    presentationSpotlightActive: true,
     postToolLifecycleEvent: () => {},
     postStatus: () => {},
     isCancelled: () => cancelled,

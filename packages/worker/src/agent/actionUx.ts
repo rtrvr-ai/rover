@@ -3,6 +3,7 @@ import type { AgentContext } from './context.js';
 import type { ActionUxToolHooks, LLMFunction, SystemToolBatchResult } from './systemTools.js';
 import { stripToolUiHintsFromArgs } from './uiHints.js';
 import { SystemToolNames } from '@rover/shared/lib/system-tools/tools.js';
+import { deriveResponseNarrationFromOutput } from './responseNarration.js';
 
 type BridgeRpc = (method: string, params?: any) => Promise<any>;
 
@@ -11,7 +12,11 @@ type ToolLifecyclePoster = (
   payload: {
     call: FunctionCall & { id?: string };
     toolCallId: string;
-    actionSpotlightActive?: boolean;
+    presentation?: RoverPresentationDirective;
+    narration?: string;
+    narrationActive?: boolean;
+    speechProvider?: RoverPresentationDirective['speechProvider'];
+    spotlightActive?: boolean;
     result?: unknown;
   },
 ) => void;
@@ -20,7 +25,7 @@ type StatusPoster = (
   message: string,
   thought?: string,
   stage?: StatusStage,
-  meta?: { narration?: string; narrationActive?: boolean },
+  meta?: { narration?: string; narrationActive?: boolean; speechProvider?: RoverPresentationDirective['speechProvider'] },
 ) => void;
 
 export type ActionUxControllerOptions = {
@@ -33,10 +38,8 @@ export type ActionUxControllerOptions = {
   runKind?: 'guide' | 'task';
   runKindSource?: 'shortcut' | 'launch' | 'session' | 'config' | 'explicit' | 'unknown' | 'unspecified';
   narrationLanguage?: string;
-  actionNarration?: boolean;
-  actionNarrationDefaultActive?: boolean;
-  actionSpotlight?: boolean;
-  actionSpotlightDefaultActive?: boolean;
+  presentationVoiceActive?: boolean;
+  presentationSpotlightActive?: boolean;
   postToolLifecycleEvent: ToolLifecyclePoster;
   postStatus: StatusPoster;
   isCancelled?: () => boolean;
@@ -144,13 +147,19 @@ export class ActionUxController implements ActionUxToolHooks {
       : crypto.randomUUID();
     const cleanCall = cloneToolCall(call, toolCallId);
     const presentation = this.takePresentationForCall(cleanCall, index);
-    const spotlightActive = this.opts.actionSpotlight === true && this.opts.actionSpotlightDefaultActive === true;
+    const spotlightActive = this.opts.presentationSpotlightActive === true;
     const spotlightTargetId = presentation?.spotlightTargetIds?.[0] || callTargetId(cleanCall);
+    const displayText = normalizeText(presentation?.displayText || presentation?.speechText);
+    const speechText = normalizeText(presentation?.speechText || displayText);
 
     this.opts.postToolLifecycleEvent('tool_start', {
       call: cleanCall,
       toolCallId,
-      actionSpotlightActive: spotlightActive || undefined,
+      presentation,
+      narration: speechText || displayText || undefined,
+      narrationActive: presentation?.narrationActive ?? (this.opts.presentationVoiceActive === true),
+      speechProvider: presentation?.speechProvider,
+      spotlightActive: spotlightActive || undefined,
     });
 
     if (spotlightActive) {
@@ -165,7 +174,6 @@ export class ActionUxController implements ActionUxToolHooks {
       );
     }
 
-    this.postPresentation(presentation);
     return cleanCall;
   }
 
@@ -173,10 +181,24 @@ export class ActionUxController implements ActionUxToolHooks {
     const toolCallId = typeof (call as any).id === 'string' && (call as any).id.trim()
       ? (call as any).id.trim()
       : crypto.randomUUID();
+    // Derive a one-line summary of the visitor-visible tool output (text, count,
+    // artifact framing, etc.). Sanitizer scrubs secrets and selectors. The
+    // scheduler decides whether to actually speak it based on the session's
+    // voiceStarted / presentationIntent gate.
+    const isError = result.response.status !== 'Success';
+    const toolResultNarration = deriveResponseNarrationFromOutput(result.response.output, {
+      responseKind: isError ? 'error' : 'final',
+      toolName: String(call.name || '') || undefined,
+    });
     this.opts.postToolLifecycleEvent('tool_result', {
       call: call as FunctionCall & { id?: string },
       toolCallId,
-      actionSpotlightActive: (this.opts.actionSpotlight === true && this.opts.actionSpotlightDefaultActive === true) || undefined,
+      spotlightActive: (this.opts.presentationSpotlightActive === true) || undefined,
+      narration: toolResultNarration,
+      // Only signal "speak this" when the session's policy has voice active.
+      // Otherwise leave undefined so the SDK scheduler can defer to visitor
+      // toggle / site default (it stays silent on cold sessions by default).
+      narrationActive: toolResultNarration && this.opts.presentationVoiceActive === true ? true : undefined,
       result: {
         success: result.response.status === 'Success',
         error: result.response.error,
@@ -216,16 +238,5 @@ export class ActionUxController implements ActionUxToolHooks {
     const resolvedIndex = matchingIndex >= 0 ? matchingIndex : 0;
     const [presentation] = this.serverPresentations.splice(resolvedIndex, 1);
     return presentation;
-  }
-
-  private postPresentation(presentation?: RoverPresentationDirective): void {
-    if (!presentation?.shouldNarrate) return;
-    const displayText = normalizeText(presentation.displayText || presentation.speechText);
-    const speechText = normalizeText(presentation.speechText || displayText);
-    if (!displayText && !speechText) return;
-    this.opts.postStatus(displayText || speechText, undefined, 'execute', {
-      narration: speechText || displayText,
-      narrationActive: presentation.narrationActive ?? (this.opts.actionNarrationDefaultActive === true),
-    });
   }
 }

@@ -25,7 +25,7 @@ test('legacy tool ui hints are stripped from executable args only', () => {
   assert.equal(Object.prototype.hasOwnProperty.call(args, 'ui'), true);
 });
 
-test('rover runtime context preserves explicit narration ui hints', async () => {
+test('rover runtime context preserves explicit presentation ui hints', async () => {
   const originalFetch = globalThis.fetch;
   const requests = [];
   globalThis.fetch = async (_url, init = {}) => {
@@ -53,10 +53,10 @@ test('rover runtime context preserves explicit narration ui hints', async () => 
           host: 'example.com',
         },
         uiHints: {
-          actionNarration: true,
-          actionNarrationDefaultActive: false,
-          actionSpotlight: true,
-          actionSpotlightDefaultActive: true,
+          presentationActive: true,
+          voiceActive: false,
+          spotlightActive: true,
+          captionActive: true,
           runKind: 'guide',
         },
       },
@@ -72,10 +72,10 @@ test('rover runtime context preserves explicit narration ui hints', async () => 
       host: 'example.com',
     });
     assert.deepEqual(requests[0].data.runtimeContext.uiHints, {
-      actionNarration: true,
-      actionNarrationDefaultActive: false,
-      actionSpotlight: true,
-      actionSpotlightDefaultActive: true,
+      presentationActive: true,
+      voiceActive: false,
+      spotlightActive: true,
+      captionActive: true,
       runKind: 'guide',
     });
   } finally {

@@ -282,8 +282,8 @@ export async function processActionResponse({
       throwIfCancelled();
       const roverPresentation = normalizeRoverPresentation(response?.roverPresentation);
       actionUx?.setServerPresentations?.(roverPresentation);
-      const willPresentServerNarration = !!roverPresentation && typeof actionUx?.setServerPresentations === 'function';
-      if (!willPresentServerNarration) {
+      const willPresentServerPresentation = !!roverPresentation && typeof actionUx?.setServerPresentations === 'function';
+      if (!willPresentServerPresentation) {
         onStatusUpdate?.(actionUx ? 'Working on the page' : `Executing browser actions: ${systemCalls.map(c => c.name).join(', ')}`, thought, 'execute');
       }
       prevSteps.push({
