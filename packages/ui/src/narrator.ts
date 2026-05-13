@@ -34,10 +34,10 @@ export type RoverNarratorOptions = {
   onProviderFailure?: (text?: string, options?: RoverNarratorSpeakOptions) => void;
 };
 
-const MAX_NARRATION_CHARS = 220;
-const MAX_CHUNK_CHARS = 150;
-const MAX_PENDING_UTTERANCES = 4;
-const MAX_PENDING_SPEECH_MS = 7_000;
+const MAX_NARRATION_CHARS = 360;
+const MAX_CHUNK_CHARS = 180;
+const MAX_PENDING_UTTERANCES = 6;
+const MAX_PENDING_SPEECH_MS = 10_500;
 const CATCH_UP_NARRATION = 'Continuing through the form.';
 const VOICE_POLL_INTERVAL_MS = 250;
 const VOICE_POLL_ATTEMPTS = 10;
@@ -47,13 +47,26 @@ const ELEVENLABS_CACHE_MAX_TEXT_CHARS = 140;
 const ELEVENLABS_NARRATION_CACHE = new Map<string, Promise<Blob>>();
 const ELEVENLABS_AUDIO_PROFILE_CACHE = new Map<string, { voiceId?: string; modelId?: string; language?: string }>();
 
+function sliceAtWordBoundary(input: string, maxChars: number): string {
+  if (input.length <= maxChars) return input;
+  let cut = input.slice(0, maxChars);
+  const lastSpace = cut.lastIndexOf(' ');
+  if (lastSpace > maxChars * 0.6) cut = cut.slice(0, lastSpace);
+  return cut.replace(/[,;:\-\s]+$/, '').trim();
+}
+
 function normalizeNarrationText(input: string): string {
-  return String(input || '')
+  const collapsed = String(input || '')
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, MAX_NARRATION_CHARS)
     .trim();
+  if (collapsed.length <= MAX_NARRATION_CHARS) return collapsed;
+  // Defensive belt: the upstream sanitizer should keep things under the cap,
+  // but if any other narration path emits longer text, back up to a word
+  // boundary and add an ellipsis to avoid mid-word cuts in the TTS.
+  let cut = sliceAtWordBoundary(collapsed, MAX_NARRATION_CHARS);
+  if (!/[.!?]$/.test(cut)) cut += '…';
+  return cut;
 }
 
 function resolveNarrationApiBase(apiBase?: string): string {
@@ -125,7 +138,7 @@ function splitNarration(text: string): string[] {
       continue;
     }
     if (current) chunks.push(current);
-    current = next.length > MAX_CHUNK_CHARS ? next.slice(0, MAX_CHUNK_CHARS).trim() : next;
+    current = next.length > MAX_CHUNK_CHARS ? sliceAtWordBoundary(next, MAX_CHUNK_CHARS) : next;
   }
   if (current) chunks.push(current);
   return chunks.slice(0, 3);

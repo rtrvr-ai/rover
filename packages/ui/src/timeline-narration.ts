@@ -35,13 +35,21 @@ type PendingPresentation = {
   estimatedMs: number;
 };
 
-const MAX_PENDING_TOOL_PRESENTATIONS = 4;
-const MAX_PENDING_PRESENTATION_SPEECH_MS = 7_000;
+const MAX_PENDING_TOOL_PRESENTATIONS = 6;
+const MAX_PENDING_PRESENTATION_SPEECH_MS = 10_500;
 const CATCH_UP_PRESENTATION = 'Continuing through the form.';
 const LOW_VALUE_KINDS = new Set(['hover', 'focus', 'wait', 'read', 'unknown']);
 
+const NARRATION_TEXT_CAP = 360;
+
 function normalizeNarrationText(input: unknown): string {
-  return sanitizeText(String(input || '').replace(/\s+/g, ' ')).slice(0, 220).trim();
+  const collapsed = sanitizeText(String(input || '').replace(/\s+/g, ' ')).trim();
+  if (collapsed.length <= NARRATION_TEXT_CAP) return collapsed;
+  let cut = collapsed.slice(0, NARRATION_TEXT_CAP);
+  const lastSpace = cut.lastIndexOf(' ');
+  if (lastSpace > NARRATION_TEXT_CAP * 0.6) cut = cut.slice(0, lastSpace);
+  cut = cut.replace(/[,;:\-\s]+$/, '').trim();
+  return /[.!?]$/.test(cut) ? cut : `${cut}…`;
 }
 
 function estimateSpeechMs(text: string): number {
@@ -62,6 +70,12 @@ function getPresentationKey(event: RoverTimelineEvent, text: string): string {
     event.title ||
     text;
   return `${kind}:${String(target).replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 120)}`;
+}
+
+function extractKindFromKey(key: string | undefined): string {
+  if (!key) return '';
+  const colon = key.indexOf(':');
+  return colon >= 0 ? key.slice(0, colon) : key;
 }
 
 function getToolPresentationPriority(event: RoverTimelineEvent): PendingPresentation['priority'] {
@@ -160,6 +174,7 @@ export function createTimelineNarrationScheduler(
 
   function enforcePresentationBudget(): void {
     let dropped = false;
+    let droppedAnyHigh = false;
     while (
       pendingPresentations.length > MAX_PENDING_TOOL_PRESENTATIONS ||
       estimatePendingMs() > MAX_PENDING_PRESENTATION_SPEECH_MS
@@ -167,18 +182,29 @@ export function createTimelineNarrationScheduler(
       const lowPriorityIndex = pendingPresentations.findIndex(item => item.priority === 'low' && !item.catchUp);
       const normalPriorityIndex = pendingPresentations.findIndex(item => item.priority === 'normal' && !item.catchUp);
       const nonHighPriorityIndex = pendingPresentations.findIndex(item => item.priority !== 'high' && !item.catchUp);
+      // When everything in the queue is 'high', drop the OLDEST high so we keep
+      // describing the freshest action the visitor is currently watching.
+      const oldestHighIndex = pendingPresentations.findIndex(item => item.priority === 'high' && !item.catchUp);
       const dropIndex = lowPriorityIndex >= 0
         ? lowPriorityIndex
         : normalPriorityIndex >= 0
           ? normalPriorityIndex
           : nonHighPriorityIndex >= 0
             ? nonHighPriorityIndex
-            : pendingPresentations.findIndex(item => !item.catchUp);
+            : oldestHighIndex >= 0
+              ? oldestHighIndex
+              : pendingPresentations.findIndex(item => !item.catchUp);
       if (dropIndex < 0) break;
-      pendingPresentations.splice(dropIndex, 1);
+      const removed = pendingPresentations.splice(dropIndex, 1)[0];
+      if (removed?.priority === 'high') droppedAnyHigh = true;
       dropped = true;
     }
-    if (dropped && !pendingPresentations.some(item => item.catchUp)) {
+    // Only insert the catch-up "Continuing through the form" when we dropped
+    // something the visitor would have noticed — i.e. at least one 'high'-
+    // priority action narration. Dropping planner-level 'normal' lines is
+    // invisible to the visitor (the ACT narration carries the same action) so
+    // a robotic catch-up after every fast sequence would feel like a bug.
+    if (dropped && droppedAnyHigh && !pendingPresentations.some(item => item.catchUp)) {
       pendingPresentations = [
         {
           text: CATCH_UP_PRESENTATION,
@@ -233,6 +259,32 @@ export function createTimelineNarrationScheduler(
       pendingPresentations[duplicateIndex] = {
         ...pendingPresentations[duplicateIndex],
         text,
+        priority,
+        estimatedMs: estimateSpeechMs(text),
+      };
+      enforcePresentationBudget();
+      scheduleFlush();
+      return;
+    }
+    // Same-kind collapse: when consecutive action narrations of the same kind
+    // are queued (e.g., two clicks on different buttons within ~1 frame), keep
+    // only the newest. The visitor can't usefully follow two clicks in
+    // 800 ms anyway; the latter narration is the one tied to the action they
+    // currently see. Applies only to 'action' source — final/response
+    // narrations stay distinct.
+    const incomingKind = extractKindFromKey(key);
+    const sameKindIndex = incomingKind
+      ? pendingPresentations.findIndex(item =>
+          item.source === 'action'
+          && !item.catchUp
+          && extractKindFromKey(item.key) === incomingKind,
+        )
+      : -1;
+    if (sameKindIndex >= 0) {
+      pendingPresentations[sameKindIndex] = {
+        ...pendingPresentations[sameKindIndex],
+        text,
+        key,
         priority,
         estimatedMs: estimateSpeechMs(text),
       };
