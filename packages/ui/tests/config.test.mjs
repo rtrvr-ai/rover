@@ -8,6 +8,8 @@ import {
   resolveActionSpotlightDecision,
   resolveNarrationComposeAvailable,
   resolveNarrationDefaultActiveForRun,
+  resolveNarrationEventSpeechDecision,
+  resolveVoiceStartedNarrationActive,
 } from '../dist/config.js';
 
 test('action spotlight color normalizes to six-digit hex and falls back to orange', () => {
@@ -169,6 +171,97 @@ test('narration compose availability is separate from default voice activity', (
     preferenceSource: 'visitor',
     visitorEnabled: false,
   }), false);
+});
+
+test('voice-started narration is run-scoped and does not depend on defaultMode', () => {
+  const ownerOff = resolveMountExperienceConfig({
+    experience: { audio: { narration: { enabled: true, defaultMode: 'off' } } },
+    onSend: () => {},
+  }, 'Rover', false);
+  assert.equal(resolveVoiceStartedNarrationActive({
+    config: ownerOff,
+    locallySupported: true,
+    preferenceSource: 'default',
+    visitorEnabled: false,
+  }), true);
+
+  const guided = resolveMountExperienceConfig({
+    experience: { audio: { narration: { enabled: true, defaultMode: 'guided' } } },
+    onSend: () => {},
+  }, 'Rover', false);
+  assert.equal(resolveVoiceStartedNarrationActive({
+    config: guided,
+    locallySupported: true,
+    preferenceSource: 'default',
+    visitorEnabled: true,
+  }), true);
+
+  const disabled = resolveMountExperienceConfig({
+    experience: { audio: { narration: { enabled: false, defaultMode: 'always' } } },
+    onSend: () => {},
+  }, 'Rover', false);
+  assert.equal(resolveVoiceStartedNarrationActive({
+    config: disabled,
+    locallySupported: true,
+    preferenceSource: 'default',
+    visitorEnabled: true,
+  }), false);
+  assert.equal(resolveVoiceStartedNarrationActive({
+    config: guided,
+    locallySupported: true,
+    preferenceSource: 'visitor',
+    visitorEnabled: false,
+  }), false);
+  assert.equal(resolveVoiceStartedNarrationActive({
+    config: ownerOff,
+    locallySupported: true,
+    preferenceSource: 'visitor',
+    visitorEnabled: true,
+  }), true);
+});
+
+test('narration speech decision gives visitor choice top priority and run events next', () => {
+  assert.equal(resolveNarrationEventSpeechDecision({
+    locallySupported: false,
+    preferenceSource: 'default',
+    visitorEnabled: true,
+    eventNarrationActive: true,
+    siteDefaultActive: true,
+  }), false);
+  assert.equal(resolveNarrationEventSpeechDecision({
+    locallySupported: true,
+    preferenceSource: 'visitor',
+    visitorEnabled: false,
+    eventNarrationActive: true,
+    siteDefaultActive: true,
+  }), false);
+  assert.equal(resolveNarrationEventSpeechDecision({
+    locallySupported: true,
+    preferenceSource: 'visitor',
+    visitorEnabled: true,
+    eventNarrationActive: false,
+    siteDefaultActive: false,
+  }), true);
+  assert.equal(resolveNarrationEventSpeechDecision({
+    locallySupported: true,
+    preferenceSource: 'default',
+    visitorEnabled: false,
+    eventNarrationActive: true,
+    siteDefaultActive: false,
+  }), true);
+  assert.equal(resolveNarrationEventSpeechDecision({
+    locallySupported: true,
+    preferenceSource: 'default',
+    visitorEnabled: true,
+    eventNarrationActive: false,
+    siteDefaultActive: true,
+  }), false);
+  assert.equal(resolveNarrationEventSpeechDecision({
+    locallySupported: true,
+    preferenceSource: 'default',
+    visitorEnabled: true,
+    siteDefaultActive: true,
+  }), true);
 });
 
 test('explicit motion.actionSpotlight value wins over preset', () => {

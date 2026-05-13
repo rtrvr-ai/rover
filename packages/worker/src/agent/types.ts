@@ -155,6 +155,20 @@ export type StatusUpdateMeta = {
   narrationActive?: boolean;
 };
 
+export type RoverPresentationDirective = {
+  source?: 'act' | 'plan';
+  shouldNarrate?: boolean;
+  speechText?: string;
+  displayText?: string;
+  spotlightTargetIds?: string[];
+  groupKey?: string;
+  intentStage?: string;
+  captionTtlMs?: number;
+  sensitivity?: 'none' | 'personal' | 'secret' | 'payment';
+  actionRefs?: string[];
+  narrationActive?: boolean;
+};
+
 export type TaskRoutingMode = 'auto' | 'act' | 'planner';
 
 export type TaskRoutingConfig = {
@@ -232,6 +246,7 @@ export type PlannerResponse = {
     error?: string;
     errorDetails?: any;
     warnings?: string[];
+    roverPresentation?: RoverPresentationDirective;
   };
   toolResults: ToolExecutionResult[];
   completedWorkflow?: any;

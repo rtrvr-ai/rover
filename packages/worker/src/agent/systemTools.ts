@@ -1,5 +1,5 @@
 import { SystemToolNames } from '@rover/shared/lib/system-tools/tools.js';
-import type { FunctionCall, RuntimeToolOutput } from './types.js';
+import type { FunctionCall, RuntimeToolOutput, RoverPresentationDirective } from './types.js';
 
 export type LLMFunction = {
   name: string;
@@ -37,6 +37,7 @@ export type SystemToolBatchResult = {
 };
 
 export type ActionUxToolHooks = {
+  setServerPresentations?: (presentations?: RoverPresentationDirective | RoverPresentationDirective[]) => void;
   beforeTool?: (call: FunctionCall, index: number, calls: FunctionCall[]) => Promise<FunctionCall | void> | FunctionCall | void;
   afterTool?: (call: FunctionCall, result: LLMFunction, index: number, calls: FunctionCall[]) => Promise<void> | void;
   onBatchFinish?: (result: Pick<SystemToolBatchResult, 'navigationOccurred' | 'navigationTool' | 'navigationOutcome'>) => Promise<void> | void;

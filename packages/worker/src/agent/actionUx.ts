@@ -1,9 +1,8 @@
-import { SUB_AGENTS } from '@rover/shared/lib/types/agent-types.js';
-import { SystemToolNames } from '@rover/shared/lib/system-tools/tools.js';
-import type { FunctionCall, RoverRuntimeContext, StatusStage } from './types.js';
+import type { FunctionCall, RoverPresentationDirective, RoverRuntimeContext, StatusStage } from './types.js';
 import type { AgentContext } from './context.js';
 import type { ActionUxToolHooks, LLMFunction, SystemToolBatchResult } from './systemTools.js';
 import { stripToolUiHintsFromArgs } from './uiHints.js';
+import { SystemToolNames } from '@rover/shared/lib/system-tools/tools.js';
 
 type BridgeRpc = (method: string, params?: any) => Promise<any>;
 
@@ -43,46 +42,8 @@ export type ActionUxControllerOptions = {
   isCancelled?: () => boolean;
 };
 
-type TargetDescription = {
-  targetId?: string;
-  elementId?: number;
-  role?: string;
-  name?: string;
-  label?: string;
-  sectionLabel?: string;
-  formLabel?: string;
-  valueKind?: string;
-  sensitivity?: 'none' | 'personal' | 'secret' | 'payment';
-  visible?: boolean;
-  bounds?: { x: number; y: number; width: number; height: number };
-  page?: { title?: string; url?: string; host?: string };
-};
-
-type NeutralAction = {
-  id?: string;
-  name: string;
-  actionType?: string;
-  phase?: string;
-  targetId?: string;
-  targetLabel?: string;
-  targetRole?: string;
-  sensitivity?: 'none' | 'personal' | 'secret' | 'payment';
-};
-
 const SPOTLIGHT_PREVIEW_TIMEOUT_MS = 120;
-const NARRATION_SOFT_DROP_MS = 900;
-const NARRATION_HARD_TIMEOUT_MS = 1800;
-const MAX_PREVIOUS_NARRATIONS = 4;
 const MAX_NARRATION_CHARS = 150;
-
-const FIELD_ACTIONS = new Set<string>([
-  SystemToolNames.type_into_element,
-  SystemToolNames.type_and_enter,
-  SystemToolNames.select_dropdown_value,
-  SystemToolNames.clear_element,
-  SystemToolNames.paste_text,
-  SystemToolNames.upload_file,
-]);
 
 const NAVIGATION_ACTIONS = new Set<string>([
   SystemToolNames.goto_url,
@@ -108,112 +69,41 @@ function cloneToolCall(call: FunctionCall, id: string): FunctionCall & { id?: st
   };
 }
 
-function neutralActionTypeForName(name: unknown): string {
-  switch (String(name || '').trim()) {
-    case SystemToolNames.click_element:
-    case SystemToolNames.double_click_element:
-    case SystemToolNames.right_click_element:
-    case SystemToolNames.long_press_element:
-      return 'activate';
-    case SystemToolNames.type_into_element:
-    case SystemToolNames.type_and_enter:
-    case SystemToolNames.paste_text:
-      return 'fill_field';
-    case SystemToolNames.select_dropdown_value:
-      return 'choose_option';
-    case SystemToolNames.clear_element:
-      return 'clear_field';
-    case SystemToolNames.upload_file:
-      return 'upload_file';
-    case SystemToolNames.scroll_page:
-    case SystemToolNames.scroll_to_element:
-    case SystemToolNames.mouse_wheel:
-    case SystemToolNames.swipe_element:
-      return 'move_view';
-    case SystemToolNames.goto_url:
-    case SystemToolNames.google_search:
-    case SystemToolNames.open_new_tab:
-    case SystemToolNames.switch_tab:
-    case SystemToolNames.go_back:
-    case SystemToolNames.go_forward:
-    case SystemToolNames.refresh_page:
-      return 'navigate';
-    case SystemToolNames.hover_element:
-    case SystemToolNames.focus_element:
-      return 'inspect';
-    default:
-      return 'continue';
-  }
-}
-
-function isFieldAction(call?: FunctionCall): boolean {
-  return FIELD_ACTIONS.has(String(call?.name || '').trim());
-}
-
 function positiveElementId(args: Record<string, any>): number | undefined {
   const value = args.element_id ?? args.target_element_id ?? args.source_element_id ?? args.center_element_id;
   const parsed = Math.trunc(Number(value));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function fallbackTargetId(call: FunctionCall): string | undefined {
+function elementIdFromTargetId(targetId?: string): number | undefined {
+  const match = String(targetId || '').trim().match(/^element:(\d+)$/);
+  const parsed = match?.[1] ? Math.trunc(Number(match[1])) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function callTargetId(call: FunctionCall): string | undefined {
   const id = positiveElementId(cloneArgs(call.args));
   return id ? `element:${id}` : undefined;
 }
 
-function targetFromDescription(input: unknown, fallbackId?: string): TargetDescription | undefined {
-  if (!input || typeof input !== 'object') return fallbackId ? { targetId: fallbackId } : undefined;
-  const raw = ((input as any).target || input) as Record<string, unknown>;
-  const targetId = String(raw.targetId || fallbackId || '').trim();
-  if (!targetId) return undefined;
-  const elementId = Number(raw.elementId);
-  const sensitivity = raw.sensitivity === 'payment' || raw.sensitivity === 'secret' || raw.sensitivity === 'personal'
-    ? raw.sensitivity
-    : 'none';
-  const boundsRaw = raw.bounds && typeof raw.bounds === 'object' ? raw.bounds as Record<string, unknown> : undefined;
-  return {
-    targetId,
-    elementId: Number.isFinite(elementId) && elementId > 0 ? elementId : undefined,
-    role: String(raw.role || '').trim() || undefined,
-    name: String(raw.name || '').trim().slice(0, 96) || undefined,
-    label: String(raw.label || '').trim().slice(0, 96) || undefined,
-    sectionLabel: String(raw.sectionLabel || '').trim().slice(0, 96) || undefined,
-    formLabel: String(raw.formLabel || '').trim().slice(0, 96) || undefined,
-    valueKind: String(raw.valueKind || '').trim().slice(0, 48) || undefined,
-    sensitivity,
-    visible: typeof raw.visible === 'boolean' ? raw.visible : undefined,
-    bounds: boundsRaw
-      ? {
-          x: Number(boundsRaw.x) || 0,
-          y: Number(boundsRaw.y) || 0,
-          width: Number(boundsRaw.width) || 0,
-          height: Number(boundsRaw.height) || 0,
-        }
-      : undefined,
-    page: (input as any).page && typeof (input as any).page === 'object'
-      ? {
-          title: String((input as any).page.title || '').trim().slice(0, 120) || undefined,
-          url: String((input as any).page.url || '').trim().slice(0, 240) || undefined,
-          host: String((input as any).page.host || '').trim().slice(0, 120) || undefined,
-        }
-      : undefined,
-  };
+function normalizeText(input: unknown, maxChars = MAX_NARRATION_CHARS): string {
+  if (typeof input !== 'string') return '';
+  return input.replace(/\s+/g, ' ').trim().slice(0, maxChars);
 }
 
-function neutralActionFromCall(call: FunctionCall, target?: TargetDescription, phase?: string): NeutralAction {
-  const targetId = target?.targetId || fallbackTargetId(call);
-  const label = target?.label || target?.name || target?.formLabel || target?.sectionLabel;
-  const actionType = neutralActionTypeForName(call.name);
-  return {
-    id: typeof (call as any).id === 'string' ? (call as any).id : undefined,
-    name: actionType,
-    actionType,
-    phase,
-    targetId,
-    targetLabel: label,
-    targetRole: target?.role,
-    sensitivity: target?.sensitivity || 'none',
-  };
+function normalizePresentations(input?: RoverPresentationDirective | RoverPresentationDirective[]): RoverPresentationDirective[] {
+  const list = Array.isArray(input) ? input : input ? [input] : [];
+  return list
+    .filter(item => item && item.shouldNarrate === true)
+    .map(item => ({
+      ...item,
+      displayText: normalizeText(item.displayText || item.speechText),
+      speechText: normalizeText(item.speechText || item.displayText),
+      spotlightTargetIds: Array.isArray(item.spotlightTargetIds)
+        ? item.spotlightTargetIds.map(value => normalizeText(value, 80)).filter(Boolean).slice(0, 3)
+        : [],
+    }))
+    .filter(item => !!(item.displayText || item.speechText));
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
@@ -224,14 +114,6 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | und
       .catch(() => resolve(undefined))
       .finally(() => clearTimeout(timer));
   });
-}
-
-function pageHostFromUrl(url?: string): string | undefined {
-  try {
-    return url ? new URL(url).hostname : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function resultIndicatesNavigation(call: FunctionCall, result: LLMFunction): boolean {
@@ -247,18 +129,23 @@ function resultIndicatesNavigation(call: FunctionCall, result: LLMFunction): boo
 }
 
 export class ActionUxController implements ActionUxToolHooks {
-  private previousNarrations: string[] = [];
-  private narratedGroups = new Map<string, number>();
   private batchId = 0;
+  private serverPresentations: RoverPresentationDirective[] = [];
 
   constructor(private readonly opts: ActionUxControllerOptions) {}
 
-  async beforeTool(call: FunctionCall, index: number, calls: FunctionCall[]): Promise<FunctionCall> {
+  setServerPresentations(presentations?: RoverPresentationDirective | RoverPresentationDirective[]): void {
+    this.serverPresentations = normalizePresentations(presentations);
+  }
+
+  async beforeTool(call: FunctionCall, index: number, _calls: FunctionCall[]): Promise<FunctionCall> {
     const toolCallId = typeof (call as any).id === 'string' && (call as any).id.trim()
       ? (call as any).id.trim()
       : crypto.randomUUID();
     const cleanCall = cloneToolCall(call, toolCallId);
+    const presentation = this.takePresentationForCall(cleanCall, index);
     const spotlightActive = this.opts.actionSpotlight === true && this.opts.actionSpotlightDefaultActive === true;
+    const spotlightTargetId = presentation?.spotlightTargetIds?.[0] || callTargetId(cleanCall);
 
     this.opts.postToolLifecycleEvent('tool_start', {
       call: cleanCall,
@@ -266,19 +153,19 @@ export class ActionUxController implements ActionUxToolHooks {
       actionSpotlightActive: spotlightActive || undefined,
     });
 
-    let preview: unknown | undefined;
     if (spotlightActive) {
-      preview = await withTimeout(
-        this.opts.bridgeRpc('previewActionTarget', { call: cleanCall, toolCallId }),
+      await withTimeout(
+        this.opts.bridgeRpc('previewActionTarget', {
+          call: cleanCall,
+          toolCallId,
+          targetId: spotlightTargetId,
+          elementId: elementIdFromTargetId(spotlightTargetId),
+        }),
         SPOTLIGHT_PREVIEW_TIMEOUT_MS,
       );
     }
 
-    if (this.shouldComposeNarration(call, index, calls)) {
-      const currentBatch = this.batchId;
-      void this.composeNarration(cleanCall, index, calls, preview, currentBatch);
-    }
-
+    this.postPresentation(presentation);
     return cleanCall;
   }
 
@@ -299,6 +186,7 @@ export class ActionUxController implements ActionUxToolHooks {
     });
     if (resultIndicatesNavigation(call, result)) {
       this.batchId += 1;
+      this.serverPresentations = [];
     }
     try {
       await this.opts.bridgeRpc('clearActionTarget', { call, toolCallId });
@@ -309,6 +197,7 @@ export class ActionUxController implements ActionUxToolHooks {
 
   async onBatchFinish(_result: Pick<SystemToolBatchResult, 'navigationOccurred' | 'navigationTool' | 'navigationOutcome'>): Promise<void> {
     this.batchId += 1;
+    this.serverPresentations = [];
     try {
       await this.opts.bridgeRpc('clearActionTarget');
     } catch {
@@ -316,99 +205,27 @@ export class ActionUxController implements ActionUxToolHooks {
     }
   }
 
-  private shouldComposeNarration(call: FunctionCall, index: number, calls: FunctionCall[]): boolean {
-    if (this.opts.actionNarration !== true) return false;
-    if (this.opts.isCancelled?.()) return false;
-    if (isFieldAction(call) && index > 0 && isFieldAction(calls[index - 1])) return false;
-    return true;
+  private takePresentationForCall(call: FunctionCall, index: number): RoverPresentationDirective | undefined {
+    if (this.opts.isCancelled?.()) return undefined;
+    if (!this.serverPresentations.length) return undefined;
+    const currentTargetId = callTargetId(call);
+    const matchingIndex = this.serverPresentations.findIndex(item => {
+      if (!item.spotlightTargetIds?.length) return index === 0;
+      return currentTargetId ? item.spotlightTargetIds.includes(currentTargetId) : index === 0;
+    });
+    const resolvedIndex = matchingIndex >= 0 ? matchingIndex : 0;
+    const [presentation] = this.serverPresentations.splice(resolvedIndex, 1);
+    return presentation;
   }
 
-  private async composeNarration(
-    call: FunctionCall,
-    index: number,
-    calls: FunctionCall[],
-    preview: unknown,
-    currentBatch: number,
-  ): Promise<void> {
-    const startedAt = Date.now();
-    const fallbackId = fallbackTargetId(call);
-    const described = preview || await withTimeout(
-      this.opts.bridgeRpc('describeActionTarget', { call, toolCallId: (call as any).id }),
-      NARRATION_SOFT_DROP_MS,
-    );
-    const target = targetFromDescription(described, fallbackId);
-    const pageFromTarget = target?.page;
-    const tabContext = !pageFromTarget
-      ? await withTimeout(this.opts.bridgeRpc('getTabContext'), 120)
-      : undefined;
-    const page = pageFromTarget || {
-      title: String((tabContext as any)?.title || '').trim().slice(0, 120) || undefined,
-      url: String((tabContext as any)?.url || '').trim().slice(0, 240) || undefined,
-      host: pageHostFromUrl((tabContext as any)?.url),
-    };
-    const actions = this.buildNeutralActions(call, index, calls, target);
-    const targetCandidates = target ? [target] : [];
-    const groupKey = this.groupKey(call, target, index);
-    if (this.isDuplicateGroup(groupKey)) return;
-
-    const response = await this.opts.ctx.callExtensionRouter(
-      SUB_AGENTS.roverNarrationCompose,
-      {
-        userInput: this.opts.rootUserInput,
-        runKind: this.opts.runKind,
-        runKindSource: this.opts.runKindSource || (this.opts.runKind ? 'explicit' : 'unspecified'),
-        page,
-        actions,
-        targetCandidates,
-        previousNarrations: this.previousNarrations,
-        language: this.opts.narrationLanguage,
-        maxChars: MAX_NARRATION_CHARS,
-        llmIntegration: this.opts.ctx.llmIntegration,
-        timestamp: this.opts.ctx.userTimestamp,
-        trajectoryId: this.opts.trajectoryId || this.opts.ctx.userTimestamp,
-        runtimeContext: this.opts.runtimeContext,
-      },
-      { timeoutMs: NARRATION_HARD_TIMEOUT_MS, retry: false, sessionTokenWaitMs: 0 },
-    ).catch(() => undefined);
-
-    if (this.opts.isCancelled?.()) return;
-    if (currentBatch !== this.batchId) return;
-    if (Date.now() - startedAt > NARRATION_SOFT_DROP_MS) return;
-    const data = response?.data || response;
-    if (!data?.shouldNarrate) return;
-    const displayText = String(data.displayText || data.speechText || '').replace(/\s+/g, ' ').trim().slice(0, MAX_NARRATION_CHARS);
-    const speechText = String(data.speechText || displayText || '').replace(/\s+/g, ' ').trim().slice(0, MAX_NARRATION_CHARS);
+  private postPresentation(presentation?: RoverPresentationDirective): void {
+    if (!presentation?.shouldNarrate) return;
+    const displayText = normalizeText(presentation.displayText || presentation.speechText);
+    const speechText = normalizeText(presentation.speechText || displayText);
     if (!displayText && !speechText) return;
-    this.previousNarrations.push(speechText || displayText);
-    this.previousNarrations = this.previousNarrations.slice(-MAX_PREVIOUS_NARRATIONS);
-    this.narratedGroups.set(groupKey, Date.now());
     this.opts.postStatus(displayText || speechText, undefined, 'execute', {
       narration: speechText || displayText,
-      narrationActive: this.opts.actionNarrationDefaultActive === true,
+      narrationActive: presentation.narrationActive ?? (this.opts.actionNarrationDefaultActive === true),
     });
-  }
-
-  private buildNeutralActions(call: FunctionCall, index: number, calls: FunctionCall[], target?: TargetDescription): NeutralAction[] {
-    const actions: NeutralAction[] = [neutralActionFromCall(call, target, 'current')];
-    if (!isFieldAction(call)) return actions;
-    for (let offset = 1; offset <= 2; offset += 1) {
-      const next = calls[index + offset];
-      if (!isFieldAction(next)) break;
-      actions.push(neutralActionFromCall(next, undefined, 'next'));
-    }
-    return actions;
-  }
-
-  private groupKey(call: FunctionCall, target: TargetDescription | undefined, index: number): string {
-    if (!isFieldAction(call)) {
-      return `${neutralActionTypeForName(call.name)}:${target?.targetId || fallbackTargetId(call) || index}`;
-    }
-    return `form:${target?.formLabel || target?.sectionLabel || target?.targetId || fallbackTargetId(call) || index}`;
-  }
-
-  private isDuplicateGroup(groupKey: string): boolean {
-    const last = this.narratedGroups.get(groupKey);
-    if (!last) return false;
-    return Date.now() - last < 2500;
   }
 }

@@ -476,3 +476,29 @@ export function resolveNarrationComposeAvailable(input: {
     : 'guided';
   return defaultMode !== 'off';
 }
+
+export function resolveVoiceStartedNarrationActive(input: {
+  config: RoverExperienceConfig;
+  locallySupported: boolean;
+  preferenceSource: 'default' | 'visitor';
+  visitorEnabled: boolean;
+}): boolean {
+  if (!input.locallySupported) return false;
+  if (input.config.audio?.narration?.enabled === false) return false;
+  if (input.preferenceSource === 'visitor') return input.visitorEnabled;
+  return true;
+}
+
+export function resolveNarrationEventSpeechDecision(input: {
+  locallySupported: boolean;
+  preferenceSource: 'default' | 'visitor';
+  visitorEnabled: boolean;
+  eventNarrationActive?: boolean;
+  siteDefaultActive: boolean;
+}): boolean {
+  if (!input.locallySupported) return false;
+  if (input.preferenceSource === 'visitor') return input.visitorEnabled;
+  if (input.eventNarrationActive === true) return true;
+  if (input.eventNarrationActive === false) return false;
+  return input.siteDefaultActive;
+}

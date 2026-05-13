@@ -1,5 +1,5 @@
 import { SUB_AGENTS } from '@rover/shared';
-import type { PlannerOptions, PlannerResponse, PlannerPreviousStep, FunctionDeclaration, PreviousSteps, ToolExecutionResult } from './types.js';
+import type { PlannerOptions, PlannerResponse, PlannerPreviousStep, FunctionDeclaration, PreviousSteps, ToolExecutionResult, RoverPresentationDirective } from './types.js';
 import type { AgentContext } from './context.js';
 import { executeToolFromPlan } from './toolExecutor.js';
 import { resolveRuntimeTabs } from './runtimeTabs.js';
@@ -7,6 +7,20 @@ import { extractLogicalFunctionCallArgs, applyLogicalTabIds } from './utils.js';
 
 const MAX_PLANNER_DEPTH = 15;
 const MAX_CHATLOG_ENTRIES = 12;
+
+function postPlannerPresentation(
+  presentation: RoverPresentationDirective | undefined,
+  onStatusUpdate?: PlannerOptions['onStatusUpdate'],
+): void {
+  if (presentation?.shouldNarrate !== true) return;
+  const displayText = String(presentation.displayText || presentation.speechText || '').replace(/\s+/g, ' ').trim().slice(0, 150);
+  const speechText = String(presentation.speechText || displayText).replace(/\s+/g, ' ').trim().slice(0, 150);
+  if (!displayText && !speechText) return;
+  onStatusUpdate?.(displayText || speechText, undefined, 'execute', {
+    narration: speechText || displayText,
+    narrationActive: presentation.narrationActive,
+  });
+}
 
 function normalizeChatLog(
   entries: Array<{ role?: 'user' | 'model'; message?: string }> | undefined,
@@ -158,6 +172,7 @@ export async function executePlanner(options: PlannerOptions & {
     error: planData.error,
     errorDetails: planData.errorDetails,
     warnings: planData.warnings,
+    roverPresentation: planData.roverPresentation,
     userUsageData: planData.userUsageData || { creditsUsed: planData.creditsUsed || 0 },
   };
 }
@@ -196,7 +211,11 @@ export async function executePlannerWithTools(
   });
 
   if (plannerResponse.questions && plannerResponse.questions.length > 0) {
-    options.onStatusUpdate?.('Planner needs more input', plannerResponse.overallThought, 'verify');
+    if (plannerResponse.roverPresentation?.shouldNarrate === true) {
+      postPlannerPresentation(plannerResponse.roverPresentation, options.onStatusUpdate);
+    } else {
+      options.onStatusUpdate?.('Planner needs more input', plannerResponse.overallThought, 'verify');
+    }
     const questionStep: PlannerPreviousStep = {
       modelParts: plannerResponse.modelParts,
       thought: plannerResponse.overallThought,
@@ -215,11 +234,15 @@ export async function executePlannerWithTools(
 
   if (plannerResponse.plan && !plannerResponse.error) {
     const plan = plannerResponse.plan;
-    options.onStatusUpdate?.(
-      `Planner selected ${plan.toolName}`,
-      plan.thought ?? plannerResponse.overallThought,
-      'execute',
-    );
+    if (plannerResponse.roverPresentation?.shouldNarrate === true) {
+      postPlannerPresentation(plannerResponse.roverPresentation, options.onStatusUpdate);
+    } else {
+      options.onStatusUpdate?.(
+        options.actionUx ? 'Working on the next step' : `Planner selected ${plan.toolName}`,
+        plan.thought ?? plannerResponse.overallThought,
+        'execute',
+      );
+    }
 
     // If backend already executed this tool server-side, use the pre-filled result
     const serverResult = plan.serverResult;
@@ -317,7 +340,7 @@ export async function executePlannerWithTools(
   }
 
   if (plannerResponse.taskComplete) {
-    options.onStatusUpdate?.('Planner marked task complete', plannerResponse.overallThought, 'complete');
+    options.onStatusUpdate?.(options.actionUx ? 'Task complete' : 'Planner marked task complete', plannerResponse.overallThought, 'complete');
     const completionStep: PlannerPreviousStep = {
       modelParts: plannerResponse.modelParts,
       thought: plannerResponse.overallThought || 'Task completed',
