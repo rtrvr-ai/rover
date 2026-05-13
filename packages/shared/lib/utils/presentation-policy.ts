@@ -49,7 +49,7 @@ const STRONG_GUIDE_PATTERNS: RegExp[] = [
   /\bguided?\s+tour\b/i,
   /\bgive\s+me\s+(?:a\s+)?(?:tour|demo|walkthrough)\b/i,
   /\bbook\s+a\s+demo\b/i,
-  /\bshow\s+(?:me\s+)?(?:the\s+)?demo\b/i,
+  /\bshow\s+(?:me\s+)?(?:a|the)?\s*demo\b/i,
   /\bshow\s+me\s+how\b/i,
   /\bshow\s+me\s+around\b/i,
   /\bsee\s+how\s+(?:it|this)\s+works\b/i,
@@ -74,6 +74,18 @@ const STRONG_GUIDE_PATTERNS: RegExp[] = [
   /\bshow\s+(?:me\s+)?features?\b/i,
   /\bwhat\s+can\s+i\s+do\b/i,
   /\bwhere\s+should\s+i\s+start\b/i,
+  // Additional strong guide signals (lose to task when both fire, but catch
+  // common request phrasings on their own).
+  /\bcan\s+you\s+demo\b/i,
+  /\b(?:live|quick|interactive|product|short|video)\s+demo\b/i,
+  /\bi\s+want\s+(?:a|to\s+see\s+a)\s+demo\b/i,
+  /\bi\s+want\s+to\s+(?:try|see|learn)\b/i,
+  /\blet\s+me\s+(?:try|see)\b/i,
+  /\bsign\s+me\s+up\b/i,
+  /\bnewbie\b/i,
+  /\bwhat\s+should\s+i\s+do\s+first\b/i,
+  /\bnew\s+to\s+(?:this|rover|the\s+platform|the\s+app|here)\b/i,
+  /\bwhere\s+do\s+i\s+(?:start|begin)\b/i,
 ];
 
 const GUIDE_TERMS: RegExp[] = [
@@ -86,6 +98,8 @@ const GUIDE_TERMS: RegExp[] = [
   /\bcheckout\s+flow\b/i,
   /\bintro(?:duction)?\b/i,
   /\bcapabilit(?:y|ies)\b/i,
+  /\bhands[- ]on\b/i,
+  /\bget\s+to\s+know\b/i,
 ];
 
 const TASK_PATTERNS: RegExp[] = [
@@ -115,9 +129,41 @@ const TASK_PATTERNS: RegExp[] = [
 ];
 
 const GUIDE_OVERRIDE_PATTERNS: RegExp[] = [
+  // Direct hand-holding asks.
   /\bshow\s+me\s+how\s+to\b/i,
   /\bwalk\s+me\s+through\b/i,
   /\bteach\s+me\s+(?:how\s+)?to\b/i,
+
+  // Explicit demo / tour / walkthrough / tutorial / demonstration / presentation
+  // asks. Definitive guide-intent markers; override a co-occurring task verb
+  // (e.g. "show me a demo of how to run a workflow" — "demo of" is the user's
+  // ask, "run a workflow" is just the topic).
+  /\bshow\s+me\s+(?:a|the)\s+(?:demo|tour|walkthrough|tutorial|demonstration|presentation)\b/i,
+  /\bgive\s+me\s+(?:a|the)\s+(?:demo|tour|walkthrough|tutorial|demonstration|presentation)\b/i,
+  /\b(?:demo|tour|walkthrough|tutorial|demonstration)\s+(?:of|on|for|about)\b/i,
+  // Narrow presentation override — must say "presentation of how" / "presentation
+  // about how" so we don't catch "create a presentation about Q4" (slides task).
+  /\bpresentation\s+(?:of|about)\s+how\b/i,
+
+  // Polite "can/could/would you" hand-holding asks.
+  /\b(?:can|could|would)\s+you\s+(?:demo|walk|tour|teach|explain|guide|show\s+me)\b/i,
+
+  // "Take me on a tour" / "take me through".
+  /\btake\s+me\s+(?:on\s+a\s+)?(?:tour|through)\b/i,
+
+  // Step-by-step requests.
+  /\bstep[- ]by[- ]step\b/i,
+  /\bgo\s+through\s+(?:it|this|that|the\s+\w+)\s+(?:with\s+me|step\s+by\s+step|step[- ]by[- ]step)\b/i,
+
+  // Onboarding asks.
+  /\bonboard\s+me\b/i,
+  /\bhelp\s+me\s+onboard\b/i,
+  /\b(?:i'?m|i\s+am)\s+new\s+(?:here|to)\b/i,
+  /\bfirst[- ]time\s+(?:user|using|here|setting?\s+up)\b/i,
+
+  // How-to questions — promoted from STRONG so they beat task verbs (e.g.
+  // "how do I extract X" is a how-to ask, not a pure task command).
+  /\bhow\s+(?:do|can)\s+(?:i|we)\b/i,
 ];
 
 function normalizeRunKind(input: unknown): RoverPresentationRunKind | undefined {
