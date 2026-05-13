@@ -21,6 +21,24 @@ function collapseWhitespace(input: string): string {
 function stripUnsafeSpeechText(input: string): string {
   let text = String(input || '');
   text = text.replace(/```[\s\S]*?```/g, ' ');
+  // Markdown stripping (must run BEFORE the line filter so bullet-stripped
+  // lines aren't dropped as tables, and BEFORE inline-code stripping so we
+  // don't accidentally swallow code-block content the user emitted as text).
+  // Headings: `# foo` … `###### foo` → drop the marker, keep the text.
+  text = text.replace(/^\s{0,3}#{1,6}\s+/gm, '');
+  // Leading bullet markers: `- foo`, `* foo`, `+ foo` → drop the marker.
+  text = text.replace(/^\s{0,3}[*+\-]\s+/gm, '');
+  // Numbered list markers: `1. foo`, `2. foo` → drop the marker.
+  text = text.replace(/^\s{0,3}\d+\.\s+/gm, '');
+  // Bold / strong wrappers: **strong** / __strong__ → keep inner text.
+  text = text.replace(/\*\*([^*\n]+)\*\*/g, '$1');
+  text = text.replace(/__([^_\n]+)__/g, '$1');
+  // Italic / em wrappers (require non-word boundary outside to avoid mangling
+  // `snake_case_var` or arithmetic like `5*x`).
+  text = text.replace(/(^|[^A-Za-z0-9])\*([^*\n]+)\*(?![A-Za-z0-9])/g, '$1$2');
+  text = text.replace(/(^|[^A-Za-z0-9])_([^_\n]+)_(?![A-Za-z0-9])/g, '$1$2');
+  // Defensive sweep — any surviving space-flanked stray asterisks.
+  text = text.replace(/(?:^|\s)\*+(?=\s|$)/g, ' ');
   text = text
     .split(/\r?\n/)
     .filter(line => {
@@ -49,6 +67,18 @@ function firstSentences(input: string, maxSentences: number): string {
   return collapseWhitespace(parts.slice(0, maxSentences).join(' '));
 }
 
+function truncateAtWordBoundary(input: string, maxChars: number): string {
+  if (input.length <= maxChars) return input;
+  let cut = input.slice(0, maxChars);
+  const lastSpace = cut.lastIndexOf(' ');
+  // Only back up to the last space if it's reasonably close to the end so we
+  // don't lop off too much. 60% threshold keeps at least 60% of the budget.
+  if (lastSpace > maxChars * 0.6) cut = cut.slice(0, lastSpace);
+  cut = cut.replace(/[,;:\-\s]+$/, '');
+  if (!/[.!?]$/.test(cut)) cut += '…';
+  return collapseWhitespace(cut);
+}
+
 export function sanitizeResponseNarration(
   input: unknown,
   context: ResponseNarrationContext = {},
@@ -63,7 +93,7 @@ export function sanitizeResponseNarration(
   let text = firstSentences(clean, maxSentences);
   const wasLong = text.length > maxChars || clean.length > maxChars + 80;
   if (text.length > maxChars) {
-    text = collapseWhitespace(`${text.slice(0, maxChars - 1).replace(/[,;:\s]+$/, '')}.`);
+    text = truncateAtWordBoundary(text, maxChars);
   }
   if (wasLong && isFinal && !/full (answer|result|details?) (is|are) in the chat/i.test(text)) {
     text = collapseWhitespace(`${text} The full result is in the chat.`);
