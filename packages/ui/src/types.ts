@@ -1,4 +1,9 @@
 import type { ToolOutput } from '@rover/shared/lib/types/index.js';
+import type {
+  RoverPresentationIntent,
+  RoverPresentationPolicySource,
+  RoverSpeechProvider,
+} from '@rover/shared/lib/utils/presentation-policy.js';
 export type { RoverVoiceConfig, RoverVoiceTelemetryEvent } from './voice.js';
 import type { RoverVoiceConfig, RoverVoiceTelemetryEvent } from './voice.js';
 
@@ -79,6 +84,21 @@ export type RoverActionCue = {
   targetLabel?: string;
 };
 
+export type RoverPresentationDirective = {
+  source?: 'act' | 'plan';
+  shouldNarrate?: boolean;
+  speechText?: string;
+  displayText?: string;
+  spotlightTargetIds?: string[];
+  groupKey?: string;
+  intentStage?: string;
+  captionTtlMs?: number;
+  sensitivity?: 'none' | 'personal' | 'secret' | 'payment';
+  actionRefs?: string[];
+  narrationActive?: boolean;
+  speechProvider?: RoverSpeechProvider;
+};
+
 export type RoverTimelineEvent = {
   id?: string;
   kind: RoverTimelineKind;
@@ -89,10 +109,14 @@ export type RoverTimelineEvent = {
   ts?: number;
   elementId?: number;
   toolName?: string;
+  presentation?: RoverPresentationDirective;
   narration?: string;
   narrationActive?: boolean;
+  speechProvider?: RoverSpeechProvider;
   // Per-step override for the action spotlight gate. When set, takes precedence over
   // site preset / runKind / visitor toggle. Undefined means defer to default behavior.
+  spotlightActive?: boolean;
+  /** Alternate name accepted on read. Reader prefers `spotlightActive`; both shapes flow through the SDK timeline for cross-product (rtrvr extension / boot-config / older Rover payloads) compatibility. */
   actionSpotlightActive?: boolean;
   responseKind?: RoverAssistantResponseKind;
   actionCue?: RoverActionCue;
@@ -279,22 +303,39 @@ export type RoverRuntimeEntitlements = {
   naturalVoiceDictation?: boolean;
 };
 
+export type RoverPresentationRunMeta = {
+  askUserAnswers?: RoverAskUserAnswerMeta;
+  attachments?: File[];
+  presentationVoiceAvailable?: boolean;
+  presentationVoicePreferenceSource?: 'default' | 'visitor';
+  presentationVoiceDefaultActive?: boolean;
+  presentationRunKind?: 'guide' | 'task';
+  narrationLanguage?: string;
+  presentationIntent?: RoverPresentationIntent;
+  presentationPolicySource?: RoverPresentationPolicySource;
+  speechProvider?: RoverSpeechProvider;
+  presentationSpotlightAvailable?: boolean;
+  presentationSpotlightPreferenceSource?: 'default' | 'visitor';
+  presentationSpotlightDefaultActive?: boolean;
+  // Alternate field names accepted from boot config and cross-product callers
+  // (rtrvr-relay extension, third-party SDK integrations, older Rover snippets).
+  // Canonical equivalents are the `presentationVoice*` / `presentationSpotlight*` /
+  // `presentationRunKind` fields above. Both shapes flow through; readers prefer
+  // the canonical name with `?? <alias>` fallback.
+  narrationEnabledForRun?: boolean;
+  narrationPreferenceSource?: 'default' | 'visitor';
+  narrationDefaultActiveForRun?: boolean;
+  narrationRunKind?: 'guide' | 'task';
+  actionSpotlightEnabledForRun?: boolean;
+  actionSpotlightPreferenceSource?: 'default' | 'visitor';
+  actionSpotlightRunKind?: 'guide' | 'task';
+  actionSpotlightDefaultActiveForRun?: boolean;
+};
+
 export type MountOptions = {
   resolveElement?: (elementId: number) => Element | null;
   getLocalLogicalTabId?: () => number | undefined;
-  onSend: (text: string, meta?: {
-    askUserAnswers?: RoverAskUserAnswerMeta;
-    attachments?: File[];
-    narrationEnabledForRun?: boolean;
-    narrationPreferenceSource?: 'default' | 'visitor';
-    narrationDefaultActiveForRun?: boolean;
-    narrationRunKind?: 'guide' | 'task';
-    narrationLanguage?: string;
-    actionSpotlightEnabledForRun?: boolean;
-    actionSpotlightPreferenceSource?: 'default' | 'visitor';
-    actionSpotlightRunKind?: 'guide' | 'task';
-    actionSpotlightDefaultActiveForRun?: boolean;
-  }) => void;
+  onSend: (text: string, meta?: RoverPresentationRunMeta) => void;
   onVoiceTelemetry?: (event: RoverVoiceTelemetryEvent, payload?: Record<string, unknown>) => void;
   onNarrationPreferenceChange?: (enabled: boolean, available: boolean, source: 'default' | 'visitor', language?: string) => void;
   onSpotlightPreferenceChange?: (enabled: boolean, available: boolean, source: 'default' | 'visitor') => void;
@@ -308,17 +349,7 @@ export type MountOptions = {
   onTaskSuggestionPrimary?: () => void;
   onTaskSuggestionSecondary?: () => void;
   shortcuts?: RoverShortcut[];
-  onShortcutClick?: (shortcut: RoverShortcut, meta?: {
-    narrationEnabledForRun?: boolean;
-    narrationPreferenceSource?: 'default' | 'visitor';
-    narrationDefaultActiveForRun?: boolean;
-    narrationRunKind?: 'guide' | 'task';
-    narrationLanguage?: string;
-    actionSpotlightEnabledForRun?: boolean;
-    actionSpotlightPreferenceSource?: 'default' | 'visitor';
-    actionSpotlightRunKind?: 'guide' | 'task';
-    actionSpotlightDefaultActiveForRun?: boolean;
-  }) => void;
+  onShortcutClick?: (shortcut: RoverShortcut, meta?: RoverPresentationRunMeta) => void;
   showTaskControls?: boolean;
   muted?: boolean;
   thoughtStyle?: RoverThoughtStyle;

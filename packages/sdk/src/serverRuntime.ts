@@ -170,6 +170,7 @@ export type RoverLaunchInputSpec =
   | {
       kind: 'prompt';
       prompt: string;
+      runKind?: 'guide' | 'task';
     }
   | {
       kind: 'shortcut';

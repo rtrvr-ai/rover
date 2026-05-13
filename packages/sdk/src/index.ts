@@ -3,6 +3,12 @@ import { sanitizeRoverPageCaptureConfig } from '@rover/shared/lib/page/index.js'
 import type { PageConfig, PageData, RoverPageCaptureConfig, ToolOutput } from '@rover/shared/lib/types/index.js';
 import type { LLMDataInput } from '@rover/shared/lib/types/workflow-types.js';
 import {
+  resolveRoverPresentationPolicy,
+  type RoverPresentationIntent,
+  type RoverPresentationPolicySource,
+  type RoverSpeechProvider,
+} from '@rover/shared/lib/utils/presentation-policy.js';
+import {
   mountWidget,
   ROVER_WIDGET_LAUNCHER_DESKTOP_INSET_PX,
   ROVER_WIDGET_LAUNCHER_DESKTOP_SIZE_PX,
@@ -678,11 +684,11 @@ let lastEffectivePageCaptureConfigJson = '';
 let suppressCheckpointSync = false;
 let lastQuestionPromptFlushSignature = '';
 let currentMode: RoverExecutionMode = 'controller';
-let narrationEnabledForRun = false;
-let narrationPreferenceSource: 'default' | 'visitor' = 'default';
+let presentationVoiceAvailableForRun = false;
+let presentationVoicePreferenceSource: 'default' | 'visitor' = 'default';
 let narrationLanguage: string | undefined = undefined;
-let actionSpotlightEnabledForRun = false;
-let actionSpotlightPreferenceSource: 'default' | 'visitor' = 'default';
+let presentationSpotlightAvailableForRun = false;
+let presentationSpotlightPreferenceSource: 'default' | 'visitor' = 'default';
 let workerReady = false;
 let sessionReady = false;
 let isTransportController = true; // default to true for single-tab mode
@@ -715,6 +721,10 @@ let deepLinkPendingShortcut:
       deadlineAt: number;
     }
   | null = null;
+// Armed when a bare `?rover_guide=1` URL was parsed with no prompt/shortcut.
+// Consumed on the next dispatchUserPrompt that hasn't been given an explicit
+// presentationRunKind, escalating that run to guide mode.
+let pendingDeepLinkGuideOverride = false;
 let launchLastHandledKey = '';
 let launchLastIgnoredDisabledKey = '';
 let launchAttachRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -4222,7 +4232,9 @@ function sanitizeTimelineEvents(input: any): PersistedTimelineEvent[] {
       toolName: typeof event?.toolName === 'string' ? truncateText(event.toolName, 120) : undefined,
       narration: typeof event?.narration === 'string' ? truncateText(event.narration.replace(/\s+/g, ' ').trim(), 220) : undefined,
       narrationActive: typeof event?.narrationActive === 'boolean' ? event.narrationActive : undefined,
-      actionSpotlightActive: typeof event?.actionSpotlightActive === 'boolean' ? event.actionSpotlightActive : undefined,
+      spotlightActive: typeof event?.spotlightActive === 'boolean'
+        ? event.spotlightActive
+        : (typeof event?.actionSpotlightActive === 'boolean' ? event.actionSpotlightActive : undefined),
       responseKind: normalizeAssistantResponseKind(event?.responseKind),
       actionCue: sanitizeActionCue(event?.actionCue),
     });
@@ -5919,7 +5931,7 @@ function appendTimelineEvent(
     toolName: event.toolName,
     narration: event.narration,
     narrationActive: event.narrationActive,
-    actionSpotlightActive: event.actionSpotlightActive,
+    spotlightActive: event.spotlightActive ?? event.actionSpotlightActive,
     responseKind: event.responseKind,
     actionCue: event.actionCue,
   };
@@ -5948,7 +5960,7 @@ function appendTimelineEvent(
       toolName: timelineEvent.toolName,
       narration: timelineEvent.narration,
       narrationActive: timelineEvent.narrationActive,
-      actionSpotlightActive: timelineEvent.actionSpotlightActive,
+      spotlightActive: timelineEvent.spotlightActive,
       responseKind: timelineEvent.responseKind,
       actionCue: timelineEvent.actionCue,
     });
@@ -6071,7 +6083,7 @@ function replayTimeline(events: PersistedTimelineEvent[]): void {
         toolName: event.toolName,
         narration: event.narration,
         narrationActive: event.narrationActive,
-        actionSpotlightActive: event.actionSpotlightActive,
+        spotlightActive: event.spotlightActive ?? event.actionSpotlightActive,
         responseKind: event.responseKind,
         actionCue: event.actionCue,
         publishShared: false,
@@ -6705,18 +6717,32 @@ function postRun(
     seedChatLog?: FollowupChatEntry[];
     appendUserMessage?: boolean;
     autoResume?: boolean;
-    routing?: 'auto' | 'act' | 'planner';
-    askUserAnswers?: RoverAskUserAnswerMeta;
-    files?: LLMDataInput[];
-    narrationEnabledForRun?: boolean;
-    narrationPreferenceSource?: 'default' | 'visitor';
-    narrationDefaultActiveForRun?: boolean;
-    narrationRunKind?: 'guide' | 'task';
-    narrationLanguage?: string;
-    actionSpotlightEnabledForRun?: boolean;
-    actionSpotlightPreferenceSource?: 'default' | 'visitor';
-    actionSpotlightRunKind?: 'guide' | 'task';
-    actionSpotlightDefaultActiveForRun?: boolean;
+	    routing?: 'auto' | 'act' | 'planner';
+	    askUserAnswers?: RoverAskUserAnswerMeta;
+	    files?: LLMDataInput[];
+	    presentationVoiceAvailable?: boolean;
+	    presentationVoicePreferenceSource?: 'default' | 'visitor';
+	    presentationVoiceDefaultActive?: boolean;
+	    presentationRunKind?: 'guide' | 'task';
+	    narrationEnabledForRun?: boolean;
+	    narrationPreferenceSource?: 'default' | 'visitor';
+	    narrationDefaultActiveForRun?: boolean;
+	    narrationRunKind?: 'guide' | 'task';
+	    narrationLanguage?: string;
+	    presentationIntent?: RoverPresentationIntent;
+	    presentationPolicySource?: RoverPresentationPolicySource;
+	    speechProvider?: RoverSpeechProvider;
+	    presentationSpotlightAvailable?: boolean;
+	    presentationSpotlightPreferenceSource?: 'default' | 'visitor';
+	    presentationSpotlightDefaultActive?: boolean;
+	    /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationSpotlightAvailable`. */
+	    actionSpotlightEnabledForRun?: boolean;
+	    /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationSpotlightPreferenceSource`. */
+	    actionSpotlightPreferenceSource?: 'default' | 'visitor';
+	    /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationRunKind`. */
+	    actionSpotlightRunKind?: 'guide' | 'task';
+	    /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationSpotlightDefaultActive`. */
+	    actionSpotlightDefaultActiveForRun?: boolean;
   },
 ): void {
   const trimmed = String(text || '').trim();
@@ -6827,25 +6853,31 @@ function postRun(
 	  setActiveTaskSeedChatLog(seedChatLog);
 	  sessionCoordinator?.acquireWorkflowLock(runId);
 	  sessionCoordinator?.setActiveRun({ runId, text: persistedRunText });
-	  const workerNarrationRunKind = normalizeRoverRunKind(options?.narrationRunKind);
-	  const workerActionSpotlightRunKind =
-	    normalizeRoverRunKind(options?.actionSpotlightRunKind) || workerNarrationRunKind;
-	  const workerNarrationPreferenceSource = options?.narrationPreferenceSource || narrationPreferenceSource;
-	  const workerActionSpotlightPreferenceSource = options?.actionSpotlightPreferenceSource || actionSpotlightPreferenceSource;
-	  const workerNarrationAvailable = options?.narrationEnabledForRun
-	    ?? (workerNarrationPreferenceSource === 'visitor' ? narrationEnabledForRun : resolveNarrationAvailableFromConfig(currentConfig));
-	  const workerNarrationDefaultActive = typeof options?.narrationDefaultActiveForRun === 'boolean'
-	    ? options.narrationDefaultActiveForRun
-	    : workerNarrationPreferenceSource === 'visitor'
-	      ? workerNarrationAvailable === true
-	      : resolveDefaultNarrationActiveForRun(workerNarrationRunKind, workerNarrationAvailable === true);
-	  const workerSpotlightAvailable = options?.actionSpotlightEnabledForRun
-	    ?? (actionSpotlightPreferenceSource === 'visitor' ? actionSpotlightEnabledForRun : true);
-	  const workerSpotlightDefaultActive = typeof options?.actionSpotlightDefaultActiveForRun === 'boolean'
-	    ? options.actionSpotlightDefaultActiveForRun
-	    : workerActionSpotlightPreferenceSource === 'visitor'
-	      ? workerSpotlightAvailable === true
-	      : resolveDefaultActionSpotlightActiveForRun(workerActionSpotlightRunKind, workerSpotlightAvailable === true);
+		  const workerPresentationRunKind = normalizeRoverRunKind(options?.presentationRunKind)
+		    || normalizeRoverRunKind(options?.narrationRunKind)
+		    || normalizeRoverRunKind(options?.actionSpotlightRunKind);
+		  const workerVoicePreferenceSource = options?.presentationVoicePreferenceSource || options?.narrationPreferenceSource || presentationVoicePreferenceSource;
+		  const workerSpotlightPreferenceSource = options?.presentationSpotlightPreferenceSource || options?.actionSpotlightPreferenceSource || presentationSpotlightPreferenceSource;
+		  const workerVoiceAvailable = options?.presentationVoiceAvailable
+		    ?? options?.narrationEnabledForRun
+		    ?? (workerVoicePreferenceSource === 'visitor' ? presentationVoiceAvailableForRun : resolveNarrationAvailableFromConfig(currentConfig));
+		  const workerVoiceDefaultActive = typeof options?.presentationVoiceDefaultActive === 'boolean'
+		    ? options.presentationVoiceDefaultActive
+		    : typeof options?.narrationDefaultActiveForRun === 'boolean'
+		      ? options.narrationDefaultActiveForRun
+		      : workerVoicePreferenceSource === 'visitor'
+		      ? workerVoiceAvailable === true
+		      : resolveDefaultNarrationActiveForRun(workerPresentationRunKind, workerVoiceAvailable === true);
+		  const workerSpotlightAvailable = options?.presentationSpotlightAvailable
+		    ?? options?.actionSpotlightEnabledForRun
+		    ?? (presentationSpotlightPreferenceSource === 'visitor' ? presentationSpotlightAvailableForRun : true);
+		  const workerSpotlightDefaultActive = typeof options?.presentationSpotlightDefaultActive === 'boolean'
+		    ? options.presentationSpotlightDefaultActive
+		    : typeof options?.actionSpotlightDefaultActiveForRun === 'boolean'
+		      ? options.actionSpotlightDefaultActiveForRun
+		      : workerSpotlightPreferenceSource === 'visitor'
+		      ? workerSpotlightAvailable === true
+		      : resolveDefaultActionSpotlightActiveForRun(workerPresentationRunKind, workerSpotlightAvailable === true);
 	  const runMessage: Record<string, unknown> = {
 	    type: 'run',
 	    text: trimmed,
@@ -6857,18 +6889,20 @@ function postRun(
     routing: options?.routing,
     askUserAnswers: options?.askUserAnswers,
 	    files: sanitizeAttachedFileDescriptors(options?.files),
-	    narrationEnabledForRun: workerNarrationAvailable === true,
-	    narrationPreferenceSource: workerNarrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
-	    ...(workerNarrationRunKind ? { narrationRunKind: workerNarrationRunKind } : {}),
-	    narrationLanguage: options?.narrationLanguage,
-	    actionSpotlightEnabledForRun: workerSpotlightAvailable === true,
-	    actionSpotlightPreferenceSource: workerActionSpotlightPreferenceSource === 'visitor' ? 'visitor' : 'default',
-	    ...(workerActionSpotlightRunKind ? { actionSpotlightRunKind: workerActionSpotlightRunKind } : {}),
+		    presentationVoiceAvailable: workerVoiceAvailable === true,
+		    presentationVoicePreferenceSource: workerVoicePreferenceSource === 'visitor' ? 'visitor' : 'default',
+		    ...(workerPresentationRunKind ? { presentationRunKind: workerPresentationRunKind } : {}),
+		    narrationLanguage: options?.narrationLanguage,
+	    ...(options?.presentationIntent ? { presentationIntent: options.presentationIntent } : {}),
+	    ...(options?.presentationPolicySource && options.presentationPolicySource !== 'default' ? { presentationPolicySource: options.presentationPolicySource } : {}),
+	    ...(options?.speechProvider ? { speechProvider: options.speechProvider } : {}),
+		    presentationSpotlightAvailable: workerSpotlightAvailable === true,
+		    presentationSpotlightPreferenceSource: workerSpotlightPreferenceSource === 'visitor' ? 'visitor' : 'default',
 	    scopedTabIds,
 	    taskTabScope: toWorkerTaskTabScopePayload(),
 	  };
-	  runMessage.narrationDefaultActiveForRun = workerNarrationDefaultActive;
-	  runMessage.actionSpotlightDefaultActiveForRun = workerSpotlightDefaultActive;
+		  runMessage.presentationVoiceDefaultActive = workerVoiceDefaultActive;
+		  runMessage.presentationSpotlightDefaultActive = workerSpotlightDefaultActive;
 	  worker.postMessage(runMessage);
 
   if (runSafetyTimer) clearTimeout(runSafetyTimer);
@@ -6902,17 +6936,31 @@ async function dispatchUserPromptAsync(
     startNewTask?: boolean;
     reason?: string;
     routing?: 'auto' | 'act' | 'planner';
-    askUserAnswers?: RoverAskUserAnswerMeta;
-    attachments?: File[];
-    narrationEnabledForRun?: boolean;
-    narrationPreferenceSource?: 'default' | 'visitor';
-    narrationDefaultActiveForRun?: boolean;
-    narrationRunKind?: 'guide' | 'task';
-    narrationLanguage?: string;
-    actionSpotlightEnabledForRun?: boolean;
-    actionSpotlightPreferenceSource?: 'default' | 'visitor';
-    actionSpotlightRunKind?: 'guide' | 'task';
-    actionSpotlightDefaultActiveForRun?: boolean;
+	    askUserAnswers?: RoverAskUserAnswerMeta;
+	    attachments?: File[];
+	    presentationVoiceAvailable?: boolean;
+	    presentationVoicePreferenceSource?: 'default' | 'visitor';
+	    presentationVoiceDefaultActive?: boolean;
+	    presentationRunKind?: 'guide' | 'task';
+	    narrationEnabledForRun?: boolean;
+	    narrationPreferenceSource?: 'default' | 'visitor';
+	    narrationDefaultActiveForRun?: boolean;
+	    narrationRunKind?: 'guide' | 'task';
+	    narrationLanguage?: string;
+	    presentationIntent?: RoverPresentationIntent;
+	    presentationPolicySource?: RoverPresentationPolicySource;
+	    speechProvider?: RoverSpeechProvider;
+	    presentationSpotlightAvailable?: boolean;
+	    presentationSpotlightPreferenceSource?: 'default' | 'visitor';
+	    presentationSpotlightDefaultActive?: boolean;
+	    /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationSpotlightAvailable`. */
+	    actionSpotlightEnabledForRun?: boolean;
+	    /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationSpotlightPreferenceSource`. */
+	    actionSpotlightPreferenceSource?: 'default' | 'visitor';
+	    /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationRunKind`. */
+	    actionSpotlightRunKind?: 'guide' | 'task';
+	    /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationSpotlightDefaultActive`. */
+	    actionSpotlightDefaultActiveForRun?: boolean;
     continueExistingRun?: boolean;
     continueRunId?: string;
   },
@@ -7142,30 +7190,51 @@ async function dispatchUserPromptAsync(
     }
   }
 
-  const effectiveNarrationPreferenceSource = options?.narrationPreferenceSource || narrationPreferenceSource;
-  const fallbackNarrationAvailable = effectiveNarrationPreferenceSource === 'visitor'
-    ? narrationEnabledForRun
+  const effectiveVoicePreferenceSource = options?.presentationVoicePreferenceSource || options?.narrationPreferenceSource || presentationVoicePreferenceSource;
+  const fallbackVoiceAvailable = effectiveVoicePreferenceSource === 'visitor'
+    ? presentationVoiceAvailableForRun
     : resolveNarrationAvailableFromConfig(currentConfig);
-  const effectiveNarrationEnabledForRun = options?.narrationEnabledForRun ?? fallbackNarrationAvailable;
-  const effectiveNarrationRunKind = normalizeRoverRunKind(options?.narrationRunKind);
+  const effectiveVoiceAvailableForRun = options?.presentationVoiceAvailable ?? options?.narrationEnabledForRun ?? fallbackVoiceAvailable;
   const effectiveNarrationLanguage = options?.narrationLanguage || narrationLanguage;
-  const effectiveNarrationDefaultActiveForRun = typeof options?.narrationDefaultActiveForRun === 'boolean'
-    ? options.narrationDefaultActiveForRun
-    : effectiveNarrationPreferenceSource === 'visitor'
-      ? effectiveNarrationEnabledForRun === true
-      : resolveDefaultNarrationActiveForRun(effectiveNarrationRunKind, effectiveNarrationEnabledForRun === true);
-  const fallbackActionSpotlightAvailable = actionSpotlightPreferenceSource === 'visitor'
-    ? actionSpotlightEnabledForRun
+  const policyExperience = deriveExperienceConfig(currentConfig);
+  const explicitPolicyRunKind = normalizeRoverRunKind(options?.presentationRunKind)
+    || normalizeRoverRunKind(options?.narrationRunKind)
+    || normalizeRoverRunKind(options?.actionSpotlightRunKind);
+  const presentationPolicy = resolveRoverPresentationPolicy({
+    userInput: trimmed,
+    explicitRunKind: explicitPolicyRunKind,
+    explicitRunKindSource: presentationPolicySourceForReason(options?.reason),
+    narrationOwnerEnabled: policyExperience?.audio?.narration?.enabled !== false,
+    narrationAvailable: effectiveVoiceAvailableForRun === true,
+    narrationDefaultMode: policyExperience?.audio?.narration?.defaultMode,
+    narrationVisitorSource: effectiveVoicePreferenceSource,
+    narrationVisitorEnabled: presentationVoiceAvailableForRun,
+    actionSpotlightOwnerEnabled: policyExperience?.motion?.actionSpotlight !== false,
+    actionSpotlightAvailable: (options?.presentationSpotlightAvailable ?? options?.actionSpotlightEnabledForRun ?? presentationSpotlightAvailableForRun) === true,
+    actionSpotlightAllowedRunKinds: policyExperience?.motion?.actionSpotlightRunKinds,
+    actionSpotlightVisitorSource: options?.presentationSpotlightPreferenceSource || options?.actionSpotlightPreferenceSource || presentationSpotlightPreferenceSource,
+    actionSpotlightVisitorEnabled: presentationSpotlightAvailableForRun,
+    naturalVoiceNarration: resolveEffectiveRuntimeEntitlements()?.naturalVoiceNarration === true,
+    browserVoiceSupported: true,
+  });
+  const effectivePresentationRunKind = normalizeRoverRunKind(options?.presentationRunKind)
+    || normalizeRoverRunKind(options?.narrationRunKind)
+    || presentationPolicy.runKind;
+  const effectiveVoiceDefaultActiveForRun = typeof options?.presentationVoiceDefaultActive === 'boolean'
+    ? options.presentationVoiceDefaultActive
+    : typeof options?.narrationDefaultActiveForRun === 'boolean'
+      ? options.narrationDefaultActiveForRun
+    : presentationPolicy.voiceActive;
+  const fallbackSpotlightAvailable = presentationSpotlightPreferenceSource === 'visitor'
+    ? presentationSpotlightAvailableForRun
     : true;
-  const effectiveActionSpotlightEnabledForRun = options?.actionSpotlightEnabledForRun ?? fallbackActionSpotlightAvailable;
-  const effectiveActionSpotlightPreferenceSource = options?.actionSpotlightPreferenceSource || actionSpotlightPreferenceSource;
-  const effectiveActionSpotlightRunKind =
-    normalizeRoverRunKind(options?.actionSpotlightRunKind) || effectiveNarrationRunKind;
-  const effectiveActionSpotlightDefaultActiveForRun = typeof options?.actionSpotlightDefaultActiveForRun === 'boolean'
-    ? options.actionSpotlightDefaultActiveForRun
-    : effectiveActionSpotlightPreferenceSource === 'visitor'
-      ? effectiveActionSpotlightEnabledForRun === true
-      : resolveDefaultActionSpotlightActiveForRun(effectiveActionSpotlightRunKind, effectiveActionSpotlightEnabledForRun === true);
+  const effectiveSpotlightAvailableForRun = options?.presentationSpotlightAvailable ?? options?.actionSpotlightEnabledForRun ?? fallbackSpotlightAvailable;
+  const effectiveSpotlightPreferenceSource = options?.presentationSpotlightPreferenceSource || options?.actionSpotlightPreferenceSource || presentationSpotlightPreferenceSource;
+  const effectiveSpotlightDefaultActiveForRun = typeof options?.presentationSpotlightDefaultActive === 'boolean'
+    ? options.presentationSpotlightDefaultActive
+    : typeof options?.actionSpotlightDefaultActiveForRun === 'boolean'
+      ? options.actionSpotlightDefaultActiveForRun
+    : presentationPolicy.spotlightActive;
   postRun(trimmed, {
     runId,
     appendUserMessage: true,
@@ -7176,15 +7245,17 @@ async function dispatchUserPromptAsync(
     routing,
     askUserAnswers: options?.askUserAnswers,
     files: uploadedFiles,
-    narrationEnabledForRun: effectiveNarrationEnabledForRun === true,
-    narrationPreferenceSource: effectiveNarrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
-    narrationDefaultActiveForRun: effectiveNarrationDefaultActiveForRun,
-    narrationRunKind: effectiveNarrationRunKind,
+    presentationVoiceAvailable: effectiveVoiceAvailableForRun === true,
+    presentationVoicePreferenceSource: effectiveVoicePreferenceSource === 'visitor' ? 'visitor' : 'default',
+    presentationVoiceDefaultActive: effectiveVoiceDefaultActiveForRun,
+    presentationRunKind: effectivePresentationRunKind,
     narrationLanguage: effectiveNarrationLanguage,
-    actionSpotlightEnabledForRun: effectiveActionSpotlightEnabledForRun === true,
-    actionSpotlightPreferenceSource: effectiveActionSpotlightPreferenceSource === 'visitor' ? 'visitor' : 'default',
-    actionSpotlightRunKind: effectiveActionSpotlightRunKind,
-    actionSpotlightDefaultActiveForRun: effectiveActionSpotlightDefaultActiveForRun,
+    presentationIntent: options?.presentationIntent || presentationPolicy.presentationIntent,
+    presentationPolicySource: options?.presentationPolicySource || (presentationPolicy.source === 'default' ? undefined : presentationPolicy.source),
+    speechProvider: options?.speechProvider || presentationPolicy.speechProvider,
+    presentationSpotlightAvailable: effectiveSpotlightAvailableForRun === true,
+    presentationSpotlightPreferenceSource: effectiveSpotlightPreferenceSource === 'visitor' ? 'visitor' : 'default',
+    presentationSpotlightDefaultActive: effectiveSpotlightDefaultActiveForRun,
   });
 }
 
@@ -7197,20 +7268,43 @@ function dispatchUserPrompt(
     routing?: 'auto' | 'act' | 'planner';
     askUserAnswers?: RoverAskUserAnswerMeta;
     attachments?: File[];
+    presentationVoiceAvailable?: boolean;
+    presentationVoicePreferenceSource?: 'default' | 'visitor';
+    presentationVoiceDefaultActive?: boolean;
+    presentationRunKind?: 'guide' | 'task';
     narrationEnabledForRun?: boolean;
     narrationPreferenceSource?: 'default' | 'visitor';
     narrationDefaultActiveForRun?: boolean;
     narrationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
+    presentationIntent?: RoverPresentationIntent;
+    presentationPolicySource?: RoverPresentationPolicySource;
+    speechProvider?: RoverSpeechProvider;
+    presentationSpotlightAvailable?: boolean;
+    presentationSpotlightPreferenceSource?: 'default' | 'visitor';
+    presentationSpotlightDefaultActive?: boolean;
+    /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationSpotlightAvailable`. */
     actionSpotlightEnabledForRun?: boolean;
+    /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationSpotlightPreferenceSource`. */
     actionSpotlightPreferenceSource?: 'default' | 'visitor';
+    /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationRunKind`. */
     actionSpotlightRunKind?: 'guide' | 'task';
+    /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationSpotlightDefaultActive`. */
     actionSpotlightDefaultActiveForRun?: boolean;
     continueExistingRun?: boolean;
     continueRunId?: string;
   },
 ): void {
-  void dispatchUserPromptAsync(text, options);
+  // Consume a bare `?rover_guide=1` URL flag once, if no explicit run kind was provided.
+  let effectiveOptions = options;
+  if (pendingDeepLinkGuideOverride && !options?.presentationRunKind) {
+    pendingDeepLinkGuideOverride = false;
+    effectiveOptions = { ...(options || {}), presentationRunKind: 'guide' };
+  } else if (pendingDeepLinkGuideOverride && options?.presentationRunKind) {
+    // Caller specified a run kind — clear the pending flag so it doesn't stick around.
+    pendingDeepLinkGuideOverride = false;
+  }
+  void dispatchUserPromptAsync(text, effectiveOptions);
 }
 
 function clearPendingRunForResume(reason: string, statusText: string): void {
@@ -8413,6 +8507,7 @@ function handleWorkerMessage(msg: any): void {
       status: responseKind === 'error' ? 'error' : 'success',
       narration: typeof msg.narration === 'string' ? msg.narration : undefined,
       narrationActive: typeof msg.narrationActive === 'boolean' ? msg.narrationActive : undefined,
+      speechProvider: msg.speechProvider === 'elevenlabs' || msg.speechProvider === 'browser' || msg.speechProvider === 'none' ? msg.speechProvider : undefined,
       responseKind,
     });
     enqueueLaunchRuntimeEvent('assistant_output', {
@@ -8435,6 +8530,7 @@ function handleWorkerMessage(msg: any): void {
       status: responseKind === 'error' ? 'error' : responseKind === 'final' ? 'success' : 'info',
       narration: typeof msg.narration === 'string' ? msg.narration : undefined,
       narrationActive: typeof msg.narrationActive === 'boolean' ? msg.narrationActive : undefined,
+      speechProvider: msg.speechProvider === 'elevenlabs' || msg.speechProvider === 'browser' || msg.speechProvider === 'none' ? msg.speechProvider : undefined,
       responseKind,
     });
     enqueueLaunchRuntimeEvent('assistant_output', {
@@ -8480,6 +8576,7 @@ function handleWorkerMessage(msg: any): void {
             status: 'pending',
             narration: typeof msg.narration === 'string' ? msg.narration : undefined,
             narrationActive: typeof msg.narrationActive === 'boolean' ? msg.narrationActive : undefined,
+            speechProvider: msg.speechProvider === 'elevenlabs' || msg.speechProvider === 'browser' || msg.speechProvider === 'none' ? msg.speechProvider : undefined,
           });
         } else {
           const title = stage ? `${formatStageLabel(stage)}: ${message}` : message;
@@ -8490,6 +8587,7 @@ function handleWorkerMessage(msg: any): void {
             status: stage === 'complete' ? 'success' : 'info',
             narration: typeof msg.narration === 'string' ? msg.narration : undefined,
             narrationActive: typeof msg.narrationActive === 'boolean' ? msg.narrationActive : undefined,
+            speechProvider: msg.speechProvider === 'elevenlabs' || msg.speechProvider === 'browser' || msg.speechProvider === 'none' ? msg.speechProvider : undefined,
           });
         }
       }
@@ -8529,7 +8627,11 @@ function handleWorkerMessage(msg: any): void {
     const actionCue = buildRoverActionCue(msg.call, msg.toolCallId, { logicalTabId });
     const toolStartElementId = actionCue?.primaryElementId
       ?? (typeof msg.call?.args?.element_id === 'number' ? msg.call.args.element_id : undefined);
-    const guidedPresentation = msg.narrationActive === true || msg.actionSpotlightActive === true;
+    const presentation = msg.presentation && typeof msg.presentation === 'object' ? msg.presentation : undefined;
+    const msgSpotlightActive = typeof msg.spotlightActive === 'boolean'
+      ? msg.spotlightActive
+      : (typeof msg.actionSpotlightActive === 'boolean' ? msg.actionSpotlightActive : undefined);
+    const guidedPresentation = msg.narrationActive === true || msgSpotlightActive === true || presentation?.shouldNarrate === true;
     appendTimelineEvent({
       kind: 'tool_start',
       title: guidedPresentation ? 'Rover is taking the next step' : `Running ${msg.call?.name || 'tool'}`,
@@ -8537,9 +8639,11 @@ function handleWorkerMessage(msg: any): void {
       status: 'pending',
       elementId: toolStartElementId,
       toolName: msg.call?.name,
-      narration: typeof msg.narration === 'string' ? msg.narration : undefined,
+      presentation,
+      narration: typeof msg.narration === 'string' ? msg.narration : typeof presentation?.speechText === 'string' ? presentation.speechText : undefined,
       narrationActive: typeof msg.narrationActive === 'boolean' ? msg.narrationActive : undefined,
-      actionSpotlightActive: typeof msg.actionSpotlightActive === 'boolean' ? msg.actionSpotlightActive : undefined,
+      speechProvider: msg.speechProvider === 'elevenlabs' || msg.speechProvider === 'browser' || msg.speechProvider === 'none' ? msg.speechProvider : undefined,
+      spotlightActive: msgSpotlightActive,
       actionCue,
     });
     emit('tool_start', msg);
@@ -8565,7 +8669,10 @@ function handleWorkerMessage(msg: any): void {
     const actionCue = buildRoverActionCue(msg.call, msg.toolCallId, { logicalTabId });
     const toolResultElementId = actionCue?.primaryElementId
       ?? (typeof msg.call?.args?.element_id === 'number' ? msg.call.args.element_id : undefined);
-    const guidedPresentation = msg.narrationActive === true || msg.actionSpotlightActive === true;
+    const msgResultSpotlightActive = typeof msg.spotlightActive === 'boolean'
+      ? msg.spotlightActive
+      : (typeof msg.actionSpotlightActive === 'boolean' ? msg.actionSpotlightActive : undefined);
+    const guidedPresentation = msg.narrationActive === true || msgResultSpotlightActive === true;
     const failed = msg?.result?.success === false;
     appendTimelineEvent({
       kind: 'tool_result',
@@ -8576,7 +8683,8 @@ function handleWorkerMessage(msg: any): void {
       toolName: msg.call?.name,
       narration: typeof msg.narration === 'string' ? msg.narration : undefined,
       narrationActive: typeof msg.narrationActive === 'boolean' ? msg.narrationActive : undefined,
-      actionSpotlightActive: typeof msg.actionSpotlightActive === 'boolean' ? msg.actionSpotlightActive : undefined,
+      speechProvider: msg.speechProvider === 'elevenlabs' || msg.speechProvider === 'browser' || msg.speechProvider === 'none' ? msg.speechProvider : undefined,
+      spotlightActive: msgResultSpotlightActive,
       actionCue,
     });
     emit('tool_result', msg);
@@ -9548,6 +9656,17 @@ function normalizeRoverRunKind(input: unknown): 'guide' | 'task' | undefined {
   return input === 'guide' || input === 'task' ? input : undefined;
 }
 
+function presentationPolicySourceForReason(
+  reason?: string,
+): Extract<RoverPresentationPolicySource, 'shortcut' | 'query' | 'api' | 'site_default'> | undefined {
+  const value = String(reason || '').trim().toLowerCase();
+  if (!value) return undefined;
+  if (value.includes('shortcut')) return 'shortcut';
+  if (value.includes('deep_link')) return 'query';
+  if (value.includes('launch') || value.includes('browser_receipt')) return 'api';
+  return undefined;
+}
+
 function resolveDefaultActionSpotlightActiveForRunFromConfig(
   cfg: RoverInit | null,
   runKind: 'guide' | 'task' | undefined,
@@ -10210,12 +10329,15 @@ function dispatchLaunchInput(response: RoverLaunchAttachResponse | RoverRunBrows
       dispatchUserPrompt(input.prompt, {
         reason: 'launch_shortcut',
         routing: input.routing,
-        narrationRunKind: input.runKind,
-        actionSpotlightRunKind: input.runKind,
+        presentationRunKind: input.runKind,
         narrationLanguage,
       });
     } else {
-      dispatchUserPrompt(input.prompt, { reason: 'launch_prompt' });
+      dispatchUserPrompt(input.prompt, {
+        reason: 'launch_prompt',
+        presentationRunKind: input.runKind,
+        narrationLanguage,
+      });
     }
     if (isHostedCloudLaunch) {
       recordTelemetryEvent('status', {
@@ -10988,13 +11110,16 @@ function dispatchClaimedBrowserRun(response: RoverRunBrowserClaimResponse): void
     dispatchUserPrompt(input.prompt, {
       reason: 'browser_receipt_shortcut',
       routing: input.routing,
-      narrationRunKind: input.runKind,
-      actionSpotlightRunKind: input.runKind,
+      presentationRunKind: input.runKind,
       narrationLanguage,
     });
     return;
   }
-  dispatchUserPrompt(input.prompt, { reason: 'browser_receipt_prompt' });
+  dispatchUserPrompt(input.prompt, {
+    reason: 'browser_receipt_prompt',
+    presentationRunKind: input.runKind,
+    narrationLanguage,
+  });
 }
 
 function handleBrowserReceiptClaimFailure(
@@ -11170,7 +11295,27 @@ function maybeHandleDeepLink(source: 'boot' | 'update' | 'navigation' | 'site_co
   if (request.kind === 'prompt') {
     clearPendingDeepLinkShortcut();
     open();
-    dispatchUserPrompt(request.value, { reason: 'deep_link_prompt' });
+    dispatchUserPrompt(request.value, {
+      reason: 'deep_link_prompt',
+      ...(request.guideOverride ? { presentationRunKind: 'guide' as const } : {}),
+    });
+    recordTelemetryEvent('status', {
+      event: 'deep_link_dispatched',
+      kind: request.kind,
+      paramName: request.paramName,
+      ...(request.guideOverride ? { guideOverride: true } : {}),
+    });
+    deepLinkLastHandledKey = handleKey;
+    consumeHandledDeepLink(config, request);
+    return;
+  }
+
+  if (request.kind === 'guide-flag') {
+    // Bare `?rover_guide=1` with no prompt/shortcut: open Rover and arm guide mode
+    // for the next visitor prompt this session.
+    clearPendingDeepLinkShortcut();
+    open();
+    pendingDeepLinkGuideOverride = true;
     recordTelemetryEvent('status', {
       event: 'deep_link_dispatched',
       kind: request.kind,
@@ -11190,8 +11335,8 @@ function maybeHandleDeepLink(source: 'boot' | 'update' | 'navigation' | 'site_co
     dispatchUserPrompt(shortcut.prompt, {
       reason: 'deep_link_shortcut',
       routing: shortcut.routing,
-      narrationRunKind: shortcut.runKind,
-      actionSpotlightRunKind: shortcut.runKind,
+      // Guide-flag wins over the shortcut's own runKind so AI agents can escalate.
+      presentationRunKind: request.guideOverride ? 'guide' : shortcut.runKind,
       narrationLanguage,
     });
     recordTelemetryEvent('status', {
@@ -12280,31 +12425,50 @@ function createRuntime(cfg: RoverInit): void {
       narrationDefaultActiveForRun?: boolean;
       narrationRunKind?: 'guide' | 'task';
       narrationLanguage?: string;
-      actionSpotlightEnabledForRun?: boolean;
-      actionSpotlightPreferenceSource?: 'default' | 'visitor';
-      actionSpotlightRunKind?: 'guide' | 'task';
-      actionSpotlightDefaultActiveForRun?: boolean;
-    }) => {
-      const text = String(shortcut.prompt || '').trim();
-      if (!text) return;
-      const narrationAvailable = meta?.narrationEnabledForRun ?? narrationEnabledForRun;
-      const spotlightAvailable = meta?.actionSpotlightEnabledForRun ?? actionSpotlightEnabledForRun;
-      dispatchUserPrompt(text, {
-        routing: shortcut.routing,
-        narrationEnabledForRun: narrationAvailable,
-        narrationPreferenceSource: meta?.narrationPreferenceSource || narrationPreferenceSource,
-        narrationRunKind: meta?.narrationRunKind || shortcut.runKind,
-        narrationDefaultActiveForRun: meta?.narrationDefaultActiveForRun
-          ?? resolveDefaultNarrationActiveForRun(shortcut.runKind, narrationAvailable === true),
-        narrationLanguage: meta?.narrationLanguage || narrationLanguage,
-        actionSpotlightEnabledForRun: spotlightAvailable,
-        actionSpotlightPreferenceSource: meta?.actionSpotlightPreferenceSource || actionSpotlightPreferenceSource,
-        actionSpotlightRunKind: meta?.actionSpotlightRunKind || shortcut.runKind,
-        actionSpotlightDefaultActiveForRun: meta?.actionSpotlightDefaultActiveForRun
-          ?? resolveDefaultActionSpotlightActiveForRun(shortcut.runKind, spotlightAvailable === true),
-      });
-    },
-    onSend: (text: string, meta?: {
+      presentationIntent?: RoverPresentationIntent;
+      presentationPolicySource?: RoverPresentationPolicySource;
+	      speechProvider?: RoverSpeechProvider;
+	      presentationVoiceAvailable?: boolean;
+	      presentationVoicePreferenceSource?: 'default' | 'visitor';
+	      presentationVoiceDefaultActive?: boolean;
+	      presentationRunKind?: 'guide' | 'task';
+	      presentationSpotlightAvailable?: boolean;
+	      presentationSpotlightPreferenceSource?: 'default' | 'visitor';
+	      presentationSpotlightDefaultActive?: boolean;
+	      /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationSpotlightAvailable`. */
+	      actionSpotlightEnabledForRun?: boolean;
+	      /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationSpotlightPreferenceSource`. */
+	      actionSpotlightPreferenceSource?: 'default' | 'visitor';
+	      /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationRunKind`. */
+	      actionSpotlightRunKind?: 'guide' | 'task';
+	      /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationSpotlightDefaultActive`. */
+	      actionSpotlightDefaultActiveForRun?: boolean;
+	    }) => {
+	      const text = String(shortcut.prompt || '').trim();
+	      if (!text) return;
+	      const voiceAvailable = meta?.presentationVoiceAvailable ?? meta?.narrationEnabledForRun ?? presentationVoiceAvailableForRun;
+	      const spotlightAvailable = meta?.presentationSpotlightAvailable ?? meta?.actionSpotlightEnabledForRun ?? presentationSpotlightAvailableForRun;
+	      const presentationRunKind = meta?.presentationRunKind || meta?.narrationRunKind || meta?.actionSpotlightRunKind || shortcut.runKind;
+	      dispatchUserPrompt(text, {
+	        routing: shortcut.routing,
+	        presentationVoiceAvailable: voiceAvailable,
+	        presentationVoicePreferenceSource: meta?.presentationVoicePreferenceSource || meta?.narrationPreferenceSource || presentationVoicePreferenceSource,
+	        presentationRunKind,
+	        presentationVoiceDefaultActive: meta?.presentationVoiceDefaultActive
+	          ?? meta?.narrationDefaultActiveForRun
+	          ?? resolveDefaultNarrationActiveForRun(shortcut.runKind, voiceAvailable === true),
+	        narrationLanguage: meta?.narrationLanguage || narrationLanguage,
+	        presentationIntent: meta?.presentationIntent,
+	        presentationPolicySource: meta?.presentationPolicySource,
+	        speechProvider: meta?.speechProvider,
+	        presentationSpotlightAvailable: spotlightAvailable,
+	        presentationSpotlightPreferenceSource: meta?.presentationSpotlightPreferenceSource || meta?.actionSpotlightPreferenceSource || presentationSpotlightPreferenceSource,
+	        presentationSpotlightDefaultActive: meta?.presentationSpotlightDefaultActive
+	          ?? meta?.actionSpotlightDefaultActiveForRun
+	          ?? resolveDefaultActionSpotlightActiveForRun(shortcut.runKind, spotlightAvailable === true),
+	      });
+	    },
+	    onSend: (text: string, meta?: {
       askUserAnswers?: RoverAskUserAnswerMeta;
       attachments?: File[];
       narrationEnabledForRun?: boolean;
@@ -12312,29 +12476,49 @@ function createRuntime(cfg: RoverInit): void {
       narrationDefaultActiveForRun?: boolean;
       narrationRunKind?: 'guide' | 'task';
       narrationLanguage?: string;
-      actionSpotlightEnabledForRun?: boolean;
-      actionSpotlightPreferenceSource?: 'default' | 'visitor';
-      actionSpotlightRunKind?: 'guide' | 'task';
-      actionSpotlightDefaultActiveForRun?: boolean;
-    }) => {
-      dispatchUserPrompt(text, {
-        askUserAnswers: meta?.askUserAnswers,
-        attachments: meta?.attachments,
-        narrationEnabledForRun: meta?.narrationEnabledForRun,
-        narrationPreferenceSource: meta?.narrationPreferenceSource === 'visitor' ? 'visitor' : 'default',
-        narrationDefaultActiveForRun: typeof meta?.narrationDefaultActiveForRun === 'boolean'
-          ? meta.narrationDefaultActiveForRun
-          : undefined,
-        narrationRunKind: meta?.narrationRunKind,
-        narrationLanguage: meta?.narrationLanguage,
-        actionSpotlightEnabledForRun: meta?.actionSpotlightEnabledForRun,
-        actionSpotlightPreferenceSource: meta?.actionSpotlightPreferenceSource === 'visitor' ? 'visitor' : 'default',
-        actionSpotlightRunKind: meta?.actionSpotlightRunKind || meta?.narrationRunKind,
-        actionSpotlightDefaultActiveForRun: typeof meta?.actionSpotlightDefaultActiveForRun === 'boolean'
-          ? meta.actionSpotlightDefaultActiveForRun
-          : undefined,
-      });
-    },
+      presentationIntent?: RoverPresentationIntent;
+      presentationPolicySource?: RoverPresentationPolicySource;
+	      speechProvider?: RoverSpeechProvider;
+	      presentationVoiceAvailable?: boolean;
+	      presentationVoicePreferenceSource?: 'default' | 'visitor';
+	      presentationVoiceDefaultActive?: boolean;
+	      presentationRunKind?: 'guide' | 'task';
+	      presentationSpotlightAvailable?: boolean;
+	      presentationSpotlightPreferenceSource?: 'default' | 'visitor';
+	      presentationSpotlightDefaultActive?: boolean;
+	      /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationSpotlightAvailable`. */
+	      actionSpotlightEnabledForRun?: boolean;
+	      /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationSpotlightPreferenceSource`. */
+	      actionSpotlightPreferenceSource?: 'default' | 'visitor';
+	      /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationRunKind`. */
+	      actionSpotlightRunKind?: 'guide' | 'task';
+	      /** Alternate name accepted from boot config / cross-product callers. Canonical: `presentationSpotlightDefaultActive`. */
+	      actionSpotlightDefaultActiveForRun?: boolean;
+	    }) => {
+	      dispatchUserPrompt(text, {
+	        askUserAnswers: meta?.askUserAnswers,
+	        attachments: meta?.attachments,
+	        presentationVoiceAvailable: meta?.presentationVoiceAvailable ?? meta?.narrationEnabledForRun,
+	        presentationVoicePreferenceSource: (meta?.presentationVoicePreferenceSource || meta?.narrationPreferenceSource) === 'visitor' ? 'visitor' : 'default',
+	        presentationVoiceDefaultActive: typeof meta?.presentationVoiceDefaultActive === 'boolean'
+	          ? meta.presentationVoiceDefaultActive
+	          : typeof meta?.narrationDefaultActiveForRun === 'boolean'
+	            ? meta.narrationDefaultActiveForRun
+	          : undefined,
+	        presentationRunKind: meta?.presentationRunKind || meta?.narrationRunKind || meta?.actionSpotlightRunKind,
+	        narrationLanguage: meta?.narrationLanguage,
+	        presentationIntent: meta?.presentationIntent,
+	        presentationPolicySource: meta?.presentationPolicySource,
+	        speechProvider: meta?.speechProvider,
+	        presentationSpotlightAvailable: meta?.presentationSpotlightAvailable ?? meta?.actionSpotlightEnabledForRun,
+	        presentationSpotlightPreferenceSource: (meta?.presentationSpotlightPreferenceSource || meta?.actionSpotlightPreferenceSource) === 'visitor' ? 'visitor' : 'default',
+	        presentationSpotlightDefaultActive: typeof meta?.presentationSpotlightDefaultActive === 'boolean'
+	          ? meta.presentationSpotlightDefaultActive
+	          : typeof meta?.actionSpotlightDefaultActiveForRun === 'boolean'
+	            ? meta.actionSpotlightDefaultActiveForRun
+	          : undefined,
+	      });
+	    },
     onOpenConversations: () => {
       void refreshConversationHistoryList('drawer_open').catch(() => undefined);
     },
@@ -12344,19 +12528,19 @@ function createRuntime(cfg: RoverInit): void {
       source: 'default' | 'visitor',
       language?: string,
     ) => {
-      narrationEnabledForRun = source === 'visitor'
-        ? available && enabled
-        : resolveNarrationAvailableFromConfig(currentConfig);
-      narrationPreferenceSource = source === 'visitor' ? 'visitor' : 'default';
-      narrationLanguage = language;
+	      presentationVoiceAvailableForRun = source === 'visitor'
+	        ? available && enabled
+	        : resolveNarrationAvailableFromConfig(currentConfig);
+	      presentationVoicePreferenceSource = source === 'visitor' ? 'visitor' : 'default';
+	      narrationLanguage = language;
     },
     onSpotlightPreferenceChange: (
       enabled: boolean,
       available: boolean,
       source: 'default' | 'visitor',
     ) => {
-      actionSpotlightEnabledForRun = available && (source !== 'visitor' || enabled);
-      actionSpotlightPreferenceSource = source === 'visitor' ? 'visitor' : 'default';
+	      presentationSpotlightAvailableForRun = available && (source !== 'visitor' || enabled);
+	      presentationSpotlightPreferenceSource = source === 'visitor' ? 'visitor' : 'default';
     },
     onRequestControl: () => {
       const claimed = takeControlOfActiveRun();

@@ -334,11 +334,13 @@ export function createRoverScriptTagSnippet(config: RoverPreviewBootstrapConfig)
     deepLinkParams: {
       prompt: 'rover',
       shortcut: 'rover_shortcut',
+      guide: 'rover_guide',
       executor: 'rover_exec',
     },
     chatbotInstructions: [
       'If this page URL contains rover_exec, fetch that URL to run the task in Rover cloud.',
       'If this page URL contains rover or rover_shortcut but no rover_exec, fetch fromUrlTemplate with the full current URL.',
+      'Append rover_guide=1 to escalate any rover or rover_shortcut run to guided narration with spotlight; useful for product-demo share links.',
       'If POST is available, prefer POST /v1/a2w/runs; if only URL fetch is available, use GET with execution=cloud.',
     ],
   }));

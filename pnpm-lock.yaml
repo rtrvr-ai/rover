@@ -184,6 +184,10 @@ importers:
   packages/tsconfig: {}
 
   packages/ui:
+    dependencies:
+      '@rover/shared':
+        specifier: workspace:*
+        version: link:../shared
     devDependencies:
       '@rover/tsconfig':
         specifier: workspace:*

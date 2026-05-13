@@ -108,6 +108,7 @@ import { createFilamentSystem } from './components/filaments.js';
 import { createLiveStack } from './components/live-stack.js';
 import { createActionSpotlightSystem, deriveElementLabel, isActionCueForLocalTab } from './components/action-spotlight.js';
 import { createTimelineNarrationScheduler } from './timeline-narration.js';
+import { resolveRoverPresentationPolicy } from '@rover/shared/lib/utils/presentation-policy.js';
 
 // Style imports
 import { baseStyles } from './styles/base.css.js';
@@ -270,6 +271,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     return narrationPreference.source !== 'visitor' || isNarrationEnabled;
   }
   function shouldSpeakNarrationEvent(event: RoverTimelineEvent): boolean {
+    if (event.speechProvider === 'none') return false;
     return resolveNarrationEventSpeechDecision({
       locallySupported: allowNarrationToggle,
       preferenceSource: narrationPreference.source,
@@ -353,22 +355,43 @@ export function mountWidget(opts: MountOptions): RoverUi {
     opts.onNarrationPreferenceChange?.(isNarrationEnabled, allowNarrationToggle, narrationPreference.source, resolveEffectiveNarrationLanguage());
   }
 
-  function buildNarrationSendMeta(
-    runKind?: RoverShortcut['runKind'],
-    options?: { voiceStarted?: boolean },
+  function presentationPolicySourceForWire(
+    source?: 'visitor' | 'shortcut' | 'query' | 'api' | 'site_default' | 'voice' | 'heuristic' | 'default',
+  ): 'visitor' | 'shortcut' | 'query' | 'api' | 'site_default' | 'voice' | 'heuristic' | undefined {
+    return source && source !== 'default' ? source : undefined;
+  }
+
+  function explicitRunKindSourceForPolicy(
+    source?: 'visitor' | 'shortcut' | 'query' | 'api' | 'site_default' | 'voice' | 'heuristic' | 'default',
+  ): 'shortcut' | 'query' | 'api' | 'site_default' | undefined {
+    return source === 'shortcut' || source === 'query' || source === 'api' || source === 'site_default'
+      ? source
+      : undefined;
+  }
+
+  function buildPresentationSendMeta(
+    options?: {
+      shortcutRunKind?: RoverShortcut['runKind'];
+      inheritedRunKind?: RoverShortcut['runKind'];
+      inheritedPolicySource?: 'visitor' | 'shortcut' | 'query' | 'api' | 'site_default' | 'voice' | 'heuristic' | 'default';
+      voiceStarted?: boolean;
+      userInput?: string;
+      reuseExistingPolicy?: boolean;
+    },
   ): {
-    narrationEnabledForRun: boolean;
-    narrationPreferenceSource: 'default' | 'visitor';
-    narrationDefaultActiveForRun: boolean;
-    narrationRunKind?: 'guide' | 'task';
+    presentationVoiceAvailable: boolean;
+    presentationVoicePreferenceSource: 'default' | 'visitor';
+    presentationVoiceDefaultActive: boolean;
+    presentationRunKind?: 'guide' | 'task';
     narrationLanguage?: string;
-    actionSpotlightEnabledForRun: boolean;
-    actionSpotlightPreferenceSource: 'default' | 'visitor';
-    actionSpotlightRunKind?: 'guide' | 'task';
-    actionSpotlightDefaultActiveForRun: boolean;
+    presentationIntent?: 'off' | 'task' | 'guide';
+    presentationPolicySource?: 'visitor' | 'shortcut' | 'query' | 'api' | 'site_default' | 'voice' | 'heuristic';
+    speechProvider?: 'elevenlabs' | 'browser' | 'none';
+    presentationSpotlightAvailable: boolean;
+    presentationSpotlightPreferenceSource: 'default' | 'visitor';
+    presentationSpotlightDefaultActive: boolean;
   } {
     const allowedKinds = experience.motion?.actionSpotlightRunKinds;
-    const runKindAllowed = !runKind || !allowedKinds || allowedKinds.length === 0 || allowedKinds.includes(runKind);
     const voiceStartedNarrationActive = options?.voiceStarted === true && resolveVoiceStartedNarrationActive({
       config: experience,
       locallySupported: allowNarrationToggle,
@@ -381,27 +404,49 @@ export function mountWidget(opts: MountOptions): RoverUi {
       preferenceSource: narrationPreference.source,
       visitorEnabled: isNarrationEnabled,
     });
-    const narrationDefaultActiveForRun = voiceStartedNarrationActive || (narrationAvailableForRun && (
-      narrationPreference.source === 'visitor'
-        ? isNarrationEnabled
-        : resolveNarrationDefaultActiveForRun(experience, runKind)
-    ));
     const spotlightAvailableForRun = allowSpotlightToggle && (spotlightVisitorSource !== 'visitor' || isActionSpotlightEnabled);
-    const spotlightDefaultActiveForRun = spotlightAvailableForRun && (
-      spotlightVisitorSource === 'visitor'
-        ? isActionSpotlightEnabled
-        : isActionSpotlightEnabled && runKindAllowed
-    );
+    const shortcutRunKind = options?.shortcutRunKind === 'guide' || options?.shortcutRunKind === 'task'
+      ? options.shortcutRunKind
+      : undefined;
+    const inheritedRunKind = options?.inheritedRunKind === 'guide' || options?.inheritedRunKind === 'task'
+      ? options.inheritedRunKind
+      : undefined;
+    const inheritedPolicySource = options?.inheritedPolicySource;
+    const policy = resolveRoverPresentationPolicy({
+      userInput: options?.reuseExistingPolicy ? undefined : options?.userInput,
+      shortcutRunKind,
+      explicitRunKind: shortcutRunKind ? undefined : inheritedRunKind,
+      explicitRunKindSource: shortcutRunKind ? undefined : explicitRunKindSourceForPolicy(inheritedPolicySource),
+      voiceStarted: options?.voiceStarted === true,
+      narrationOwnerEnabled: experience.audio?.narration?.enabled !== false,
+      narrationAvailable: narrationAvailableForRun,
+      narrationDefaultMode: experience.audio?.narration?.defaultMode,
+      narrationVisitorSource: narrationPreference.source,
+      narrationVisitorEnabled: isNarrationEnabled,
+      actionSpotlightOwnerEnabled: experience.motion?.actionSpotlight !== false,
+      actionSpotlightAvailable: spotlightAvailableForRun,
+      actionSpotlightAllowedRunKinds: allowedKinds,
+      actionSpotlightVisitorSource: spotlightVisitorSource,
+      actionSpotlightVisitorEnabled: isActionSpotlightEnabled,
+      naturalVoiceNarration: runtimeEntitlements.naturalVoiceNarration === true,
+      browserVoiceSupported: true,
+    });
+    const resolvedRunKind = policy.runKind;
+    const policySource = options?.reuseExistingPolicy && inheritedPolicySource
+      ? inheritedPolicySource
+      : policy.source;
     return {
-      narrationEnabledForRun: narrationAvailableForRun,
-      narrationPreferenceSource: narrationPreference.source,
-      narrationDefaultActiveForRun,
-      ...(runKind === 'guide' || runKind === 'task' ? { narrationRunKind: runKind } : {}),
+      presentationVoiceAvailable: narrationAvailableForRun,
+      presentationVoicePreferenceSource: narrationPreference.source,
+      presentationVoiceDefaultActive: policy.voiceActive || voiceStartedNarrationActive,
+      ...(resolvedRunKind === 'guide' || resolvedRunKind === 'task' ? { presentationRunKind: resolvedRunKind } : {}),
       narrationLanguage: resolveEffectiveNarrationLanguage(),
-      actionSpotlightEnabledForRun: spotlightAvailableForRun,
-      actionSpotlightPreferenceSource: spotlightVisitorSource,
-      ...(runKind === 'guide' || runKind === 'task' ? { actionSpotlightRunKind: runKind } : {}),
-      actionSpotlightDefaultActiveForRun: spotlightDefaultActiveForRun,
+      presentationIntent: policy.presentationIntent,
+      ...(presentationPolicySourceForWire(policySource) ? { presentationPolicySource: presentationPolicySourceForWire(policySource) } : {}),
+      speechProvider: policy.speechProvider,
+      presentationSpotlightAvailable: spotlightAvailableForRun,
+      presentationSpotlightPreferenceSource: spotlightVisitorSource,
+      presentationSpotlightDefaultActive: policy.spotlightActive,
     };
   }
 
@@ -535,6 +580,15 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
   // Track runKind of the current run for spotlight gating. Undefined for free-text runs.
   let currentRunKind: 'guide' | 'task' | undefined = undefined;
+  let currentPresentationPolicySource: 'visitor' | 'shortcut' | 'query' | 'api' | 'site_default' | 'voice' | 'heuristic' | undefined = undefined;
+
+  function rememberResolvedPresentationPolicy(
+    sendMeta: { presentationRunKind?: 'guide' | 'task'; narrationRunKind?: 'guide' | 'task'; actionSpotlightRunKind?: 'guide' | 'task'; presentationPolicySource?: typeof currentPresentationPolicySource },
+    fallbackRunKind?: 'guide' | 'task',
+  ): void {
+    currentRunKind = sendMeta.presentationRunKind || sendMeta.narrationRunKind || sendMeta.actionSpotlightRunKind || fallbackRunKind;
+    currentPresentationPolicySource = sendMeta.presentationPolicySource;
+  }
 
   // Visitor-side action-spotlight preference (mirrors narration toggle pattern).
   const spotlightStorageKey = `rv-spotlight-pref-${opts.siteId || window.location.hostname || 'default'}`;
@@ -652,8 +706,11 @@ export function mountWidget(opts: MountOptions): RoverUi {
   const shortcutsComp = createShortcuts(agentName, visitorName);
   function handleShortcutClick(shortcut: RoverShortcut): void {
     unlockNarration();
-    currentRunKind = shortcut.runKind === 'guide' || shortcut.runKind === 'task' ? shortcut.runKind : undefined;
-    opts.onShortcutClick?.(shortcut, buildNarrationSendMeta(currentRunKind));
+    const shortcutRunKind = shortcut.runKind === 'guide' || shortcut.runKind === 'task' ? shortcut.runKind : undefined;
+    currentRunKind = shortcutRunKind;
+    const sendMeta = buildPresentationSendMeta({ shortcutRunKind, userInput: shortcut.prompt || shortcut.label });
+    rememberResolvedPresentationPolicy(sendMeta, shortcutRunKind);
+    opts.onShortcutClick?.(shortcut, sendMeta);
   }
   let currentShortcuts: RoverShortcut[] = opts.shortcuts?.slice(0, SHORTCUTS_RENDER_LIMIT) || [];
   if (currentShortcuts.length > 0) {
@@ -665,8 +722,11 @@ export function mountWidget(opts: MountOptions): RoverUi {
   const commandBar = createCommandBar({
     onSelect: (shortcut) => {
       unlockNarration();
-      currentRunKind = shortcut.runKind === 'guide' || shortcut.runKind === 'task' ? shortcut.runKind : undefined;
-      opts.onShortcutClick?.(shortcut, buildNarrationSendMeta(currentRunKind));
+      const shortcutRunKind = shortcut.runKind === 'guide' || shortcut.runKind === 'task' ? shortcut.runKind : undefined;
+      currentRunKind = shortcutRunKind;
+      const sendMeta = buildPresentationSendMeta({ shortcutRunKind, userInput: shortcut.prompt || shortcut.label });
+      rememberResolvedPresentationPolicy(sendMeta, shortcutRunKind);
+      opts.onShortcutClick?.(shortcut, sendMeta);
     },
     onClose: () => { /* no-op, just closes */ },
   });
@@ -1178,12 +1238,15 @@ export function mountWidget(opts: MountOptions): RoverUi {
     const submittedFromVoice = !!composerVoiceOriginText && sanitizeText(message) === composerVoiceOriginText;
     unlockNarration();
     currentRunKind = undefined;
+    currentPresentationPolicySource = undefined;
     setTaskSuggestion({ visible: false });
     latestTaskTitle = text || (attachments.length > 0 ? `Review ${attachments.length === 1 ? attachments[0].name : `${attachments.length} attachments`}` : latestTaskTitle);
     taskStartedAt = Date.now();
+    const sendMeta = buildPresentationSendMeta({ voiceStarted: submittedFromVoice, userInput: message });
+    rememberResolvedPresentationPolicy(sendMeta);
     opts.onSend(message, {
       ...(attachments.length > 0 ? { attachments } : {}),
-      ...buildNarrationSendMeta(currentRunKind, { voiceStarted: submittedFromVoice }),
+      ...sendMeta,
     });
     composerComp.setText('');
     composerVoiceOriginText = '';
@@ -1349,10 +1412,16 @@ export function mountWidget(opts: MountOptions): RoverUi {
     const keys = currentQuestionPrompt.questions.map(q => q.key);
     const rawText = rawLines.length ? rawLines.join('\n') : keys.map(k => `${k}: (no answer provided)`).join('\n');
     const attachments = composerComp.getPendingAttachments();
+    const sendMeta = buildPresentationSendMeta({
+      inheritedRunKind: currentRunKind,
+      inheritedPolicySource: currentPresentationPolicySource,
+      reuseExistingPolicy: true,
+    });
+    rememberResolvedPresentationPolicy(sendMeta, currentRunKind);
     opts.onSend(rawText, {
       askUserAnswers: { answersByKey, rawText, keys },
       attachments: attachments.length ? attachments : undefined,
-      ...buildNarrationSendMeta(currentRunKind),
+      ...sendMeta,
     });
     composerComp.clearAttachments();
   });
@@ -1808,6 +1877,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       composerComp.setSendAsStop(false, () => {});
       if (!options?.preserveNarration) cancelNarration();
       currentRunKind = undefined;
+      currentPresentationPolicySource = undefined;
 
       waitingForFirstModelSignal = false;
       filamentSystem.clearAll();
@@ -2076,7 +2146,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
         const shouldSpotlight = resolveActionSpotlightDecision({
           visitorSource: spotlightVisitorSource,
           visitorEnabled: isActionSpotlightEnabled,
-          stepOverride: displayEvent.actionSpotlightActive,
+          stepOverride: displayEvent.spotlightActive ?? displayEvent.actionSpotlightActive,
           currentRunKind,
           allowedRunKinds: experience.motion?.actionSpotlightRunKinds,
         });
