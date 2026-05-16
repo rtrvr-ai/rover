@@ -226,6 +226,15 @@ export type RoverUi = {
   setScrollPosition: (position: number) => void;
   showPausedTaskBanner: (task: { taskId: string; rootUserInput: string }) => void;
   hidePausedTaskBanner: () => void;
+  /**
+   * Mid-run "steering" feedback lifecycle. The SDK calls markFeedbackQueued
+   * optimistically when the visitor sends; markFeedbackApplied / Dropped
+   * fire when the worker emits the corresponding ack event. Optional so the
+   * UI can ship without breaking older SDK consumers.
+   */
+  markFeedbackQueued?: (id: string, text: string, source: 'text' | 'voice') => void;
+  markFeedbackApplied?: (id: string, atStepIndex: number) => void;
+  markFeedbackDropped?: (id: string, reason: string) => void;
 };
 
 export type RoverExperienceMode = 'guided' | 'minimal';
@@ -336,6 +345,14 @@ export type MountOptions = {
   resolveElement?: (elementId: number) => Element | null;
   getLocalLogicalTabId?: () => number | undefined;
   onSend: (text: string, meta?: RoverPresentationRunMeta) => void;
+  /**
+   * Mid-run steering: when the visitor submits while a run is active (and no
+   * ask_user question is showing), the UI routes the submission here instead
+   * of `onSend`. The host SDK forwards it as a `user_feedback` postMessage
+   * to the worker. The UI itself manages the optimistic "Queued" card via
+   * `markFeedbackQueued` once this callback is invoked.
+   */
+  onSendFeedback?: (text: string, opts: { source: 'text' | 'voice' }) => void;
   onVoiceTelemetry?: (event: RoverVoiceTelemetryEvent, payload?: Record<string, unknown>) => void;
   onNarrationPreferenceChange?: (enabled: boolean, available: boolean, source: 'default' | 'visitor', language?: string) => void;
   onSpotlightPreferenceChange?: (enabled: boolean, available: boolean, source: 'default' | 'visitor') => void;

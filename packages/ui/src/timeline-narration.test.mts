@@ -108,3 +108,31 @@ test('a planner-only burst (all normal priority) does NOT trigger catch-up', () 
     `unexpected catch-up on normal-only burst: ${JSON.stringify(spoken)}`,
   );
 });
+
+test('tool_result events with narration text ARE spoken (regression: were silently dropped at scheduler entry)', () => {
+  const { scheduler, spoken, flush } = makeScheduler();
+  // Worker-derived result summary (deriveResponseNarrationFromOutput).
+  scheduler.scheduleEvent({
+    kind: 'tool_result',
+    actionCue: { kind: 'send_email', primaryElementId: undefined, targetLabel: undefined },
+    narration: 'Email sent successfully.',
+    narrationActive: true,
+    speechProvider: 'browser',
+  } as any);
+  flush();
+  assert.ok(
+    spoken.includes('Email sent successfully.'),
+    `expected tool_result narration to be spoken, got: ${JSON.stringify(spoken)}`,
+  );
+});
+
+test('tool_result without narration text is silently ignored (no speech, no crash)', () => {
+  const { scheduler, spoken, flush } = makeScheduler();
+  scheduler.scheduleEvent({
+    kind: 'tool_result',
+    actionCue: { kind: 'click', primaryElementId: undefined, targetLabel: undefined },
+    // No narration / narrationActive — most tool_result events are like this.
+  } as any);
+  flush();
+  assert.equal(spoken.length, 0, `expected no narration for empty tool_result, got: ${JSON.stringify(spoken)}`);
+});

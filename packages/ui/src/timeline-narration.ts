@@ -342,10 +342,18 @@ export function createTimelineNarrationScheduler(
   return {
     scheduleEvent(event: RoverTimelineEvent): void {
       try {
-        if (disposed || event.kind === 'tool_result' || !eventGate(event)) return;
+        if (disposed || !eventGate(event)) return;
         const text = resolveTimelineNarrationText(event);
         if (!text) return;
         if (event.kind === 'tool_start') {
+          appendToolPresentation(event, text);
+          return;
+        }
+        if (event.kind === 'tool_result') {
+          // Tool-result narrations (visitor-visible result summaries derived by
+          // the worker in actionUx.afterTool) route through the same tool-
+          // presentation queue as tool_start so same-kind collapse, budget
+          // caps, and catch-up logic apply uniformly.
           appendToolPresentation(event, text);
           return;
         }

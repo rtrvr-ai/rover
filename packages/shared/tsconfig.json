@@ -22,6 +22,7 @@
     "lib/types/index.ts",
     "lib/types/artifact-types.ts",
     "lib/types/workflow-types.ts",
-    "lib/types/agent-types.ts"
+    "lib/types/agent-types.ts",
+    "lib/types/rover-feedback.ts"
   ]
 }

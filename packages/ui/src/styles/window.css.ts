@@ -1082,6 +1082,48 @@ export const windowStyles = `
     .sendBtn.stopMode:active {
       transform: scale(0.96);
     }
+
+    /* ── Cancel button (steer-mode only; hidden by default) ──
+       Sized smaller than Send (36×36) and styled subtler so Send remains
+       the visually-dominant primary action. Destructive intent surfaces on
+       hover (red tint) without screaming at the visitor in the resting
+       state. mount.ts toggles display via setCancelVisible. */
+    .composerCancelBtn {
+      border: 1.5px solid var(--rv-border-strong);
+      background: rgba(255, 255, 255, 0.9);
+      color: var(--rv-text-secondary, #6b7280);
+      border-radius: var(--rv-radius-md);
+      height: 36px;
+      width: 36px;
+      min-width: 36px;
+      padding: 0;
+      cursor: pointer;
+      display: none;
+      place-items: center;
+      transition: transform 200ms var(--rv-ease-spring), box-shadow 200ms ease, border-color 150ms ease, background 150ms ease, color 150ms ease;
+      box-shadow: 0 2px 6px rgba(19, 30, 43, 0.06);
+    }
+    .composerCancelBtn.visible {
+      display: grid;
+    }
+    .composerCancelBtn:hover {
+      transform: translateY(-1px);
+      border-color: rgba(220, 38, 38, 0.4);
+      color: rgb(220, 38, 38);
+      background: rgba(254, 242, 242, 0.95);
+      box-shadow: 0 4px 10px rgba(220, 38, 38, 0.12);
+    }
+    .composerCancelBtn:active {
+      transform: scale(0.94);
+    }
+    .composerCancelBtn:focus-visible {
+      outline: 2px solid rgba(220, 38, 38, 0.5);
+      outline-offset: 2px;
+    }
+    .composerCancelBtn svg {
+      width: 14px;
+      height: 14px;
+    }
     .sendBtn.stopMode svg {
       width: 16px;
       height: 16px;
