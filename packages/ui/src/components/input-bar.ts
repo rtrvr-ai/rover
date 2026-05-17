@@ -84,6 +84,22 @@ export function createInputBar(opts: InputBarOptions): InputBarComponent {
     },
     setRunning(running: boolean) {
       bar.classList.toggle('running', running);
+      // Swap the close button's icon + label to communicate the right
+      // semantic for the current state. While idle the × means "close —
+      // I'm done." While running it would visually collide with the
+      // composer's Stop button (also a × in the prior design); switching
+      // to a chevron-down makes it unmistakable that this action
+      // MINIMIZES (tucks the widget away while work continues), and the
+      // stop-square Cancel button is the destructive affordance.
+      if (running) {
+        // innerHTML replaces any existing text node — no separate clear needed.
+        closeBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
+        closeBtn.setAttribute('aria-label', 'Minimize to launcher — task keeps running');
+      } else {
+        // textContent replaces any existing SVG element — no separate clear needed.
+        closeBtn.textContent = '×';
+        closeBtn.setAttribute('aria-label', 'Close input bar');
+      }
     },
     setExpanded(expanded: boolean) {
       expandBtn.innerHTML = expanded

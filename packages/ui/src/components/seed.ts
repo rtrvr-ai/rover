@@ -22,6 +22,14 @@ export type SeedComponent = {
   video: HTMLVideoElement | null;
   update: (experience: RoverExperienceConfig) => void;
   setMood: (mood: RoverMood) => void;
+  /**
+   * Toggle a `.running` class on the launcher so the seed renders a subtle
+   * pulse while a task is in flight after the visitor minimized the widget.
+   * Without this, a minimized + running task gives the visitor no signal
+   * that work is happening in the background — risk of "did I cancel it?"
+   * confusion.
+   */
+  setRunning: (running: boolean) => void;
   setMuted: (muted: boolean) => void;
   setGreeting: (text: string | null) => void;
   applyPosition: () => void;
@@ -325,6 +333,10 @@ export function createSeed(opts: SeedOptions): SeedComponent {
     // Mood is applied via wrapper data attribute, not directly on seed
   }
 
+  function setRunning(running: boolean): void {
+    launcher.classList.toggle('running', running);
+  }
+
   function setMuted(muted: boolean): void {
     launcherMediaState.setMuted(muted);
   }
@@ -397,6 +409,7 @@ export function createSeed(opts: SeedOptions): SeedComponent {
     video: launcherVideo,
     update,
     setMood,
+    setRunning,
     setMuted,
     setGreeting,
     applyPosition,

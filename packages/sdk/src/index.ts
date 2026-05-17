@@ -466,6 +466,7 @@ export type RoverEventName =
   | 'tab_event_conflict_retry'
   | 'tab_event_conflict_exhausted'
   | 'checkpoint_token_missing'
+  | 'diagnostic'
   | 'open'
   | 'close';
 
@@ -8513,6 +8514,15 @@ function handleWorkerMessage(msg: any): void {
     for (const id of payload.ids) {
       if (typeof id === 'string' && id) ui?.markFeedbackApplied?.(id, stepIndex);
     }
+    return;
+  }
+
+  if (msg.type === 'worker_diagnostic') {
+    // Worker-side diagnostic snapshots (presentation flags at run start,
+    // etc.) routed via the public `diagnostic` event. Silent when no
+    // listener is wired — no console pollution on customer embeds. Hosts
+    // who want visibility do `rover.on('diagnostic', payload => …)`.
+    emit('diagnostic', msg.payload);
     return;
   }
 

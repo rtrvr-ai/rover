@@ -815,8 +815,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
       particleSystem.setMode(pulseActive ? 'pulse' : 'idle');
     }
     pulseBadge.style.display = pulseActive ? 'flex' : 'none';
-    // Sync bar running indicator
+    // Sync bar + seed running indicators so a minimized + running task
+    // still pulses in the background.
     inputBar.setRunning(isRunning);
+    seed.setRunning(isRunning);
   }
 
   // ── Tool Ripple Helper ──
@@ -1959,6 +1961,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
       // its tool steps render inside a collapsed trace and stay invisible.
       feedComp.setTraceExpanded(true, experience.stream?.maxVisibleLiveCards);
       inputBar.setRunning(true);
+      // Soft pulse on the seed so the visitor knows work is happening even
+      // when they minimize the widget. Paired with the cleared pulse on
+      // setRunning(false) below.
+      seed.setRunning(true);
       // In steer mode (host wired onSendFeedback), keep Send as Send — the
       // visitor needs it to deliver mid-run guidance. Surface a separate,
       // one-click Cancel button to the left of Send so cancel stays
@@ -1974,6 +1980,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
       // Hide live stack
       liveStack.hide();
       inputBar.setRunning(false);
+      seed.setRunning(false);
       composerComp.setSendAsStop(false, () => {});
       composerComp.setCancelVisible(false, () => {});
       if (!options?.preserveNarration) cancelNarration();
@@ -1983,6 +1990,17 @@ export function mountWidget(opts: MountOptions): RoverUi {
       waitingForFirstModelSignal = false;
       filamentSystem.clearAll();
       try { actionSpotlightSystem.clearAll(); } catch { /* spotlight is best-effort */ }
+
+      // On natural run end (transitioning from running → not), collapse the
+      // workflow trace and clear the live stack. The final response is what
+      // the visitor wants to read on completion, not the step trail — they
+      // can hit "Show trace" to expand. This used to live in a dead
+      // addTimelineEvent branch keyed on a "Run completed" timeline event
+      // that the SDK never emits.
+      if (wasRunning) {
+        feedComp.setTraceExpanded(false, experience.stream?.maxVisibleLiveCards);
+        try { liveStack.clear(); } catch { /* live stack clear is best-effort */ }
+      }
 
       // Open canvas with results if task completed and panel isn't already open
       if ((wasRunning || options?.openOnStop === true) && stateMachine.getState() !== 'window') {
@@ -2227,17 +2245,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
       captureArtifactFromBlocks(displayEvent.detailBlocks);
       let shouldScheduleTimelineNarration = true;
       if (displayEvent.kind === 'thought' && isRunning && waitingForFirstModelSignal) { waitingForFirstModelSignal = false; syncProcessingIndicator(); }
-      if ((displayEvent.title || '').toLowerCase() === 'run completed') {
-        // Collapse the trace on completion. Paired with the re-expand in
-        // setRunning(true) — a follow-up run must re-open it or its live
-        // progress is invisible. Keep these two in sync.
-        feedComp.setTraceExpanded(false, experience.stream?.maxVisibleLiveCards);
-        try { actionSpotlightSystem.clearAll(); } catch { /* spotlight is best-effort */ }
-        // Drop the live-stack's cards so a follow-up run doesn't flash stale
-        // cards from this run when setRunning(true) calls liveStack.show().
-        try { liveStack.clear(); } catch { /* live stack clear is best-effort */ }
-        shouldScheduleTimelineNarration = false;
-      }
+      // Run-end cleanup (trace collapse, live-stack clear, spotlight clear)
+      // happens in setRunning(false) — not here. The SDK never emits a
+      // 'Run completed' timeline event, so the prior branch keyed on that
+      // title was dead code.
       const status = displayEvent.status || (displayEvent.kind === 'error' ? 'error' : displayEvent.kind === 'tool_result' ? 'success' : 'pending');
       if (status === 'error') stateMachine.setMood('error', 2200);
       else if (status === 'success') stateMachine.setMood('success', 1200);

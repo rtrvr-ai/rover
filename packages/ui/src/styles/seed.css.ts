@@ -79,6 +79,28 @@ export const seedStyles = `
       border-color: rgba(220, 38, 38, 0.28);
     }
 
+    /* ── Running indicator on the seed (minimized while task in flight) ──
+       When the visitor minimizes the widget mid-run, the launcher pulses
+       gently so they can see at a glance that work is happening in the
+       background. Soft, slow, low-amplitude — never flashes or distracts. */
+    @keyframes roverSeedRunningPulse {
+      0%, 100% {
+        box-shadow: 0 14px 38px rgba(255, 76, 0, 0.18), 0 0 0 0 rgba(255, 76, 0, 0.28);
+      }
+      50% {
+        box-shadow: 0 14px 38px rgba(255, 76, 0, 0.24), 0 0 0 6px rgba(255, 76, 0, 0);
+      }
+    }
+    .launcher.running {
+      animation: roverSeedRunningPulse 1.6s ease-in-out infinite;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .launcher.running {
+        animation: none;
+        box-shadow: 0 14px 38px rgba(255, 76, 0, 0.24);
+      }
+    }
+
     .launcherFallback {
       font-size: 14px;
       font-weight: 700;
