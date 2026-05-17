@@ -40,7 +40,7 @@ One product, two planes:
 
 ### For websites
 
-Drop in Rover and users get an assistant that can actually use the page.
+Drop in Rover and users get an assistant that can actually use the page. While a task is running, visitors can steer it mid-flight — typing or voice — without restarting. See [SDK docs / Real-Time Steering](packages/sdk/README.md#real-time-steering).
 
 ### For AI agents
 

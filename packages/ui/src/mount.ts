@@ -108,6 +108,12 @@ import { createFilamentSystem } from './components/filaments.js';
 import { createLiveStack } from './components/live-stack.js';
 import { createActionSpotlightSystem, deriveElementLabel, isActionCueForLocalTab } from './components/action-spotlight.js';
 import { createTimelineNarrationScheduler } from './timeline-narration.js';
+import { resolveSubmittedFromVoice } from './voice-origin.js';
+import {
+  createFeedbackQueueModel,
+  describeFeedbackStatus,
+  type FeedbackQueueModel,
+} from './feedback-queue.js';
 import { resolveRoverPresentationPolicy } from '@rover/shared/lib/utils/presentation-policy.js';
 
 // Style imports
@@ -944,6 +950,11 @@ export function mountWidget(opts: MountOptions): RoverUi {
     const supported = voiceProvider.isSupported();
     composerComp.setVoiceVisible(enabled && supported);
     composerComp.setVoiceActive(voiceState === 'listening');
+    // Pause the rotating example placeholder while voice is listening — the
+    // textarea may be empty for the moment before the first transcript chunk
+    // arrives, and we don't want a random "Find the best option here…"
+    // example flashing on top of the live dictation indicator.
+    composerComp.setPlaceholderRotationPaused?.(voiceState === 'listening');
     if (voiceState === 'error' && voiceErrorMessage) {
       composerComp.setStatusMessage(voiceErrorMessage, 'error');
       return;
@@ -1057,6 +1068,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
     if (error.code === 'aborted' || error.code === 'no_speech' || error.code === 'unknown') return;
     clearVoiceStopTimer(); clearVoiceGraceTimer(); clearVoiceRestartTimer();
     voiceState = 'error'; voiceErrorMessage = error.message; voiceStopReason = 'error';
+    // A failed dictation must not leave a stale voice-origin signal — it would
+    // false-positive submittedFromVoice on whatever the visitor sends next.
+    composerVoiceOriginText = '';
     syncVoiceUi(); emitVoiceErrorTelemetry(error);
   }
 
@@ -1113,7 +1127,11 @@ export function mountWidget(opts: MountOptions): RoverUi {
       emitVoiceTelemetry('voice_stopped', buildVoiceTelemetryContext({ reason: stoppedReason, stopReason: stoppedReason, requested, errorCode: lastError?.code }));
       const shouldSubmit = pendingVoiceSubmit;
       pendingVoiceSubmit = false; voiceStopReason = null; resetVoiceDraftState(); resetVoiceSessionState(); syncVoiceUi();
-      if (shouldSubmit) submitComposerDraft();
+      // shouldSubmit is only true when the visitor pressed Send while dictation
+      // was still listening — an unambiguous voice submission. Flag it
+      // explicitly so voiceStarted doesn't depend on fragile textarea/transcript
+      // string equality (which diverges on interim chunks / trailing space).
+      if (shouldSubmit) submitComposerDraft({ fromVoice: true });
     },
     onError: handleVoiceError,
   };
@@ -1226,16 +1244,68 @@ export function mountWidget(opts: MountOptions): RoverUi {
   let canComposeInObserver = false;
   let currentQuestionPrompt: { questions: RoverAskUserQuestion[] } | null = null;
   let questionPromptSignature: string | null = null;
+  // Mid-run steering queue: the UI-side mirror of the worker's feedback
+  // buffer. The SDK marks items Queued optimistically on submission; the
+  // worker's feedback_applied / _dropped events transition them to terminal.
+  const feedbackQueue: FeedbackQueueModel = createFeedbackQueueModel();
+  function renderFeedbackCard(id: string): void {
+    const card = feedbackQueue.get(id);
+    if (!card) return;
+    const statusText = describeFeedbackStatus(card);
+    const eventStatus: 'pending' | 'success' | 'error' =
+      card.status === 'applied' ? 'success'
+        : card.status === 'dropped' ? 'error'
+          : 'pending';
+    feedComp.addTimelineEvent({
+      id: `feedback:${id}`,
+      kind: 'status',
+      title: card.source === 'voice' ? '🎤 Your guidance' : 'Your guidance',
+      detail: `${card.text}\n— ${statusText}`,
+      status: eventStatus,
+    });
+    // The live-stack also renders timeline events; pushing here gives the
+    // visitor a card in the compressed UI for symmetry with the feed.
+    liveStack.addTimelineEvent({
+      id: `feedback:${id}`,
+      kind: 'status',
+      title: card.source === 'voice' ? '🎤 You' : 'You',
+      detail: `${card.text} — ${statusText}`,
+      status: eventStatus,
+    });
+  }
   let questionDraftAnswers: Record<string, string> = {};
   let pausedTaskId = '';
 
-  function submitComposerDraft(): void {
+  function submitComposerDraft(submitOpts?: { fromVoice?: boolean }): void {
     if (composerComp.textarea.disabled) return;
     const text = sanitizeText(composerComp.textarea.value);
     const attachments = composerComp.getPendingAttachments();
     const message = text || (attachments.length > 0 ? 'Use the attached files as context for this task.' : '');
     if (!message) return;
-    const submittedFromVoice = !!composerVoiceOriginText && sanitizeText(message) === composerVoiceOriginText;
+    const submittedFromVoice = resolveSubmittedFromVoice({
+      explicitFromVoice: submitOpts?.fromVoice,
+      voiceOriginText: composerVoiceOriginText,
+    });
+    // Steering branch: a run is in flight and no ask_user question is active
+    // → this submission steers the running task instead of starting a new
+    // one. We deliberately do NOT touch task title, taskStartedAt,
+    // currentRunKind, or send presentation meta — none of those should
+    // change for mid-run guidance. Attachments are silently dropped: v1
+    // steering only carries text/voice. The whole point of this branch is
+    // "never start a new task mid-run" — falling through on a stray
+    // attachment would defeat that.
+    const hasFeedbackChannel = typeof opts.onSendFeedback === 'function';
+    const questionPromptActive = !!currentQuestionPrompt?.questions?.length;
+    if (isRunning && !questionPromptActive && hasFeedbackChannel) {
+      opts.onSendFeedback!(message, { source: submittedFromVoice ? 'voice' : 'text' });
+      composerComp.setText('');
+      composerVoiceOriginText = '';
+      composerComp.clearAttachments();
+      voiceErrorMessage = ''; voiceState = 'idle'; resetVoiceDraftState(); resetVoiceSessionState();
+      pendingVoiceSubmit = false; voiceStopReason = null;
+      syncVoiceUi();
+      return;
+    }
     unlockNarration();
     currentRunKind = undefined;
     currentPresentationPolicySource = undefined;
@@ -1332,7 +1402,15 @@ export function mountWidget(opts: MountOptions): RoverUi {
   }
 
   function syncComposerDisabledState(): void {
-    const disabled = isRunning || (currentMode === 'observer' && !canComposeInObserver);
+    // Steering mode: while a run is in flight AND no ask_user question is
+    // active, keep the composer enabled. The submit path then routes to
+    // onSendFeedback instead of onSend. If onSendFeedback isn't wired by the
+    // host, we fall back to disabling so the visitor isn't stranded with an
+    // input that silently does nothing.
+    const hasFeedbackChannel = typeof opts.onSendFeedback === 'function';
+    const questionPromptActive = !!currentQuestionPrompt?.questions?.length;
+    const inSteerMode = isRunning && !questionPromptActive && hasFeedbackChannel;
+    const disabled = (isRunning && !inSteerMode) || (currentMode === 'observer' && !canComposeInObserver);
     composerComp.setDisabled(disabled);
     win.questionPromptCancel.disabled = disabled;
     win.questionPromptSubmit.disabled = disabled;
@@ -1340,6 +1418,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
       (node as HTMLInputElement).disabled = disabled;
     }
     if (disabled && voiceState === 'listening') stopVoiceDictation('disabled');
+    // Visual cue: in steer mode, swap to a placeholder that explicitly tells
+    // the visitor their message will guide the running task, not start a new
+    // one. Empty string passes through to the rotating-placeholders default.
+    composerComp.setStaticPlaceholder(inSteerMode ? 'Guide Rover (this won’t start a new task)…' : '');
     syncVoiceUi();
   }
 
@@ -1778,6 +1860,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
     hasMessages = false; latestTaskTitle = ''; taskStartedAt = 0;
     latestArtifactBlock = null; artifactExpanded = false;
     composerComp.clearAttachments();
+    // Drop any prior-run feedback cards so a fresh transcript doesn't carry
+    // stale Queued/Applied/Dropped state from an unrelated session.
+    feedbackQueue.reset();
     renderArtifactStage(); syncTaskStage();
     setQuestionPrompt(undefined);
     shortcutsComp.syncVisibility(false, isRunning, false);
@@ -1868,13 +1953,29 @@ export function mountWidget(opts: MountOptions): RoverUi {
 
       // Show floating live stack — no panel, no backdrop blur
       liveStack.show();
+      // Re-expand the feed trace so follow-up runs show live progress. A prior
+      // run's "run completed" event collapses the trace (see addTimelineEvent);
+      // without re-expanding here, a 2nd message in the same chat executes but
+      // its tool steps render inside a collapsed trace and stay invisible.
+      feedComp.setTraceExpanded(true, experience.stream?.maxVisibleLiveCards);
       inputBar.setRunning(true);
-      composerComp.setSendAsStop(true, () => { opts.onCancelRun?.(); });
+      // In steer mode (host wired onSendFeedback), keep Send as Send — the
+      // visitor needs it to deliver mid-run guidance. Surface a separate,
+      // one-click Cancel button to the left of Send so cancel stays
+      // reachable from compressed state (without expanding the panel). For
+      // legacy hosts without a feedback channel, fall back to the original
+      // Send→Stop swap so they still have a way to abort.
+      if (typeof opts.onSendFeedback === 'function') {
+        composerComp.setCancelVisible(true, () => { opts.onCancelRun?.(); });
+      } else {
+        composerComp.setSendAsStop(true, () => { opts.onCancelRun?.(); });
+      }
     } else {
       // Hide live stack
       liveStack.hide();
       inputBar.setRunning(false);
       composerComp.setSendAsStop(false, () => {});
+      composerComp.setCancelVisible(false, () => {});
       if (!options?.preserveNarration) cancelNarration();
       currentRunKind = undefined;
       currentPresentationPolicySource = undefined;
@@ -2003,6 +2104,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
     clearVoiceStopTimer(); voiceProvider.dispose();
     commandBar.destroy();
     inputBar.destroy();
+    // Composer owns a 4-second placeholder-rotation setInterval; without this
+    // dispose, the interval keeps firing after the widget is destroyed.
+    composerComp.destroy();
     liveStack.destroy();
     particleSystem.destroy();
     filamentSystem.destroy();
@@ -2010,6 +2114,7 @@ export function mountWidget(opts: MountOptions): RoverUi {
     timelineNarrationScheduler.dispose();
     narrator.dispose();
     audioAnalyser.dispose();
+    feedbackQueue.reset();
     window.removeEventListener('resize', handleViewportMutation);
     window.removeEventListener('orientationchange', handleViewportMutation);
     window.visualViewport?.removeEventListener('resize', handleViewportMutation);
@@ -2123,8 +2228,14 @@ export function mountWidget(opts: MountOptions): RoverUi {
       let shouldScheduleTimelineNarration = true;
       if (displayEvent.kind === 'thought' && isRunning && waitingForFirstModelSignal) { waitingForFirstModelSignal = false; syncProcessingIndicator(); }
       if ((displayEvent.title || '').toLowerCase() === 'run completed') {
+        // Collapse the trace on completion. Paired with the re-expand in
+        // setRunning(true) — a follow-up run must re-open it or its live
+        // progress is invisible. Keep these two in sync.
         feedComp.setTraceExpanded(false, experience.stream?.maxVisibleLiveCards);
         try { actionSpotlightSystem.clearAll(); } catch { /* spotlight is best-effort */ }
+        // Drop the live-stack's cards so a follow-up run doesn't flash stale
+        // cards from this run when setRunning(true) calls liveStack.show().
+        try { liveStack.clear(); } catch { /* live stack clear is best-effort */ }
         shouldScheduleTimelineNarration = false;
       }
       const status = displayEvent.status || (displayEvent.kind === 'error' ? 'error' : displayEvent.kind === 'tool_result' ? 'success' : 'pending');
@@ -2236,5 +2347,19 @@ export function mountWidget(opts: MountOptions): RoverUi {
     setScrollPosition: (pos) => feedComp.setScrollPosition(pos),
     showPausedTaskBanner,
     hidePausedTaskBanner,
+    markFeedbackQueued: (id: string, text: string, source: 'text' | 'voice') => {
+      feedbackQueue.enqueue({ id, text, source });
+      renderFeedbackCard(id);
+    },
+    markFeedbackApplied: (id: string, atStepIndex: number) => {
+      const updated = feedbackQueue.markApplied(id, atStepIndex);
+      if (updated) renderFeedbackCard(id);
+    },
+    markFeedbackDropped: (id: string, reason: string) => {
+      // Caller may send any string; the model casts to a known reason union
+      // and falls through to the generic "Not applied" copy if unrecognized.
+      const updated = feedbackQueue.markDropped(id, reason as never);
+      if (updated) renderFeedbackCard(id);
+    },
   };
 }

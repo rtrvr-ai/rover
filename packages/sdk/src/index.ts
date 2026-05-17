@@ -2,6 +2,13 @@ import { Bridge, bindRpc, type NavigationIntentEvent } from '@rover/bridge';
 import { sanitizeRoverPageCaptureConfig } from '@rover/shared/lib/page/index.js';
 import type { PageConfig, PageData, RoverPageCaptureConfig, ToolOutput } from '@rover/shared/lib/types/index.js';
 import type { LLMDataInput } from '@rover/shared/lib/types/workflow-types.js';
+import type {
+  RoverUserFeedback,
+  RoverFeedbackApplied,
+  RoverFeedbackDropped,
+  RoverFeedbackSource,
+  RoverFeedbackDropReason,
+} from '@rover/shared/lib/types/rover-feedback.js';
 import {
   resolveRoverPresentationPolicy,
   type RoverPresentationIntent,
@@ -515,6 +522,15 @@ export type RoverInstance = {
   show: () => void;
   hide: () => void;
   send: (text: string) => void;
+  /**
+   * Send mid-run "steering" guidance to the agent. Distinct from `send`:
+   * the message does NOT start a new task — it is queued for injection into
+   * the next planner iteration as `userFeedback` on the most-recent prev
+   * step. Returns the generated id so callers can correlate ack events.
+   * Returns `null` if there is no active run to steer (the API rejects the
+   * call rather than silently dropping the message).
+   */
+  sendFeedback: (text: string, opts?: { source?: RoverFeedbackSource }) => { id: string } | null;
   newTask: (options?: { reason?: string; clearUi?: boolean }) => void;
   endTask: (options?: { reason?: string }) => void;
   getState: () => any;
@@ -8490,6 +8506,26 @@ function handleWorkerMessage(msg: any): void {
   }
   if (shouldIgnoreRunScopedWorkerMessage(msg)) return;
 
+  if (msg.type === 'feedback_applied') {
+    const payload = msg.payload as RoverFeedbackApplied | undefined;
+    if (!payload || !Array.isArray(payload.ids)) return;
+    const stepIndex = typeof payload.appliedAtStepIndex === 'number' ? payload.appliedAtStepIndex : 0;
+    for (const id of payload.ids) {
+      if (typeof id === 'string' && id) ui?.markFeedbackApplied?.(id, stepIndex);
+    }
+    return;
+  }
+
+  if (msg.type === 'feedback_dropped') {
+    const payload = msg.payload as RoverFeedbackDropped | undefined;
+    if (!payload || !Array.isArray(payload.ids)) return;
+    const reason: RoverFeedbackDropReason = payload.reason || 'run_ended';
+    for (const id of payload.ids) {
+      if (typeof id === 'string' && id) ui?.markFeedbackDropped?.(id, reason);
+    }
+    return;
+  }
+
   if (msg.type === 'assistant') {
     const blocks = sanitizeMessageBlocks(msg.blocks);
     const text = String(msg.text || deriveTextFromMessageBlocks(blocks) || '');
@@ -12558,6 +12594,12 @@ function createRuntime(cfg: RoverInit): void {
     onCancelRun: () => {
       cancelCurrentFlow('manual_cancel_task');
     },
+    onSendFeedback: (text: string, opts: { source: 'text' | 'voice' }) => {
+      // UI submitted mid-run guidance — route through sendFeedback so the
+      // queued card, worker postMessage, and ack lifecycle all stay
+      // consistent with the public `sendFeedback(text, …)` API.
+      sendFeedback(text, { source: opts?.source });
+    },
     onCancelQuestionFlow: () => {
       cancelCurrentFlow('question_prompt_cancel');
     },
@@ -13216,6 +13258,7 @@ export function boot(cfg: RoverInit): RoverInstance {
     show,
     hide,
     send,
+    sendFeedback,
     newTask,
     endTask,
     getState,
@@ -13689,6 +13732,36 @@ export function send(text: string): void {
   dispatchUserPrompt(text);
 }
 
+/**
+ * Send mid-run steering guidance. The text is delivered to the worker as a
+ * `user_feedback` postMessage, buffered, then drained at the next planner
+ * iteration into the prev-step's `userFeedback` array so the LLM sees it
+ * before its next decision. Returns the generated id so callers (or the UI)
+ * can correlate the eventual feedback_applied / feedback_dropped event.
+ */
+export function sendFeedback(
+  text: string,
+  opts?: { source?: RoverFeedbackSource },
+): { id: string } | null {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return null;
+  const runId = String(runtimeState?.pendingRun?.id || '').trim();
+  if (!runId) return null;
+  const id = `fb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const source: RoverFeedbackSource = opts?.source === 'voice' ? 'voice' : 'text';
+  // Optimistic UI: render the "Queued" card before the worker round-trip.
+  ui?.markFeedbackQueued?.(id, trimmed, source);
+  const payload: RoverUserFeedback = {
+    id,
+    runId,
+    text: trimmed,
+    source,
+    submittedAt: Date.now(),
+  };
+  worker?.postMessage({ type: 'user_feedback', payload });
+  return { id };
+}
+
 export async function attachLaunch(params: RoverPreviewAttachLaunch): Promise<RoverLaunchAttachResponse | null> {
   if (!currentConfig) return null;
   await ensureRoverServerRuntime(currentConfig);
@@ -14059,6 +14132,17 @@ export type {
   RoverOwnerInstallRoverBookConfig,
   RoverProductionEmbedScriptTagInput,
 };
+
+// Real-time steering types — surfaced for consumers who want to type
+// custom Steer UI buttons or correlate sendFeedback round-trips with the
+// internal feedback_applied / feedback_dropped events.
+export type {
+  RoverUserFeedback,
+  RoverFeedbackApplied,
+  RoverFeedbackDropped,
+  RoverFeedbackSource,
+  RoverFeedbackDropReason,
+} from '@rover/shared/lib/types/rover-feedback.js';
 
 type RoverGlobalFn = ((command: string, ...args: any[]) => any) & Partial<RoverInstance> & { q?: any[]; l?: number };
 

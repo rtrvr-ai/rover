@@ -29,8 +29,29 @@ export type ComposerComponent = {
   setText: (value: string) => void;
   setStaticPlaceholder: (text: string) => void;
   setPlaceholders: (phrases: string[]) => void;
+  /**
+   * Pause the rotating example-placeholder overlay. Used by mount.ts during
+   * voice listening (the textarea may be empty for the moment between mic-on
+   * and the first transcript chunk; pausing here avoids a misleading "example
+   * prompt" rendering on top of the dictation indicator).
+   */
+  setPlaceholderRotationPaused: (paused: boolean) => void;
+  /**
+   * Show/hide a one-click Cancel button in the composer actions row. Used by
+   * mount.ts during a run in steer mode — since the Send button stays as
+   * Send (to deliver mid-run guidance), the visitor needs a separate, equally
+   * discoverable affordance to abort the running task without expanding the
+   * panel. The button is hidden by default.
+   */
+  setCancelVisible: (visible: boolean, onCancel: () => void) => void;
   update: (experience: RoverExperienceConfig) => void;
   syncAttachmentUi: () => void;
+  /**
+   * Release composer-owned resources. Currently clears the placeholder
+   * rotation interval; future cleanup (listener removals, etc.) slots in
+   * here. Called from mount.ts:destroy.
+   */
+  destroy: () => void;
 };
 
 let activePhrases: string[] = [
@@ -139,9 +160,28 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
   voiceButton.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 3a3 3 0 0 0-3 3v5a3 3 0 1 0 6 0V6a3 3 0 0 0-3-3Z"></path><path d="M19 11a7 7 0 0 1-14 0"></path><path d="M12 18v3"></path><path d="M8 21h8"></path></svg>';
   composerActions.appendChild(voiceButton);
 
+  // Cancel button — shown ONLY during a run in steer mode (mount.ts wires it
+  // via setCancelVisible). Lives to the left of Send so the destructive
+  // affordance is visually separated from the primary positive action.
+  // Hidden by default so it doesn't render when the host hasn't adopted
+  // steering or when no run is in flight.
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.className = 'composerCancelBtn';
+  cancelButton.setAttribute('aria-label', 'Cancel current task');
+  cancelButton.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>';
+  composerActions.appendChild(cancelButton);
+  let cancelHandler: (() => void) | null = null;
+  cancelButton.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    cancelHandler?.();
+  });
+
   const sendButton = document.createElement('button');
   sendButton.type = 'submit';
   sendButton.className = 'sendBtn';
+  sendButton.setAttribute('aria-label', 'Send message');
   const sendArrowSvg = '<svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>';
   const stopSquareSvg = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
   sendButton.innerHTML = sendArrowSvg;
@@ -288,12 +328,28 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
 
   let phraseIndex = 0;
   let placeholderTimer: ReturnType<typeof setInterval> | null = null;
+  // The rotating example-overlay must NOT compete with:
+  //   - a static placeholder set by mount (steer-mode "Guide Rover…"),
+  //   - the visitor typing (a non-empty draft),
+  //   - voice listening (caller pauses us via setPlaceholderRotationPaused).
+  // Tracking the static + external-pause state explicitly fixes a bug where
+  // updatePlaceholderVisibility (called on every blur/input) re-showed the
+  // overlay after setStaticPlaceholder had hidden it, producing two
+  // overlapping placeholder strings.
+  let staticPlaceholderActive = false;
+  let rotationExternallyPaused = false;
 
   function updatePlaceholderVisibility(): void {
-    placeholderOverlay.style.display = !textarea.value.trim() ? '' : 'none';
+    const hide = staticPlaceholderActive || rotationExternallyPaused || !!textarea.value.trim();
+    placeholderOverlay.style.display = hide ? 'none' : '';
   }
 
   function cyclePlaceholder(): void {
+    // Self-guard: skip ticks when the overlay shouldn't be visible anyway.
+    // Mutating placeholderText.textContent while hidden is harmless but
+    // wasted work; more importantly, this matches "rotation only at idle".
+    if (staticPlaceholderActive || rotationExternallyPaused) return;
+    if (textarea.value.trim()) return;
     placeholderText.classList.add('fading');
     setTimeout(() => {
       phraseIndex = (phraseIndex + 1) % activePhrases.length;
@@ -366,6 +422,10 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
         sendButton.type = 'submit';
       }
     },
+    setCancelVisible(visible: boolean, onCancel: () => void) {
+      cancelHandler = visible ? onCancel : null;
+      cancelButton.classList.toggle('visible', visible);
+    },
     setVoiceActive(active: boolean) {
       voiceButton.classList.toggle('active', active);
       voiceButton.setAttribute('aria-pressed', active ? 'true' : 'false');
@@ -381,11 +441,20 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
     },
     setStaticPlaceholder(text: string) {
       textarea.placeholder = text;
-      if (text) {
-        placeholderOverlay.style.display = 'none';
-      } else {
-        updatePlaceholderVisibility();
-      }
+      staticPlaceholderActive = !!text;
+      // Mirror the visual mode-cue on the Send button for screen-reader
+      // users: in steer mode (static placeholder active), Send delivers
+      // mid-run guidance, not a new task. Default reverts when the static
+      // placeholder is cleared.
+      sendButton.setAttribute(
+        'aria-label',
+        staticPlaceholderActive ? 'Send guidance to the current task' : 'Send message',
+      );
+      updatePlaceholderVisibility();
+    },
+    setPlaceholderRotationPaused(paused: boolean) {
+      rotationExternallyPaused = !!paused;
+      updatePlaceholderVisibility();
     },
     setPlaceholders(phrases: string[]) {
       if (!phrases.length) return;
@@ -400,5 +469,11 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
       syncAttachmentUi();
     },
     syncAttachmentUi,
+    destroy() {
+      if (placeholderTimer != null) {
+        clearInterval(placeholderTimer);
+        placeholderTimer = null;
+      }
+    },
   };
 }

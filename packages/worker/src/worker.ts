@@ -42,6 +42,16 @@ import {
 } from './agent/responseNarration.js';
 import type { LLMDataInput } from '@rover/shared/lib/types/workflow-types.js';
 import { ROVER_V2_PERSIST_CAPS } from '@rover/shared';
+import {
+  createFeedbackBuffer,
+  type FeedbackBuffer,
+} from './feedback-buffer.js';
+import type {
+  RoverUserFeedback,
+  RoverFeedbackApplied,
+  RoverFeedbackDropped,
+  RoverFeedbackDropReason,
+} from '@rover/shared/lib/types/rover-feedback.js';
 
 type RpcRequest = { t: 'req'; id: string; method: string; params?: unknown };
 type RpcResponse = { t: 'res'; id: string; ok: boolean; result?: unknown; error?: { message: string } };
@@ -208,6 +218,51 @@ let tabularStore: TabularStore | null = null;
 let attachedFiles: LLMDataInput[] = [];
 const PLANNER_TOOL_NAME_SET = new Set<string>(Object.values(PLANNER_FUNCTION_CALLS));
 let activeRun: { runId: string; text: string; startedAt: number; resume: boolean; preserveHistory: boolean } | null = null;
+const feedbackBuffer: FeedbackBuffer = createFeedbackBuffer();
+
+function emitFeedbackApplied(ids: string[], runId: string, appliedAtStepIndex: number): void {
+  if (!ids.length) return;
+  (self as any).postMessage({
+    type: 'feedback_applied',
+    payload: { ids, runId, appliedAtStepIndex } satisfies RoverFeedbackApplied,
+  });
+}
+
+function emitFeedbackDropped(ids: string[], runId: string, reason: RoverFeedbackDropReason): void {
+  if (!ids.length) return;
+  (self as any).postMessage({
+    type: 'feedback_dropped',
+    payload: { ids, runId, reason } satisfies RoverFeedbackDropped,
+  });
+}
+
+/**
+ * Drain queued feedback for the active run and attach it to the last step in
+ * `steps` **in place**. Emits feedback_applied for the drained ids.
+ *
+ * Mutation matters: the caller (applyAgentPrevSteps) is invoked from the
+ * planner's onPrevStepsUpdate callback with the SAME array reference the
+ * planner itself uses for its next iteration. Mutating that array (rather
+ * than a deep-cloned copy) is what makes the userFeedback visible to the
+ * next planner request without needing a separate plumbing channel.
+ *
+ * No-op when there is no active run, no queued items, or the steps array
+ * is empty — feedback queued before the first step exists will land on
+ * whatever step is first produced (applyAgentPrevSteps is called per step
+ * boundary).
+ */
+function drainFeedbackIntoSteps(steps: PreviousSteps[]): void {
+  const runId = activeRun?.runId;
+  if (!runId) return;
+  if (!Array.isArray(steps) || steps.length === 0) return;
+  const drained = feedbackBuffer.drain(runId);
+  if (drained.length === 0) return;
+  const lastIndex = steps.length - 1;
+  const last = steps[lastIndex] || {};
+  const prior = Array.isArray(last.userFeedback) ? last.userFeedback : [];
+  steps[lastIndex] = { ...last, userFeedback: [...prior, ...drained.map(item => item.text)] };
+  emitFeedbackApplied(drained.map(item => item.id), runId, lastIndex);
+}
 const cancelledRunIds = new Set<string>();
 let activeAbortController: AbortController | null = null;
 let lastStatusKey = '';
@@ -1886,6 +1941,12 @@ function assessAdversarialInput(rawText: string): { blocked: boolean; score: num
 
 function applyAgentPrevSteps(next?: any[], options?: { snapshot?: boolean }): void {
   if (!Array.isArray(next) || !next.length) return;
+  // Drain BEFORE the deep clone: the next planner iteration holds the same
+  // array reference as `next` (verified via messageOrchestrator.ts:
+  // routedAgentPrevSteps), so mutating `next` in place is what makes the
+  // visitor's userFeedback visible to the LLM's next decision. Draining the
+  // already-cloned `agentPrevSteps` afterward would not propagate.
+  drainFeedbackIntoSteps(next as PreviousSteps[]);
   agentPrevSteps = sanitizeAgentPrevStepsForPersist(next as PreviousSteps[]);
   if (options?.snapshot !== false) {
     postStateSnapshot();
@@ -3337,6 +3398,16 @@ async function runUserMessage(
       throw error;
     }
   } finally {
+    // Drop any visitor feedback that arrived for this run but never got
+    // applied (e.g., queued after the final planner tick). Reason is best-
+    // effort: 'run_canceled' if the run id was explicitly cancelled, else
+    // 'run_ended' for any other terminal path (success, failure, throw).
+    const endingRunId = activeRun?.runId;
+    if (endingRunId) {
+      const orphaned = feedbackBuffer.clear(endingRunId);
+      const reason: RoverFeedbackDropReason = cancelledRunIds.has(endingRunId) ? 'run_canceled' : 'run_ended';
+      emitFeedbackDropped(orphaned, endingRunId, reason);
+    }
     activeAbortController = null;
     activeRun = null;
     activePresentationVoiceAvailable = false;
@@ -3429,6 +3500,21 @@ async function runUserMessage(
       return;
     }
 
+    if (data.type === 'user_feedback') {
+      // Visitor sent steering text/voice mid-run. Validate against the active
+      // run id and either buffer it (drained on the next applyAgentPrevSteps
+      // tick) or emit feedback_dropped so the UI can flip the card to "Not
+      // applied" with a precise reason.
+      const payload = data.payload as Partial<RoverUserFeedback> | undefined;
+      const submittedRunId = String(payload?.runId || '').trim();
+      if (!payload || !submittedRunId) return;
+      const result = feedbackBuffer.submit(payload as RoverUserFeedback, activeRun?.runId);
+      if (!result.accepted) {
+        emitFeedbackDropped([result.id], submittedRunId, result.reason);
+      }
+      return;
+    }
+
     if (data.type === 'start_new_task') {
       if (!config) throw new Error('Worker not initialized');
       const nextTaskId = typeof data.taskId === 'string' && data.taskId.trim() ? data.taskId.trim() : crypto.randomUUID();
@@ -3436,6 +3522,12 @@ async function runUserMessage(
         typeof data.taskBoundaryId === 'string' && data.taskBoundaryId.trim()
           ? data.taskBoundaryId.trim()
           : crypto.randomUUID();
+      // A new task tears everything down — drop any feedback queued for prior
+      // runs with the canceled reason so visitors aren't left with stuck
+      // "Queued" cards from a discarded run.
+      for (const stale of feedbackBuffer.pruneForeign(undefined)) {
+        emitFeedbackDropped(stale.ids, stale.runId, 'run_canceled');
+      }
       activeAbortController?.abort();
       clearTaskScopedContextAfterBoundary('new_task');
       terminalRuns.clear();
@@ -3453,6 +3545,10 @@ async function runUserMessage(
     if (data.type === 'cancel_run') {
       if (typeof data.runId === 'string' && data.runId) {
         rememberCancelledRun(data.runId);
+        // Drop any queued feedback for this run immediately so the UI flips
+        // cards to "run canceled" without waiting for the abort to propagate.
+        const dropped = feedbackBuffer.clear(data.runId);
+        emitFeedbackDropped(dropped, data.runId, 'run_canceled');
         activeAbortController?.abort();
       }
       clearTaskScopedContextAfterBoundary('cancel');

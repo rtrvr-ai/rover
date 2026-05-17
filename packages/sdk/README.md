@@ -763,6 +763,7 @@ rover.send('Hello');
 | `show()` | Show the widget (launcher + panel) |
 | `hide()` | Hide the widget entirely |
 | `send(text)` | Send a message to Rover |
+| `sendFeedback(text, opts?)` | Mid-run steering — guide the agent without starting a new task. Returns `{ id }` if accepted, `null` if no run is active. `opts.source` may be `'text'` (default) or `'voice'`. See [Real-Time Steering](#real-time-steering). |
 | `newTask(options?)` | Start a new task, clearing context |
 | `endTask(options?)` | End the current task |
 | `getState()` | Get current runtime state |
@@ -773,6 +774,40 @@ rover.send('Hello');
 | `registerPromptContextProvider(provider)` | Inject bounded prompt context before a fresh Rover task/run |
 | `identify(visitor)` | Update visitor profile after boot (for async login/user hydration) |
 | `on(event, handler)` | Subscribe to events (returns unsubscribe fn) |
+
+## Real-Time Steering
+
+While the agent is executing a task, the visitor can guide it mid-flight without restarting. There are two equivalent ways to deliver guidance:
+
+1. **The visitor's composer.** During a run, the composer's placeholder changes to "Guide Rover (this won't start a new task)…" — typed or dictated input is routed as steering, not a new task. No host code needed.
+2. **The host's SDK call.** Call `roverApi.sendFeedback(text)` from your page code (e.g., from a custom "Steer" button).
+
+```javascript
+const ack = rover.sendFeedback('use the search bar, not the menu');
+if (ack === null) {
+  // No run is in flight — sendFeedback is a no-op outside a run.
+}
+```
+
+### Lifecycle
+
+Each item progresses through:
+
+| Status | Meaning |
+|---|---|
+| `Queued` | Accepted; will be injected at the next planner step boundary |
+| `Applied` | The LLM saw the guidance on its next decision (step index reported) |
+| `Dropped` | Item was discarded. Reasons: `run_ended`, `run_canceled`, `run_id_mismatch`, `queue_full` (16/run cap), `empty_text` |
+
+Rover renders a card in the live trace for each item so the visitor can see whether their guidance landed. No host integration is required to surface this.
+
+### Constraints
+
+- Active run only. `sendFeedback` returns `null` when no run is in flight.
+- Bounded at 16 items per run. Excess submissions are dropped with `queue_full`.
+- Text is sanitized (control chars stripped, capped at 500 chars, triple-backticks escaped) before being injected into the LLM prompt.
+- `ask_user` prompts take precedence: while an agent-initiated question is showing, the composer routes to answers, not steering.
+- Attachments are not supported on steering; the text portion of the submission is taken as guidance and any pending attachment is cleared.
 
 ## Events
 

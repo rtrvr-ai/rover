@@ -382,13 +382,28 @@ export function createWindow(opts: WindowOptions): WindowComponent {
 
       const desktopSize = experience.shell?.desktopSize || 'stage';
       const desktopHeight = experience.shell?.desktopHeight || 'tall';
+      // Viewport-relative default for the 'stage' size — the fixed 960×600
+      // default felt squished post-completion on FHD+ displays and didn't
+      // scale up on larger monitors. ~62% width × ~80% height, then clamped
+      // by the existing MIN/MAX rails, gives a panel that's readable on a
+      // 1280 laptop and generous on 1440/1920+ displays. Explicit 'compact'
+      // and 'cinema' overrides keep their fixed semantics for hosts who pin
+      // a size.
+      const viewportTargetWidth = Math.round(nextMetrics.width * 0.62);
+      const viewportTargetHeight = Math.round(nextMetrics.height * 0.80);
       const targetWidth = clampNumber(
-        desktopSize === 'compact' ? PANEL_DESKTOP_MIN_WIDTH : desktopSize === 'cinema' ? PANEL_DESKTOP_MAX_WIDTH : PANEL_DESKTOP_DEFAULT_WIDTH,
+        desktopSize === 'compact'
+          ? PANEL_DESKTOP_MIN_WIDTH
+          : desktopSize === 'cinema'
+            ? PANEL_DESKTOP_MAX_WIDTH
+            : viewportTargetWidth,
         PANEL_DESKTOP_MIN_WIDTH,
         Math.max(PANEL_DESKTOP_MIN_WIDTH, Math.min(PANEL_DESKTOP_MAX_WIDTH, nextMetrics.width - (safeInset * 2))),
       );
       const targetHeight = clampNumber(
-        desktopHeight === 'full' ? nextMetrics.height - (safeInset * 2) : Math.min(PANEL_DESKTOP_DEFAULT_HEIGHT, nextMetrics.height - (safeInset * 2)),
+        desktopHeight === 'full'
+          ? nextMetrics.height - (safeInset * 2)
+          : Math.min(viewportTargetHeight, nextMetrics.height - (safeInset * 2)),
         PANEL_DESKTOP_MIN_HEIGHT,
         Math.max(PANEL_DESKTOP_MIN_HEIGHT, nextMetrics.height - (safeInset * 2)),
       );
