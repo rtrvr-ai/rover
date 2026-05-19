@@ -226,6 +226,10 @@ export type PreviousSteps = {
 export type ToolExecutionResult = {
   toolName?: string;
   output?: RuntimeToolOutput;
+  // Some tool executors (act-loop, extract) put their payload under `data`
+  // instead of `output`. Both surfaces must be readable for downstream text
+  // resolution to find a usable response.
+  data?: RuntimeToolOutput;
   error?: string;
   errorDetails?: any;
   creditsUsed?: number;

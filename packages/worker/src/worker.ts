@@ -236,6 +236,37 @@ function emitFeedbackDropped(ids: string[], runId: string, reason: RoverFeedback
   });
 }
 
+// Diagnostic posting with built-in flood protection. The current single
+// `run_start_presentation` kind fires once per visitor message — well within
+// these limits — but the safeguard is here so the next added diagnostic
+// inherits flood-resistance by default instead of needing to think about it.
+// - Per-kind debounce: a given kind fires at most once per DIAGNOSTIC_MIN_INTERVAL_MS.
+// - Global rate cap: across all kinds, at most DIAGNOSTIC_GLOBAL_CAP_PER_MINUTE per 60s window.
+// - Silent drop when over cap (logging the drop would itself become noise).
+// - Memory: lastDiagnosticByKind ~one entry per kind, diagnosticPostTimestamps
+//   is hard-bounded at DIAGNOSTIC_GLOBAL_CAP_PER_MINUTE entries.
+const DIAGNOSTIC_MIN_INTERVAL_MS = 500;
+const DIAGNOSTIC_GLOBAL_CAP_PER_MINUTE = 60;
+const lastDiagnosticByKind = new Map<string, number>();
+const diagnosticPostTimestamps: number[] = [];
+
+function postDiagnostic(kind: string, payload: Record<string, unknown>): void {
+  if (!kind) return;
+  const now = Date.now();
+  const last = lastDiagnosticByKind.get(kind) || 0;
+  if (now - last < DIAGNOSTIC_MIN_INTERVAL_MS) return;
+  const cutoff = now - 60_000;
+  while (diagnosticPostTimestamps.length && diagnosticPostTimestamps[0] < cutoff) {
+    diagnosticPostTimestamps.shift();
+  }
+  if (diagnosticPostTimestamps.length >= DIAGNOSTIC_GLOBAL_CAP_PER_MINUTE) return;
+  lastDiagnosticByKind.set(kind, now);
+  diagnosticPostTimestamps.push(now);
+  try {
+    (self as any).postMessage({ type: 'worker_diagnostic', payload: { kind, ...payload } });
+  } catch { /* diagnostic is best-effort */ }
+}
+
 /**
  * Drain queued feedback for the active run and attach it to the last step in
  * `steps` **in place**. Emits feedback_applied for the drained ids.
@@ -279,6 +310,11 @@ let activeSpeechProvider: RoverSpeechProvider | undefined;
 let recentPresentationNarrations: string[] = [];
 let recentPresentationGroupKeys: string[] = [];
 let lastAssistantResponseNarrationKey = '';
+// Per-run flag: set when a postAssistantMessage with responseKind='final'
+// actually emits to the UI. If a run reaches terminalState='completed' without
+// ever flipping this true, runUserMessage fires a fallback message from the
+// latest prevSteps data so the user always sees a final bubble.
+let runFinalEmitted = false;
 
 let RPC_TIMEOUT_MS = 30_000;
 const DETACHED_EXTERNAL_TAB_MAX_AGE_MS = 90_000;
@@ -519,23 +555,25 @@ function buildRoverRuntimeContext(params: {
     ...(site ? { site } : {}),
     tabIdContract: 'tree_index_mapped_by_tab_order',
     taskBoundaryId: params.taskBoundaryId,
-    ...(params.presentationActive || params.voiceActive || params.spotlightActive || params.captionActive || params.runKind || params.narrationLanguage || params.presentationIntent || params.presentationPolicySource || params.speechProvider || params.previousNarrations?.length || params.previousGroupKeys?.length
-      ? {
-          uiHints: {
-            ...(params.presentationActive ? { presentationActive: true } : {}),
-            ...(params.voiceActive ? { voiceActive: true } : {}),
-            ...(params.spotlightActive ? { spotlightActive: true } : {}),
-            ...(params.captionActive ? { captionActive: true } : {}),
-            ...(params.runKind ? { runKind: params.runKind } : {}),
-            ...(params.narrationLanguage ? { narrationLanguage: params.narrationLanguage } : {}),
-            ...(params.presentationIntent ? { presentationIntent: params.presentationIntent } : {}),
-            ...(params.presentationPolicySource && params.presentationPolicySource !== 'default' ? { presentationPolicySource: params.presentationPolicySource } : {}),
-            ...(params.speechProvider ? { speechProvider: params.speechProvider } : {}),
-            ...(params.previousNarrations?.length ? { previousNarrations: params.previousNarrations.slice(-4) } : {}),
-            ...(params.previousGroupKeys?.length ? { previousGroupKeys: params.previousGroupKeys.slice(-4) } : {}),
-          },
-        }
-      : {}),
+    // Always emit uiHints with explicit booleans for the four presentation
+    // flags. The backend gates `narrationActive` on
+    // `runtimeContext.uiHints.voiceActive === true`, and a conditional spread
+    // ("only include if truthy") is indistinguishable from "explicitly off"
+    // on the wire — that ambiguity was silently dropping narration mid-run
+    // when any field was falsy. Explicit booleans make the contract clear.
+    uiHints: {
+      presentationActive: !!params.presentationActive,
+      voiceActive: !!params.voiceActive,
+      spotlightActive: !!params.spotlightActive,
+      captionActive: !!params.captionActive,
+      ...(params.runKind ? { runKind: params.runKind } : {}),
+      ...(params.narrationLanguage ? { narrationLanguage: params.narrationLanguage } : {}),
+      ...(params.presentationIntent ? { presentationIntent: params.presentationIntent } : {}),
+      ...(params.presentationPolicySource && params.presentationPolicySource !== 'default' ? { presentationPolicySource: params.presentationPolicySource } : {}),
+      ...(params.speechProvider ? { speechProvider: params.speechProvider } : {}),
+      ...(params.previousNarrations?.length ? { previousNarrations: params.previousNarrations.slice(-4) } : {}),
+      ...(params.previousGroupKeys?.length ? { previousGroupKeys: params.previousGroupKeys.slice(-4) } : {}),
+    },
     ...(externalTabs.length ? { externalTabs } : {}),
   };
 }
@@ -1709,21 +1747,29 @@ function postAssistantMessage(payload: string | AssistantMessagePayload): string
   const firstTextBlock = blocks?.find((block): block is Extract<AssistantMessageBlock, { type: 'text' }> => block.type === 'text');
   const firstStructuredBlock = blocks?.find((block): block is Extract<AssistantMessageBlock, { type: 'tool_output' | 'json' }> =>
     block.type === 'tool_output' || block.type === 'json');
-  const resolvedText =
+  const kind = responseKind === 'checkpoint' || responseKind === 'final' || responseKind === 'question' || responseKind === 'error'
+    ? responseKind
+    : undefined;
+  let resolvedText =
     text
     || firstTextBlock?.text
     || summarizeOutputText(firstStructuredBlock?.data as RuntimeToolOutput | undefined)
     || '';
   if (!resolvedText && (!blocks || blocks.length === 0)) {
-    return '';
+    // Final-kind messages must always render something — silently dropping a
+    // final leaves the visitor staring at an empty result. Any other empty
+    // payload (status echoes, etc.) is still safe to skip. Prefer the latest
+    // agent prevStep text over a generic placeholder so the bubble carries
+    // the agent's actual work when the planner's overallThought is missing.
+    if (kind !== 'final') {
+      return '';
+    }
+    resolvedText = deriveTailPrevStepText(agentPrevSteps) || 'I finished the task.';
   }
   const runId = activeRun?.runId;
   if (runId && cancelledRunIds.has(runId)) {
     return resolvedText;
   }
-  const kind = responseKind === 'checkpoint' || responseKind === 'final' || responseKind === 'question' || responseKind === 'error'
-    ? responseKind
-    : undefined;
   const narration = kind
     ? normalizeResponseNarration(resolvedText, kind)
     : undefined;
@@ -1737,6 +1783,7 @@ function postAssistantMessage(payload: string | AssistantMessagePayload): string
     narrationActive: kind ? (activePresentationVoice || undefined) : undefined,
     executionId: runId,
   });
+  if (kind === 'final') runFinalEmitted = true;
   return resolvedText;
 }
 
@@ -2001,7 +2048,11 @@ function buildPlannerToolResultBlocks(toolResults: ToolExecutionResult[] | undef
     const result = toolResults[i];
     if (!result) continue;
     const stepLabel = `Step ${i + 1}`;
-    const output = result.output ?? result.generatedContentRef ?? result.schemaHeaderSheetInfo;
+    // Include `result.data` in the fallback chain — planner tools like ACT
+    // return their payload under `.data` (see actAgent / toolExecutor); if we
+    // miss it, the visitor sees no final bubble for an otherwise-successful
+    // planner run.
+    const output = result.output ?? result.data ?? result.generatedContentRef ?? result.schemaHeaderSheetInfo;
     const summary = summarizeOutputText(output);
     if (output !== undefined && shouldAttachStructuredBlock(output, summary)) {
       blocks.push({
@@ -2041,7 +2092,7 @@ function summarizePlannerToolResults(toolResults: ToolExecutionResult[] | undefi
   for (let i = 0; i < toolResults.length; i += 1) {
     const result = toolResults[i];
     if (!result) continue;
-    const output = result.output ?? result.generatedContentRef ?? result.schemaHeaderSheetInfo;
+    const output = result.output ?? result.data ?? result.generatedContentRef ?? result.schemaHeaderSheetInfo;
     const summary = summarizeOutputText(output);
     if (summary) {
       lines.push(summary);
@@ -2052,10 +2103,37 @@ function summarizePlannerToolResults(toolResults: ToolExecutionResult[] | undefi
   return lines.join('\n\n');
 }
 
+// Walk prevSteps from the end and return the first non-empty natural-language
+// text we can find. Tries `thought` (planner free-form rationale), then `data`
+// (per-step result payload, often a JSON-stringified array of `{response: ...}`
+// objects). Used as a last-resort source of user-facing content when the
+// planner's overallThought + tool summaries are both empty — so we surface the
+// agent's actual work rather than a generic placeholder.
+function deriveTailPrevStepText(steps: PreviousSteps[] | undefined): string | undefined {
+  if (!Array.isArray(steps) || !steps.length) return undefined;
+  for (let i = steps.length - 1; i >= 0; i -= 1) {
+    const step = steps[i] as any;
+    if (!step) continue;
+    const thought = typeof step.thought === 'string' ? step.thought.trim() : '';
+    if (thought) return thought;
+    const rawData = step.data;
+    if (rawData == null) continue;
+    let parsed: unknown = rawData;
+    if (typeof rawData === 'string') {
+      try { parsed = JSON.parse(rawData); } catch { parsed = rawData; }
+    }
+    const derived = deriveResponseTextFromOutput(parsed as RuntimeToolOutput | undefined);
+    if (derived && derived.trim()) return derived.trim();
+  }
+  return undefined;
+}
+
 function resolvePlannerFinalText(response: { overallThought?: unknown } | undefined, toolResults: ToolExecutionResult[] | undefined): string {
   const overall = String(response?.overallThought || '').trim();
+  if (overall) return overall;
   const toolSummary = summarizePlannerToolResults(toolResults);
-  return overall || toolSummary || '';
+  if (toolSummary) return toolSummary;
+  return deriveTailPrevStepText(agentPrevSteps) || '';
 }
 
 function extractLatestPrevStepsFromPlanner(toolResults: ToolExecutionResult[] | undefined): PreviousSteps[] | undefined {
@@ -2695,6 +2773,22 @@ async function handleUserMessage(
   activeNarrationRunKind = presentationHints.runKind;
   activeNarrationLanguage = presentationHints.narrationLanguage;
   activeSpeechProvider = presentationHints.speechProvider;
+  // Diagnostic — emits the resolved presentation flags at run-start so we
+  // can confirm whether voiceActive was actually true when the visitor
+  // expected narration. Routed through postDiagnostic (per-kind debounce +
+  // global rate cap), surfaced to hosts via `rover.on('diagnostic', …)`.
+  // Silent on customer embeds unless a listener is wired.
+  postDiagnostic('run_start_presentation', {
+    runId: activeRunId,
+    voiceActive: presentationHints.voiceActive === true,
+    spotlightActive: presentationHints.spotlightActive === true,
+    presentationActive: presentationHints.presentationActive === true,
+    captionActive: presentationHints.captionActive === true,
+    runKind: presentationHints.runKind,
+    speechProvider: presentationHints.speechProvider,
+    presentationIntent: presentationHints.presentationIntent,
+    presentationPolicySource: presentationHints.presentationPolicySource,
+  });
   const runtimeContext = buildRoverRuntimeContext({
     tabs: tabsForRun,
     config,
@@ -3286,6 +3380,7 @@ async function runUserMessage(
   seenStatusKeys = new Set<string>();
   lastRuntimeTabsDiagnosticsKey = '';
   lastAssistantResponseNarrationKey = '';
+  runFinalEmitted = false;
   cancelledRunIds.delete(runId);
   activeAbortController = new AbortController();
   activeRun = { runId, text, startedAt: Date.now(), resume, preserveHistory };
@@ -3321,6 +3416,19 @@ async function runUserMessage(
     const isTerminalOutcome =
       outcome.terminalState === 'completed'
       || outcome.terminalState === 'failed';
+    // Safety net: if a completed run never emitted a final assistant message
+    // (e.g., the handler returned via a path that skipped postAssistantMessage
+    // entirely, or postAssistantMessage was called with empty content earlier
+    // in this run), surface something so the visitor sees the run finished.
+    // Pull from the most recent prevStep so the bubble carries the agent's
+    // actual outcome — the generic string only fires if there's nothing to
+    // recover from prevSteps.
+    if (outcome.terminalState === 'completed' && !runFinalEmitted) {
+      postAssistantMessage({
+        text: deriveTailPrevStepText(agentPrevSteps) || 'I finished the task.',
+        responseKind: 'final',
+      });
+    }
     if (isTerminalOutcome) {
       rememberTerminalRun(runId, { ok: true, outcome, taskBoundaryId: runTaskBoundaryId });
       (self as any).postMessage({
@@ -3497,6 +3605,15 @@ async function runUserMessage(
 
     if (data.type === 'register_tool') {
       if (data.tool) toolRegistry.registerTool(data.tool as ClientToolDefinition);
+      return;
+    }
+
+    if (data.type === 'narration_reset') {
+      // SDK signals host-page navigation. The worker survives nav (the document
+      // dies but the Worker stays alive), so a stale narration dedupe can
+      // suppress the first post-nav response narration. Clear it so the new
+      // page's narrator receives narration on the next assistant message.
+      lastAssistantResponseNarrationKey = '';
       return;
     }
 

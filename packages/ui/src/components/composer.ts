@@ -168,8 +168,12 @@ export function createComposer(opts: ComposerOptions): ComposerComponent {
   const cancelButton = document.createElement('button');
   cancelButton.type = 'button';
   cancelButton.className = 'composerCancelBtn';
-  cancelButton.setAttribute('aria-label', 'Cancel current task');
-  cancelButton.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>';
+  // Stop-square icon (not ×) — visually distinct from the input-bar's
+  // close-to-seed button, and matches the semantic visitors already learned
+  // from the prior Send→Stop swap. × would collide with the close button
+  // sitting two slots to the right.
+  cancelButton.setAttribute('aria-label', 'Stop current task');
+  cancelButton.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
   composerActions.appendChild(cancelButton);
   let cancelHandler: (() => void) | null = null;
   cancelButton.addEventListener('click', (e) => {
