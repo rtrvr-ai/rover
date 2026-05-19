@@ -456,10 +456,57 @@ export function mountWidget(opts: MountOptions): RoverUi {
     };
   }
 
+  // Auto-unlock narration on the next user gesture if narration is queued
+  // while still locked. The narrator queues speech but its play loop is a
+  // no-op until unlock(). This commonly happens after the host page navigates
+  // mid-run: the new page's narrator boots locked, the final response arrives
+  // before any gesture on the new page, and the queued speech sits idle. A
+  // one-shot capture-phase listener on document drains the queue the moment
+  // the visitor touches anything.
+  let pendingGestureUnlockInstalled = false;
+  function installGestureUnlockOnce(): void {
+    if (pendingGestureUnlockInstalled || narrationUnlocked) return;
+    if (typeof document === 'undefined') return;
+    pendingGestureUnlockInstalled = true;
+    // Listen on the iframe document AND, when same-origin-accessible, the host
+    // page's top document. If Rover is embedded as an iframe, visitors often
+    // interact with the surrounding host before clicking inside Rover — those
+    // gestures must also drain the queue. Cross-origin parents throw on access
+    // and we silently fall back to iframe-only.
+    const targets: Document[] = [document];
+    try {
+      const topWin = window.top;
+      if (topWin && topWin !== window && topWin.document && topWin.document !== document) {
+        targets.push(topWin.document);
+      }
+    } catch { /* cross-origin parent; iframe-only is the best we can do */ }
+    const drain = () => {
+      pendingGestureUnlockInstalled = false;
+      for (const target of targets) {
+        try { target.removeEventListener('pointerdown', drain, true); } catch { /* ignore */ }
+        try { target.removeEventListener('keydown', drain, true); } catch { /* ignore */ }
+        try { target.removeEventListener('touchstart', drain, true); } catch { /* ignore */ }
+      }
+      try { unlockNarration(); } catch { /* narration is best-effort */ }
+    };
+    for (const target of targets) {
+      try {
+        target.addEventListener('pointerdown', drain, { capture: true, once: true, passive: true });
+        target.addEventListener('keydown', drain, { capture: true, once: true });
+        target.addEventListener('touchstart', drain, { capture: true, once: true, passive: true });
+      } catch { /* ignore */ }
+    }
+  }
+
   const timelineNarrationScheduler = createTimelineNarrationScheduler({
     isEnabled: isNarrationLocallyAllowed,
     shouldSpeakEvent: shouldSpeakNarrationEvent,
-    speak: (text, options) => narrator.speak(text, options),
+    speak: (text, options) => {
+      narrator.speak(text, options);
+      if (!narrationUnlocked && isNarrationLocallyAllowed()) {
+        installGestureUnlockOnce();
+      }
+    },
   });
 
   function scheduleTimelineNarration(event: RoverTimelineEvent): void {
@@ -1953,13 +2000,12 @@ export function mountWidget(opts: MountOptions): RoverUi {
         inputBar.setExpanded(false);
       }
 
-      // Show floating live stack — no panel, no backdrop blur
+      // Show floating live stack — no panel, no backdrop blur. Live cards
+      // surface in-progress steps as a transient overlay; the workflow trace
+      // stays collapsed by default and the visitor opens it via "Show trace"
+      // only when they want the full step history. Auto-expanding the trace
+      // here was confusing visitors with a wall of detail on every run.
       liveStack.show();
-      // Re-expand the feed trace so follow-up runs show live progress. A prior
-      // run's "run completed" event collapses the trace (see addTimelineEvent);
-      // without re-expanding here, a 2nd message in the same chat executes but
-      // its tool steps render inside a collapsed trace and stay invisible.
-      feedComp.setTraceExpanded(true, experience.stream?.maxVisibleLiveCards);
       inputBar.setRunning(true);
       // Soft pulse on the seed so the visitor knows work is happening even
       // when they minimize the widget. Paired with the cleared pulse on
@@ -2317,8 +2363,13 @@ export function mountWidget(opts: MountOptions): RoverUi {
       pulseBadge.textContent = String(stepCount);
       syncPulseState();
     },
-    clearTimeline: () => {
-      cancelNarration();
+    clearTimeline: (options?: { preserveNarration?: boolean }) => {
+      // Replay/rehydration paths (post-navigation, session restore) call
+      // clearTimeline to flush stale UI before re-emitting events, but the
+      // narrator's queue may carry a final narration that hasn't drained yet
+      // (autoplay-locked, waiting on first gesture). Skip the cancel in that
+      // case so voice still plays after the visitor's next gesture.
+      if (!options?.preserveNarration) cancelNarration();
       feedComp.clearTimeline(); liveStack.clear(); latestArtifactBlock = null; artifactExpanded = false; renderArtifactStage(); syncTaskStage();
       toolStartCount = 0; toolResultCount = 0; updateTideProgress();
       filamentSystem.clearAll();

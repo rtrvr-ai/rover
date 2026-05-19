@@ -4885,6 +4885,12 @@ function ensureUnloadHandler(): void {
     if (runtimeState?.pendingRun) {
       sessionCoordinator?.releaseWorkflowLock(runtimeState.pendingRun.id);
     }
+    // Worker survives host-page navigation; its narration dedupe key needs to
+    // reset so the new page receives narration for the first post-nav response.
+    // SDK-side per-run assistant dedupe map must also clear so a re-mount on
+    // the new page doesn't suppress replay of the latest assistant message.
+    try { worker?.postMessage({ type: 'narration_reset' }); } catch { /* worker may be gone */ }
+    try { latestAssistantByRunId.clear(); } catch { /* ignore */ }
     persistRuntimeStateImmediate();
     void flushTelemetry(true);
     stopTelemetry();
@@ -6084,7 +6090,11 @@ function maybeEmitFrameDiagnostics(pageData: PageData | undefined, source: strin
 }
 
 function replayTimeline(events: PersistedTimelineEvent[]): void {
-  ui?.clearTimeline();
+  // Replay re-emits every event (and re-schedules its narration). Cancelling
+  // the narrator queue here would wipe a final narration that arrived right
+  // before rehydration kicked off — leaving voice silent on the new page even
+  // after rehydration completes. Preserve the queue; replay will rebuild it.
+  ui?.clearTimeline({ preserveNarration: true });
   for (const event of events) {
     appendTimelineEvent(
       {
