@@ -1782,8 +1782,24 @@ function postAssistantMessage(payload: string | AssistantMessagePayload): string
     narration: shouldNarrate ? narration : undefined,
     narrationActive: kind ? (activePresentationVoice || undefined) : undefined,
     executionId: runId,
+    // Stamp the current task boundary so the SDK's filter can verify the
+    // message belongs to this session even when pendingRunId has been cleared
+    // by an earlier completion event arriving in the same tick. Without this,
+    // a fallback final emitted right after execution_completed is silently
+    // dropped on the post-navigation page.
+    runBoundaryId: taskBoundaryId,
   });
   if (kind === 'final') runFinalEmitted = true;
+  try {
+    console.debug('[rover/worker] postAssistantMessage emitted', {
+      kind,
+      runId,
+      taskBoundaryId,
+      textLength: resolvedText.length,
+      blocksCount: blocks?.length || 0,
+      hasNarration: !!narration,
+    });
+  } catch { /* ignore */ }
   return resolvedText;
 }
 
@@ -3424,8 +3440,17 @@ async function runUserMessage(
     // actual outcome — the generic string only fires if there's nothing to
     // recover from prevSteps.
     if (outcome.terminalState === 'completed' && !runFinalEmitted) {
+      const fallbackText = deriveTailPrevStepText(agentPrevSteps) || 'I finished the task.';
+      try {
+        console.debug('[rover/worker] runUserMessage emitting fallback final', {
+          runId,
+          taskBoundaryId,
+          textPreview: fallbackText.slice(0, 80),
+          fromPrevSteps: !!deriveTailPrevStepText(agentPrevSteps),
+        });
+      } catch { /* ignore */ }
       postAssistantMessage({
-        text: deriveTailPrevStepText(agentPrevSteps) || 'I finished the task.',
+        text: fallbackText,
         responseKind: 'final',
       });
     }

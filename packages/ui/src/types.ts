@@ -187,6 +187,9 @@ export type RoverUi = {
   addTimelineEvent: (event: RoverTimelineEvent) => void;
   clearTimeline: (options?: { preserveNarration?: boolean }) => void;
   clearLiveExecution?: (options?: { preserveNarration?: boolean }) => void;
+  /** Best-effort flush of any in-flight narration so OS audio engines don't
+   *  emit a stale tail after the document tears down on navigation. */
+  cancelNarration?: () => void;
   setTaskSuggestion: (suggestion: RoverTaskSuggestion) => void;
   setStatus: (text: string) => void;
   setRunning: (running: boolean, options?: { preserveNarration?: boolean; openOnStop?: boolean }) => void;

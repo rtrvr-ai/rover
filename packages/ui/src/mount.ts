@@ -255,7 +255,27 @@ export function mountWidget(opts: MountOptions): RoverUi {
     },
   });
   let narrator = createNarratorForExperience(experience, narrationPreference);
-  let narrationUnlocked = false;
+  // Persist the "visitor has already unlocked narration in this tab" bit
+  // across same-origin navigations. The narrator instance is page-bound and
+  // resets to locked on every fresh mount, but the visitor's consent should
+  // carry through the session so the new page can speak without forcing the
+  // visitor to interact first. Browser autoplay policy may still require a
+  // fresh gesture on some platforms; the gesture-unlock listener below is
+  // the belt-and-braces fallback for those.
+  const NARRATION_UNLOCKED_STORAGE_KEY = opts.siteId
+    ? `rover:narrationUnlocked:${opts.siteId}`
+    : undefined;
+  let narrationUnlocked = (() => {
+    if (!NARRATION_UNLOCKED_STORAGE_KEY) return false;
+    try { return sessionStorage.getItem(NARRATION_UNLOCKED_STORAGE_KEY) === '1'; } catch { return false; }
+  })();
+  // If the visitor already unlocked on a prior page in this tab, pre-unlock
+  // the fresh narrator. unlock() is idempotent and best-effort — the browser
+  // may silently no-op until a real gesture lands, but trying immediately
+  // catches the common case where same-origin nav DOES carry activation.
+  if (narrationUnlocked) {
+    try { narrator.unlock(); } catch { /* unlock is best-effort */ }
+  }
   let narrationConfigSignature = JSON.stringify({
     owner: experience.audio?.narration || {},
     provider: resolveNarrationProvider(),
@@ -333,6 +353,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
   function unlockNarration(): void {
     if (!allowNarrationToggle) return;
     narrationUnlocked = true;
+    if (NARRATION_UNLOCKED_STORAGE_KEY) {
+      try { sessionStorage.setItem(NARRATION_UNLOCKED_STORAGE_KEY, '1'); } catch { /* ignore */ }
+    }
     narrator.unlock();
   }
 
@@ -2377,6 +2400,10 @@ export function mountWidget(opts: MountOptions): RoverUi {
       pulseBadge.textContent = '0';
     },
     clearLiveExecution: clearLiveExecutionVisuals,
+    // Exposed so the SDK can flush any in-flight speech before the document
+    // tears down on navigation — otherwise some platforms (macOS Web Speech)
+    // emit a stale ~1s tail of audio after pagehide.
+    cancelNarration,
     setTaskSuggestion,
     setStatus,
     setRunning,

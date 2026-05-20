@@ -137,6 +137,48 @@ test('assistant and tool events are ignored when their task boundary mismatches 
   assert.equal(allowAssistantWithoutBoundaryWhenRunMatches, false);
 });
 
+test('boundary-matched non-lifecycle messages pass even when pendingRunId is empty', () => {
+  // Post-navigation scenario: the run already completed (pendingRunId cleared
+  // by execution_completed), but a follow-up assistant or tool_result arrives
+  // carrying the same boundary. The boundary-match short-circuit must let it
+  // through so the final bubble renders.
+  const acceptAssistantBoundaryMatch = shouldIgnoreRunScopedMessage({
+    type: 'assistant',
+    messageRunId: 'run-1',
+    messageTaskBoundaryId: 'boundary-current',
+    currentTaskBoundaryId: 'boundary-current',
+    pendingRunId: undefined,
+    taskStatus: 'completed',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(acceptAssistantBoundaryMatch, false);
+
+  const acceptToolBoundaryMatch = shouldIgnoreRunScopedMessage({
+    type: 'tool_result',
+    messageRunId: 'run-1',
+    messageTaskBoundaryId: 'boundary-current',
+    currentTaskBoundaryId: 'boundary-current',
+    pendingRunId: undefined,
+    taskStatus: 'completed',
+    ignoredRunIds: new Set(),
+  });
+  assert.equal(acceptToolBoundaryMatch, false);
+
+  // Lifecycle events with a matching boundary still go through their own
+  // gating logic (not short-circuited here).
+  const lifecycleStillGated = shouldIgnoreRunScopedMessage({
+    type: 'execution_started',
+    messageRunId: 'run-1',
+    messageTaskBoundaryId: 'boundary-current',
+    currentTaskBoundaryId: 'boundary-current',
+    pendingRunId: undefined,
+    taskStatus: 'idle',
+    ignoredRunIds: new Set(),
+  });
+  // execution_started without pendingRunId and no authoritativeRunId match → ignored.
+  assert.equal(lifecycleStillGated, true);
+});
+
 test('pending completion is accepted even if boundary metadata is missing', () => {
   const acceptPendingCompletion = shouldIgnoreRunScopedMessage({
     type: 'run_completed',
