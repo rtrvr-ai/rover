@@ -3573,6 +3573,20 @@ function shouldIgnoreRunScopedWorkerMessage(msg: any): boolean {
       terminalState: typeof msg?.terminalState === 'string' ? msg.terminalState : undefined,
     });
   }
+  // console.debug is hidden by default in devtools until Verbose level is
+  // enabled, so this is invisible to production embeds but on-tap when
+  // diagnosing the next regression of "where did my assistant bubble go?"
+  if (ignored) {
+    try {
+      console.debug('[rover/sdk] worker message ignored', {
+        type,
+        messageRunId,
+        messageTaskBoundaryId,
+        currentTaskBoundaryId: resolveCurrentTaskBoundaryCandidate(),
+        pendingRunId: getPendingRunId(),
+      });
+    } catch { /* ignore */ }
+  }
   return ignored;
 }
 
@@ -4891,6 +4905,10 @@ function ensureUnloadHandler(): void {
     // the new page doesn't suppress replay of the latest assistant message.
     try { worker?.postMessage({ type: 'narration_reset' }); } catch { /* worker may be gone */ }
     try { latestAssistantByRunId.clear(); } catch { /* ignore */ }
+    // Flush in-flight speech cleanly so the OS audio engine doesn't carry a
+    // half-spoken tail of audio into the new document. The mid-utterance cut
+    // is unavoidable on full navigation, but cancelling here makes it clean.
+    try { ui?.cancelNarration?.(); } catch { /* narration is best-effort */ }
     persistRuntimeStateImmediate();
     void flushTelemetry(true);
     stopTelemetry();

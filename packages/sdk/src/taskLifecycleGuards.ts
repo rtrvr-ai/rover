@@ -158,6 +158,16 @@ export function shouldIgnoreRunScopedMessage(params: {
   if (currentBoundary) {
     if (messageBoundary && messageBoundary !== currentBoundary) return true;
     if (isLifecycleBoundaryEvent && !messageBoundary && !canRelaxBoundaryForPendingCompletion) return true;
+    // Boundary-match short-circuit: when a non-lifecycle content message
+    // (assistant, status, tool_start, tool_result, etc.) carries a boundary
+    // that matches the current session, accept it even when pendingRunId
+    // has been cleared. This handles the case where a final assistant
+    // emission arrives just after execution_completed cleared the pending
+    // run on the SDK side — without this, post-completion content (and
+    // post-navigation resumed content) gets silently dropped.
+    if (messageBoundary && messageBoundary === currentBoundary && !isLifecycleBoundaryEvent) {
+      return false;
+    }
   }
   if (!messageRunId && type !== 'run_started' && type !== 'run_resumed' && type !== 'execution_started') return false;
   if (messageRunId && ignoredRunIds?.has(messageRunId)) return true;
