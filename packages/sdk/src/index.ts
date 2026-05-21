@@ -7167,6 +7167,7 @@ async function dispatchUserPromptAsync(
         forceNewRun: shouldStartFreshTask,
         runId: shouldContinueAskUserBoundary ? continuationRunId : undefined,
         requestedMode: options?.routing || currentConfig.taskRouting?.mode || 'act',
+        presentationMode: derivePresentationModeFromPolicySource(options?.presentationPolicySource),
       });
       if (!server) {
         throw new Error('Server run/input returned no data; run was not accepted.');
@@ -7198,6 +7199,7 @@ async function dispatchUserPromptAsync(
               continueRun: false,
               forceNewRun: true,
               requestedMode: options?.routing || currentConfig.taskRouting?.mode || 'act',
+              presentationMode: derivePresentationModeFromPolicySource(options?.presentationPolicySource),
             });
             if (retry?.runId) {
               runId = retry.runId.trim();
@@ -9741,6 +9743,20 @@ function presentationPolicySourceForReason(
   return undefined;
 }
 
+/**
+ * Compact mode hint for the server's /command handler. The detailed
+ * presentation policy already flows through the local worker channel; the
+ * server only needs to know whether to attach narration directives to its
+ * responses (and whether highlights should accompany them).
+ */
+function derivePresentationModeFromPolicySource(
+  source?: RoverPresentationPolicySource,
+): 'voice' | 'guided' | 'default' | undefined {
+  if (source === 'voice') return 'voice';
+  if (source === 'shortcut' || source === 'query' || source === 'heuristic') return 'guided';
+  return undefined;
+}
+
 function resolveDefaultActionSpotlightActiveForRunFromConfig(
   cfg: RoverInit | null,
   runKind: 'guide' | 'task' | undefined,
@@ -11687,15 +11703,28 @@ function loadAndMergeShortcuts(cfg: RoverInit): void {
   if (cached) {
     backendSiteConfig = cached;
   }
+  // Snapshot what we actually applied (post-sanitize) so we can compare against
+  // the fresh server fetch and skip the second apply when nothing changed. The
+  // sanitizers used by getCachedSiteConfig and fetchBackendSiteConfig produce
+  // stable key order, so JSON.stringify is a safe comparator.
+  const appliedSiteConfigSnapshot = cached ? JSON.stringify(cached) : '';
   applyEffectiveSiteConfig(cfg);
   maybeShowGreeting();
 
   void fetchBackendSiteConfig(cfg)
     .then(siteConfig => {
       if (!siteConfig) return;
+      const fetchedSnapshot = JSON.stringify(siteConfig);
+      const sameAsApplied = appliedSiteConfigSnapshot !== '' && fetchedSnapshot === appliedSiteConfigSnapshot;
       backendSiteConfig = siteConfig;
       setCachedSiteConfig(cfg.siteId, siteConfig);
-      applyEffectiveSiteConfig(cfg);
+      // Only re-broadcast when the fetched config materially differs from what
+      // we already applied. Skipping the redundant broadcast prevents the
+      // narrator from being disposed+recreated on a no-op refresh — which would
+      // otherwise cancel in-flight speech and flip the provider mid-render.
+      if (!sameAsApplied) {
+        applyEffectiveSiteConfig(cfg);
+      }
       if (!greetingDismissed) {
         const greetingCfg = resolveEffectiveGreetingConfig(cfg);
         if (greetingShownInSession && !runtimeState?.uiOpen) {

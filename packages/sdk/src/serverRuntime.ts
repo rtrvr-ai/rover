@@ -977,6 +977,14 @@ export class RoverServerRuntimeClient {
     forceNewRun?: boolean;
     runId?: string;
     requestedMode?: 'act' | 'planner' | 'auto';
+    /**
+     * Hint to the server about how the run should be presented back. Voice =
+     * mic-driven (talk back every step, no spotlight). Guided = shortcut /
+     * heuristic-detected guided text (talk back + spotlight). Default = silent
+     * unless the user has narration toggled on manually. The server uses this
+     * to decide whether to attach `roverPresentation` directives on each step.
+     */
+    presentationMode?: 'voice' | 'guided' | 'default';
   }): Promise<RunInputResponse | null> {
     return this.withCommandLock(async () => {
       const clientEventId =
@@ -997,6 +1005,9 @@ export class RoverServerRuntimeClient {
             forceNewRun: !!params.forceNewRun,
             requestedMode: params.requestedMode,
             taskBoundaryId: this.options.getTaskBoundaryId?.(),
+            ...(params.presentationMode && params.presentationMode !== 'default'
+              ? { presentationMode: params.presentationMode }
+              : {}),
           },
         });
         if (!result.ok) {
