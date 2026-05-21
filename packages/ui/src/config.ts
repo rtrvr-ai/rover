@@ -497,7 +497,16 @@ export function resolveNarrationEventSpeechDecision(input: {
   siteDefaultActive: boolean;
 }): boolean {
   if (!input.locallySupported) return false;
-  if (input.preferenceSource === 'visitor') return input.visitorEnabled;
+  // The visitor's effective enabled state is the source of truth. If the
+  // speaker icon shows as ON in the header (visitor toggled it, or site
+  // default is on and they haven't disabled it), narration speaks regardless
+  // of host-API presentation flags. Without this, narration was silenced
+  // for ordinary user queries because the worker only flags `narrationActive`
+  // when a host explicitly opts in via `presentationVoiceAvailable`.
+  if (input.visitorEnabled === true) return true;
+  // Visitor explicitly turned narration off — respect that, regardless of
+  // what the event or site default say.
+  if (input.preferenceSource === 'visitor') return false;
   if (input.eventNarrationActive === true) return true;
   if (input.eventNarrationActive === false) return false;
   return input.siteDefaultActive;

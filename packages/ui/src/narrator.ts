@@ -611,7 +611,12 @@ export function createElevenLabsNarrator(opts: RoverNarratorOptions = {}): Rover
           text: item.text,
         }),
       });
-      if ((response.status === 401 || response.status === 403) && currentGeneration === generation && !disposed) {
+      // 412 Precondition Failed → tier gate rejected the request. The site
+      // doesn't have the ElevenLabs entitlement. Cache the failure so we
+      // don't keep paying the network roundtrip on every utterance — the
+      // notifyProviderFailure call below tells the parent factory to fall
+      // back to the Web Speech narrator for the rest of this session.
+      if ((response.status === 401 || response.status === 403 || response.status === 412) && currentGeneration === generation && !disposed) {
         permanentlyDisabled = true;
         notifyProviderFailure(item);
         cleanupActive();
