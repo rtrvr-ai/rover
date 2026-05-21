@@ -335,6 +335,8 @@ When those are present, the helper can fetch the short-lived preview config from
   Some sites enforce strict CSP or reload aggressively. Use the Preview Helper or Hosted Preview instead.
 - **`Open hosted shell` does nothing**
   Hosted Preview should open Rover's dedicated hosted viewer route, not the launcher page.
+- **Need internal diagnostics?**
+  Rover stays silent in integrator consoles by default. Set `window.__roverDebug = true` and reload to surface diagnostic lines tagged `[rover/ui]`, `[rover/sdk]`, etc. — useful when sharing repro details with the Rover team.
 
 ### Hosted playground
 

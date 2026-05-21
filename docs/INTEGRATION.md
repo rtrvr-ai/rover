@@ -867,3 +867,14 @@ When authentication is missing or invalid, Rover emits an `auth_required` event:
 - Rover emits an `auth_required` event when credits are exhausted.
 - Check your balance in the [Workspace](https://rover.rtrvr.ai/workspace).
 - Upgrade your plan or wait for renewal at [rtrvr.ai](https://www.rtrvr.ai/cloud?view=pricing).
+
+### Debug logging
+
+Rover keeps its console quiet on integrator sites by default. To surface internal diagnostics (e.g. narrator provider transitions, voice/narration entitlement state), set a window flag before reload:
+
+```js
+window.__roverDebug = true;
+location.reload();
+```
+
+Lines tagged `[rover/ui]`, `[rover/sdk]`, etc. will then appear in DevTools. Share the relevant log lines with the Rover team when reporting an issue. Unset (or refresh without setting) to silence them again.

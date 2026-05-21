@@ -225,13 +225,6 @@ export function mountWidget(opts: MountOptions): RoverUi {
     preference?: Pick<NarrationVisitorPreference, 'language' | 'voiceURI' | 'voicePreference'>,
   ) => {
     const provider = resolveNarrationProvider();
-    try {
-      console.debug('[rover/ui] narrator provider selected', {
-        provider,
-        naturalVoiceNarrationEntitled: runtimeEntitlements.naturalVoiceNarration === true,
-        siteId: opts.siteId,
-      });
-    } catch { /* ignore */ }
     return createRoverNarrator({
       provider,
       apiBase: opts.apiBase,
@@ -241,6 +234,25 @@ export function mountWidget(opts: MountOptions): RoverUi {
       voiceURI: preference?.voiceURI,
       voicePreference: preference?.voicePreference,
     });
+  };
+  // Gated by `window.__roverDebug = true`. Default-off so integrator consoles
+  // (Webflow/Wix/etc.) stay clean. We (rtrvr) flip the flag locally when we
+  // need to debug a narration issue and ask the user to share the log.
+  const isRoverDebugEnabled = (): boolean => {
+    try {
+      return typeof window !== 'undefined' && (window as Window & { __roverDebug?: boolean }).__roverDebug === true;
+    } catch { return false; }
+  };
+  const logNarratorProviderSelection = (transition: 'initial' | 'changed'): void => {
+    if (!isRoverDebugEnabled()) return;
+    try {
+      console.debug('[rover/ui] narrator provider selected', {
+        provider: currentNarratorProvider,
+        naturalVoiceNarrationEntitled: runtimeEntitlements.naturalVoiceNarration === true,
+        siteId: opts.siteId,
+        transition,
+      });
+    } catch { /* ignore */ }
   };
   const getNarrationDefaultOn = (config: RoverExperienceConfig): boolean => {
     const narration = config.audio?.narration;
@@ -264,7 +276,9 @@ export function mountWidget(opts: MountOptions): RoverUi {
       }
     },
   });
+  let currentNarratorProvider: 'browser' | 'elevenlabs' = resolveNarrationProvider();
   let narrator = createNarratorForExperience(experience, narrationPreference);
+  logNarratorProviderSelection('initial');
   // Persist the "visitor has already unlocked narration in this tab" bit
   // across same-origin navigations. The narrator instance is page-bound and
   // resets to locked on every fresh mount, but the visitor's consent should
@@ -344,11 +358,15 @@ export function mountWidget(opts: MountOptions): RoverUi {
       },
     });
     if (nextSignature !== narrationConfigSignature) {
+      const nextProvider = resolveNarrationProvider();
+      const providerChanged = nextProvider !== currentNarratorProvider;
       narrationConfigSignature = nextSignature;
       cancelNarration();
       narrator.dispose();
+      currentNarratorProvider = nextProvider;
       narrator = createNarratorForExperience(experience, narrationPreference);
       if (narrationUnlocked) narrator.unlock();
+      if (providerChanged) logNarratorProviderSelection('changed');
     }
     allowNarrationToggle = narrationPreference.supportedByConfig && narrator.isSupported();
     isNarrationEnabled = allowNarrationToggle && narrationPreference.enabled;
