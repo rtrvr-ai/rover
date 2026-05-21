@@ -1790,16 +1790,6 @@ function postAssistantMessage(payload: string | AssistantMessagePayload): string
     runBoundaryId: taskBoundaryId,
   });
   if (kind === 'final') runFinalEmitted = true;
-  try {
-    console.debug('[rover/worker] postAssistantMessage emitted', {
-      kind,
-      runId,
-      taskBoundaryId,
-      textLength: resolvedText.length,
-      blocksCount: blocks?.length || 0,
-      hasNarration: !!narration,
-    });
-  } catch { /* ignore */ }
   return resolvedText;
 }
 

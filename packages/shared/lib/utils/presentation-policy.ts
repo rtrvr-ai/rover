@@ -230,6 +230,18 @@ export function resolveRoverPresentationPolicy(input: RoverPresentationPolicyInp
     source = 'voice';
   }
 
+  // Visitor-driven narration: when the speaker icon is effectively ON
+  // (visitor toggled it, or site default is on and the visitor has not
+  // disabled it), treat the run as a 'task' so the policy chain stays
+  // "active" all the way through to the worker. Without this, an ordinary
+  // typed query has no runKind, presentationIntent collapses to 'off', and
+  // the worker silences narration text generation — even though the visitor
+  // clearly asked for voice via the UI toggle.
+  if (!runKind && narrationAvailable && !visitorNarrationOff && input.narrationVisitorEnabled === true) {
+    runKind = 'task';
+    source = source === 'default' ? 'visitor' : source;
+  }
+
   if (!runKind) {
     const inferred = inferRoverPresentationRunKindFromText(
       [input.queryPrompt, input.userInput].filter(Boolean).join(' '),
@@ -243,16 +255,23 @@ export function resolveRoverPresentationPolicy(input: RoverPresentationPolicyInp
   const narrationActive = narrationAvailable
     && !visitorNarrationOff
     && (
-      input.narrationVisitorSource === 'visitor'
-        ? input.narrationVisitorEnabled === true
-        : defaultMode === 'always' || (defaultMode === 'guided' && runKind === 'guide')
+      // Visitor's effective enabled state is the source of truth. If the
+      // speaker icon shows ON (whether from an explicit toggle click or
+      // because site default is on), narration is active — regardless of
+      // whether a host-API runKind was supplied. This unifies the gate so
+      // ordinary user queries narrate just like guided demos do.
+      input.narrationVisitorEnabled === true
+      || defaultMode === 'always'
+      || (defaultMode === 'guided' && runKind === 'guide')
     );
   const spotlightActive = spotlightAvailable
     && !visitorSpotlightOff
     && (
-      input.actionSpotlightVisitorSource === 'visitor'
-        ? input.actionSpotlightVisitorEnabled === true
-        : !!runKind && runKindAllowed(runKind, input.actionSpotlightAllowedRunKinds)
+      // Same source-of-truth model as narration: if the visitor has
+      // highlighting effectively enabled (currently piggybacks on the
+      // narration toggle until we split them), spotlight is active.
+      input.actionSpotlightVisitorEnabled === true
+      || (!!runKind && runKindAllowed(runKind, input.actionSpotlightAllowedRunKinds))
     );
 
   const presentationIntent: RoverPresentationIntent =

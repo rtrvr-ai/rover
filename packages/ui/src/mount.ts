@@ -223,15 +223,25 @@ export function mountWidget(opts: MountOptions): RoverUi {
   const createNarratorForExperience = (
     config: RoverExperienceConfig,
     preference?: Pick<NarrationVisitorPreference, 'language' | 'voiceURI' | 'voicePreference'>,
-  ) => createRoverNarrator({
-    provider: resolveNarrationProvider(),
-    apiBase: opts.apiBase,
-    getAuth: opts.getAudioAuth,
-    lang: preference?.language || config.audio?.narration?.language || getBrowserLanguage(),
-    rate: config.audio?.narration?.rate,
-    voiceURI: preference?.voiceURI,
-    voicePreference: preference?.voicePreference,
-  });
+  ) => {
+    const provider = resolveNarrationProvider();
+    try {
+      console.debug('[rover/ui] narrator provider selected', {
+        provider,
+        naturalVoiceNarrationEntitled: runtimeEntitlements.naturalVoiceNarration === true,
+        siteId: opts.siteId,
+      });
+    } catch { /* ignore */ }
+    return createRoverNarrator({
+      provider,
+      apiBase: opts.apiBase,
+      getAuth: opts.getAudioAuth,
+      lang: preference?.language || config.audio?.narration?.language || getBrowserLanguage(),
+      rate: config.audio?.narration?.rate,
+      voiceURI: preference?.voiceURI,
+      voicePreference: preference?.voicePreference,
+    });
+  };
   const getNarrationDefaultOn = (config: RoverExperienceConfig): boolean => {
     const narration = config.audio?.narration;
     if (narration?.enabled === false) return false;
